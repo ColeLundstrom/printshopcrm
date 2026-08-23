@@ -229,6 +229,10 @@ node bin/gate.mjs
 
 ## Troubleshooting
 
+**`.env not found. Continuing without it.` on start**
+Not an error. Node says this when there's no `.env` file, which is normal for a local trial — the
+app runs on its defaults. It goes away once you create one (`cp .env.example .env`).
+
 **`SyntaxError` or "node:sqlite not found" on start**
 Node is older than 22. Check `node --version`. If you installed 22 but systemd runs an old one,
 put the absolute path in the unit's `ExecStart` (`which node`).
