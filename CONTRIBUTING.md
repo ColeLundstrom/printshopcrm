@@ -94,4 +94,15 @@ would compromise how simple this is to run.
 
 ## License
 
-Contributions are accepted under the MIT license — see [LICENSE](LICENSE).
+PrintShopCRM is licensed under the [Business Source License 1.1](LICENSE). You can run it for your
+own shop commercially and free of charge; what the license reserves is offering it to other people
+as a hosted service. Each version converts to Apache 2.0 four years after its release.
+
+By opening a pull request you agree that your contribution is licensed under the same terms, and
+that the Licensor may also distribute it under the Change License (Apache 2.0) and under commercial
+licenses. That last part is what makes it possible to sell hosting exceptions without having to
+track down every past contributor — it isn't a copyright assignment, and you keep your own rights
+to your work.
+
+If that's a problem for you, say so in the PR and we'll figure something out rather than merging
+something you're uncomfortable with.

@@ -1,13 +1,15 @@
 # PrintShopCRM
 
-**Open-source shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
+**Shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
+
+Free to run for your own shop, source included.
 
 Quoting, estimates, invoicing, a production board, art proofing, purchasing, and per-job
 profitability in one app. Node.js + SQLite. No build step, four runtime dependencies, one database
 file you can copy.
 
 [![CI](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
 ```bash
@@ -143,14 +145,16 @@ Secrets stored in settings are redacted out of any response sent to the browser.
 
 ## Hosted option
 
-Self-hosting is fully supported and always will be — this repo is the whole product, not a teaser.
+Self-hosting is fully supported and always will be — this repo is the whole product, not a teaser,
+and running it for your own shop is free forever.
 
 If you'd rather not run a server, **managed hosting and setup are available from MerchTroop**:
 backups, updates, SSL, monitoring, and data migration off your current tool. See
 **[HOSTING.md](HOSTING.md)**.
 
-Running it for other people? Set `PSC_HOST_BADGE_TEXT` (and optionally `PSC_HOST_BADGE_URL`) to put
-your own "hosted by" credit in the sidebar. Unset, nothing renders.
+Installing and configuring it on a client's own server for a fee is allowed and needs no license.
+Running it *for* clients on your own infrastructure is the one reserved use — that needs a
+commercial license, which is available; see [HOSTING.md](HOSTING.md#agencies-consultants-and-resellers).
 
 ---
 
@@ -214,4 +218,20 @@ Security issues: please report privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Use it, sell it, host it, fork it.
+**Business Source License 1.1** — see [LICENSE](LICENSE).
+
+In plain terms:
+
+- ✅ **Run it for your own print shop, free, forever.** Commercial use in your own business is
+  explicitly granted. Modify it, brand it, do what you like with it.
+- ✅ **Read, fork, and contribute.** The whole source is here. Nothing is held back.
+- ✅ **Set it up on someone else's server for a fee.** Consulting and installation work is fine.
+- ❌ **Don't sell it as a hosted service.** Running it *for* other shops on infrastructure you
+  control, as a product or service, needs a commercial license —
+  [get in touch](https://github.com/ColeLundstrom/printshopcrm/discussions).
+- 🕒 **It becomes Apache 2.0 on 2030-08-23.** Every version converts on its own four-year clock, so
+  today's release is fully open source in four years, permanently.
+
+This is "source available," not OSI open source — the difference is the hosting restriction, and
+calling it anything else would be dishonest. Everything else you'd expect from an open project is
+here: the real source, the real tests, and no feature gating.
