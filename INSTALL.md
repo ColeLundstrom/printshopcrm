@@ -244,6 +244,26 @@ node bin/gate.mjs
 
 ## Troubleshooting
 
+**Locked out — forgot the password, and the reset email never arrives**
+
+Expected on a fresh install: password reset goes out by email, and a new install has no mail
+configured yet. Recover it from the server, where you have filesystem access anyway:
+
+```bash
+cd /opt/printshopcrm
+npm run admin -- list-shops                       # see the shops and their owner addresses
+npm run admin -- reset-password owner@yourshop.com
+```
+
+That prints a new password immediately — no email involved. `npm run admin` on its own lists every
+command (there's also `list-users` and `promote`, for when the only owner has left the business).
+
+Set `PSC_DB` if your database isn't at the default path:
+
+```bash
+PSC_DB=/var/lib/printshopcrm/printshop.db npm run admin -- list-shops
+```
+
 **`.env not found. Continuing without it.` on start**
 Not an error. Node says this when there's no `.env` file, which is normal for a local trial — the
 app runs on its defaults. It goes away once you create one (`cp .env.example .env`).

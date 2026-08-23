@@ -65,12 +65,22 @@ For context when you're assessing a finding:
 - **The service worker caches the app shell only** — never authenticated `/api/*` responses — and
   wipes its cache on logout, so a shared floor tablet can't serve one shop's data to the next login.
 
+## Account recovery
+
+Password reset is delivered by email, so an install with no mail configured cannot reset a password
+through the UI. Anyone with server access can recover an account offline:
+
+```bash
+npm run admin -- reset-password owner@yourshop.com
+```
+
+This is intentional and grants no new privilege: the tool needs read/write access to the database
+files, and anyone who has that could already read or change anything in them. It exists so a
+lockout is a command rather than a lost business.
+
 ## Known limitations
 
 Documented rather than hidden. None is a secret, and a patch for any of them is welcome:
 
 - Webhook retry state is held in process, so pending retries are lost if the server restarts.
-- `webhook_deliveries` has no retention policy and grows without bound.
 - The SSRF guard has a small TOCTOU window between DNS validation and the actual `fetch`.
-- `invoices.status` is recomputed on write, so an invoice becomes `overdue` on its next write rather
-  than at the instant the due date passes.

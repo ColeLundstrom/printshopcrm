@@ -169,6 +169,18 @@ not features. Hosted and self-hosted run identical code.
 
 ---
 
+## Running it day to day
+
+```bash
+npm run admin                                     # what the admin tool can do
+npm run admin -- list-shops                       # shops and their owners
+npm run admin -- reset-password owner@shop.com    # set a password with no email involved
+```
+
+That last one is the way out of a lockout. Password reset normally goes by email, and a fresh
+install has none configured — so anyone with server access can recover an account directly. It
+grants no privilege they didn't already have, since the databases are right there on disk.
+
 ## Tests
 
 ```bash

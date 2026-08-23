@@ -561,6 +561,61 @@ await t('statement totals every open invoice, however many there are', async () 
   assert.ok(s.includes('$13,000.00'), 'TOTAL DUE must cover all 130 open invoices')
 })
 
+section('invoices: overdue is the calendar, not the last write')
+await t('an invoice that passes its due date reads as overdue with no write in between', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const { EFFECTIVE_STATUS_SQL } = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  db.exec(`CREATE TABLE invoices (id INTEGER PRIMARY KEY, amount_due REAL, amount_paid REAL, due_date TEXT, status TEXT)`)
+  // Every row carries the status it was LAST WRITTEN with — which is what the bug relied on.
+  db.exec(`INSERT INTO invoices (id, amount_due, amount_paid, due_date, status) VALUES
+    (1, 100, 0,   '2026-01-01', 'unpaid'),
+    (2, 100, 0,   '2099-01-01', 'unpaid'),
+    (3, 100, 40,  '2026-01-01', 'partial'),
+    (4, 100, 100, '2026-01-01', 'paid'),
+    (5, 100, 0,   NULL,         'unpaid'),
+    (6, 100, 0,   '',           'unpaid')`)
+  const today = '2026-08-23'
+  const eff = (id) => db.prepare(`SELECT ${EFFECTIVE_STATUS_SQL} AS s FROM invoices i WHERE i.id = ?`).get(today, id).s
+
+  assert.equal(eff(1), 'overdue', 'past due and unpaid must read overdue even though nothing wrote to it')
+  assert.equal(eff(2), 'unpaid', 'a future due date is not overdue')
+  assert.equal(eff(3), 'partial', 'partial outranks overdue, matching syncInvoiceStatus')
+  assert.equal(eff(4), 'paid', 'paid outranks everything')
+  assert.equal(eff(5), 'unpaid', 'a null due date is never overdue')
+  assert.equal(eff(6), 'unpaid', 'a blank due date is never overdue')
+
+  // The actual symptom: "$X overdue" on the dashboard, nothing under Invoices → Overdue.
+  const filtered = db.prepare(`SELECT i.id FROM invoices i WHERE ${EFFECTIVE_STATUS_SQL} = ?`).all(today, 'overdue').map((r) => r.id)
+  const dashboard = db.prepare(`SELECT i.id FROM invoices i WHERE i.amount_paid = 0 AND i.due_date IS NOT NULL AND i.due_date != '' AND i.due_date < ?`).all(today).map((r) => r.id)
+  assert.deepEqual(filtered, dashboard, 'the Overdue filter and the dashboard must return the same invoices')
+})
+
+section('webhooks: delivery history has a retention policy')
+await t('old terminal deliveries are pruned, in-flight retries and recent ones survive', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-prune-'))
+  process.env.PSC_DB = join(dir, 'p.db')
+  try {
+    // Fresh module instance so it opens the throwaway database rather than the shared one.
+    const db = await import(`../lib/db.mjs?prune=${Date.now()}`)
+    db.run('INSERT INTO webhook_subscriptions (url, events, secret) VALUES (?,?,?)', 'https://x.test', 'a', 's')
+    const stamp = (daysAgo) => new Date(Date.now() - daysAgo * 86400_000).toISOString().replace('T', ' ').slice(0, 19)
+    for (const [created, status] of [[stamp(40), 'delivered'], [stamp(40), 'failed'], [stamp(40), 'retrying'], [stamp(0), 'delivered']]) {
+      db.run('INSERT INTO webhook_deliveries (subscription_id,event,payload,status,created_at) VALUES (1,?,?,?,?)', 'e', '{}', status, created)
+    }
+    assert.equal(db.pruneWebhookDeliveries(30), 2, 'only the two old terminal rows should go')
+    const left = db.all('SELECT status FROM webhook_deliveries ORDER BY id').map((r) => r.status)
+    assert.deepEqual(left, ['retrying', 'delivered'], 'a delivery still being retried must never be deleted mid-flight')
+    assert.equal(db.pruneWebhookDeliveries(0), 0, 'days=0 disables the sweep entirely')
+  } finally {
+    delete process.env.PSC_DB
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

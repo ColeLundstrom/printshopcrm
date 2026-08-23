@@ -28,6 +28,7 @@
     "dev": "node --no-warnings --env-file-if-exists=.env --watch server.mjs",
     "seed": "node --no-warnings --env-file-if-exists=.env seed.mjs",
     "reset": "node bin/reset.mjs && npm run seed",
+    "admin": "node --no-warnings bin/admin.mjs",
     "test": "node bin/gate.mjs",
     "test:e2e": "node bin/gate-e2e.mjs",
     "test:all": "npm test && npm run test:e2e"

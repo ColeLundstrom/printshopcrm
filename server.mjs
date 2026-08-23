@@ -6,7 +6,7 @@ import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   all, get, run, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
-  syncInvoiceStatus, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
+  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
   scheduleFor, addBusinessDays, businessDaysBetween,
 } from './lib/db.mjs'
@@ -778,7 +778,15 @@ This link works once and expires in 60 minutes. If you didn't ask for it you can
 
 — The ${BRAND_NAME} team`
   sendEmail({ to: r.member.email, toName: r.member.name, subject: `Reset your ${BRAND_NAME} password`, body, settings: { shop_name: BRAND_NAME }, platform: true })
-    .then((d) => { if (!d.delivered) console.log('reset email not delivered (no platform relay):', r.member.email, d.error || ''); else console.log('reset email sent via', d.via, 'to', r.member.email) })
+    .then((d) => {
+      if (d.delivered) return console.log('reset email sent via', d.via, 'to', r.member.email)
+      // No mail configured — the user is staring at "a reset link is on its way" and nothing is
+      // coming. Tell the operator, in the logs they can actually see, how to unlock the account.
+      // The token itself is deliberately not logged: logs get shipped to aggregators, and the
+      // offline command below is a better path anyway.
+      console.warn(`reset email NOT delivered to ${r.member.email} — no mail is configured.${d.error ? ' (' + d.error + ')' : ''}`)
+      console.warn(`  → unlock it from the server:  npm run admin -- reset-password ${r.member.email}`)
+    })
     .catch((e) => console.error('reset email:', e.message))
   res.json(generic)
 }))
@@ -1834,10 +1842,14 @@ app.get('/api/estimates/:id/pdf', wrap((req, res) => {
 
 app.get('/api/invoices', wrap((req, res) => {
   const status = req.query.status
-  let sql = `SELECT i.*, c.name AS contact_name, c.company, e.estimate_number FROM invoices i
+  // Report and filter on the EFFECTIVE status so this list agrees with the dashboard's
+  // money-at-risk figure, which has always been computed live from due_date.
+  const today = todayIso()
+  let sql = `SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status, c.name AS contact_name, c.company, e.estimate_number
+    FROM invoices i
     LEFT JOIN contacts c ON c.id=i.contact_id LEFT JOIN estimates e ON e.id=i.estimate_id`
-  const params = []
-  if (status && status !== 'all') { sql += ' WHERE i.status = ?'; params.push(status) }
+  const params = [today]
+  if (status && status !== 'all') { sql += ` WHERE ${EFFECTIVE_STATUS_SQL} = ?`; params.push(today, status) }
   sql += ' ORDER BY i.id DESC'
   res.json(all(sql, ...params))
 }))
@@ -3475,9 +3487,12 @@ app.post('/api/v1/estimates', wrap((req, res) => {
 app.get('/api/v1/invoices', wrap((req, res) => {
   const limit = v1Limit(req.query); const off = v1Offset(req.query)
   const st = String(req.query.status || '').trim()
+  // Effective status, same as the app's own list — an integration polling for overdue invoices
+  // must not miss the ones that went overdue while nothing wrote to them.
+  const today = todayIso()
   const rows = st
-    ? all('SELECT * FROM invoices WHERE status = ? ORDER BY id DESC LIMIT ? OFFSET ?', st, limit + 1, off)
-    : all('SELECT * FROM invoices ORDER BY id DESC LIMIT ? OFFSET ?', limit + 1, off)
+    ? all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE ${EFFECTIVE_STATUS_SQL} = ? ORDER BY i.id DESC LIMIT ? OFFSET ?`, today, today, st, limit + 1, off)
+    : all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i ORDER BY i.id DESC LIMIT ? OFFSET ?`, today, limit + 1, off)
   v1List(res, rows.map(v1Invoice), limit)
 }))
 app.get('/api/v1/invoices/:id', wrap((req, res) => {
@@ -5067,6 +5082,12 @@ server.listen(PORT, () => {
   // Time-based automations. Printavo sells these as a top-tier feature; here it's a loop.
   // Each timed trigger checks the run log before firing, so restarting won't re-nag anyone.
   const TICK_MS = Number(process.env.PSC_TICK_MS) || 5 * 60 * 1000
+
+  // Housekeeping that belongs on a daily cadence rather than every tick. In-process only: a
+  // restart just means the sweep runs once more than strictly needed, which is harmless.
+  let lastDailySweep = 0
+  const dueForDailySweep = () => Date.now() - lastDailySweep > 24 * 60 * 60 * 1000
+  const markDailySweepDone = () => { lastDailySweep = Date.now() }
   const runTick = async () => {
     try {
       if (AUTH_ENABLED) purgeExpiredSessions() // keep control.db's sessions table from growing forever
@@ -5084,9 +5105,16 @@ server.listen(PORT, () => {
         // work, so a request arriving mid-tick waits for ONE shop's tick instead of all of them.
         let total = 0
         let qboPushed = 0
+        let pruned = 0
         for (const slug of automationTenantSlugs({ lite: EDITION === 'lite' })) {
           try { total += withTenant(slug, () => tick(autoDeps)).length }
           catch (e) { console.error(`  tick failed for ${slug}:`, e.message) }
+          // Webhook history retention. Once a day, not every tick — it's housekeeping, and on a
+          // large fleet running it every 5 minutes is a lot of scanning for nothing.
+          if (dueForDailySweep()) {
+            try { pruned += withTenant(slug, () => pruneWebhookDeliveries()) }
+            catch (e) { console.error(`  webhook prune failed for ${slug}:`, e.message) }
+          }
           // QBO reconciliation queue: retries are network-bound and awaited, so they don't
           // extend the synchronous per-shop tick — the event loop stays free during each push.
           try { qboPushed += await withTenant(slug, () => processQboQueue()) }
@@ -5095,10 +5123,17 @@ server.listen(PORT, () => {
         }
         if (total) console.log(`  automations: ${total} fired across tenants`)
         if (qboPushed) console.log(`  qbo: ${qboPushed} invoice(s) synced`)
+        if (pruned) console.log(`  webhook history: ${pruned} old deliver{y,ies} pruned`)
+        markDailySweepDone()
       } else if (EDITION !== 'lite') {
         const fired = tick(autoDeps)
         if (fired.length) console.log(`  automations: ${fired.length} fired — ${fired.slice(0, 4).join(', ')}`)
         await processQboQueue().catch((e) => console.error('  qbo queue failed:', e.message))
+        if (dueForDailySweep()) {
+          const n = pruneWebhookDeliveries()
+          if (n) console.log(`  webhook history: ${n} old deliveries pruned`)
+          markDailySweepDone()
+        }
       }
       // Platform-level: fire any due marketing nurture emails (approved by Cole 2026-07-27; re-enabled
       // 2026-07-28 after a review pause). Not a per-tenant concern, so it runs once per tick. This is
