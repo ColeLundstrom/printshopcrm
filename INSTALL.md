@@ -264,6 +264,17 @@ To verify before restarting, run the tests against the new code:
 node bin/gate.mjs
 ```
 
+### Confirming the server runs what the repo says
+
+```bash
+bash deploy/verify-sync.sh user@your-server /opt/printshopcrm/current
+```
+
+Compares a checksum of every runtime file against your working tree and reports anything that
+drifted — a hand-edit made on the server during an incident and then forgotten, or a deploy that
+half-finished. Exit 0 means the running service is byte-for-byte the published source, which is
+also how an AGPL deployment demonstrates it is serving what it claims to.
+
 ---
 
 ## Troubleshooting
