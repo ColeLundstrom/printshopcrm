@@ -1,0 +1,51 @@
+/* Embeddable DTF gang-sheet builder — self-contained, drops into the shop's site via iframe.
+   Neutral, light theme so it blends into most websites. No dependency on the app's CSS. */
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1a2230; background: #fff; }
+.gs { max-width: 920px; margin: 0 auto; padding: 18px; }
+.gs-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #eceff3; }
+.gs-title { font-size: 19px; font-weight: 700; }
+.gs-sub { font-size: 13px; color: #6b7688; margin-top: 2px; }
+.gs-price { text-align: right; }
+.gs-price-n { display: block; font-size: 24px; font-weight: 800; color: #0f7c4f; }
+.gs-price-s { display: block; font-size: 12px; color: #6b7688; }
+
+.gs-body { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 18px 0; }
+@media (max-width: 720px) { .gs-body { grid-template-columns: 1fr; } }
+
+.gs-drop { border: 2px dashed #cfd6e0; border-radius: 12px; padding: 22px; text-align: center; cursor: pointer; transition: .15s; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.gs-drop:hover, .gs-drop.over { border-color: #3b82f6; background: #f5f9ff; }
+.gs-drop-ic { font-size: 26px; }
+.gs-drop strong { display: block; font-size: 15px; }
+.gs-drop span { display: block; font-size: 12.5px; color: #6b7688; margin-top: 2px; }
+
+.gs-list { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.gs-item { display: flex; gap: 10px; align-items: center; border: 1px solid #eceff3; border-radius: 10px; padding: 8px; }
+.gs-thumb { width: 52px; height: 52px; border-radius: 8px; background: #f2f4f7 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="4" height="4" fill="%23e6e9ee"/><rect x="4" y="4" width="4" height="4" fill="%23e6e9ee"/></svg>'); flex: 0 0 auto; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.gs-thumb img { max-width: 100%; max-height: 100%; }
+.gs-item-b { flex: 1; min-width: 0; }
+.gs-item-n { font-size: 12.5px; color: #46505f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gs-item-ctl { display: flex; align-items: center; gap: 10px; margin-top: 5px; flex-wrap: wrap; }
+.gs-item-ctl label { font-size: 12px; color: #6b7688; display: flex; align-items: center; gap: 4px; }
+.gs-item-ctl input { width: 56px; padding: 5px 6px; border: 1px solid #d5dbe4; border-radius: 6px; font: inherit; font-size: 13px; }
+.gs-del { margin-left: auto; border: none; background: #f2f4f7; color: #98a1b0; border-radius: 6px; width: 26px; height: 26px; cursor: pointer; font-size: 13px; }
+.gs-del:hover { background: #ffe9e9; color: #d64545; }
+
+.gs-sheet-wrap { border: 1px solid #eceff3; border-radius: 12px; padding: 12px; background: #fafbfc; text-align: center; }
+.gs-sheet-lbl { font-size: 12px; color: #6b7688; margin-bottom: 8px; }
+#gs-canvas { max-width: 100%; height: auto; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.08); background: #eef1f5; }
+
+.gs-foot { border-top: 1px solid #eceff3; padding-top: 16px; }
+.gs-hint { color: #98a1b0; font-size: 13.5px; text-align: center; }
+.gs-fields { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.gs-in { flex: 1; min-width: 180px; padding: 11px 12px; border: 1px solid #d5dbe4; border-radius: 9px; font: inherit; }
+.gs-cta { width: 100%; padding: 14px; border: none; border-radius: 11px; background: #0f7c4f; color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; transition: .15s; }
+.gs-cta:hover { background: #0c6a43; }
+.gs-cta:disabled { opacity: .6; cursor: default; }
+.gs-secure { text-align: center; font-size: 12px; color: #98a1b0; margin-top: 8px; }
+
+.gs-done { text-align: center; padding: 50px 20px; }
+.gs-done-ic { width: 60px; height: 60px; border-radius: 50%; background: #e6f6ee; color: #0f7c4f; font-size: 30px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
+.gs-done h2 { margin: 0 0 8px; }
+.gs-done p { color: #6b7688; max-width: 420px; margin: 0 auto 22px; }
+.gs-done .gs-cta { max-width: 260px; margin: 0 auto; }

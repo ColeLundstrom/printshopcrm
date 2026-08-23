@@ -1,0 +1,101 @@
+import { api, $, $$, el, esc, relTime, initials, setPage, empty, toast, on, go } from '../core.js'
+
+/**
+ * Conversations — GHL's unified inbox, built in.
+ *
+ * One thread per customer, both directions, email and SMS together. Every automated touch
+ * and every nudge already lands here, so the shop sees the whole relationship in one place
+ * instead of paying for a separate CRM to remember it.
+ */
+let activeId = null
+
+export async function conversationsView(contactId) {
+  setPage('Conversations')
+  activeId = contactId ? +contactId : activeId
+  $('#view').innerHTML = `<div class="convo">
+    <div class="convo-list card" id="convo-list"><div class="dim" style="padding:20px">Loading…</div></div>
+    <div class="convo-thread card" id="convo-thread"></div>
+  </div>`
+  await drawList()
+  if (activeId) await drawThread(activeId)
+  else $('#convo-thread').innerHTML = empty('▭', 'Pick a conversation', 'Every email and text with a customer lives here, both directions.')
+}
+
+async function drawList() {
+  const d = await api.get('/api/conversations')
+  if (!activeId && d.threads.length) activeId = d.threads[0].id
+  $('#convo-list').innerHTML = d.threads.length ? d.threads.map((t) => `
+    <div class="convo-item ${t.id === activeId ? 'on' : ''} ${t.unread ? 'unread' : ''}" data-c="${t.id}">
+      <div class="avatar">${esc(initials(t.name))}</div>
+      <div class="ci-main">
+        <div class="ci-top"><span class="ci-name">${esc(t.name)}</span><span class="ci-time">${relTime(t.last_at)}</span></div>
+        <div class="ci-preview">${t.last_dir === 'out' ? '<span class="dim">You: </span>' : ''}${esc((t.last_body || '').replace(/\n/g, ' ').slice(0, 60))}</div>
+      </div>
+      ${t.unread ? `<span class="ci-badge">${t.unread}</span>` : `<span class="ci-ch">${t.last_channel === 'sms' ? '✉' : '@'}</span>`}
+    </div>`).join('') : empty('▭', 'No conversations', 'Send an estimate or a proof to start one.', '<a class="btn" href="#/autopilot">Create an estimate</a>')
+  on($('#convo-list'), '[data-c]', (_e, t) => { activeId = +t.dataset.c; go(`/conversations/${activeId}`) })
+}
+
+async function drawThread(id) {
+  const d = await api.get(`/api/conversations/${id}`)
+  const c = d.contact
+  $('#convo-thread').innerHTML = `
+    <div class="ct-head">
+      <div class="avatar">${esc(initials(c.name))}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:650">${esc(c.name)}</div>
+        <div class="dim" style="font-size:12px">${esc(c.company || '')}${c.email ? ` · ${esc(c.email)}` : ''}</div>
+      </div>
+      <a class="btn ghost sm" href="#/contacts/${c.id}">Profile</a>
+    </div>
+    <div class="ct-body" id="ct-body">
+      ${d.messages.map((m) => `<div class="bubble ${m.direction === 'out' ? 'out' : 'in'}">
+        <div class="bub-txt">${esc(m.body).replace(/\n/g, '<br>')}</div>
+        <div class="bub-meta">${m.channel === 'sms' ? 'SMS' : 'Email'} · ${relTime(m.created_at)}${m.kind === 'automation' ? ' · auto' : ''}</div>
+      </div>`).join('')}
+    </div>
+    <div class="ct-compose">
+      <div class="row" style="margin-bottom:7px">
+        <div class="tabs" id="ct-channel">
+          <button data-ch="email" class="on">Email</button><button data-ch="sms">SMS</button>
+        </div>
+        <div class="sp"></div>
+        <button class="btn ghost sm" id="ct-ai">Draft with AI</button>
+        ${window.__me?.single_tenant ? '<button class="btn ghost sm" id="ct-sim" title="Dev preview only — fakes a customer reply">Simulate reply</button>' : ''}
+      </div>
+      <textarea class="input" id="ct-text" placeholder="Write a reply…" style="min-height:70px"></textarea>
+      <div class="row" style="margin-top:7px"><div class="sp"></div><button class="btn" id="ct-send">Send</button></div>
+    </div>`
+
+  const body = $('#ct-body'); body.scrollTop = body.scrollHeight
+  let channel = 'email'
+  on($('#ct-channel'), '[data-ch]', (_e, t) => { channel = t.dataset.ch; $$('#ct-channel button').forEach((b) => b.classList.toggle('on', b.dataset.ch === channel)) })
+
+  $('#ct-send').onclick = async () => {
+    const text = $('#ct-text').value.trim()
+    if (!text) return toast('Write a reply first', true)
+    $('#ct-send').disabled = true
+    try {
+      await api.post(`/api/conversations/${id}/reply`, { body: text, channel })
+      $('#ct-text').value = ''
+      await drawThread(id); await drawList()
+      toast('Sent')
+    } catch (e) { toast(e.message, true); $('#ct-send').disabled = false }
+  }
+
+  $('#ct-ai').onclick = async () => {
+    const btn = $('#ct-ai'); btn.disabled = true; btn.textContent = 'Drafting…'
+    try {
+      const last = d.messages.filter((m) => m.direction === 'in').slice(-1)[0]
+      const r = await api.post('/api/ai/draft', { contact_id: id, intent: 'reply helpfully to the customer', context: last?.body || 'follow up on their order' })
+      if (r.text) { $('#ct-text').value = r.text; toast('Draft ready — edit before sending') }
+      else toast(r.ai_note || 'Model offline — type your reply', true)
+    } catch (e) { toast(e.message, true) } finally { btn.disabled = false; btn.textContent = 'Draft with AI' }
+  }
+
+  const sim = $('#ct-sim')
+  if (sim) sim.onclick = async () => {
+    await api.post(`/api/conversations/${id}/simulate`, { channel, body: 'Sounds good — go ahead!' })
+    await drawThread(id); await drawList()
+  }
+}

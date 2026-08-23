@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Databases. `data/` holds printshop.db, control.db and every tenant database.
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Customer artwork and shop logos
+public/uploads/*
+!public/uploads/.gitkeep
+
+# Logs and runtime
+*.log
+npm-debug.log*
+pids/
+*.pid
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local tooling
+.claude/
+coverage/
+tmp/

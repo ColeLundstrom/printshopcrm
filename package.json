@@ -1,0 +1,43 @@
+{
+  "name": "printshopcrm",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Open-source shop management for screen printers, embroiderers and DTF shops — quoting, production, invoicing and per-job profitability, with the CRM built in.",
+  "keywords": [
+    "screen-printing",
+    "embroidery",
+    "dtf",
+    "print-shop",
+    "shop-management",
+    "crm",
+    "invoicing",
+    "sqlite",
+    "self-hosted"
+  ],
+  "homepage": "https://github.com/ColeLundstrom/printshopcrm#readme",
+  "bugs": {
+    "url": "https://github.com/ColeLundstrom/printshopcrm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ColeLundstrom/printshopcrm.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "node --no-warnings --env-file-if-exists=.env server.mjs",
+    "dev": "node --no-warnings --env-file-if-exists=.env --watch server.mjs",
+    "seed": "node --no-warnings --env-file-if-exists=.env seed.mjs",
+    "reset": "rm -f data/printshop.db data/printshop.db-* && npm run seed",
+    "test": "node bin/gate.mjs",
+    "test:e2e": "bash bin/gate-e2e.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
+    "ws": "^8.21.1"
+  }
+}

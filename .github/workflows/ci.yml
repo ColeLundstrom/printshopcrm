@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the floor (node:sqlite). Also run the current release so we see breakage early.
+        node: ['22.x', 'lts/*']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: node bin/gate.mjs
+
+      - name: End-to-end tests
+        run: bash bin/gate-e2e.sh
+
+      - name: Seed a fresh database
+        run: npm run seed
+
+      - name: Server boots and serves
+        run: |
+          PORT=3999 node --no-warnings server.mjs &
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://localhost:3999/ && break; sleep 1; done
+          curl -sf -o /dev/null -w 'GET / → %{http_code}\n' http://localhost:3999/
+          curl -sf -o /dev/null -w 'GET /api/dashboard → %{http_code}\n' http://localhost:3999/api/dashboard
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No committed credentials
+        run: |
+          # Fails the build if a real-looking key lands in the tree. Placeholders (psc_live_XXXX,
+          # whsec_test) are excluded on purpose — the docs and tests need them.
+          if grep -rInE '(sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
+               --exclude-dir=node_modules --exclude-dir=.git . ; then
+            echo "::error::A credential-shaped string is committed. Remove it and rotate the key."
+            exit 1
+          fi
+          echo "No credentials found."
+
+      - name: No committed database or .env
+        run: |
+          if git ls-files | grep -InE '(^|/)\.env$|\.db$|\.sqlite3?$'; then
+            echo "::error::A database or .env file is tracked. Add it to .gitignore and git rm --cached it."
+            exit 1
+          fi
+          echo "Clean."

@@ -1,0 +1,14 @@
+{
+  "name": "The Print Shop CRM",
+  "short_name": "PrintShopCRM",
+  "description": "Run the whole shop — quotes, proofs, production, invoices, floor scanning.",
+  "start_url": "/#/scan",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

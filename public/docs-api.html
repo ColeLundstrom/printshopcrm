@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PrintShopCRM API — REST + webhooks, every plan</title>
+<style>
+  :root { --bg:#0b0d10; --panel:#14171c; --line:#242a33; --txt:#e8ecf1; --dim:#8b95a3; --acc:#10d39a; --amber:#f7b955; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.65 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 20px 100px; }
+  h1 { font-size: 30px; letter-spacing:-.5px; margin: 0 0 6px; }
+  h2 { font-size: 20px; margin: 44px 0 10px; padding-top: 20px; border-top: 1px solid var(--line); }
+  h3 { font-size: 15px; margin: 26px 0 6px; }
+  p, li { color: var(--dim); }
+  strong { color: var(--txt); }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font: 12.5px/1.6 ui-monospace, Menlo, monospace; color: var(--txt); }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; }
+  pre code { background: none; border: 0; padding: 0; color: #c9d4e0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .tag { display: inline-block; min-width: 46px; text-align: center; font: 700 11px/1.8 ui-monospace, monospace; border-radius: 5px; margin-right: 6px; }
+  .get { background: rgba(74,168,255,.15); color: #7cbcff; }
+  .post { background: rgba(16,211,154,.15); color: var(--acc); }
+  .del { background: rgba(255,95,109,.15); color: #ff8b96; }
+  .note { border-left: 3px solid var(--acc); padding: 8px 14px; background: var(--panel); border-radius: 0 8px 8px 0; }
+  a { color: var(--acc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>The PrintShopCRM API</h1>
+  <p>REST + signed webhooks, on <strong>every plan</strong> — no top-tier gate, no undisclosed fee, no "Enterprise only".
+     Rate limit: <strong>120 requests/min per shop</strong>, published right here.</p>
+
+  <h2>Authentication</h2>
+  <p>Create a key in <strong>Settings → Developers</strong>, then send it as a bearer token:</p>
+  <pre><code>curl https://pro.printshopcrm.com/api/v1/me \
+  -H "Authorization: Bearer psc_live_XXXXXXXXXXXX"</code></pre>
+  <p>Keys are shop-scoped and can be rotated or revoked at any time. Rotating invalidates the old key immediately.</p>
+
+  <h2>Endpoints</h2>
+  <table>
+    <tr><th>Route</th><th>What it does</th></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/me</code></td><td>Shop info + rate limit</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/customers</code></td><td>List customers — <code>?query=</code>, <code>?limit=</code> (≤100), <code>?offset=</code></td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/customers/:id</code></td><td>One customer + recent jobs and invoices</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/api/v1/customers</code></td><td>Create — <code>{name, email?, phone?, company?}</code>; 409 on duplicate email</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/estimates</code></td><td>List — <code>?status=draft|sent|approved|declined</code></td></tr>
+    <tr><td><span class="tag post">POST</span><code>/api/v1/estimates</code></td><td>Create a draft quote — see below</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/invoices</code></td><td>List — <code>?status=unpaid|partial|paid|overdue</code></td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/invoices/:id</code></td><td>One invoice + its payments</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/jobs</code></td><td>List — <code>?stage=new|art_approval|prepress|production|qc|shipping|complete</code></td></tr>
+    <tr><td><span class="tag post">POST</span><code>/api/v1/jobs/:id/stage</code></td><td>Move a job — <code>{stage}</code>; fires automations + webhooks</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/payments</code></td><td>List payments</td></tr>
+    <tr><td><span class="tag get">GET</span><code>/api/v1/webhooks</code></td><td>List webhook subscriptions</td></tr>
+    <tr><td><span class="tag post">POST</span><code>/api/v1/webhooks</code></td><td>Subscribe — <code>{url, events}</code>; returns the signing secret <strong>once</strong></td></tr>
+    <tr><td><span class="tag del">DEL</span><code>/api/v1/webhooks/:id</code></td><td>Unsubscribe</td></tr>
+  </table>
+
+  <h3>Create an estimate</h3>
+  <pre><code>curl -X POST https://pro.printshopcrm.com/api/v1/estimates \
+  -H "Authorization: Bearer psc_live_XXXX" -H "Content-Type: application/json" \
+  -d '{
+    "customer": { "name": "Jamie Rivera", "email": "jamie@example.edu", "company": "Lakeside High School" },
+    "items": [{ "description": "Gildan 5000 Black", "sizes": { "S": 12, "M": 24, "L": 24, "XL": 12 },
+                "unit_price": 11.50, "decoration": "Screen Print 3-color front" }],
+    "notes": "From the website order form"
+  }'</code></pre>
+  <p>Pass <code>customer_id</code> instead of <code>customer</code> to attach to an existing record. List responses are
+     <code>{"data": [...], "has_more": true|false}</code> — page with <code>limit</code>/<code>offset</code>.</p>
+
+  <h2>Webhooks</h2>
+  <p>Subscribe a URL (Zapier, Make, or your own endpoint) to any of:</p>
+  <p><code>contact.created</code> <code>estimate.sent</code> <code>estimate.approved</code> <code>invoice.paid</code>
+     <code>job.stage</code> <code>art.sent</code> <code>art.approved</code> <code>art.rejected</code>
+     <code>opportunity.won</code> <code>opportunity.lost</code> <code>conversation.received</code> <code>separation.saved</code>
+     — or <code>*</code> for everything.</p>
+  <pre><code>POST (your URL)
+X-PSC-Event: invoice.paid
+X-PSC-Signature: t=1755763200,v1=6f1a…e3c9
+
+{ "event": "invoice.paid", "at": "2026-08-21 06:10:00",
+  "data": { "invoice": { "id": 41, "number": "INV-1041", "status": "paid",
+            "amount_due": 1284, "amount_paid": 1284 },
+            "contact": { "id": 7, "name": "Jamie Rivera", "company": "Lakeside High School" } } }</code></pre>
+  <h3>Verifying signatures</h3>
+  <pre><code>const [t, v1] = header.match(/t=(\d+),v1=([0-9a-f]+)/).slice(1)
+const expected = crypto.createHmac('sha256', WEBHOOK_SECRET)
+  .update(`${t}.${rawBody}`).digest('hex')
+// compare with timingSafeEqual; reject if |now - t| > 300s</code></pre>
+  <p>Failed deliveries retry twice (30&nbsp;s, then 5&nbsp;min). Every attempt — success or failure, with the
+     reason — is visible in <strong>Settings → Developers</strong>.</p>
+
+  <h2>Data freedom</h2>
+  <p class="note">Your data is yours. Full exports — customers, orders with line items and size grids, payments —
+     are available in the app at any time, in documented CSV/JSON, <strong>including after you cancel</strong>.
+     We keep customers by being good, not by holding their history hostage.</p>
+
+  <p style="margin-top:48px"><a href="/">← Back to the app</a></p>
+</div>
+</body>
+</html>

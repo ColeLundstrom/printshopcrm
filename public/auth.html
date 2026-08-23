@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <script>try{var t=localStorage.getItem('psc-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Sign in · __BRAND_NAME__</title>
+  <style>
+    /* Aligned to the app's design system: one green accent (no cyan second accent), the app's
+       neutral palette, the app's radius scale, and a real light theme (the page had none). Default
+       is system; an explicit choice is honored via data-theme on <html>. */
+    :root, :root[data-theme="light"] {
+      --bg:#f5f7fa; --panel:#ffffff; --line:#e3e8ef; --txt:#1a2230; --dim:#5b6675;
+      --field:#f7f9fc; --accent:#0b8f6a; --accent-ink:#ffffff; --red:#c5262c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg:#0a0c0f; --panel:#151920; --line:#242a34; --txt:#eef1f6; --dim:#9aa5b6;
+        --field:#0f141b; --accent:#10d39a; --accent-ink:#04120a; --red:#ff5f6d;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg:#0a0c0f; --panel:#151920; --line:#242a34; --txt:#eef1f6; --dim:#9aa5b6;
+      --field:#0f141b; --accent:#10d39a; --accent-ink:#04120a; --red:#ff5f6d;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+      background:var(--bg); color:var(--txt);
+      display:flex; align-items:center; justify-content:center; padding:24px; }
+    .wrap { width:100%; max-width:420px; }
+    .brand { display:flex; align-items:center; gap:9px; margin-bottom:22px; justify-content:center; }
+    .brand .dot { width:11px; height:11px; border-radius:50%; background:var(--accent); display:block; }
+    .brand h1 { font-size:18px; margin:0; font-weight:700; letter-spacing:-.2px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:26px; box-shadow:0 8px 30px rgba(20,30,50,.08); }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .card { box-shadow:0 20px 60px rgba(0,0,0,.4); } }
+    :root[data-theme="dark"] .card { box-shadow:0 20px 60px rgba(0,0,0,.4); }
+    .tabs { display:flex; gap:6px; background:var(--field); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:20px; }
+    .tabs button { flex:1; padding:9px; border:0; background:transparent; color:var(--dim); font:inherit; font-weight:600; border-radius:7px; cursor:pointer; }
+    .tabs button.on { background:var(--accent); color:var(--accent-ink); }
+    h2 { margin:0 0 4px; font-size:20px; }
+    .sub { color:var(--dim); font-size:13px; margin-bottom:18px; }
+    label { display:block; font-size:12px; color:var(--dim); margin:12px 0 5px; font-weight:600; }
+    input { width:100%; min-height:44px; padding:11px 12px; background:var(--field); border:1px solid var(--line); border-radius:10px; color:var(--txt); font:inherit; }
+    input:focus { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
+    .btn { width:100%; min-height:44px; margin-top:18px; padding:12px; border:0; border-radius:10px; background:var(--accent); color:var(--accent-ink); font-size:15px; font-weight:700; cursor:pointer; }
+    .btn:disabled { opacity:.6; cursor:default; }
+    .err { background:color-mix(in srgb, var(--red) 12%, transparent); color:var(--red); border:1px solid color-mix(in srgb, var(--red) 32%, transparent); border-radius:10px; padding:9px 11px; font-size:13px; margin-top:14px; display:none; }
+    .foot { text-align:center; color:var(--dim); font-size:12px; margin-top:16px; }
+    .foot a { color:var(--accent); text-decoration:none; }
+    .hide { display:none; }
+    .hp{position:absolute!important;left:-9999px!important;width:1px;height:1px;opacity:0;pointer-events:none}
+    .notice{display:none;margin:10px 0 0;padding:10px 12px;border-radius:6px;font-size:14px;line-height:1.45}
+  </style>
+  <style id="edition-skin">__AUTH_SKIN__</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <span class="dot"></span>
+      <h1>__BRAND_NAME__</h1>
+    </div>
+    <div class="card">
+      <div class="tabs">
+        <button id="tab-login" class="on" onclick="mode('login')">Sign in</button>
+        <button id="tab-signup" onclick="mode('signup')">Create your shop</button>
+      </div>
+
+      <form id="form" onsubmit="return submitForm(event)">
+        <div id="signup-fields" class="hide">
+          <h2>Start your shop</h2>
+          <div class="sub">Your own isolated workspace — set up in under a minute.</div>
+          <label>Shop name</label>
+          <input name="shop_name" placeholder="Rebel Ink Press" autocomplete="organization">
+          <label>Your name</label>
+          <input name="owner_name" placeholder="Alex Rivera" autocomplete="name">
+          <!-- Honeypot. Off-screen rather than type="hidden" so it also catches the bots that only
+               fill inputs they can see; a real person can't tab into it or read it. Same field name
+               as the marketing site's lead form so the two look alike to a scripted submitter. -->
+          <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+        </div>
+        <div id="login-head">
+          <h2>Welcome back</h2>
+          <div class="sub">Sign in to your shop.</div>
+        </div>
+
+        <div id="email-field">
+          <label>Email</label>
+          <input name="email" type="email" placeholder="you@yourshop.com" autocomplete="email" required>
+        </div>
+        <div id="password-field">
+          <label id="password-label">Password</label>
+          <input name="password" type="password" placeholder="••••••••" autocomplete="current-password" required minlength="8">
+        </div>
+
+        <div class="err" id="err"></div>
+        <div class="notice" id="notice"></div>
+        <button class="btn" id="submit" type="submit">Sign in</button>
+      </form>
+      <div class="foot" id="forgot-foot"><a href="#" onclick="mode('forgot');return false">Forgot your password?</a></div>
+      <div class="foot" id="foot"><span id="foot-q">New here?</span> <a href="#" onclick="mode('signup');return false" id="foot-a">Create your shop →</a></div>
+    </div>
+  </div>
+
+  <script>
+    const RESET_TOKEN = new URLSearchParams(location.search).get('token') || ''
+    let M = location.pathname === '/reset' && RESET_TOKEN ? 'reset' : location.pathname === '/signup' ? 'signup' : 'login'
+    const $ = (id) => document.getElementById(id)
+    const TITLES = { login: 'Sign in', signup: 'Create shop', forgot: 'Email me a reset link', reset: 'Set new password' }
+    function mode(m) {
+      M = m
+      const isSignup = m === 'signup', isForgot = m === 'forgot', isReset = m === 'reset'
+      $('tab-login').classList.toggle('on', m === 'login')
+      $('tab-signup').classList.toggle('on', isSignup)
+      $('signup-fields').classList.toggle('hide', !isSignup)
+      $('login-head').classList.toggle('hide', isSignup || isForgot || isReset)
+      // A hidden input that is still `required` makes the browser block submit on a field it
+      // can't focus, so the attribute has to move with the mode rather than stay in the markup.
+      $('email-field').classList.toggle('hide', isReset)
+      $('password-field').classList.toggle('hide', isForgot)
+      document.querySelector('[name=email]').required = !isReset
+      document.querySelector('[name=password]').required = !isForgot
+      $('password-label').textContent = isReset ? 'New password' : 'Password'
+      $('submit').textContent = TITLES[m]
+      $('forgot-foot').classList.toggle('hide', m !== 'login')
+      $('foot').classList.toggle('hide', isForgot || isReset)
+      $('foot-q').textContent = isSignup ? 'Already have a shop?' : 'New here?'
+      $('foot-a').textContent = isSignup ? 'Sign in →' : 'Create your shop →'
+      $('foot-a').setAttribute('onclick', `mode('${isSignup ? 'login' : 'signup'}');return false`)
+      $('err').style.display = 'none'
+      document.querySelector('[name=password]').setAttribute('autocomplete', isSignup || isReset ? 'new-password' : 'current-password')
+      if (!isReset) history.replaceState(null, '', isSignup ? '/signup' : isForgot ? '/login' : '/login')
+    }
+    async function submitForm(e) {
+      e.preventDefault()
+      const f = $('form'); const btn = $('submit'); const err = $('err')
+      err.style.display = 'none'; btn.disabled = true; btn.textContent = '…'
+      const data = Object.fromEntries(new FormData(f).entries())
+      const URLS = { signup: '/api/auth/signup', login: '/api/auth/login', forgot: '/api/auth/forgot', reset: '/api/auth/reset' }
+      if (M === 'reset') data.token = RESET_TOKEN
+      try {
+        const r = await fetch(URLS[M], { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+        const d = await r.json()
+        if (!r.ok) throw new Error(d.error || 'Something went wrong')
+        if (M === 'forgot') {
+          // Deliberately the same message whether or not that address has an account.
+          $('notice').textContent = d.message || 'If that email has an account, a reset link is on its way.'
+          $('notice').style.display = 'block'
+          btn.disabled = false; btn.textContent = TITLES[M]
+          return false
+        }
+        location.href = d.onboarding ? '/#/welcome' : '/'
+      } catch (ex) {
+        err.textContent = ex.message; err.style.display = 'block'
+        btn.disabled = false; btn.textContent = TITLES[M]
+      }
+      return false
+    }
+    // Deep-link prefill: the marketing site can send people to /signup?email=…&shop=… so the
+    // trial form is half-filled on arrival. Read params before mode() rewrites the URL.
+    (function prefill() {
+      const q = new URLSearchParams(location.search)
+      if (q.has('email') || q.has('shop') || q.get('trial') === '1') M = 'signup'
+      const setV = (name, v) => { if (v) { const el = document.querySelector(`[name=${name}]`); if (el) el.value = v } }
+      setV('email', q.get('email'))
+      setV('shop_name', q.get('shop') || q.get('shop_name'))
+      setV('owner_name', q.get('name'))
+    })()
+    mode(M)
+    // A dead or already-spent link should say so up front rather than after the user has picked
+    // a new password and pressed the button.
+    if (M === 'reset') {
+      fetch('/api/auth/reset?token=' + encodeURIComponent(RESET_TOKEN)).then((r) => r.json()).then((d) => {
+        if (d.valid) return
+        $('err').textContent = 'That reset link has expired or already been used. Request a new one.'
+        $('err').style.display = 'block'
+        $('password-field').classList.add('hide')
+        $('submit').classList.add('hide')
+        setTimeout(() => { history.replaceState(null, '', '/login'); mode('forgot') }, 2500)
+      }).catch(() => {})
+    }
+  </script>
+</body>
+</html>

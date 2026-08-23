@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__BRAND_NAME__</title>
+  <link rel="stylesheet" href="/css/app.css?v=__ASSET_V__">
+  <link rel="stylesheet" href="/css/icons.css?v=__ASSET_V__">
+  <link rel="icon" href="__FAVICON__">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0b0d10">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <script>
+    // Floor-mode PWA: installable, and the board/scan pages survive shop-wifi dropouts.
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {})
+  </script>
+  <style id="edition-skin">__EDITION_CSS__</style>
+  <script>
+    // The server stamps the running edition ('pro' | 'lite') and product brand into the shell.
+    window.__EDITION = "__EDITION__";
+    // Apply the theme before first paint so there's no flash. The lite edition is light-first by
+    // design (a clean, approachable invoicing tool); pro respects the user's saved/OS preference.
+    (function () {
+      var forced = "__THEME_FORCE__";
+      var t = forced || localStorage.getItem('psc-theme');
+      if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+</head>
+<body>
+  <!-- ------------------------------------------------------------------------------------------
+       Icon sprite. Hand-authored, Lucide-style: 16x16 grid, no fill, 1.5px round-capped strokes,
+       stroke="currentColor" so every icon picks up the active / hover / theme colour of whatever
+       link it sits in, with no per-icon CSS. Self-contained — no icon font, no CDN, no npm.
+       Referenced as <svg class="ico"><use href="#i-NAME"></use></svg>; see public/js/app.js.
+  ------------------------------------------------------------------------------------------- -->
+  <svg class="icon-sprite" width="0" height="0" hidden aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+
+      <!-- Today — a calendar page with today marked -->
+      <symbol id="i-today" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2.25" y="3.25" width="11.5" height="10.5" rx="2"/>
+        <path d="M2.25 6.5h11.5M5.5 1.75v3M10.5 1.75v3"/>
+        <circle cx="8" cy="10.25" r="1.1"/>
+      </symbol>
+
+      <!-- Conversations / Inbox — a speech bubble -->
+      <symbol id="i-conversations" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 9.5c0 .83-.67 1.5-1.5 1.5H5.75L2.5 13.75V4c0-.83.67-1.5 1.5-1.5h8.5c.83 0 1.5.67 1.5 1.5z"/>
+        <path d="M5.25 5.75h5.5M5.25 8.25h3.5"/>
+      </symbol>
+
+      <!-- Pipeline — a funnel: many leads in, few deals out -->
+      <symbol id="i-pipeline" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1.9 2.75h12.2l-4.7 5.5v5.1l-2.8-1.4V8.25z"/>
+      </symbol>
+
+      <!-- Estimates — a document with ruled lines -->
+      <symbol id="i-estimates" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 1.75H4.5A1.5 1.5 0 0 0 3 3.25v9.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5V5.75z"/>
+        <path d="M9 1.75v4h4"/>
+        <path d="M5.75 8.5h4.5M5.75 11h3"/>
+      </symbol>
+
+      <!-- Orders — a shipping box -->
+      <symbol id="i-orders" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 5.4v5.2a1 1 0 0 1-.53.88l-5 2.7a1 1 0 0 1-.94 0l-5-2.7A1 1 0 0 1 2 10.6V5.4a1 1 0 0 1 .53-.88l5-2.7a1 1 0 0 1 .94 0l5 2.7A1 1 0 0 1 14 5.4z"/>
+        <path d="M2.25 4.9 8 8l5.75-3.1M8 14.3V8"/>
+      </symbol>
+
+      <!-- Follow-ups — a reminder bell -->
+      <symbol id="i-followups" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 6.5a4 4 0 1 0-8 0c0 3.4-1.35 4.4-1.35 4.4h10.7S12 9.9 12 6.5z"/>
+        <path d="M9.35 13.1a1.6 1.6 0 0 1-2.7 0"/>
+      </symbol>
+
+      <!-- Reorder Radar — a radar sweep, scanning for repeat business -->
+      <symbol id="i-reorders" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 8A6 6 0 1 1 8 2"/>
+        <path d="M11.25 8A3.25 3.25 0 1 1 8 4.75"/>
+        <path d="M8 8l4.6-4.6"/>
+      </symbol>
+
+      <!-- Job Board — kanban columns -->
+      <symbol id="i-board" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2.25" width="3.5" height="11.5" rx="1"/>
+        <rect x="6.25" y="2.25" width="3.5" height="8" rx="1"/>
+        <rect x="10.5" y="2.25" width="3.5" height="5" rx="1"/>
+      </symbol>
+
+      <!-- Art & Prepress — an artist's palette -->
+      <symbol id="i-art" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 14.25a6.25 6.25 0 1 1 6.25-6.25c0 1.55-1.26 2.6-2.75 2.6h-1.3a1.6 1.6 0 0 0-1.25 2.6c.2.26.3.55.3.85 0 .12-.05.2-.15.2z"/>
+        <circle cx="5" cy="8.4" r=".8"/>
+        <circle cx="5.9" cy="5.3" r=".8"/>
+        <circle cx="9.1" cy="4.8" r=".8"/>
+        <circle cx="11.4" cy="6.9" r=".8"/>
+      </symbol>
+
+      <!-- Separation Studio — stacked colour separations -->
+      <symbol id="i-seps" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 1.5 1.6 4.75 8 8l6.4-3.25z"/>
+        <path d="M1.6 8 8 11.25 14.4 8"/>
+        <path d="M1.6 11.25 8 14.5l6.4-3.25"/>
+      </symbol>
+
+      <!-- DTF Resize — scale artwork to the frame -->
+      <symbol id="i-dtf" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6.25 2.25H2.25V6.25M9.75 2.25h4V6.25M6.25 13.75H2.25V9.75M9.75 13.75h4V9.75"/>
+        <path d="M6.25 9.75 9.75 6.25"/>
+      </symbol>
+
+      <!-- Gang Sheet Builder — prints nested on one sheet -->
+      <symbol id="i-gangsheet" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1.9" y="1.9" width="12.2" height="12.2" rx="1.75"/>
+        <rect x="4.15" y="4.15" width="3.35" height="3.35" rx=".6"/>
+        <rect x="8.5" y="4.15" width="3.35" height="3.35" rx=".6"/>
+        <rect x="4.15" y="8.5" width="3.35" height="3.35" rx=".6"/>
+        <rect x="8.5" y="8.5" width="3.35" height="3.35" rx=".6"/>
+      </symbol>
+
+      <!-- Capacity — a gauge with the needle in the upper band -->
+      <symbol id="i-capacity" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 11.75a6 6 0 1 1 12 0"/>
+        <path d="M8 11.75 10.9 7.6"/>
+        <circle cx="8" cy="11.75" r=".85"/>
+      </symbol>
+
+      <!-- Pricing — a price tag -->
+      <symbol id="i-pricing" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M7.55 1.85H3.4a1.55 1.55 0 0 0-1.55 1.55v4.15c0 .41.16.8.45 1.1l5.45 5.45a1.55 1.55 0 0 0 2.2 0l4.05-4.05a1.55 1.55 0 0 0 0-2.2L8.65 2.3a1.55 1.55 0 0 0-1.1-.45z"/>
+        <circle cx="5.1" cy="5.1" r=".6"/>
+      </symbol>
+
+      <!-- Invoices — a document carrying an amount due -->
+      <symbol id="i-invoices" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 1.75H4.5A1.5 1.5 0 0 0 3 3.25v9.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5V5.75z"/>
+        <path d="M9 1.75v4h4"/>
+        <path d="M8 7.35v5.2"/>
+        <path d="M9.5 8.5H7.3a1.05 1.05 0 0 0 0 2.1h1.4a1.05 1.05 0 0 1 0 2.1H6.5"/>
+      </symbol>
+
+      <!-- Profitability — a margin trending up -->
+      <symbol id="i-roi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1.9 11.9 6.3 7.5l2.5 2.5 5.3-5.3"/>
+        <path d="M10.4 4.7h3.7v3.7"/>
+      </symbol>
+
+      <!-- Customers — two people -->
+      <symbol id="i-customers" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.4 13.9v-1.3a2.75 2.75 0 0 0-2.75-2.75H4.4A2.75 2.75 0 0 0 1.65 12.6v1.3"/>
+        <circle cx="6.02" cy="4.9" r="2.25"/>
+        <path d="M14.35 13.9v-1.3a2.75 2.75 0 0 0-2.06-2.66"/>
+        <path d="M10.2 2.79a2.25 2.25 0 0 1 0 4.36"/>
+      </symbol>
+
+      <!-- Autopilot — the shop running itself -->
+      <symbol id="i-autopilot" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8.9 1.6 3.1 9.15h4.2l-.2 5.25 5.8-7.55H8.7z"/>
+      </symbol>
+
+      <!-- AI Receptionist — a headset answering the phone -->
+      <symbol id="i-receptionist" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.25 10.4V8a4.75 4.75 0 0 1 9.5 0v2.4"/>
+        <rect x="1.6" y="9.1" width="2.9" height="3.7" rx="1.35"/>
+        <rect x="11.5" y="9.1" width="2.9" height="3.7" rx="1.35"/>
+        <path d="M12.75 12.8v.35a1.35 1.35 0 0 1-1.35 1.35H9.25"/>
+      </symbol>
+
+      <!-- Automations — steps wired into a workflow -->
+      <symbol id="i-automations" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1.75" y="1.9" width="4.6" height="4.35" rx="1.25"/>
+        <rect x="9.65" y="9.75" width="4.6" height="4.35" rx="1.25"/>
+        <path d="M6.35 4.05h3.6a2 2 0 0 1 2 2v3.7"/>
+        <path d="M4.05 6.25v5.65a2 2 0 0 0 2 2h1.6"/>
+      </symbol>
+
+      <!-- Products — the blank being decorated -->
+      <symbol id="i-products" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 1.9 2.15 3.6l1.1 2.9 1.6-.6v7.2h6.3V5.9l1.6.6 1.1-2.9L10 1.9a2 2 0 0 1-4 0z"/>
+      </symbol>
+
+      <!-- Activity — an event pulse -->
+      <symbol id="i-activity" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1.75 8h3l1.75-4.9 2.85 9.8L11.1 8h3.15"/>
+      </symbol>
+
+      <!-- Outbox — mail on its way out -->
+      <symbol id="i-outbox" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.1 1.9 7.4 8.6"/>
+        <path d="M14.1 1.9 9.85 14.1 7.4 8.6 1.9 6.15z"/>
+      </symbol>
+
+      <!-- Billing — the card on file -->
+      <symbol id="i-billing" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1.6" y="3.25" width="12.8" height="9.5" rx="1.75"/>
+        <path d="M1.6 6.6h12.8"/>
+        <path d="M4.35 9.9h2.4"/>
+      </symbol>
+
+      <!-- Settings — a gear -->
+      <symbol id="i-settings" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="8" r="2.4"/>
+        <circle cx="8" cy="8" r="4.6"/>
+        <path d="M8 3.4V1.75M8 12.6v1.65M12.6 8h1.65M1.75 8H3.4"/>
+        <path d="M11.25 4.75 12.42 3.58M3.58 12.42 4.75 11.25M11.25 11.25l1.17 1.17M3.58 3.58 4.75 4.75"/>
+      </symbol>
+
+      <!-- Control Room — the admin's mixing desk -->
+      <symbol id="i-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 4.5h5.5M12.25 4.5h1.75M2 11.5h1.75M8.5 11.5h5.5"/>
+        <circle cx="9.9" cy="4.5" r="1.6"/>
+        <circle cx="6.1" cy="11.5" r="1.6"/>
+      </symbol>
+
+      <!-- More / open the nav drawer -->
+      <symbol id="i-menu" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2.25 4.25h11.5M2.25 8h11.5M2.25 11.75h11.5"/>
+      </symbol>
+
+      <!-- Search -->
+      <symbol id="i-search" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="7.15" cy="7.15" r="4.9"/>
+        <path d="M14 14l-3.4-3.4"/>
+      </symbol>
+
+      <!-- Sign out -->
+      <symbol id="i-logout" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6.25 2.25H3.75A1.5 1.5 0 0 0 2.25 3.75v8.5a1.5 1.5 0 0 0 1.5 1.5h2.5"/>
+        <path d="M10.5 11.25 13.75 8 10.5 4.75"/>
+        <path d="M13.75 8h-7.5"/>
+      </symbol>
+
+    </defs>
+  </svg>
+
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <h1><span class="dot"></span> <span id="brand-name">__BRAND_NAME__</span></h1>
+        <div class="sub" id="brand-tag">__BRAND_TAG__</div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="shopcard">
+        <div class="av" id="shop-initials">RI</div>
+        <div style="flex:1;min-width:0">
+          <div class="nm" id="shop-name">Rebel Ink Press</div>
+          <div class="rl">Owner · unlimited seats</div>
+        </div>
+        <button class="logout-btn" id="logout-btn" title="Sign out" aria-label="Sign out" hidden><svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-logout"></use></svg></button>
+      </div>
+      __HOST_BADGE__
+    </aside>
+
+    <div class="main">
+      <a class="trialbar" id="trialbar" href="#/billing" hidden></a>
+      <header class="topbar">
+        <div class="menu-btn" id="menu-btn" title="Menu"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-menu"></use></svg></div>
+        <h2 id="page-title">Dashboard</h2>
+        <div class="crumb" id="crumb"></div>
+        <div class="spacer"></div>
+        <div class="searchtrigger" id="search-trigger"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-search"></use></svg> Search… <kbd>⌘K</kbd></div>
+        <button class="asst-trigger" id="asst-trigger" title="Ask the assistant (a)"><svg class="spark" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-conversations"></use></svg> <span class="lbl">Ask</span></button>
+        <button class="theme-toggle" id="theme-toggle" title="Toggle light / dark" aria-label="Toggle theme"></button>
+        <div id="page-actions" class="row"></div>
+      </header>
+      <main class="view" id="view"></main>
+    </div>
+    <nav class="tabbar" id="tabbar" aria-label="Primary"></nav>
+  </div>
+
+  <div id="modal-root"></div>
+  <script type="module" src="/js/app.js?v=__ASSET_V__"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# PrintShopCRM systemd unit
+#
+#   sudo cp deploy/printshopcrm.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/printshopcrm.service    # set User/Group and check the paths
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now printshopcrm
+#
+# Configuration comes from the EnvironmentFile below — copy .env.example to /opt/printshopcrm/.env
+# and edit it. PSC_SECRET is required; see INSTALL.md.
+
+[Unit]
+Description=PrintShopCRM
+Documentation=https://github.com/ColeLundstrom/printshopcrm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# The account that owns /opt/printshopcrm and the data directory. Do NOT run this as root.
+User=printshopcrm
+Group=printshopcrm
+
+WorkingDirectory=/opt/printshopcrm
+EnvironmentFile=/opt/printshopcrm/.env
+ExecStart=/usr/bin/node --no-warnings server.mjs
+
+Restart=always
+RestartSec=3
+
+# Journal only; the app logs to stdout.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=printshopcrm
+
+# --- Hardening -------------------------------------------------------------
+# The app needs to write exactly two places: the database directory and public/uploads.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+# Add every path the service must write to. Adjust if you moved PSC_DB.
+ReadWritePaths=/var/lib/printshopcrm
+ReadWritePaths=/opt/printshopcrm/public/uploads
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+/* ---------------------------------------------------------------------------
+   Icon system — sizing only.
+
+   The icons themselves are an inline SVG sprite at the top of index.html
+   (16x16 grid, fill:none, stroke:currentColor, 1.5px round caps/joins). Because
+   every symbol paints with `currentColor`, colour is inherited from whatever
+   link the icon sits in, so the existing .nav a:hover / .nav a.on / .nav a.hot
+   and both themes keep working with no extra rules here. This file only gives
+   the <svg> a box — app.css already owns the colour story.
+
+   Loaded after app.css so these can add the box-model bits the old glyph rules
+   (which sized text, not vectors) never needed.
+   --------------------------------------------------------------------------- */
+
+/* The sprite is a definition store, never painted. `hidden` handles this in
+   every current browser; this is belt and braces against a UA stylesheet that
+   gives <svg> a default display. */
+svg.icon-sprite { display: none !important; }
+
+/* Vectors don't shrink under flexbox the way a glyph did, and they must never
+   be squeezed by a long nav label. */
+svg.ico, svg.tico { flex: 0 0 auto; overflow: visible; }
+
+/* Sidebar nav. app.css sets width:16px + opacity on `.nav a .ico`; an <svg>
+   also needs a height or it collapses to the CSS default 150px x 150px ratio. */
+.nav a svg.ico { width: 16px; height: 16px; }
+
+/* Mobile tab bar — one notch larger, matching the 19px the glyphs used to be
+   set at. app.css's `.tabbar a .tico { font-size }` is inert on a vector. */
+.tabbar a svg.tico { width: 21px; height: 21px; }
+
+/* Topbar chrome: drawer toggle, search trigger, sign-out. */
+.menu-btn svg.ico { width: 17px; height: 17px; color: var(--txt-2); }
+.searchtrigger svg.ico { width: 15px; height: 15px; }
+.logout-btn svg.ico { width: 15px; height: 15px; }
+/* .logout-btn is a <button> using grid-free centring; keep the glyph optically
+   centred now that it's a box rather than a line of text. */
+.logout-btn { display: grid; place-items: center; }
+
+/* Nothing here fights a `prefers-reduced-motion` or high-contrast preference —
+   there is no animation and no hard-coded colour in this file at all. */
+
+
+/* The assistant trigger's mark, sized to sit beside its label in the topbar.
+   Colour comes from currentColor so it tracks the button in both themes. */
+.asst-trigger svg.spark { width: 14px; height: 14px; flex: 0 0 auto; vertical-align: -2px; }
+
+/* Onboarding rail — same 16px box as the nav so the first screen shows one icon system. */
+.ob-rail-ic svg { width: 16px; height: 16px; display: block; }
+.ob-rail-ic { display: grid; place-items: center; }

@@ -1,0 +1,70 @@
+/* Work ticket — printed on paper, taped to the box. High contrast, big numbers, no chrome. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #eef1f4;
+  color: #000;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+  padding: 20px;
+}
+
+.tk { max-width: 760px; margin: 0 auto; background: #fff; padding: 26px; border: 2px solid #000; }
+
+.tk-h { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; border-bottom: 3px solid #000; padding-bottom: 14px; }
+.jn { font-family: ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
+.tk-h h1 { font-size: 25px; line-height: 1.15; margin: 3px 0 5px; letter-spacing: -.4px; }
+.cust { font-size: 13px; color: #333; }
+.tk-r { text-align: right; flex: none; }
+.rush { background: #000; color: #fff; font-size: 13px; font-weight: 800; letter-spacing: 2px; padding: 3px 10px; margin-bottom: 6px; }
+.due span { display: block; font-size: 9px; letter-spacing: 1.2px; color: #666; font-weight: 700; }
+.due strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+
+.tk-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 16px; padding: 14px 0; border-bottom: 1px solid #bbb; }
+.tk-meta span { display: block; font-size: 8.5px; text-transform: uppercase; letter-spacing: 1px; color: #666; font-weight: 700; }
+.tk-meta strong { font-size: 13.5px; text-transform: capitalize; }
+
+h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; margin: 16px 0 7px; color: #444; }
+
+/* The number the press reads from three feet away. */
+.tk-sz { width: 100%; border-collapse: collapse; }
+.tk-sz th, .tk-sz td { border: 1.5px solid #000; text-align: center; padding: 7px 4px; }
+.tk-sz th { background: #000; color: #fff; font-size: 11px; letter-spacing: .8px; }
+.tk-sz td { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tk-sz .t { background: #ddd; }
+.tk-sz th.t { background: #444; }
+
+.tk-screens { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.tk-scr { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.tk-scr .dot { width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid #000; display: inline-block; }
+
+.tk-cols { display: grid; grid-template-columns: 1fr 240px; gap: 20px; align-items: start; }
+.tk-notes { font-size: 13px; white-space: pre-wrap; border-left: 3px solid #000; padding: 4px 0 4px 10px; min-height: 60px; }
+.tk-art img { width: 100%; border: 1px solid #999; background: #f6f7f8; }
+.tk-art .cap { font-size: 10px; color: #555; margin-top: 4px; }
+.warnbox { border: 2px solid #000; background: #ffe9e9; padding: 12px; font-weight: 700; font-size: 13px; }
+
+.tk-sign { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 26px; padding-top: 14px; border-top: 1px solid #bbb; }
+.tk-sign span { font-size: 8.5px; text-transform: uppercase; letter-spacing: 1px; color: #666; font-weight: 700; }
+.tk-sign .ln { border-bottom: 1.5px solid #000; height: 30px; }
+
+.tk-f { margin-top: 18px; font-size: 9.5px; color: #888; text-align: center; }
+
+.printbtn {
+  display: block; margin: 0 auto 16px; background: #10d39a; color: #04120d; border: 0;
+  padding: 11px 22px; border-radius: 8px; font: inherit; font-weight: 700; font-size: 14px; cursor: pointer;
+}
+.printbtn:hover { background: #0bbd89; }
+
+@media print {
+  body { background: #fff; padding: 0; }
+  .tk { border: 0; padding: 0; max-width: none; }
+  .printbtn { display: none; }
+  @page { margin: 12mm; }
+}
+
+/* Scan-to-advance barcode (v56) */
+.tk-bc { margin-top: 8px; text-align: right; }
+.tk-bc svg { max-width: 180px; height: 44px; }
+.tk-bc-num { font: 700 9px/1.4 ui-monospace, monospace; color: #555; letter-spacing: .04em; }
+@media print { .tk-bc svg { max-width: 200px; } }
