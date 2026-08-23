@@ -77,14 +77,25 @@ cd /opt/printshopcrm
 npm ci --omit=dev
 ```
 
-### 3. Put the database outside the app directory
+### 3. Put your data outside the app directory
 
-This matters. Keep your data somewhere an upgrade cannot overwrite:
+This matters more than it looks. Two things must live where an upgrade cannot touch them: the
+**database** and the **uploads directory**.
 
 ```bash
-sudo mkdir -p /var/lib/printshopcrm
-sudo chown "$USER" /var/lib/printshopcrm
+sudo mkdir -p /var/lib/printshopcrm/uploads
+sudo chown -R "$USER" /var/lib/printshopcrm
+ln -sfn /var/lib/printshopcrm/uploads /opt/printshopcrm/public/uploads
 ```
+
+`public/uploads` holds customer artwork. If you leave it as a real directory inside the app and
+later deploy by copying a fresh checkout over the top, every proof uploaded before that deploy
+becomes a broken image — the files are still on disk, just in the directory you replaced. Making it
+a symlink to persistent storage on day one avoids the whole class of problem.
+
+[`deploy/release.sh`](deploy/release.sh) does this correctly if you'd rather deploy with a script:
+it keeps releases in `releases/<tag>/`, symlinks uploads and `.env` into each one, runs the test
+suite before flipping `current`, and rolls back automatically if the service fails to start.
 
 ### 4. Configure
 
