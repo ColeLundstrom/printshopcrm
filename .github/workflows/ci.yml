@@ -188,6 +188,49 @@ jobs:
           echo "published image arch: $(docker image inspect "$IMAGE" --format '{{.Os}}/{{.Architecture}}')"
           docker rm -f pub
 
+  # Deploy configs can't be exercised without accounts on those platforms, so at minimum prove they
+  # parse and that the settings which silently destroy data are present. Every one of these
+  # assertions is a failure mode where the app appears to work and the shop's database is gone.
+  deploy-configs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: fly.toml
+        run: |
+          python3 - <<'PY'
+          import tomllib
+          d = tomllib.load(open('deploy/fly.toml','rb'))
+          assert d['build']['dockerfile'] == 'Dockerfile', \
+              "build.dockerfile must be 'Dockerfile' — the docs copy this file to the repo root"
+          assert any(m['destination'] == '/data' for m in d['mounts']), \
+              "no /data mount — Fly machines are ephemeral, the database would be wiped every deploy"
+          assert d['env']['PSC_DB'].startswith('/data/'), "PSC_DB must live on the mounted volume"
+          assert d['http_service']['min_machines_running'] >= 1, \
+              "min_machines_running 0 lets Fly stop the only machine, killing the automation tick"
+          assert d['http_service']['checks'][0]['path'] == '/health'
+          print('fly.toml ok')
+          PY
+
+      - name: render.yaml
+        run: |
+          pip install --quiet pyyaml
+          python3 - <<'PY'
+          import yaml
+          s = yaml.safe_load(open('deploy/render.yaml'))['services'][0]
+          env = {e['key']: e for e in s['envVars']}
+          assert s['plan'] != 'free', "the free plan has no persistent disk — data destroyed on every deploy"
+          assert s['disk']['mountPath'] == '/data', "no disk at /data"
+          assert env['PSC_DB']['value'].startswith('/data/'), "PSC_DB must live on the disk"
+          assert env['PSC_SECRET'].get('generateValue') is True, "PSC_SECRET must be generated, never blank"
+          assert s['healthCheckPath'] == '/health'
+          print('render.yaml ok')
+          PY
+
+      - name: shell scripts parse
+        run: |
+          for f in deploy/*.sh; do bash -n "$f" && echo "  ok $f"; done
+
   secrets:
     runs-on: ubuntu-latest
     steps:
