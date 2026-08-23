@@ -612,7 +612,10 @@ await t('old terminal deliveries are pruned, in-flight retries and recent ones s
     assert.equal(db.pruneWebhookDeliveries(0), 0, 'days=0 disables the sweep entirely')
   } finally {
     delete process.env.PSC_DB
-    rmSync(dir, { recursive: true, force: true })
+    // db.mjs holds its connection for the life of the process and exposes no close, so on Windows
+    // the file is still locked here and unlink throws EBUSY. Best effort: it's under the OS temp
+    // directory either way, and failing to tidy up must not fail the test.
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* Windows keeps the handle */ }
   }
 })
 
