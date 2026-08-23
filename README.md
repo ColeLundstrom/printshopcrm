@@ -8,6 +8,7 @@ file you can copy.
 
 [![CI](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![Docker image](https://img.shields.io/badge/ghcr.io-printshopcrm-2496ed?logo=docker&logoColor=white)](https://github.com/ColeLundstrom/printshopcrm/pkgs/container/printshopcrm)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
@@ -221,6 +222,16 @@ one shop cannot reach another's data.
 - **Node.js 22 or newer** — uses the built-in `node:sqlite` module, so there is no native SQLite
   build step and nothing to compile.
 - That's it. Four runtime dependencies: `express`, `multer`, `nodemailer`, `ws`.
+
+Runs on Linux, macOS, and Windows — all three are exercised by CI on every push. Or skip Node
+entirely and use the container image, published for `linux/amd64` and `linux/arm64`:
+
+```bash
+docker pull ghcr.io/colelundstrom/printshopcrm:latest
+```
+
+For reference, the production install this is developed against serves 14 shops in about **40 MB of
+RAM** on a small VPS.
 
 ---
 
