@@ -232,16 +232,37 @@ A backup on the disk that just failed is not a backup. Backing up to **your own*
 one-time setup:
 
 1. At [Google Cloud credentials](https://console.cloud.google.com/apis/credentials), create an
-   OAuth client of type **Desktop app**, and enable the **Google Drive API** for that project.
-2. Put the client id and secret in your `.env` as `PSC_BACKUP_GDRIVE_CLIENT_ID` /
+   OAuth client of type **Web application**, and enable the **Google Drive API** for that project.
+2. Add `http://127.0.0.1:4765` to that client's **Authorized redirect URIs**. Google retired the
+   old copy-a-code flow in 2022, so authorization has to come back to a loopback address.
+3. Put the client id and secret in your `.env` as `PSC_BACKUP_GDRIVE_CLIENT_ID` /
    `PSC_BACKUP_GDRIVE_CLIENT_SECRET`.
-3. Run the consent flow and paste the code it asks for:
+4. Run the consent flow:
 
    ```bash
    node bin/backup-drive.mjs connect
    ```
 
-4. Put the refresh token it prints in `.env` as `PSC_BACKUP_GDRIVE_REFRESH_TOKEN`.
+   It prints a URL and waits for the redirect. **On a headless server**, either forward the port
+   from your laptop first:
+
+   ```bash
+   ssh -L 4765:127.0.0.1:4765 user@your-server
+   ```
+
+   or skip the port entirely and paste the redirected URL back instead:
+
+   ```bash
+   node bin/backup-drive.mjs connect --manual
+   ```
+
+   (The browser will show a "can't reach this page" error at `127.0.0.1` — that's expected. Copy
+   the whole address out of the URL bar; the code is in it.)
+
+5. Put the refresh token it prints in `.env` as `PSC_BACKUP_GDRIVE_REFRESH_TOKEN`.
+
+Port 4765 is the default; set `PSC_BACKUP_GDRIVE_PORT` if it clashes, and use the matching URI in
+Google Cloud.
 
 From then on `backup.sh` uploads every nightly archive automatically and keeps the most recent 30
 in Drive. Check it any time with `node bin/backup-drive.mjs status`.
