@@ -14,7 +14,9 @@ app = "printshopcrm"
 primary_region = "sjc"          # put this near your shop, not near us
 
 [build]
-  dockerfile = "../Dockerfile"
+  # Resolved relative to THIS file, which is why the steps above copy it to the repo root.
+  # Running it from deploy/ would look for the Dockerfile outside the repo and fail.
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = "3333"

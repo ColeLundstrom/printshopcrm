@@ -38,11 +38,12 @@ services:
       # incoming Host header when building the links it emails to customers.
       PSC_PUBLIC_URL: ${PSC_PUBLIC_URL:-}
 
-    # Everything else in .env (SMTP, Twilio, branding, supplier endpoints) is picked up here.
+    # Everything else in .env (SMTP, Twilio, branding, supplier endpoints) is passed through here.
     # Values in `environment:` above win over the file.
+    # Short form on purpose: the `path:`/`required:` long form needs Compose 2.24+, and this has to
+    # work on whatever version is in the distro repo. `cp .env.example .env` before `up`.
     env_file:
-      - path: .env
-        required: false
+      - .env
 
     volumes:
       - printshopcrm-data:/data

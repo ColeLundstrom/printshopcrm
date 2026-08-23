@@ -32,8 +32,8 @@ Missing or invalid key → `401`:
 
 ## Rate limit
 
-**120 requests per minute per shop**, sliding window. Responses carry `X-RateLimit-Limit`. Over the
-limit → `429`:
+**120 requests per minute per shop**, sliding window. Over the limit you get a `429` carrying
+`X-RateLimit-Limit` (the header is sent on the rejection, not on every successful response):
 
 ```json
 { "error": "Rate limit exceeded (120 requests/min). Retry in 34s.", "code": "rate_limited" }
@@ -68,8 +68,11 @@ unknown size, a fractional quantity, or a missing `unit_price` is a `400`, every
 Confirms the key and identifies the shop. Good for a connection test.
 
 ```json
-{ "shop": "Rebel Ink Press", "plan": "everything", "rate_limit": "120/min", "docs": "/docs-api.html" }
+{ "shop": "Rebel Ink Press", "plan": "trial", "rate_limit": "120/min", "docs": "/docs-api.html" }
 ```
+
+`plan` reflects this shop's billing state and has no effect on what the API can do — there is one
+product and every shop has all of it.
 
 ### Customers
 

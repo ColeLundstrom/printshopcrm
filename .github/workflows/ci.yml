@@ -132,9 +132,61 @@ jobs:
             || { echo "::error::database did not survive the container being replaced"; exit 1; }
           echo "database survived container replacement"
 
+      - name: docker compose brings the stack up
+        run: |
+          docker rm -f psc2 || true
+          # The documented first run, exactly as DEPLOY.md describes it.
+          cp .env.example .env
+          echo "PSC_SECRET=$(openssl rand -hex 32)" >> .env
+          docker compose up -d --build
+          for i in $(seq 1 45); do
+            if curl -sf -o /dev/null http://localhost:3333/health; then break; fi
+            sleep 2
+          done
+          curl -sf -o /dev/null -w 'compose: GET / → %{http_code}\n' http://localhost:3333/
+          docker compose down
+
+      - name: compose refuses to start without PSC_SECRET
+        run: |
+          # A missing secret must fail loudly, not silently run on a default that lets anyone
+          # forge customer share links.
+          rm -f .env && touch .env
+          if docker compose config >/dev/null 2>&1; then
+            echo "::error::compose accepted a missing PSC_SECRET"; exit 1
+          fi
+          echo "compose correctly refused to start without PSC_SECRET"
+
       - name: Logs on failure
         if: failure()
-        run: docker logs psc 2>&1 | tail -50 || true
+        run: |
+          docker logs psc 2>&1 | tail -50 || true
+          docker compose logs 2>&1 | tail -50 || true
+
+  # The published image is what DEPLOY.md tells people to pull, so prove that exact artifact runs.
+  # The job above builds from source; this one pulls what is actually on the registry.
+  published-image:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Pull and run the published image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/printshopcrm:latest
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          echo "pulling $IMAGE"
+          docker pull "$IMAGE"
+
+          docker run -d --name pub -p 3335:3333 \
+            -e PSC_SECRET=ci-published-test \
+            -v pub-data:/data "$IMAGE"
+
+          for i in $(seq 1 45); do
+            if curl -sf -o /dev/null http://localhost:3335/health; then break; fi
+            sleep 2
+          done
+          curl -sf -o /dev/null -w 'published image: GET / → %{http_code}\n' http://localhost:3335/
+          curl -sf -o /dev/null -w 'published image: GET /api/dashboard → %{http_code}\n' http://localhost:3335/api/dashboard
+          echo "published image arch: $(docker image inspect "$IMAGE" --format '{{.Os}}/{{.Architecture}}')"
+          docker rm -f pub
 
   secrets:
     runs-on: ubuntu-latest
