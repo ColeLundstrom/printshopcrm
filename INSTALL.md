@@ -1,9 +1,13 @@
 # Installing PrintShopCRM
 
-Two paths:
+Three paths:
 
-- **[Try it locally](#try-it-locally)** — two minutes, any laptop.
+- **[Try it locally](#try-it-locally)** — about a minute, any laptop (Linux, macOS, or Windows).
+- **[Docker](deploy/DEPLOY.md#docker)** — one command, if you already run containers.
 - **[Production install](#production-install)** — a Linux server on your own domain with SSL.
+
+Deploying to Fly.io or Render instead? [deploy/DEPLOY.md](deploy/DEPLOY.md) covers those, and
+compares all the options.
 
 Don't want to run a server at all? See [HOSTING.md](HOSTING.md).
 
@@ -14,7 +18,7 @@ Don't want to run a server at all? See [HOSTING.md](HOSTING.md).
 | | |
 |---|---|
 | **Node.js** | **22.0 or newer.** Non-negotiable — the app uses the built-in `node:sqlite` module. |
-| OS | Linux, macOS, or Windows. Production instructions below assume Ubuntu/Debian. |
+| OS | Linux, macOS, or Windows — all three are covered by CI. Production instructions below assume Ubuntu/Debian. |
 | Database | None to install. SQLite is inside Node. |
 | RAM | 512 MB is plenty. The live reference install idles around 80 MB. |
 | Disk | ~150 MB for the app and dependencies, plus your uploads and database. |

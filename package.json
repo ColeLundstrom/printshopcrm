@@ -27,9 +27,10 @@
     "start": "node --no-warnings --env-file-if-exists=.env server.mjs",
     "dev": "node --no-warnings --env-file-if-exists=.env --watch server.mjs",
     "seed": "node --no-warnings --env-file-if-exists=.env seed.mjs",
-    "reset": "rm -f data/printshop.db data/printshop.db-* && npm run seed",
+    "reset": "node bin/reset.mjs && npm run seed",
     "test": "node bin/gate.mjs",
-    "test:e2e": "bash bin/gate-e2e.sh"
+    "test:e2e": "node bin/gate-e2e.mjs",
+    "test:all": "npm test && npm run test:e2e"
   },
   "engines": {
     "node": ">=22"

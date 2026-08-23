@@ -19,7 +19,19 @@ npm run seed      # optional: a demo shop mid-week, so the app isn't empty
 npm start         # → http://localhost:3333
 ```
 
-That's the whole install. No Docker required, no Postgres, no Redis, no build pipeline.
+That's the whole install — measured at about 3 seconds on a cold npm cache. No Postgres, no Redis,
+no build pipeline, nothing to compile.
+
+Prefer containers?
+
+```bash
+docker run -p 3333:3333 -e PSC_SECRET=$(openssl rand -hex 32) \
+  -v printshopcrm-data:/data ghcr.io/colelundstrom/printshopcrm:latest
+```
+
+Runs on **Linux, macOS, and Windows** (Node 22+), and on x86 or ARM in Docker. Deploying to a
+server? See **[deploy/DEPLOY.md](deploy/DEPLOY.md)** for Docker Compose, Fly.io, Render, or a plain
+VPS.
 
 ---
 
@@ -159,9 +171,14 @@ not features. Hosted and self-hosted run identical code.
 ## Tests
 
 ```bash
-node bin/gate.mjs        # 61 unit tests, no network, runs in seconds
-bash bin/gate-e2e.sh     # 17 end-to-end checks against a throwaway database
+npm test           # 61 unit tests, no network, runs in seconds
+npm run test:e2e   # 17 end-to-end checks against a throwaway database
+npm run test:all   # both
 ```
+
+Pure Node, no test framework and no shell dependencies — they run identically on Linux, macOS, and
+Windows. CI runs both on Node 22 and current LTS, on Ubuntu and Windows, plus a Docker build that
+boots the container and checks the data volume survives a container replacement.
 
 Both must pass before a release. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

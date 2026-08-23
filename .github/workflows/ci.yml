@@ -28,7 +28,7 @@ jobs:
         run: node bin/gate.mjs
 
       - name: End-to-end tests
-        run: bash bin/gate-e2e.sh
+        run: node bin/gate-e2e.mjs
 
       - name: Seed a fresh database
         run: npm run seed
@@ -39,6 +39,102 @@ jobs:
           for i in $(seq 1 30); do curl -sf -o /dev/null http://localhost:3999/ && break; sleep 1; done
           curl -sf -o /dev/null -w 'GET / → %{http_code}\n' http://localhost:3999/
           curl -sf -o /dev/null -w 'GET /api/dashboard → %{http_code}\n' http://localhost:3999/api/dashboard
+
+  # Windows is a supported platform for running the app, so it gets tested like one. The e2e suite
+  # is pure Node specifically so it can run here — it used to be bash + curl + python3.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: node bin/gate.mjs
+
+      - name: End-to-end tests
+        run: node bin/gate-e2e.mjs
+
+      - name: Seed, reset, reseed
+        run: |
+          npm run seed
+          npm run reset
+
+      - name: Server boots and serves
+        shell: pwsh
+        run: |
+          $env:PORT = '3999'
+          $p = Start-Process node -ArgumentList '--no-warnings','server.mjs' -PassThru -NoNewWindow
+          foreach ($i in 1..30) {
+            try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3999/health | Out-Null; break } catch { Start-Sleep 1 }
+          }
+          $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3999/
+          "GET / -> $($r.StatusCode)"
+          $d = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3999/api/dashboard
+          "GET /api/dashboard -> $($d.StatusCode)"
+          Stop-Process -Id $p.Id -Force
+          if ($r.StatusCode -ne 200 -or $d.StatusCode -ne 200) { exit 1 }
+
+  # The Dockerfile is a supported install path, so build it and prove the container actually serves.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: docker build -t printshopcrm:ci .
+
+      - name: Run container and check health
+        run: |
+          docker run -d --name psc -p 3333:3333 \
+            -e PSC_SECRET=ci-test-secret \
+            -v psc-data:/data \
+            printshopcrm:ci
+
+          for i in $(seq 1 45); do
+            if curl -sf -o /dev/null http://localhost:3333/health; then break; fi
+            sleep 2
+          done
+
+          echo "--- health ---"
+          curl -sf -w '\nGET /health → %{http_code}\n' http://localhost:3333/health
+          echo "--- app shell ---"
+          curl -sf -o /dev/null -w 'GET / → %{http_code}\n' http://localhost:3333/
+          echo "--- api ---"
+          curl -sf -o /dev/null -w 'GET /api/dashboard → %{http_code}\n' http://localhost:3333/api/dashboard
+
+      - name: Container runs as non-root
+        run: |
+          U=$(docker exec psc id -un)
+          echo "container user: $U"
+          [ "$U" = "node" ] || { echo "::error::container is running as $U, expected node"; exit 1; }
+
+      - name: Database landed on the volume, not the image
+        run: |
+          docker exec psc ls -la /data
+          docker exec psc sh -c 'test -f /data/printshop.db' \
+            || { echo "::error::no database at /data — PSC_DB is not pointing at the volume"; exit 1; }
+
+      - name: Data survives a container replacement
+        run: |
+          docker rm -f psc
+          docker run -d --name psc2 -p 3334:3333 \
+            -e PSC_SECRET=ci-test-secret -v psc-data:/data printshopcrm:ci
+          for i in $(seq 1 45); do
+            if curl -sf -o /dev/null http://localhost:3334/health; then break; fi
+            sleep 2
+          done
+          docker exec psc2 sh -c 'test -f /data/printshop.db' \
+            || { echo "::error::database did not survive the container being replaced"; exit 1; }
+          echo "database survived container replacement"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs psc 2>&1 | tail -50 || true
 
   secrets:
     runs-on: ubuntu-latest

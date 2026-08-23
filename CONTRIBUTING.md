@@ -42,7 +42,7 @@ module cache: hard-reload.
 
 ```bash
 npm test                 # bin/gate.mjs — 61 unit tests, no network, a few seconds
-npm run test:e2e         # bin/gate-e2e.sh — 17 checks against a throwaway database
+npm run test:e2e         # bin/gate-e2e.mjs — 17 checks against a throwaway database
 ```
 
 Both must pass before anything merges. CI runs them on every push and pull request.
@@ -61,7 +61,7 @@ await t('a stored screen_fee of 0 is honoured, not re-defaulted to 25', async ()
 ```
 
 Add unit tests to `bin/gate.mjs` under the closest existing section. Add route-level tests to
-`bin/gate-e2e.sh` with `chk "<label>" "$RESPONSE" '<regex>'`.
+`bin/gate-e2e.mjs` with `chk("<label>", response, "<regex>")`.
 
 ## Style
 

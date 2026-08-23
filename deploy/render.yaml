@@ -1,0 +1,38 @@
+# Render.com blueprint.
+#
+#   cp deploy/render.yaml render.yaml
+#   push to GitHub, then: Render dashboard → New → Blueprint → pick the repo
+#
+# A DISK IS REQUIRED. Render's filesystem is ephemeral without one, so the SQLite database would be
+# destroyed on every deploy — silently, coming back as an empty shop. The disk below prevents that.
+#
+# Note: a persistent disk means the service cannot scale past one instance. That's correct here —
+# SQLite is a single-writer database and this app is designed around one process.
+
+services:
+  - type: web
+    name: printshopcrm
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter                 # the free plan has no persistent disk, so it cannot be used
+    healthCheckPath: /health
+
+    disk:
+      name: printshopcrm-data
+      mountPath: /data
+      sizeGB: 5
+
+    envVars:
+      - key: PSC_DB
+        value: /data/printshop.db
+      - key: PSC_AUTH
+        value: "1"
+      - key: PORT
+        value: "3333"
+      # Generated once by Render and then held constant. Do not rotate it casually: customer share
+      # links are HMACs of this value, so changing it invalidates every link already emailed.
+      - key: PSC_SECRET
+        generateValue: true
+      # Set this to your service URL after the first deploy (Settings → Environment).
+      - key: PSC_PUBLIC_URL
+        sync: false

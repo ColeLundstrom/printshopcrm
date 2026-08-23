@@ -1,0 +1,55 @@
+# Fly.io deployment.
+#
+#   cp deploy/fly.toml fly.toml
+#   fly launch --no-deploy --copy-config
+#   fly volumes create printshopcrm_data --size 3
+#   fly secrets set PSC_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+#   fly deploy
+#
+# THE VOLUME IS NOT OPTIONAL. Fly machines have ephemeral filesystems — without the mount below,
+# the SQLite database is wiped on every deploy and every machine restart. Nothing warns you; the
+# app just comes back as a brand-new empty shop.
+
+app = "printshopcrm"
+primary_region = "sjc"          # put this near your shop, not near us
+
+[build]
+  dockerfile = "../Dockerfile"
+
+[env]
+  PORT = "3333"
+  PSC_DB = "/data/printshop.db"
+  PSC_AUTH = "1"
+  # Set this to your real URL once you know it, or customer links are built from the Host header:
+  #   fly secrets set PSC_PUBLIC_URL=https://printshopcrm.fly.dev
+  # PSC_PUBLIC_URL = ""
+
+# PSC_SECRET is a secret, never an env entry — `fly secrets set PSC_SECRET=...`
+
+[[mounts]]
+  source = "printshopcrm_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3333
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  # Zero would let Fly stop the only machine, which also stops the scheduled automations that
+  # chase overdue invoices and slipping deadlines. Keep one alive.
+  min_machines_running = 1
+
+  [http_service.http_options.response.headers]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "15s"
+  method = "GET"
+  path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"              # the reference install idles around 40 MB

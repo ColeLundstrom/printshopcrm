@@ -1,0 +1,62 @@
+# PrintShopCRM — one command to a running shop.
+#
+#   cp .env.example .env      # set PSC_SECRET; see the note below
+#   docker compose up -d
+#   open http://localhost:3333
+#
+# Logs:     docker compose logs -f
+# Update:   git pull && docker compose up -d --build
+# Backup:   docker compose exec app node -e "…"  — or just copy the printshopcrm-data volume;
+#           the whole shop is in it. See INSTALL.md.
+
+services:
+  app:
+    build: .
+    # Or skip the build and pin a published image:
+    # image: ghcr.io/colelundstrom/printshopcrm:latest
+    container_name: printshopcrm
+    restart: unless-stopped
+
+    ports:
+      - "${PORT:-3333}:3333"
+
+    environment:
+      # Databases live on the volume, never in the container filesystem.
+      PSC_DB: /data/printshop.db
+
+      # REQUIRED. Customer share links (estimate approvals, art proofs) are HMACs of this, so
+      # anyone who knows it can forge a link to any customer's documents. Generate one with:
+      #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      # The `?err` suffix makes compose refuse to start rather than silently run insecurely.
+      PSC_SECRET: ${PSC_SECRET:?set PSC_SECRET in .env — see the comment in docker-compose.yml}
+
+      # 1 = signup, staff logins, isolated database per shop. Leave it on for anything reachable
+      # from the internet; without it there is no login at all.
+      PSC_AUTH: ${PSC_AUTH:-1}
+
+      # Your real external URL, e.g. https://shop.example.com. Without it the app trusts the
+      # incoming Host header when building the links it emails to customers.
+      PSC_PUBLIC_URL: ${PSC_PUBLIC_URL:-}
+
+    # Everything else in .env (SMTP, Twilio, branding, supplier endpoints) is picked up here.
+    # Values in `environment:` above win over the file.
+    env_file:
+      - path: .env
+        required: false
+
+    volumes:
+      - printshopcrm-data:/data
+      - printshopcrm-uploads:/app/public/uploads
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3333/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  # Named volumes, so `docker compose down` cannot take the shop's data with it.
+  # `docker compose down -v` still will — that flag means "delete my data".
+  printshopcrm-data:
+  printshopcrm-uploads:
