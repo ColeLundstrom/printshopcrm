@@ -226,11 +226,37 @@ Three things that script does which a naive `cp` does not, and which all matter:
 - **Includes `uploads/`, and verifies each snapshot opens** with `PRAGMA quick_check` before
   declaring success. Skip the artwork and restored proofs come back as broken images.
 
-### Two things the script cannot do for you
+### Get a copy off the machine — Google Drive is built in
 
-**Get a copy off the machine.** A backup on the disk that just failed is not a backup. Add one line
-to the same cron entry — `rclone copy`, `aws s3 cp`, or `scp` to another host. The script's footer
-has the exact commands.
+A backup on the disk that just failed is not a backup. Backing up to **your own** Google Drive is
+one-time setup:
+
+1. At [Google Cloud credentials](https://console.cloud.google.com/apis/credentials), create an
+   OAuth client of type **Desktop app**, and enable the **Google Drive API** for that project.
+2. Put the client id and secret in your `.env` as `PSC_BACKUP_GDRIVE_CLIENT_ID` /
+   `PSC_BACKUP_GDRIVE_CLIENT_SECRET`.
+3. Run the consent flow and paste the code it asks for:
+
+   ```bash
+   node bin/backup-drive.mjs connect
+   ```
+
+4. Put the refresh token it prints in `.env` as `PSC_BACKUP_GDRIVE_REFRESH_TOKEN`.
+
+From then on `backup.sh` uploads every nightly archive automatically and keeps the most recent 30
+in Drive. Check it any time with `node bin/backup-drive.mjs status`.
+
+**This is your Drive and your Google account.** The credentials live in your own environment; there
+is no shared account and no default destination. Two things worth knowing:
+
+- The scope is `drive.file`, the narrowest Google offers — this can only ever see files it created
+  itself. It cannot read your existing documents, and revoking access at
+  [myaccount.google.com/permissions](https://myaccount.google.com/permissions) leaves your Drive
+  exactly as it was apart from the backup folder.
+- Retention only ever deletes from that one folder, oldest first, and never the newest archive.
+
+Prefer something else? The script's footer has one-liners for `rclone`, `aws s3 cp`, and `scp` —
+add whichever you already use to the same cron entry.
 
 **Restore one, once, somewhere else.** An untested backup is a hope:
 

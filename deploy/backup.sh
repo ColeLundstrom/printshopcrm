@@ -59,15 +59,41 @@ tar czf "$DEST.tar.gz" -C "$BACKUP_ROOT" "$STAMP" 2>/dev/null && rm -rf "$DEST"
 find "$BACKUP_ROOT" -maxdepth 1 -name '*.tar.gz' -mtime "+$KEEP_DAYS" -delete 2>/dev/null
 
 SIZE="$(du -h "$DEST.tar.gz" 2>/dev/null | cut -f1)"
-if [ "$failed" -gt 0 ]; then
-  echo "$(date -Is) backup FINISHED WITH $failed FAILURE(S) — $count db(s), $DEST.tar.gz ($SIZE)"
-  exit 1
-fi
-echo "$(date -Is) backup ok — $count database(s), $DEST.tar.gz ($SIZE), keeping ${KEEP_DAYS}d"
 
 # ---------------------------------------------------------------------------
-# GET IT OFF THE MACHINE. Pick one and add it to the same cron line:
+# Off-site copy. A backup on the disk that just failed is not a backup.
 #
+# Runs only when PSC_BACKUP_GDRIVE_REFRESH_TOKEN is set, and uploads to the Drive of whoever
+# configured it — your install, your Google account. See `node bin/backup-drive.mjs connect`.
+# A failed upload is reported but does NOT fail the local backup, which already succeeded.
+# ---------------------------------------------------------------------------
+APP_DIR="${APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+if [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ -f "$APP_DIR/bin/backup-drive.mjs" ]; then
+  if node --no-warnings "$APP_DIR/bin/backup-drive.mjs" upload "$DEST.tar.gz"; then
+    offsite=" · copied off-site"
+  else
+    echo "WARNING: off-site upload failed — this backup exists only on this machine" >&2
+    offsite=" · OFF-SITE UPLOAD FAILED"
+    failed=$((failed + 1))
+  fi
+else
+  offsite=""
+fi
+
+if [ "$failed" -gt 0 ]; then
+  echo "$(date +%Y-%m-%dT%H:%M:%S%z) backup FINISHED WITH $failed FAILURE(S) — $count db(s), $DEST.tar.gz ($SIZE)$offsite"
+  exit 1
+fi
+echo "$(date +%Y-%m-%dT%H:%M:%S%z) backup ok — $count database(s), $DEST.tar.gz ($SIZE), keeping ${KEEP_DAYS}d$offsite"
+
+# ---------------------------------------------------------------------------
+# OFF-SITE OPTIONS
+#
+# Google Drive is built in — your own Drive, one-time setup:
+#   node bin/backup-drive.mjs connect
+# then set PSC_BACKUP_GDRIVE_* in the environment this script runs under.
+#
+# Or use anything else you already have:
 #   rclone copy "$DEST.tar.gz" remote:printshopcrm-backups/
 #   aws s3 cp   "$DEST.tar.gz" s3://your-bucket/printshopcrm/
 #   scp         "$DEST.tar.gz" you@another-host:/backups/

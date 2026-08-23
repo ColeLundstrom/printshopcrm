@@ -619,6 +619,30 @@ await t('old terminal deliveries are pruned, in-flight retries and recent ones s
   }
 })
 
+section('off-site backup: Drive retention prunes the OLDEST, never the newest')
+await t('keeps the N most recent archives and deletes only the rest', async () => {
+  // The listing is orderBy=createdTime desc, so index 0 is newest. slice(KEEP) must therefore be
+  // the tail. Inverting this deletes the backup you would actually restore from.
+  const listed = [
+    { id: 'f9', name: '20260823.tar.gz' }, { id: 'f8', name: '20260822.tar.gz' },
+    { id: 'f7', name: '20260821.tar.gz' }, { id: 'f6', name: '20260820.tar.gz' },
+    { id: 'f5', name: '20260819.tar.gz' },
+  ]
+  const KEEP = 3
+  const doomed = listed.slice(KEEP)
+  assert.deepEqual(doomed.map((f) => f.id), ['f6', 'f5'], 'must delete the two oldest')
+  const kept = listed.slice(0, KEEP).map((f) => f.id)
+  assert.ok(kept.includes('f9'), 'the newest archive must always survive')
+  assert.equal(kept.length + doomed.length, listed.length, 'every archive is either kept or pruned')
+
+  // Retention of 1 keeps exactly the newest and nothing else.
+  assert.deepEqual(listed.slice(0, 1).map((f) => f.id), ['f9'])
+  assert.equal(listed.slice(1).length, listed.length - 1)
+
+  // Fewer archives than the retention target must delete nothing at all.
+  assert.deepEqual(listed.slice(50), [], 'a young install must never have a backup pruned')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
