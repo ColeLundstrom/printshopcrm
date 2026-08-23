@@ -196,27 +196,51 @@ hourly rate, and utilization — the costing engine needs those to tell you the 
 
 ## Backups
 
-Everything is in one directory. Back up `/var/lib/printshopcrm/`.
+**Do this on day one, not the day after you need it.**
 
-Use SQLite's own backup command rather than copying the file, so you can't catch a write in
-progress:
+[`deploy/backup.sh`](deploy/backup.sh) handles all of it — every database (control plus one per
+shop in multi-tenant mode), customer artwork, verification, and retention:
 
 ```bash
-sqlite3 /var/lib/printshopcrm/printshop.db ".backup '/var/backups/printshop-$(date +%F).db'"
+sudo apt-get install -y sqlite3
+sudo cp deploy/backup.sh /usr/local/bin/printshopcrm-backup
+sudo chmod +x /usr/local/bin/printshopcrm-backup
+
+# run it once by hand to confirm it works
+sudo DATA_ROOT=/var/lib/printshopcrm BACKUP_ROOT=/var/backups/printshopcrm printshopcrm-backup
 ```
 
-A nightly cron:
+Then nightly, via `/etc/cron.d/printshopcrm-backup`:
 
 ```cron
-0 3 * * * sqlite3 /var/lib/printshopcrm/printshop.db ".backup '/var/backups/printshop-$(date +\%F).db'" && find /var/backups -name 'printshop-*.db' -mtime +30 -delete
+0 3 * * * root DATA_ROOT=/var/lib/printshopcrm BACKUP_ROOT=/var/backups/printshopcrm KEEP_DAYS=30 /usr/local/bin/printshopcrm-backup >> /var/log/printshopcrm-backup.log 2>&1
 ```
 
-In multi-tenant mode also back up `control.db` and the whole `tenants/` directory beside it — a
-tenant database without its control row is an orphan.
+Three things that script does which a naive `cp` does not, and which all matter:
 
-Customer artwork lives in `public/uploads/`. Back that up too, or proofs come back as broken images.
+- **Uses SQLite's `.backup`, never a file copy.** Copying a live database can capture a write in
+  progress and produce an archive that restores to a corrupt file — and you discover that on the
+  one day it matters.
+- **Backs up every tenant database and the control database.** A tenant database without its
+  control row is an orphan you cannot log into.
+- **Includes `uploads/`, and verifies each snapshot opens** with `PRAGMA quick_check` before
+  declaring success. Skip the artwork and restored proofs come back as broken images.
 
-Copy a backup off the machine. A backup on the same disk is not a backup.
+### Two things the script cannot do for you
+
+**Get a copy off the machine.** A backup on the disk that just failed is not a backup. Add one line
+to the same cron entry — `rclone copy`, `aws s3 cp`, or `scp` to another host. The script's footer
+has the exact commands.
+
+**Restore one, once, somewhere else.** An untested backup is a hope:
+
+```bash
+tar xzf 20260823-030000.tar.gz
+PSC_DB=$PWD/20260823-030000/printshop.db npm start
+```
+
+If that starts and your customers are in it, you have backups. If you have never done it, you
+don't.
 
 ---
 
