@@ -2,7 +2,7 @@
   "name": "printshopcrm",
   "version": "1.0.0",
   "type": "module",
-  "description": "Shop management for screen printers, embroiderers and DTF shops — quoting, production, invoicing and per-job profitability, with the CRM built in.",
+  "description": "Open-source shop management for screen printers, embroiderers and DTF shops — quoting, production, invoicing and per-job profitability, with the CRM built in.",
   "keywords": [
     "screen-printing",
     "embroidery",
@@ -22,7 +22,7 @@
     "type": "git",
     "url": "git+https://github.com/ColeLundstrom/printshopcrm.git"
   },
-  "license": "BUSL-1.1",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "node --no-warnings --env-file-if-exists=.env server.mjs",
     "dev": "node --no-warnings --env-file-if-exists=.env --watch server.mjs",

@@ -1,0 +1,70 @@
+name: Bug report
+description: Something is broken or gives the wrong number
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Anything involving money or dates: please include the actual numbers. "The total was wrong"
+        is hard to chase; "72 pieces at $9.50 billed $684 but the invoice said $700" is a test case.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what happened, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create an estimate for …
+        2. Approve it
+        3. The invoice shows …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "`git rev-parse --short HEAD`, or the release you installed."
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: "`node --version` — must be 22 or newer."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Single shop (PSC_AUTH unset)
+        - Multi-tenant (PSC_AUTH=1)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Server output, browser console, or the failing request and response.
+      render: shell
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you post
+      options:
+        - label: I've removed real customer names, emails, and any API keys from what I pasted above.
+          required: true

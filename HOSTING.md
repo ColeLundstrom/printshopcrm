@@ -1,11 +1,11 @@
 # Managed hosting & setup
 
-The repository is the whole product. Self-hosting is fully supported, always will be, and nothing is
-held back for a paid tier — there is no "open core," no feature flags, and no license key. **Running
-PrintShopCRM for your own print shop is free forever, commercial use included.**
+PrintShopCRM is open source under the [AGPL](LICENSE) and the repository is the whole product.
+Self-hosting is fully supported, always will be, and nothing is held back for a paid tier — no
+"open core," no feature flags, no license key. **Running it for your own print shop is free forever,
+commercial use included.**
 
-The one thing the [license](LICENSE) reserves is selling it *to other people* as a hosted service.
-That's the business, and it's stated plainly rather than enforced through crippled features.
+Same arrangement WordPress has: the software is free, the services around it are the business.
 
 This page is for shops that would rather not run a server.
 
@@ -80,43 +80,49 @@ The reason this project exists is that shops get trapped by their tools. So, in 
 
 ## Agencies, consultants, and resellers
 
-Two different things, with two different answers:
+Set it up for clients, host it for clients, build a business on it — the AGPL permits all of it.
+Two obligations come with running it as a service, and both are easy:
 
-**Setting it up on a client's own server, for a fee — allowed, no license needed.** Install it,
-migrate their data, configure their pricing, bill them for the work, walk away. The client is
-self-hosting; you were the labour. That's explicitly granted.
+1. **Publish your modifications.** If you patch it and run that patched version for other people,
+   your changes have to be available to those users. Unmodified deployments have nothing to publish.
+2. **Point the source link at your fork.** Set `PSC_SOURCE_URL` to your repository. The app shows a
+   source link to every user; that's how AGPL §13 is satisfied, and leaving it aimed at upstream
+   while running patched code isn't compliance.
 
-**Running it for clients on infrastructure you control — needs a commercial license.** That's a
-hosted service, which is the one use the [license](LICENSE) reserves. If that's the business you
-want to be in, that's a conversation, not a wall: get in touch through
-[Discussions](https://github.com/ColeLundstrom/printshopcrm/discussions) and we'll work out terms.
-Reseller and white-label arrangements are available.
+**If the copyleft doesn't work for your business** — you've built proprietary integrations you can't
+publish, or your customers' contracts forbid it — **commercial licenses that release you from AGPL
+terms are available.** That's a conversation, not a wall:
+[Discussions](https://github.com/ColeLundstrom/printshopcrm/discussions). White-label and reseller
+arrangements exist too.
 
-Either way, the branding hooks are built in:
+The branding hooks are built in either way:
 
 ```ini
-PSC_HOST_BADGE_TEXT=Set up by Your Company
+PSC_HOST_BADGE_TEXT=Hosted by Your Company
 PSC_HOST_BADGE_URL=https://yourcompany.com
+PSC_SOURCE_URL=https://github.com/yourcompany/printshopcrm
 ```
 
-puts your credit in the sidebar, and `PSC_BRAND_NAME` / `PSC_BRAND_TAG` / `PSC_BRAND_ACCENT` rename
-and re-skin the whole app. Unset, nothing renders and no third-party branding appears anywhere —
-which is what a shop self-hosting for itself wants.
+The badge puts your credit in the sidebar, and `PSC_BRAND_NAME` / `PSC_BRAND_TAG` /
+`PSC_BRAND_ACCENT` rename and re-skin the whole app. Unset, no third-party branding appears
+anywhere — which is what a shop self-hosting for itself wants.
 
 ---
 
 ## Why it's licensed this way
 
-Worth saying out loud, because "source available" gets a fair amount of side-eye.
-
 The entire pitch of this project is that shop software shouldn't hold you hostage — no feature
 tiers, no export fees, no forced payment processor, no per-seat pricing that climbs every year.
-Keeping that promise means the project has to be funded by something. It's funded by hosting.
+Keeping that promise means the software itself has to be genuinely free, or it's just a nicer cage.
 
-So the license draws the line exactly where the money is and nowhere else. Your shop gets
-everything, free, with the source. What it doesn't allow is someone taking the same code, standing
-up a competing service, and out-marketing the person maintaining it — which would end with the
-project unmaintained and every shop on it stranded. That's the whole reasoning.
+So it's AGPL. Your shop gets everything, permanently, and no future owner can take it back — AGPL
+grants are irrevocable, so every version ever published stays free no matter what happens to
+whoever maintains it.
 
-And it expires: each version turns into Apache 2.0 four years after release, automatically, whether
-or not anyone is still around to agree to it.
+The copyleft exists so improvements come back. If someone builds better embroidery costing on top
+of this and runs it for shops, those shops' improvements return to every other shop instead of
+vanishing into a proprietary fork. That's the trade, and it's the same one that made WordPress the
+default rather than a footnote.
+
+The business is hosting, setup, migration, support, and commercial licenses for companies that need
+out of the copyleft. None of it depends on withholding software from you.

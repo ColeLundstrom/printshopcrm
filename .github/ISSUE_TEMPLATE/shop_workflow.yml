@@ -1,0 +1,62 @@
+name: "This doesn't match how shops work"
+description: The software models something differently from how your shop actually does it
+labels: [shop-reality]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is the most valuable issue type in the project.** Code bugs get found eventually;
+        wrong assumptions about how shops price, schedule, and cost work can sit there for years
+        looking correct.
+
+        You don't need to know how to fix it, or read any code. Describe how it works in your
+        building.
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What the software assumes
+      description: What it currently does, or makes you do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reality
+    attributes:
+      label: How it actually works in your shop
+      description: |
+        The more specific the better — real numbers, real edge cases, the exception that comes up
+        twice a year and ruins the month.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Pricing / quoting
+        - Costing / profitability
+        - Scheduling / capacity / due dates
+        - Art and proof approval
+        - Production floor
+        - Purchasing / suppliers / receiving
+        - Invoicing / payments / accounting
+        - Customers and sales
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: decoration
+    attributes:
+      label: Decoration methods your shop runs
+      placeholder: Screen print, embroidery, DTF, sublimation, vinyl, patches…
+
+  - type: input
+    id: size
+    attributes:
+      label: Roughly how big is your shop?
+      description: Optional — but a 2-person shop and a 40-person shop often need opposite answers.
+      placeholder: 4 people, 1 auto + 1 manual

@@ -4861,18 +4861,37 @@ const editionCss = () => {
  *   PSC_HOST_BADGE_TEXT="Hosted by MerchTroop"
  *   PSC_HOST_BADGE_URL="https://printshopcrm.com/hosting"
  */
+const htmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+// Only http(s) — an operator-supplied javascript: or data: URL would be a stored XSS vector.
+const safeHttpUrl = (u) => (/^https?:\/\//i.test(String(u || '').trim()) ? String(u).trim() : '')
+
 const HOST_BADGE_TEXT = String(process.env.PSC_HOST_BADGE_TEXT || '').trim()
 const HOST_BADGE_URL = String(process.env.PSC_HOST_BADGE_URL || '').trim()
 const hostBadgeHtml = () => {
   if (!HOST_BADGE_TEXT) return ''
-  const e = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-  // Only http(s) — an operator-supplied javascript: or data: URL would be a stored XSS vector.
-  const safeUrl = /^https?:\/\//i.test(HOST_BADGE_URL) ? HOST_BADGE_URL : ''
-  const label = e(HOST_BADGE_TEXT)
+  const safeUrl = safeHttpUrl(HOST_BADGE_URL)
+  const label = htmlEscape(HOST_BADGE_TEXT)
   return safeUrl
-    ? `<a class="host-badge" href="${e(safeUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+    ? `<a class="host-badge" href="${htmlEscape(safeUrl)}" target="_blank" rel="noopener noreferrer">${label}</a>`
     : `<div class="host-badge">${label}</div>`
 }
+
+/**
+ * AGPL §13 — Remote Network Interaction.
+ *
+ * This app is licensed under the AGPL and is used over a network, so every user interacting with
+ * it remotely must be offered the Corresponding Source of the version actually running. That is a
+ * licence obligation, not a courtesy, and it is why this link is always rendered and has no "off"
+ * switch — only a way to point it somewhere truthful.
+ *
+ * IF YOU MODIFY THIS SOFTWARE AND RUN IT FOR OTHER PEOPLE, set PSC_SOURCE_URL to a public
+ * repository containing YOUR modified source. Leaving it pointing at upstream while running
+ * patched code does not satisfy §13.
+ */
+const SOURCE_URL = safeHttpUrl(process.env.PSC_SOURCE_URL) || 'https://github.com/ColeLundstrom/printshopcrm'
+const sourceLinkHtml = () =>
+  `<a class="source-link" href="${htmlEscape(SOURCE_URL)}" target="_blank" rel="noopener noreferrer"
+      title="This software is free and open source (AGPL-3.0). Click for the source code.">Source · AGPL-3.0</a>`
 
 let SHELL_HTML = null
 const shellHtml = () => {
@@ -4882,6 +4901,7 @@ const shellHtml = () => {
     .replaceAll('__ASSET_V__', assetVersion())
     .replaceAll('__EDITION__', EDITION)
     .replaceAll('__HOST_BADGE__', hostBadgeHtml())
+    .replaceAll('__SOURCE_LINK__', sourceLinkHtml())
     .replaceAll('__BRAND_NAME__', BRAND_NAME)
     .replaceAll('__BRAND_TAG__', BRAND_TAG)
     .replaceAll('__THEME_FORCE__', EDITION === 'lite' ? 'light' : '')
@@ -4901,6 +4921,7 @@ const authHtml = () => {
   if (AUTH_HTML) return AUTH_HTML
   AUTH_HTML = readFileSync(join(PUBLIC, 'auth.html'), 'utf8')
     .replaceAll('__BRAND_NAME__', BRAND_NAME)
+    .replaceAll('__SOURCE_LINK__', sourceLinkHtml())
     .replaceAll('__AUTH_SKIN__', AUTH_SKIN)
   return AUTH_HTML
 }

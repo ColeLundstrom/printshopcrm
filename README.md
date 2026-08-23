@@ -1,15 +1,14 @@
 # PrintShopCRM
 
-**Shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
-
-Free to run for your own shop, source included.
+**Open-source shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
 
 Quoting, estimates, invoicing, a production board, art proofing, purchasing, and per-job
 profitability in one app. Node.js + SQLite. No build step, four runtime dependencies, one database
 file you can copy.
 
 [![CI](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml)
-[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
 ```bash
@@ -152,9 +151,8 @@ If you'd rather not run a server, **managed hosting and setup are available from
 backups, updates, SSL, monitoring, and data migration off your current tool. See
 **[HOSTING.md](HOSTING.md)**.
 
-Installing and configuring it on a client's own server for a fee is allowed and needs no license.
-Running it *for* clients on your own infrastructure is the one reserved use — that needs a
-commercial license, which is available; see [HOSTING.md](HOSTING.md#agencies-consultants-and-resellers).
+That's the deal, plainly: the software is free and always will be, and paying us buys operations —
+not features. Hosted and self-hosted run identical code.
 
 ---
 
@@ -211,27 +209,40 @@ one shop cannot reach another's data.
 
 ## Contributing
 
-Bug reports, fixes, and features are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The one hard
-rule: a bug fix needs a failing test first.
+**This project wants a community, and shop owners count as contributors.**
+
+The hardest thing to get right here isn't the code — it's modelling how shops actually quote,
+schedule, and cost work. That knowledge lives in print shops, not in repositories. If something in
+here doesn't match how your shop works, [open an issue and say
+so](https://github.com/ColeLundstrom/printshopcrm/issues/new/choose). There's a template for exactly
+that, and it needs no code.
+
+Also wanted: more supplier integrations, more decoration methods (sublimation, vinyl, patches and
+laser are thin), translations, and anything labelled
+[`good first issue`](https://github.com/ColeLundstrom/printshopcrm/labels/good%20first%20issue).
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before a code PR — it covers the setup, the house rules, and
+the one hard rule: **a bug fix needs a failing test first.** Planning something large? Open a
+[discussion](https://github.com/ColeLundstrom/printshopcrm/discussions) first so it doesn't sit.
+
+By contributing you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Security issues: please report privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-**Business Source License 1.1** — see [LICENSE](LICENSE).
+**GNU AGPL v3** — see [LICENSE](LICENSE). Real, OSI-approved open source, the same deal WordPress
+made: the software is free, and the services around it are the business.
 
-In plain terms:
+- ✅ **Run it for your print shop, free, forever** — commercially, modified however you like. Your
+  shop's data and your private changes are yours; nothing obliges you to publish anything.
+- ✅ **Fork it, sell services around it, build on it.**
+- ⚖️ **If you run a modified version as a service for other people, publish your changes.** That's
+  the copyleft bargain — improvements to a shared tool come back to the shops using it, instead of
+  disappearing into someone's proprietary fork.
+- 💼 **Don't want that obligation?** Commercial licenses that release you from AGPL terms are
+  available — [get in touch](https://github.com/ColeLundstrom/printshopcrm/discussions).
 
-- ✅ **Run it for your own print shop, free, forever.** Commercial use in your own business is
-  explicitly granted. Modify it, brand it, do what you like with it.
-- ✅ **Read, fork, and contribute.** The whole source is here. Nothing is held back.
-- ✅ **Set it up on someone else's server for a fee.** Consulting and installation work is fine.
-- ❌ **Don't sell it as a hosted service.** Running it *for* other shops on infrastructure you
-  control, as a product or service, needs a commercial license —
-  [get in touch](https://github.com/ColeLundstrom/printshopcrm/discussions).
-- 🕒 **It becomes Apache 2.0 on 2030-08-23.** Every version converts on its own four-year clock, so
-  today's release is fully open source in four years, permanently.
-
-This is "source available," not OSI open source — the difference is the hosting restriction, and
-calling it anything else would be dishonest. Everything else you'd expect from an open project is
-here: the real source, the real tests, and no feature gating.
+If you deploy this for others, set `PSC_SOURCE_URL` to your own repository. The app shows a source
+link to every user, which is how AGPL §13 is satisfied — pointing it at upstream while running
+patched code is not compliance.

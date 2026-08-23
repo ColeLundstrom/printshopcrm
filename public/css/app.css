@@ -164,6 +164,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 a.host-badge:hover { color: var(--accent); }
 
+/* AGPL §13 source offer. Always rendered — it is a licence obligation, not decoration. */
+.source-link {
+  display: block; padding: var(--sp-3) var(--sp-6) var(--sp-5);
+  font-size: var(--fs-3xs); color: var(--txt-3); text-decoration: none; letter-spacing: .02em; opacity: .75;
+}
+.host-badge + .source-link { padding-top: 0; }
+.source-link:hover { color: var(--accent); opacity: 1; }
+
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
   height: 58px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-6);

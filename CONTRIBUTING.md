@@ -3,6 +3,27 @@
 Bug reports, fixes, and features are all welcome. This document is short because the project is
 deliberately simple.
 
+**If you run a print shop, you are the most useful contributor here** — even if you never write a
+line of code. The hardest thing to get right in this software is how shops actually quote, schedule,
+and cost work, and that knowledge doesn't come from reading code. "This is not how pricing works in
+embroidery" is a great issue to open.
+
+## Good first contributions
+
+- **Tell us where it's wrong for your shop.** Decoration methods we've modelled badly, a pricing
+  rule that doesn't match reality, a workflow that doesn't exist in your building.
+- **Supplier integrations.** S&S and SanMar are in; alphabroder, Carhartt, and the regional
+  distributors are not. `lib/suppliers.mjs` is the pattern.
+- **Decoration methods.** Screen print, embroidery, DTF and UV DTF are modelled. Sublimation, vinyl,
+  patches, and laser have partial support at best.
+- **Translations.** Nothing is externalised yet — strings are inline. Doing the extraction is a real
+  contribution on its own.
+- **Anything labelled [`good first issue`](https://github.com/ColeLundstrom/printshopcrm/labels/good%20first%20issue).**
+
+Not sure if an idea fits? Open a
+[discussion](https://github.com/ColeLundstrom/printshopcrm/discussions) before writing code. Better
+to find out early than to have a PR sit.
+
 ## Getting set up
 
 ```bash
@@ -92,17 +113,32 @@ Some things are deliberately absent: an online store / product designer, and a g
 Those are big surfaces that a shop is generally better served buying elsewhere, and adding them
 would compromise how simple this is to run.
 
-## License
+## License and the dual-licensing grant
 
-PrintShopCRM is licensed under the [Business Source License 1.1](LICENSE). You can run it for your
-own shop commercially and free of charge; what the license reserves is offering it to other people
-as a hosted service. Each version converts to Apache 2.0 four years after its release.
+PrintShopCRM is [AGPL v3](LICENSE) — real open source. Run it, fork it, sell services around it.
 
-By opening a pull request you agree that your contribution is licensed under the same terms, and
-that the Licensor may also distribute it under the Change License (Apache 2.0) and under commercial
-licenses. That last part is what makes it possible to sell hosting exceptions without having to
-track down every past contributor — it isn't a copyright assignment, and you keep your own rights
-to your work.
+**By opening a pull request you agree to two things:**
 
-If that's a problem for you, say so in the PR and we'll figure something out rather than merging
-something you're uncomfortable with.
+1. Your contribution is licensed under the AGPL v3, like the rest of the project.
+2. You also grant the maintainer permission to distribute your contribution under other license
+   terms, including commercial licenses.
+
+Point 2 needs an honest explanation, because it's the part people rightly look twice at.
+
+The project is funded by hosting and by selling commercial licenses to companies that can't accept
+the AGPL's copyleft. That funding is what pays for this being maintained instead of abandoned. If
+every contributor's code were AGPL-only, a single merged PR would make it legally impossible to
+offer those licenses without tracking down every past contributor for permission — which in
+practice means the maintainer would have to reject contributions and write everything alone. That
+outcome is worse for everyone.
+
+**What this is not:** it is not a copyright assignment. You keep full ownership of your work and can
+relicense or reuse it anywhere you like. It's a non-exclusive grant, the same arrangement Qt, Mattermost,
+and Grafana use.
+
+**What you get in return:** the AGPL guarantees are permanent. The code you contribute stays open
+source, and no future owner can close it — AGPL grants are irrevocable, so every version ever
+published stays free forever, whatever happens to the company.
+
+If you're not comfortable with the grant, say so in the PR. A bug report with a reproduction, or an
+issue describing the fix, is genuinely valuable too and carries no such requirement.
