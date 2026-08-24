@@ -643,6 +643,29 @@ await t('keeps the N most recent archives and deletes only the rest', async () =
   assert.deepEqual(listed.slice(50), [], 'a young install must never have a backup pruned')
 })
 
+section('capacity: an unseparated job schedules on its QUOTED colours, not a flat default')
+await t('quote colours beat the default; a saved separation still wins over both', async () => {
+  const { jobColors, colorsFromItems } = await import('../lib/capacity.mjs')
+  const settings = { capacity_default_colors: '2' }
+
+  // The bug this replaces: no separation → every job booked as 2 colours, so a 6-colour run
+  // reserved a third of the press time it needs and the promised date was fiction.
+  assert.equal(jobColors({ colors: 6 }, settings), 6, 'a 6-colour quote must schedule as 6')
+  assert.equal(jobColors({}, settings), 2, 'nothing known → the shop default')
+  assert.equal(jobColors({ colors: 0 }, settings), 2, 'a zero colour count is "unknown", not zero passes')
+  assert.equal(jobColors({ separation: JSON.stringify({ screens: 4 }), colors: 6 }, settings), 4,
+    'a recorded separation is a measurement and outranks the quote')
+  assert.equal(jobColors({ separation: 'not json', colors: 6 }, settings), 6,
+    'corrupt separation JSON must fall through, not throw')
+  assert.equal(jobColors({ colors: 99 }, settings), 12, 'clamped to a plausible screen count')
+
+  // Locations sum within a line; the heaviest line wins across lines (one press setup).
+  assert.equal(colorsFromItems([{ locations: [{ colors: 3 }, { colors: 2 }] }]), 5, 'front + back sum')
+  assert.equal(colorsFromItems([{ colors: 2 }, { locations: [{ colors: 6 }] }]), 6, 'heaviest line wins')
+  assert.equal(colorsFromItems([{ description: 'setup fee' }]), 0, 'a fee line implies no press passes')
+  assert.equal(colorsFromItems(null), 0, 'no items → 0, so the caller falls through to its default')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

@@ -1,5 +1,5 @@
 import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today } from '../core.js'
-import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, quoteScreenPrint, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
+import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
 
@@ -55,27 +55,6 @@ export async function estimateEditor(id) {
     : await api.get(`/api/estimates/${id}`)
   let items = est.items.length ? est.items : [blankItem()]
   const upcharges = () => { try { return JSON.parse(settings.size_upcharges) } catch { return {} } }
-
-  // Handoff from Separation Studio: the screen count it computed becomes real line items.
-  if (isNew && params.get('sep')) {
-    try {
-      const sep = JSON.parse(sessionStorage.getItem('psc-sep') || 'null')
-      if (sep) {
-        const q = quoteScreenPrint({ garmentCost: 3.2, markup: Number(settings.default_markup) || 2, qty: 48,
-          locations: [{ name: 'Front', colors: sep.colors }], screenFee: Number(settings.screen_fee) || 25, darkGarment: sep.dark })
-        items = [{
-          description: `Screen print, ${sep.colors} color${sep.colors === 1 ? '' : 's'} front`,
-          detail: `${sep.dark ? `${sep.garment} garment, underbase incl. ` : `${sep.garment} garment. `}Inks: ${sep.inks.map((i) => i.name).join(', ')}`,
-          decoration: 'Screen Print', sizes: { S: 0, M: 48, L: 0, XL: 0 }, unit_price: q.perPiece, taxable: true,
-        }, {
-          description: `Screen setup, ${sep.screens} screen${sep.screens === 1 ? '' : 's'}`,
-          detail: 'From Separation Studio, one-time', qty: sep.screens, unit_price: Number(settings.screen_fee) || 25, taxable: false,
-        }]
-        sessionStorage.removeItem('psc-sep')
-        setTimeout(() => toast(`Loaded ${sep.screens} screens from Separation Studio`), 200)
-      }
-    } catch { /* ignore a malformed handoff */ }
-  }
 
   setPage(isNew ? 'New Estimate' : `Edit ${est.estimate_number}`, `<button class="btn ghost" id="cancel">Cancel</button><button class="btn" id="save">${isNew ? 'Create Estimate' : 'Save'}</button>`,
     `<a href="#/estimates">Estimates</a> /`)

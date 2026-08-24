@@ -24,7 +24,6 @@ const COMMANDS = [
   { icon: '◱', title: 'New opportunity', kw: 'create deal pipeline lead', run: () => go('/pipeline?new=1') },
   { icon: '◆', title: 'Run Autopilot', kw: 'autopilot email automate front office', run: () => go('/autopilot') },
   { icon: '⟳', title: 'New automation', kw: 'create automation rule workflow', run: () => go('/automations?new=1') },
-  { icon: '◑', title: 'Separate artwork', kw: 'separation studio screens color art', run: () => go('/seps') },
   { icon: '◳', title: 'DTF Resize — trim art to print size', kw: 'dtf resize trim transparent png dpi print size film', run: () => go('/dtf') },
   { icon: '◷', title: 'Can we promise this date?', kw: 'capacity promise date schedule deadline can we hit press hours booked', run: () => go('/capacity'), hint: 'g y' },
   { icon: '⊛', title: 'Reorder Radar — who\'s due to reorder', kw: 'reorder radar repeat customers due follow up cadence returning', run: () => go('/reorders'), hint: 'g r' },

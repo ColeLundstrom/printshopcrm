@@ -113,6 +113,8 @@ Three more things it does that are unusual:
 **The app itself**
 - Light and dark themes, tuned separately rather than inverted
 - ⌘K command palette, full keyboard navigation, undo-instead-of-confirm on reversible actions
+- A sidebar that starts with the daily loop — quote → produce → invoice → get paid — and folds the
+  power tools behind one click, so the first screen isn't 27 destinations deep
 - Multi-tenant mode: one isolated SQLite database per shop, real staff logins with owner/manager/staff roles
 - PWA — installable, works on a shop-floor tablet
 

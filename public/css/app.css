@@ -142,6 +142,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .nav { padding: var(--sp-5) var(--sp-5); flex: 1; overflow-y: auto; }
 .nav-label { font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .9px; color: var(--txt-3); padding: var(--sp-5) var(--sp-4) var(--sp-3); font-weight: 600; }
+
+/* Reveals the advanced destinations. Styled as a quiet nav row, not a call to action — it is an
+   escape hatch for people who want more, not something to draw a new user's eye. */
+.nav-more {
+  display: flex; align-items: center; gap: var(--sp-4); width: 100%;
+  margin-top: var(--sp-4); padding: var(--sp-4) var(--sp-5);
+  background: none; border: 0; border-top: 1px solid var(--line); border-radius: 0;
+  color: var(--txt-3); font: inherit; font-size: var(--fs-2xs); font-weight: 500;
+  text-align: left; cursor: pointer; transition: color .12s;
+}
+.nav-more:hover { color: var(--txt); }
+.nav-more .count {
+  margin-left: auto; font-size: var(--fs-3xs); color: var(--txt-3);
+  background: var(--panel-2, rgba(127,127,127,.14)); border-radius: 999px; padding: 1px 7px;
+}
 .nav a {
   display: flex; align-items: center; gap: var(--sp-5); padding: var(--sp-4) var(--sp-5); border-radius: var(--r-md);
   color: var(--txt-2); font-size: var(--fs-sm); font-weight: 500; margin-bottom: var(--sp-1); transition: .12s;

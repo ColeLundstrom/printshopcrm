@@ -14,7 +14,6 @@ import { wireKeys } from './keys.js'
 import { openAssistant, closeAssistant } from './views/assistant.js'
 import { followupsView } from './views/followups.js'
 import { automationsView } from './views/automations.js'
-import { sepsView } from './views/seps.js'
 import { conversationsView } from './views/conversations.js'
 import { pipelineView } from './views/pipeline.js'
 import { autopilotView } from './views/autopilot.js'
@@ -45,11 +44,10 @@ const NAV = [
   { label: 'Production', section: true },
   { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
   { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
-  // Separation Studio hidden from nav 2026-08-19 — underperforms; route still reachable by URL.
-  { href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
-  { href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
+  { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
+  { advanced: true, href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
   { href: '/capacity', ico: 'capacity', name: 'Capacity' },
-  { href: '/scan', ico: 'board', name: 'Floor Mode' },
+  { advanced: true, href: '/scan', ico: 'board', name: 'Floor Mode' },
   { label: 'Money', section: true },
   { href: '/pricing', ico: 'pricing', name: 'Pricing' },
   { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
@@ -59,13 +57,13 @@ const NAV = [
   { href: '/contacts', ico: 'customers', name: 'Customers' },
   { label: 'Automate', section: true },
   { href: '/autopilot', ico: 'autopilot', name: 'Autopilot' },
-  { href: '/receptionist', ico: 'receptionist', name: 'AI Receptionist' },
-  { href: '/automations', ico: 'automations', name: 'Automations', badge: 'automations' },
+  { advanced: true, href: '/receptionist', ico: 'receptionist', name: 'AI Receptionist' },
+  { advanced: true, href: '/automations', ico: 'automations', name: 'Automations', badge: 'automations' },
   { label: 'More', section: true },
-  { href: '/products', ico: 'products', name: 'Products' },
-  { href: '/activity', ico: 'activity', name: 'Activity' },
-  { href: '/developers', ico: 'settings', name: 'Developers' },
-  { href: '/outbox', ico: 'outbox', name: 'Outbox' },
+  { advanced: true, href: '/products', ico: 'products', name: 'Products' },
+  { advanced: true, href: '/activity', ico: 'activity', name: 'Activity' },
+  { advanced: true, href: '/developers', ico: 'settings', name: 'Developers' },
+  { advanced: true, href: '/outbox', ico: 'outbox', name: 'Outbox' },
   { href: '/billing', ico: 'billing', name: 'Billing', owner: true },
   { href: '/settings', ico: 'settings', name: 'Settings' },
   { label: 'Admin', section: true, admin: true },
@@ -96,7 +94,6 @@ route(/^\/board$/, boardView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)
 route(/^\/art$/, artView)
-route(/^\/seps/, sepsView)
 route(/^\/gangsheet$/, gangSheetView)
 route(/^\/dtf$/, dtfResizeView)
 route(/^\/estimates$/, estimatesView)
@@ -166,14 +163,49 @@ function isActive(href, path) {
   return href === '/' ? path === '/' : path.startsWith(href) || (href === '/board' && path.startsWith('/jobs'))
 }
 
+/**
+ * Power tools stay folded away until asked for.
+ *
+ * The full nav is 27 destinations. A shop owner opening this for the first time has to read all of
+ * them to work out "where do I write a quote", and most of what they read is a tool they may never
+ * use. Nothing is removed — every item is one click, ⌘K, or a URL away — but the sidebar leads with
+ * the daily loop: quote → produce → invoice → get paid.
+ */
+const MORE_KEY = 'psc-nav-more'
+const moreOpen = () => localStorage.getItem(MORE_KEY) === '1'
+
 function drawNav() {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
-  $('#nav').innerHTML = visibleNav().map((n) => {
-    if (n.section) return `<div class="nav-label">${n.label}</div>`
+  const all = visibleNav()
+  // Never hide the page you are standing on: arriving at an advanced route from a link, a search
+  // result or a bookmark must not produce a sidebar with no current item in it.
+  const onAdvanced = all.some((n) => !n.section && n.advanced && isActive(n.href, path))
+  const expanded = moreOpen() || onAdvanced
+  const shown = expanded ? all : all.filter((n) => !n.advanced)
+  const hiddenCount = all.filter((n) => !n.section && n.advanced).length
+
+  const link = (n) => {
     const on = isActive(n.href, path)
     const c = badges[n.badge]
     return `<a href="#${n.href}" class="${on ? 'on' : ''} ${n.hot ? 'hot' : ''}"${on ? ' aria-current="page"' : ''}>${icon(n.ico, 'ico')}${n.name}${n.hot ? '<span class="hotdot"></span>' : ''}${c ? `<span class="count">${c}</span>` : ''}</a>`
-  }).join('')
+  }
+
+  // Drop any section header left with nothing beneath it once the advanced items are filtered out.
+  const pruned = shown.filter((n, i) => !n.section || shown.slice(i + 1).some((x) => !x.section) && !shown[i + 1]?.section)
+
+  $('#nav').innerHTML = pruned.map((n) => (n.section ? `<div class="nav-label">${n.label}</div>` : link(n))).join('')
+    + (hiddenCount
+      ? `<button type="button" class="nav-more" id="nav-more" aria-expanded="${expanded}">${
+          expanded ? 'Show fewer tools' : `More tools <span class="count">${hiddenCount}</span>`}</button>`
+      : '')
+
+  const btn = $('#nav-more')
+  if (btn) {
+    btn.onclick = () => {
+      localStorage.setItem(MORE_KEY, expanded ? '0' : '1')
+      drawNav()
+    }
+  }
   drawTabbar(path)
 }
 

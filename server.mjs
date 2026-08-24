@@ -31,7 +31,7 @@ import {
 import { initAutomations, seedAutomations, listAutomations, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
 import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS } from './lib/ai.mjs'
 import * as pipeline from './lib/pipeline.mjs'
-import { capacityReport, promise as capacityPromise } from './lib/capacity.mjs'
+import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
@@ -1241,11 +1241,17 @@ app.get('/api/dashboard', wrap((_req, res) => {
 
 /** The committed board, each job tagged with its honest due date (proof-gated projection). */
 const activeJobsForCapacity = () =>
-  all(`SELECT j.*, c.name AS contact_name FROM jobs j LEFT JOIN contacts c ON c.id = j.contact_id
+  // The estimate rides along so a job that was never separated still schedules against the colour
+  // count the shop actually quoted, rather than the flat capacity_default_colors guess.
+  all(`SELECT j.*, c.name AS contact_name, e.items AS est_items
+       FROM jobs j
+       LEFT JOIN contacts c ON c.id = j.contact_id
+       LEFT JOIN estimates e ON e.id = j.estimate_id
        WHERE j.status = 'active'`)
     .map((j) => ({
       id: j.id, title: j.title, job_number: j.job_number, contact_name: j.contact_name,
       stage: j.stage, rush: !!j.rush, due: scheduleFor(j).due || j.due_date, separation: j.separation,
+      colors: colorsFromItems(parse(j.est_items, [])),
       sizes: j.sizes, quantities: j.quantities,
     }))
 
@@ -2143,26 +2149,6 @@ app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
   res.json({ ok: true })
 }))
 
-/** Save a Separation Studio result onto a job — its screens are now part of the job record. */
-app.post('/api/jobs/:id/separation', wrap((req, res) => {
-  const id = +req.params.id
-  const j = get('SELECT * FROM jobs WHERE id = ?', id)
-  if (!j) return res.status(404).json({ error: 'Job not found' })
-  const b = req.body || {}
-  const sep = {
-    colors: Math.max(1, Number(b.colors) || 1),
-    screens: Math.max(1, Number(b.screens) || 1),
-    dark: !!b.dark, garment: String(b.garment || '').slice(0, 30),
-    mode: b.mode === 'process' ? 'process' : 'spot',
-    inks: Array.isArray(b.inks) ? b.inks.slice(0, 12).map((i) => ({ name: String(i.name || '').slice(0, 20), hex: String(i.hex || '').slice(0, 7) })) : [],
-    saved_at: now(),
-  }
-  run('UPDATE jobs SET separation = ?, updated_at = ? WHERE id = ?', JSON.stringify(sep), now(), id)
-  logActivity('art', `Separation saved — ${sep.screens} screen${sep.screens === 1 ? '' : 's'} (${sep.inks.map((i) => i.name).join(', ') || sep.colors + ' colors'})`, { contact_id: j.contact_id, job_id: id })
-  fireAuto('separation.saved', { job: get('SELECT * FROM jobs WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id) })
-  res.json({ ok: true, separation: sep })
-}))
-
 /* ================= ART / PREPRESS ================= */
 
 app.get('/api/art', wrap((_req, res) => {
@@ -2536,7 +2522,7 @@ app.post('/api/assistant', async (req, res) => {
  *
  * Reads the email → finds or creates the customer → writes the estimate → sends and marks
  * it approved → converts to an invoice + production job → records the deposit. Everything
- * downstream (mockup, separation) the client adds as a visual flourish. When a real inbound
+ * downstream (the mockup) the client adds as a visual flourish. When a real inbound
  * webhook + Stripe are wired, this same chain runs untouched with nobody clicking.
  */
 app.post('/api/autopilot', async (req, res) => {
@@ -3148,9 +3134,9 @@ app.post('/api/purchase-orders/:id/receive', requireRole('manager'), wrap((req, 
 /* ================= RIP / PRINT PACKAGE ================= */
 
 /**
- * Print-ready package for the RIP / hot folder: the approved art + the separation spec (screens,
+ * Print-ready package for the RIP / hot folder: the approved art + any recorded screen spec (
  * inks, print order) + the size grid, as a manifest a RIP or DTF workflow can consume. The film
- * positives themselves are generated in Separation Studio (Download screens) at print resolution.
+ * positives come from whatever prepress tool the shop already uses.
  */
 app.get('/api/jobs/:id/print-package', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
@@ -3164,8 +3150,8 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
     approved_art: approved ? { file: `/uploads/${approved.filename}`, version: approved.version } : null,
     separation: sep ? { mode: sep.mode, screens: sep.screens, inks: sep.inks, dark: sep.dark } : null,
     ready: !!(approved && sep),
-    note: approved && sep ? 'Ready for the RIP — film positives via Separation Studio → Download screens.'
-      : 'Not print-ready: needs approved art and a saved separation.',
+    note: approved && sep ? 'Ready for the RIP — approved art, ink list and the full size grid.'
+      : 'Not print-ready: needs approved art.',
   })
 }))
 
@@ -3538,7 +3524,7 @@ app.get('/api/v1/payments', wrap((req, res) => {
 // Webhook subscription CRUD — same handlers back both the API-key surface and the Developers UI.
 const listWebhooks = () => all('SELECT id, url, events, active, created_at FROM webhook_subscriptions ORDER BY id')
 const WEBHOOK_EVENTS = ['contact.created', 'estimate.sent', 'estimate.approved', 'invoice.paid', 'job.stage',
-  'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received', 'separation.saved']
+  'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received']
 const MAX_WEBHOOKS = 10
 
 /**
@@ -3586,7 +3572,7 @@ app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
     deliveries: all(`SELECT d.id, d.event, d.status, d.attempts, d.last_error, d.created_at, s.url
                      FROM webhook_deliveries d JOIN webhook_subscriptions s ON s.id = d.subscription_id
                      ORDER BY d.id DESC LIMIT 25`),
-    events: ['contact.created', 'estimate.sent', 'estimate.approved', 'invoice.paid', 'job.stage', 'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received', 'separation.saved'],
+    events: ['contact.created', 'estimate.sent', 'estimate.approved', 'invoice.paid', 'job.stage', 'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received'],
     docs: '/docs-api.html',
   })
 }))

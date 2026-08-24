@@ -186,7 +186,7 @@ Webhook management requires a key belonging to an **owner or manager**.
 
 `contact.created` · `estimate.sent` · `estimate.approved` · `invoice.paid` · `job.stage` ·
 `art.sent` · `art.approved` · `art.rejected` · `opportunity.won` · `opportunity.lost` ·
-`conversation.received` · `separation.saved`
+`conversation.received`
 
 ### Verifying the signature
 

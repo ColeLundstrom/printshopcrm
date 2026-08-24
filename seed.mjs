@@ -275,7 +275,7 @@ addArt(J.rosie, { file: ART.bakery, name: 'rosies-apron-embroidery-v1.svg', vers
 addArt(J.forge, { file: ART.crossfit, name: 'forge-tank-dtf.svg', version: 1, status: 'approved',
   sent: stamp(-3), decided: stamp(-3), by: 'Danny Ortiz', created: stamp(-3) })
 
-/* ---------- separations (from Separation Studio) ---------- */
+/* ---------- recorded screens/inks on demo jobs ---------- */
 
 const saveSep = (job, sep) => run('UPDATE jobs SET separation = ? WHERE id = ?', JSON.stringify(sep), job.id)
 saveSep(J.wildcats, { colors: 4, screens: 5, dark: true, garment: 'Black', mode: 'spot',

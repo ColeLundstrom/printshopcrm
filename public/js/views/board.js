@@ -214,6 +214,8 @@ export async function jobDetailView(id) {
   const grid = (() => { try { return JSON.parse(j.sizes || '{}') } catch { return {} } })()
   const sizes = SIZES.filter((s) => Number(grid[s]) > 0).map((s) => [s, grid[s]])
   const total = sizes.reduce((s, [, n]) => s + n, 0)
+  // Screens/inks recorded on jobs that were separated before that tool was removed. Read-only:
+  // the data still feeds capacity and costing, so it stays visible rather than silently vanishing.
   const sep = (() => { try { return j.separation ? JSON.parse(j.separation) : null } catch { return null } })()
 
   // Explain the due date rather than just showing it. A projected date that's later than
@@ -281,7 +283,7 @@ export async function jobDetailView(id) {
             <div class="sizebox tot"><span>TOTAL</span><strong>${total}</strong></div></div>
         </div>` : ''}
         ${sep ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-          <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px">Separation — ${sep.screens} screen${sep.screens === 1 ? '' : 's'} · ${esc(sep.mode === 'process' ? 'sim process' : 'spot color')}</div>
+          <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px">Screens &amp; inks — ${sep.screens} screen${sep.screens === 1 ? '' : 's'} · ${esc(sep.mode === 'process' ? 'sim process' : 'spot color')}</div>
           <div class="wrap-row">${(sep.inks || []).map((ink) => `<span class="inkchip"><span class="sw" style="background:${esc(ink.hex)}"></span>${esc(ink.name)}</span>`).join('')}
             ${sep.dark ? '<span class="inkchip"><span class="sw" style="background:#f5f5f5"></span>underbase</span>' : ''}</div>
         </div>` : ''}
@@ -324,7 +326,7 @@ export async function jobDetailView(id) {
 
       <div class="card"><div class="card-h"><h3>Production Files</h3><span class="pill green">RIP-ready</span></div>
         <div class="card-b">
-          <p class="dim" style="font-size:12px;margin-bottom:11px;line-height:1.55">One bundle for the press — approved art, separations, ink list and the full size grid — ready to drop into your RIP.</p>
+          <p class="dim" style="font-size:12px;margin-bottom:11px;line-height:1.55">One bundle for the press — approved art, ink list and the full size grid — ready to drop into your RIP.</p>
           <div class="stack" style="gap:8px">
             <a class="btn sm" href="/api/jobs/${id}/print-package?download=1" style="width:100%">↓ Print-ready package</a>
             <button class="btn ghost sm" id="po-order" style="width:100%">Order blanks from supplier</button>
