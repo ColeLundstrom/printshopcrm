@@ -3,6 +3,7 @@ import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
 import { pricingView } from './views/pricing.js'
+import { matricesView, matrixEditor } from './views/matrices.js'
 import { contactsView, contactDetailView } from './views/contacts.js'
 import { estimatesView, estimateEditor, estimateDetailView } from './views/estimates.js'
 import { invoicesView, invoiceDetailView } from './views/invoices.js'
@@ -90,6 +91,10 @@ route(/^\/receptionist$/, agentView)
 route(/^\/orders$/, ordersView)
 route(/^\/products$/, productsView)
 route(/^\/pricing$/, pricingView)
+// Custom price matrices live under Pricing rather than in the sidebar — the nav was deliberately
+// simplified (2026-08-24) and this is a setup screen you visit, not a place you work all day.
+route(/^\/matrices$/, matricesView)
+route(/^\/matrices\/(\d+)$/, matrixEditor)
 route(/^\/board$/, boardView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)

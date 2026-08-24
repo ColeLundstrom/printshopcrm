@@ -247,6 +247,9 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 .field { margin-bottom: var(--sp-5); }
 .field label { display: block; font-size: var(--fs-2xs); font-weight: 600; color: var(--txt-2); margin-bottom: var(--sp-3); text-transform: uppercase; letter-spacing: .5px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5); }
+/* Must live beside .grid2, ABOVE the mobile block that stacks them — a later base rule would
+   override the media query and the three fields would stay side by side at 375px. */
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-5); }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); }
 .card-h { padding: var(--sp-5) var(--sp-6); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-5); }
@@ -791,6 +794,8 @@ kbd { background: var(--panel-2); border: 1px solid var(--line-2); border-bottom
      of vertical spacing in the stacked state. */
   .grid2 { grid-template-columns: 1fr; }
   .grid2 > .field { margin-bottom: 0; }
+  .grid3 { grid-template-columns: 1fr; }
+  .grid3 > .field { margin-bottom: 0; }
   .view { padding: var(--sp-6); }
   .items .ih { display: none; }
   .items .ir { grid-template-columns: 1fr 1fr; }
@@ -989,6 +994,65 @@ body { overflow-x: hidden; }
 .pm-cell.warn .pm-margin { color: var(--amber); }
 .pm-cell.bad .pm-margin, .pm-cell.below .pm-margin { color: var(--red); font-weight: 600; }
 
+/* ===================== Custom price matrices =====================
+   The shop's own price sheet, in any shape. Headings are inputs, not labels, because renaming a
+   column is the most common edit — "3 Colors" becomes "Both Sides" becomes "20 oz Tumbler". */
+.mx-grid { width: 100%; border-collapse: separate; border-spacing: 3px; }
+.mx-grid .mx-corner { font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .5px; color: var(--txt-3); font-weight: 600; text-align: left; padding: var(--sp-2) var(--sp-3); white-space: nowrap; }
+.mx-head { position: relative; padding: 0; min-width: 108px; }
+.mx-rowhead { min-width: 132px; }
+.mx-h { width: 100%; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-6) var(--sp-3) var(--sp-3); font: inherit; font-size: var(--fs-2xs);
+  font-weight: 650; color: var(--txt-2); text-align: left; }
+.mx-h:focus { outline: none; border-color: var(--accent); background: var(--panel); color: var(--txt); }
+/* The delete affordance stays out of the way until you're on the heading — a row of always-visible
+   × buttons across a 12-column grid reads as clutter and invites a misclick. */
+.mx-x { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px;
+  background: 0; border: 0; color: var(--txt-3); font-size: var(--fs-md); line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity .12s; border-radius: var(--r-sm); }
+.mx-head:hover .mx-x, .mx-x:focus-visible { opacity: 1; }
+.mx-x:hover { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+
+.mx-cell { padding: 0; }
+.mx-in { width: 100%; min-width: 92px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r-md); padding: var(--sp-3); font: inherit; font-size: var(--fs-xs);
+  color: var(--txt); text-align: right; font-variant-numeric: tabular-nums; }
+.mx-in::placeholder { color: var(--txt-3); }
+.mx-in:focus { outline: none; border-color: var(--accent); background: var(--panel); }
+/* A priced cell is visibly different from a blank one — a shop scanning for holes in its sheet
+   should find them without reading every number. */
+.mx-in:not(:placeholder-shown) { font-weight: 650; border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.mx-in::-webkit-outer-spin-button, .mx-in::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.mx-in[type=number] { -moz-appearance: textfield; appearance: textfield; }
+
+/* Template cards on the list screen. */
+.mx-tpl { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: var(--sp-4); }
+.mx-tpl-card { text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: var(--sp-5); cursor: pointer; font: inherit; color: inherit; display: block; }
+.mx-tpl-card:hover { border-color: var(--accent); background: var(--panel); }
+.mx-tpl-name { font-weight: 650; font-size: var(--fs-sm); color: var(--txt); }
+.mx-tpl-desc { font-size: var(--fs-2xs); color: var(--txt-3); line-height: 1.5; margin-top: var(--sp-2); }
+.mx-tpl-meta { font-size: var(--fs-3xs); color: var(--txt-3); margin-top: var(--sp-3); font-variant-numeric: tabular-nums; }
+
+/* Row actions stay on one line — four buttons that wrap read as two broken rows, not a toolbar. */
+.mx-actions { white-space: nowrap; }
+.mx-actions .btn { margin-left: var(--sp-2); }
+
+/* The price readout in the quote-side picker. */
+.mx-out { background: var(--panel-2); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  border-radius: var(--r-md); padding: var(--sp-5); margin: var(--sp-2) 0 var(--sp-5); }
+.mx-out.empty { border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); font-size: var(--fs-2xs); color: var(--txt-3); line-height: 1.6; }
+.mx-out-price { font-size: var(--fs-xl); font-weight: 700; color: var(--txt); font-variant-numeric: tabular-nums; }
+.mx-out-price span { font-size: var(--fs-2xs); font-weight: 400; color: var(--txt-3); }
+.mx-out-sub { font-size: var(--fs-2xs); color: var(--txt-3); margin-top: var(--sp-2); }
+
+/* The per-line "price from a matrix" button on the estimate editor. */
+.rate-cell { display: flex; align-items: center; gap: var(--sp-2); }
+.rate-cell .input { flex: 1; min-width: 0; }
+.mx-btn { flex: 0 0 auto; width: 24px; height: 24px; padding: 0; background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); color: var(--txt-3); cursor: pointer; font-size: var(--fs-2xs); line-height: 1; }
+.mx-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ===================== 2026 usability pass (v22) ===================== */
 
 /* Full-height that survives mobile browser chrome; kill horizontal overflow app-wide. */
@@ -1094,6 +1158,9 @@ select:focus-visible, textarea:focus-visible, .chip:focus-visible, [tabindex]:fo
 /* Pricing matrix: horizontal-scroll the grid rather than crushing it on small screens. */
 @media (max-width: 720px) {
   .pm-table { min-width: 560px; }
+  /* Same for a custom matrix — its width is the shop's own column count, so it can be anything. */
+  .mx-grid { min-width: 560px; }
+  .mx-x { opacity: 1; }   /* no hover on touch: the delete affordance has to be visible */
 }
 
 /* Bottom-nav clearance for floating UI (assistant, toasts) on mobile. */

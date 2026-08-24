@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, toast, on, modal, closeModal } from '../core.js'
+import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal } from '../core.js'
 
 /* Pricing Matrix + margin-floor guard — the shop's whole price grid, generated from its own
    costing inputs, with the real margin of every cell and a hard flag on anything that loses money. */
@@ -16,6 +16,8 @@ export async function pricingView() {
 }
 
 async function loadChart(which) {
+  // "Your matrices" is a screen of its own (list + editor + deep links), not a tab body.
+  if (which === 'matrices') return go('/matrices')
   chart = which
   if (which === 'book') return loadBook()
   const qs = which === 'screen' ? '' : `?chart=${which}`
@@ -25,7 +27,7 @@ async function loadChart(which) {
 }
 
 const chartTabs = () => `<div class="tabs" id="pm-tabs" style="margin-bottom:14px">
-  ${[['screen', 'Screen Print'], ['embroidery', 'Embroidery'], ['dtf', 'DTF'], ['book', 'Your prices']]
+  ${[['screen', 'Screen Print'], ['embroidery', 'Embroidery'], ['dtf', 'DTF'], ['book', 'Your prices'], ['matrices', 'Your matrices']]
     .map(([k, l]) => `<button data-c="${k}" class="${chart === k ? 'on' : ''}">${l}</button>`).join('')}
 </div>`
 
@@ -93,6 +95,7 @@ function renderBook(b) {
       <span class="dim" style="font-size:11px">${b.services.length} services</span></div>
       <div class="card-b">
         <p class="dim" style="font-size:12.5px;line-height:1.6">Every shop starts on our stock rates so you can quote today. They are a starting point, not a rule. Change any number, rename any setup fee, or add work we've never heard of. Whatever you set here is what your quotes use, everywhere: Autopilot, Slack, and the estimate screen.</p>
+        <p class="dim" style="font-size:12.5px;line-height:1.6;margin-top:10px">Sell something this calculator has never modelled — mug printing, laser engraving, banners by the square foot? Build a <a href="#/matrices">price matrix of your own</a>: any name, your row and column headings, your prices.</p>
       </div></div>
 
     <div class="card" id="pm-matrix-card"><div class="card-b dim" style="font-size:12.5px">Loading your price matrix…</div></div>

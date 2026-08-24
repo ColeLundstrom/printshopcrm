@@ -71,6 +71,29 @@
   <p>Pass <code>customer_id</code> instead of <code>customer</code> to attach to an existing record. List responses are
      <code>{"data": [...], "has_more": true|false}</code> — page with <code>limit</code>/<code>offset</code>.</p>
 
+  <h2>Price matrices</h2>
+  <p>Your own price sheets, under <code>/api/matrices</code> (session auth, not <code>/api/v1</code>). A matrix is a
+     named grid with free-text headings and no built-in meaning — name it anything, label the rows and columns in
+     your own words, and the cells are prices. <code>cells</code> is dense and positional
+     (<code>cells[row][col]</code>, <code>null</code> = no price set), so renaming a column never orphans a price.</p>
+  <table>
+    <tr><td><code>GET /api/matrices</code></td><td>All matrices, plus the starter templates</td></tr>
+    <tr><td><code>GET /api/matrices/:id</code></td><td>One matrix, with every cell</td></tr>
+    <tr><td><code>POST /api/matrices</code></td><td>Create — a full matrix, or <code>{"template":"dtf"}</code></td></tr>
+    <tr><td><code>PUT /api/matrices/:id</code></td><td>Save</td></tr>
+    <tr><td><code>POST /api/matrices/:id/duplicate</code></td><td>Copy it, to make a variant</td></tr>
+    <tr><td><code>POST /api/matrices/:id/default</code></td><td>Pre-select it on new quotes</td></tr>
+    <tr><td><code>DELETE /api/matrices/:id</code></td><td>Delete it</td></tr>
+    <tr><td><code>POST /api/matrices/import</code></td><td>Read a CSV upload or a pasted grid</td></tr>
+    <tr><td><code>GET /api/matrices/:id/price</code></td><td>Look one price up</td></tr>
+  </table>
+  <pre><code>curl "https://pro.printshopcrm.com/api/matrices/3/price?col=11%20oz&amp;qty=30" -b cookies.txt
+
+{ "price": 11.5, "row": "24+", "col": "11 oz", "unit": "piece", "amount": 345 }</code></pre>
+  <p><code>row</code> and <code>col</code> take an index <em>or</em> the heading text. Omit <code>row</code> and pass
+     <code>qty</code>, and a matrix whose rows read as quantity bands picks its own row. An empty cell returns
+     <code>200</code> with <code>"price": null</code> — that means <em>we don't price that combination</em>, not zero.</p>
+
   <h2>Webhooks</h2>
   <p>Subscribe a URL (Zapier, Make, or your own endpoint) to any of:</p>
   <p><code>contact.created</code> <code>estimate.sent</code> <code>estimate.approved</code> <code>invoice.paid</code>

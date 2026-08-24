@@ -58,7 +58,13 @@ PrintShopCRM costs every job against your real utilization and tells you **while
 editable**. That's the whole idea. Everything else is the shop-management software you need around
 it so that number is based on real data instead of a spreadsheet.
 
-Three more things it does that are unusual:
+Four more things it does that are unusual:
+
+- **Your price sheet, not ours.** Most shop software ships a pricing model — colours × quantity —
+  and every shop that sells something else bends its real prices to fit it. Here you build price
+  matrices of your own: name one anything, label the rows and columns in your own words, type your
+  prices in. A mug shop prices by mug size, an engraver by engraved area, and neither has to pretend
+  to be a screen printer. See [Price matrices](#price-matrices).
 
 - **Turnaround starts at art approval, so the schedule does too.** Your terms say "10 business days
   from proof approval." Most tools store a due date typed at intake that never moves — a proof
@@ -92,7 +98,8 @@ Three more things it does that are unusual:
 
 **Money**
 - Quoting calculator: garment × markup + imprint charge scaled by run length and colors-per-location + one-time screens; tiered rush; dark garments automatically add an underbase
-- Custom price matrices — upload your own grid and it wins over the calculator
+- Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
+- Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins
 - Invoices with partial payments, running balance, and status always derived from the payments table
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
@@ -117,6 +124,66 @@ Three more things it does that are unusual:
   power tools behind one click, so the first screen isn't 27 destinations deep
 - Multi-tenant mode: one isolated SQLite database per shop, real staff logins with owner/manager/staff roles
 - PWA — installable, works on a shop-floor tablet
+
+---
+
+## Price matrices
+
+**Pricing → Your matrices.**
+
+A price matrix is your own price sheet. It has no built-in meaning: you name it, you write the row
+and column headings, and you type the prices. That is deliberate — the moment software decides that
+pricing means "quantity × ink colours", every shop that sells anything else has to lie to it.
+
+![A price matrix](docs/img/price-matrix.png)
+
+*A mug shop's price sheet. Nothing about this grid is screen printing, and nothing had to be.*
+
+| | |
+|---|---|
+| **Name** | Anything. `Screen Printing`, `Mug Printing`, `Laser Engraving`, `Hat Embroidery`, `Rush Fees`, `2026 Wholesale`. |
+| **Rows** | Any labels. Quantity bands (`1–11`, `48–71`, `500+`), or `Same day` / `2–3 days`, or `Small` / `Medium` / `Large`. |
+| **Columns** | Any labels. `1 colour`…`6 colours`, or `11 oz mug` / `20 oz tumbler`, or `Front` / `Back` / `Both sides`. |
+| **Cells** | The prices. A blank cell means *we don't price that combination* — quotes say so rather than invent a number. |
+| **Each price is** | **Per piece** (multiplied by the line quantity) or a **flat charge** (the whole line, whatever the quantity — right for setup, art and rush fees). |
+
+What you can do with them:
+
+- **Create** as many as you like, from scratch or from a starter template
+- **Edit** every heading and every price; add or delete rows and columns at any time
+- **Duplicate** one to make a variant — a wholesale sheet, a second brand, next year's prices
+- **Import** a CSV or paste a grid straight out of your spreadsheet; your headings come through as
+  text, not mangled into numbers
+- **Set a default** that new quotes start on
+- **Delete** one — estimates already priced from it keep their prices
+
+### On a quote
+
+Every line of an estimate can be priced from a *different* matrix, so one quote can mix screen
+printing on the tees, embroidery on the caps, and your mug sheet for the giveaway mugs. Click the ▦
+next to a line's rate (or **▦ From a price matrix** to add a new line), pick the matrix, row and
+column, and the price fills in. The matrix a line came from is recorded on the estimate, so you can
+trace a number back to the sheet that produced it.
+
+If your row headings read like quantity bands — `1–11`, `12–23`, `500+`, `up to 24` — the picker
+selects the right row from the line's quantity on its own. Rows that aren't quantities (`Large`,
+`Both sides`) simply don't get that, and work exactly the same otherwise.
+
+### Starter templates
+
+Screen Printing · DTF Transfers · Embroidery · Heat Press & Vinyl · Mugs & Drinkware · Custom
+Patches · Laser Engraving — plus a blank grid.
+
+These are **starting points, not rules**. Importing one gives you your own copy with real,
+defensible numbers so you can quote on day one; rename it, restructure it, and overwrite every price.
+Nothing links back to the template.
+
+### Where they live
+
+One `price_matrices` row per matrix, in your shop's own SQLite database. The grid is stored dense and
+positional (`cells[row][col]`), so renaming a column or reordering rows can never orphan a price. The
+engine is [`lib/matrices.mjs`](lib/matrices.mjs) and the REST surface is `/api/matrices` — see
+[docs/API.md](docs/API.md).
 
 ---
 

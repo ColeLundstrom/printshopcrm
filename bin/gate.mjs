@@ -666,6 +666,113 @@ await t('quote colours beat the default; a saved separation still wins over both
   assert.equal(colorsFromItems(null), 0, 'no items → 0, so the caller falls through to its default')
 })
 
+/* ---------- custom price matrices (lib/matrices.mjs) ---------- */
+section('matrices: a grid with no opinion about what it prices')
+await t('row headings are read as quantity bands when they look like bands, ignored when they do not', async () => {
+  const { parseQtyRange, rowIndexForQty } = await import('../lib/matrices.mjs')
+
+  // The shapes shops actually type on a price sheet.
+  assert.deepEqual(parseQtyRange('12-24'), { min: 12, max: 24, exact: false })
+  assert.deepEqual(parseQtyRange('144–287'), { min: 144, max: 287, exact: false }, 'en dash is what a spreadsheet produces')
+  assert.deepEqual(parseQtyRange('500+'), { min: 500, max: Infinity, exact: false })
+  assert.deepEqual(parseQtyRange('1,000 or more'), { min: 1000, max: Infinity, exact: false }, 'thousands separator')
+  assert.deepEqual(parseQtyRange('Up to 24'), { min: 0, max: 24, exact: false })
+  assert.equal(parseQtyRange('Large'), null, 'a size matrix has no quantity rows and must not pretend otherwise')
+  assert.equal(parseQtyRange('Both Sides'), null)
+
+  const bands = ['1–11', '12–23', '24–47', '48–71', '72–143', '144–287', '288–499', '500+']
+  assert.equal(rowIndexForQty(bands, 1), 0)
+  assert.equal(rowIndexForQty(bands, 60), 3, '60 falls inside 48–71')
+  assert.equal(rowIndexForQty(bands, 5000), 7, 'past the last band → the open-ended row')
+
+  // A column of bare numbers is a band list, not eight exact quantities — the reading that makes a
+  // pasted spreadsheet work. 30 must land in the 24 band, not fall off the grid.
+  assert.equal(rowIndexForQty(['1', '12', '24', '48'], 30), 2)
+  assert.equal(rowIndexForQty(['Small', 'Medium', 'Large'], 30), -1, 'no quantity rows → no auto-pick')
+})
+
+await t('resizing the grid keeps every price that still has a home', async () => {
+  const { resizeGrid } = await import('../lib/matrices.mjs')
+  const cells = [[1, 2, 3], [4, 5, 6]]
+  assert.deepEqual(resizeGrid(cells, 2, 4), [[1, 2, 3, null], [4, 5, 6, null]], 'adding a column must not disturb existing prices')
+  assert.deepEqual(resizeGrid(cells, 3, 3), [[1, 2, 3], [4, 5, 6], [null, null, null]])
+  assert.deepEqual(resizeGrid(cells, 2, 2), [[1, 2], [4, 5]], 'shrinking drops only the removed column')
+  assert.deepEqual(resizeGrid(null, 1, 2), [[null, null]], 'a corrupt grid resizes to blanks, never throws')
+})
+
+await t('lookup takes an index OR a header label, and blank means blank', async () => {
+  const { lookupPrice } = await import('../lib/matrices.mjs')
+  const m = {
+    rows: ['1–11', '12–23', '24+'], cols: ['11 oz mug', '20 oz tumbler'], unit: 'piece',
+    cells: [[18, 26], [13, 20], [null, 18]],
+  }
+  assert.equal(lookupPrice(m, { row: 1, col: 0 }).price, 13, 'by index')
+  assert.equal(lookupPrice(m, { row: '12–23', col: '20 oz tumbler' }).price, 20, 'by label — what the API and AI surfaces send')
+  assert.equal(lookupPrice(m, { row: '12–23', col: '20 OZ TUMBLER' }).price, 20, 'label match is case-insensitive')
+  assert.equal(lookupPrice(m, { col: 0, qty: 15 }).price, 13, 'no row given → picked from the quantity')
+  assert.equal(lookupPrice(m, { row: 2, col: 0 }), null, 'an empty cell is "no price set", not zero')
+
+  // 'flat' exists so a setup fee or rush tier can live in a matrix without multiplying by quantity.
+  assert.equal(lookupPrice(m, { row: 0, col: 0, qty: 10 }).amount, 180, 'per-piece × qty')
+  assert.equal(lookupPrice({ ...m, unit: 'flat' }, { row: 0, col: 0, qty: 10 }).amount, 18, 'a flat charge ignores quantity')
+})
+
+await t('a pasted sheet keeps its headings as TEXT', async () => {
+  const { parseSheet } = await import('../lib/matrices.mjs')
+  // The old service-bound importer stripped headers to numbers, which threw away every heading a
+  // non-screen-print shop would ever write. This is the regression that must not come back.
+  const sheet = parseSheet('Quantity,11 oz Mug,20 oz Tumbler\n1-11,$18.00,26.00\n12-23,13.00,20.00')
+  assert.deepEqual(sheet.cols, ['11 oz Mug', '20 oz Tumbler'])
+  assert.deepEqual(sheet.rows, ['1-11', '12-23'])
+  assert.deepEqual(sheet.cells, [[18, 26], [13, 20]], '$ and stray spaces are tolerated')
+  assert.equal(sheet.cornerLabel, 'Quantity')
+  assert.equal(sheet.filled, 4)
+
+  // A heading containing the delimiter survives if it's quoted, as any spreadsheet exports it.
+  assert.deepEqual(parseSheet('Qty,"Front, Back"\n1-11,9.50').cols, ['Front, Back'])
+  assert.deepEqual(parseSheet('Qty\tSmall\tLarge\n1-11\t4.00\t8.00').cols, ['Small', 'Large'], 'tab-separated paste')
+  assert.throws(() => parseSheet('just one line'), /header row/i)
+  assert.throws(() => parseSheet('Qty,Small\n1-11,abc'), /No prices found/i)
+})
+
+await t('sanitize refuses an unusable matrix and never leaves ambiguous headers', async () => {
+  const { sanitize } = await import('../lib/matrices.mjs')
+  assert.throws(() => sanitize({ name: '  ' }), /name/i)
+  assert.throws(() => sanitize({ name: 'X', rows: [], cols: ['a'] }), /at least one row/i)
+  assert.throws(() => sanitize({ name: 'X', rows: ['a'], cols: [] }), /at least one column/i)
+
+  // Duplicate headings would make label-based lookup ambiguous for the public API and the AI.
+  const s = sanitize({ name: 'Mugs', rows: ['1-11', '1-11'], cols: ['A', 'a'], cells: [[1, 2], [3, 4]] })
+  assert.deepEqual(s.rows, ['1-11', '1-11 (2)'])
+  assert.deepEqual(s.cols, ['A', 'a (2)'])
+  assert.deepEqual(s.cells, [[1, 2], [3, 4]], 'de-duplicating a heading must not move any price')
+
+  // A grid that arrives the wrong size is squared up rather than rejected — the editor can add a
+  // column and save before the cells array has caught up.
+  assert.deepEqual(sanitize({ name: 'X', rows: ['r'], cols: ['a', 'b'], cells: [[5]] }).cells, [[5, null]])
+  assert.equal(sanitize({ name: 'X', rows: ['r'], cols: ['a'], cells: [[-3]] }).cells[0][0], null, 'a negative price is not a price')
+})
+
+await t('every starter template is a valid, complete grid', async () => {
+  const { TEMPLATES, sanitize, rowIndexForQty } = await import('../lib/matrices.mjs')
+  assert.ok(TEMPLATES.length >= 6, 'the shipped set covers the trades the README names')
+  for (const tpl of TEMPLATES) {
+    assert.equal(tpl.cells.length, tpl.rows.length, `${tpl.key}: a row per row heading`)
+    for (const row of tpl.cells) assert.equal(row.length, tpl.cols.length, `${tpl.key}: a cell per column`)
+    assert.doesNotThrow(() => sanitize(tpl), `${tpl.key} must survive its own sanitizer`)
+    // Every priced template is quantity-banded, so a quote fills its own row in.
+    if (tpl.key !== 'blank') assert.ok(rowIndexForQty(tpl.rows, 100) >= 0, `${tpl.key}: 100 pieces must land on a row`)
+  }
+  // Prices fall as quantity rises — a template that got this backwards would quietly teach a new
+  // shop to lose money on its biggest orders.
+  const sp = TEMPLATES.find((x) => x.key === 'screen-print')
+  for (let c = 0; c < sp.cols.length; c++) {
+    for (let r = 1; r < sp.rows.length; r++) {
+      assert.ok(sp.cells[r][c] < sp.cells[r - 1][c], `screen print col ${c}: row ${r} must be cheaper than row ${r - 1}`)
+    }
+  }
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

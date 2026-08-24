@@ -2,6 +2,7 @@ import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, o
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
+import { matrixPickerModal } from './matrices.js'
 
 let listFilter = 'all'
 
@@ -83,6 +84,7 @@ export async function estimateEditor(id) {
           <button class="btn ghost sm" id="add">+ Garment line</button>
           <button class="btn ghost sm" id="add-fee">+ Fee / setup line</button>
           <button class="btn ghost sm" id="add-disc">− Discount</button>
+          <button class="btn ghost sm" id="add-matrix">▦ From a price matrix</button>
           <div class="sp"></div>
           <button class="btn ghost sm" id="read-email">Read from email</button>
           <button class="btn ghost sm" id="quote-calc">Price calculator</button>
@@ -116,7 +118,10 @@ export async function estimateEditor(id) {
       ${gridded
         ? `<div class="qtycell" title="Set by the size grid">${lineQty(it)}<span class="dim" style="font-size:10px"> pcs</span></div>`
         : `<input class="input num" data-f="qty" type="number" min="0" value="${esc(it.qty)}">`}
-      <input class="input num" data-f="unit_price" type="number"${gridded ? ' min="0"' : ''} step="0.01" value="${esc(it.unit_price)}">
+      <div class="rate-cell">
+        <input class="input num" data-f="unit_price" type="number"${gridded ? ' min="0"' : ''} step="0.01" value="${esc(it.unit_price)}">
+        <button class="mx-btn" data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${it.matrix.name}: ${it.matrix.row} × ${it.matrix.col}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
+      </div>
       <div class="amt">${money(lineAmount(it, up))}</div>
       <button class="del" data-del="${i}" title="Remove line">&times;</button>
     </div>
@@ -258,10 +263,47 @@ export async function estimateEditor(id) {
     draw()
   })
 
+  /**
+   * Price a line from one of the shop's own matrices. Every line can use a DIFFERENT matrix, which
+   * is what makes a mixed quote work: screen printing on the tees, embroidery on the caps, and the
+   * shop's mug sheet for the giveaway mugs, all on one estimate.
+   *
+   * `i` names an existing line to fill in; omit it to add a new line. The matrix, row and column
+   * are stored on the item so the quote can say where the number came from — and so a shop can
+   * find every quote priced off a sheet it later changed.
+   */
+  const priceFromMatrix = (i) => {
+    const target = i === undefined ? null : items[i]
+    matrixPickerModal({
+      qty: target ? lineQty(target) || Number(target.qty) || 0 : 0,
+      onPick: (pick) => {
+        if (target) {
+          target.unit_price = pick.price
+          if (!target.description.trim()) target.description = pick.description
+          target.detail = pick.detail
+          target.matrix = pick.matrix
+          // The decoration field is a screen-printing-era default. A line priced off the shop's own
+          // sheet says what it is in the matrix headings; leaving "Screen Print" on a mug line lies.
+          target.decoration = ''
+          // A flat charge is a fee line by definition: it must not multiply by a size grid.
+          if (pick.unit === 'flat' && target.sizes) { delete target.sizes; target.qty = 1; target.taxable = false }
+        } else {
+          items.push(pick.unit === 'flat'
+            ? { ...blankFee(), description: pick.description, detail: pick.detail, qty: 1, unit_price: pick.price, matrix: pick.matrix }
+            : { ...blankItem(), decoration: '', description: pick.description, detail: pick.detail, unit_price: pick.price, matrix: pick.matrix })
+        }
+        draw()
+        toast(`Priced from ${pick.matrix.name}`)
+      },
+    })
+  }
+  on($('#rows'), '[data-mx]', (_e, t) => priceFromMatrix(+t.dataset.mx))
+
   const addLine = (mk) => { items.push(mk()); draw(); $$('#rows .ir').pop().querySelector('input').focus() }
   $('#add').onclick = () => addLine(blankItem)
   $('#add-fee').onclick = () => addLine(blankFee)
   $('#add-disc').onclick = () => addLine(blankDiscount)
+  $('#add-matrix').onclick = () => priceFromMatrix()
   $('#quote-calc').onclick = () => quoteModal(settings, (line) => { items.push(line); draw() })
   $('#read-email').onclick = () => intakeModal(settings, (line, parsed) => {
     // First read replaces the empty starter row rather than sitting under it.
@@ -367,7 +409,10 @@ export async function estimateDetailView(id) {
           <td><div style="font-weight:600">${esc(i.description)}</div>
             <div class="dim" style="font-size:12px">${esc([i.detail, i.decoration].filter(Boolean).join(' · '))}</div>
             ${i.sizes ? `<div class="sizetags">${sizeSummary(i.sizes).split(' / ').map((s) => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}</td>
-          <td class="num">${lineQty(i)}</td><td class="num">${money(i.unit_price)}${extra ? `<div class="dim" style="font-size:10.5px">+${money(extra)} sizes</div>` : ''}</td>
+          <td class="num">${lineQty(i)}</td><td class="num">${money(i.unit_price)}${extra ? `<div class="dim" style="font-size:10.5px">+${money(extra)} sizes</div>` : ''}${
+            // Where the number came from — internal provenance, so a shop can trace a price back
+            // to the sheet that produced it. Not part of what the customer receives.
+            i.matrix ? `<div class="dim" style="font-size:10.5px" title="Priced from your ${esc(i.matrix.name)} matrix">▦ ${esc(i.matrix.name)}</div>` : ''}</td>
           <td class="num"><strong>${money(lineAmount(i, up))}</strong></td>
         </tr>`}).join('')}</tbody>
       </table>

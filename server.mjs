@@ -52,6 +52,7 @@ import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead } from './li
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
 import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor } from './lib/pricebook.mjs'
+import * as matrices from './lib/matrices.mjs'
 import { runNurtureDrip } from './lib/nurture.mjs'
 import { initRealtime, broadcast, roomSize } from './lib/realtime.mjs'
 import { createServer } from 'node:http'
@@ -3049,6 +3050,116 @@ app.delete('/api/pricebook/:name', requireRole('manager'), wrap((req, res) => {
   if (saved.services) delete saved.services[req.params.name]
   setSetting('price_book', JSON.stringify(saved))
   res.json({ ok: true })
+}))
+
+/* ================= CUSTOM PRICE MATRICES =================
+ * The shop's own price sheets, in any shape. Unlike /api/pricebook — which drives a calculator
+ * that knows what a screen and a stitch count are — a matrix here is just a named grid with free
+ * text headers, so a shop can hold pricing for work this software has never modelled: mug
+ * printing, laser engraving, banner square footage, rush tiers, anything.
+ *
+ * Reads are open to any signed-in user (quoting needs them); writes are manager+, matching the
+ * price book. See lib/matrices.mjs for the shape and why the grid is stored positionally.
+ */
+
+/** Every matrix the shop has, as summaries — plus the starter templates it can import. */
+app.get('/api/matrices', wrap((_req, res) => {
+  const list = matrices.listMatrices()
+  res.json({
+    matrices: list.map(matrices.summary),
+    templates: matrices.templateSummaries(),
+    units: Object.values(matrices.UNITS),
+    limits: matrices.LIMITS,
+  })
+}))
+
+/** One matrix, with every cell — what the editor and the quote picker load. */
+app.get('/api/matrices/:id', wrap((req, res) => {
+  const m = matrices.getMatrix(req.params.id)
+  if (!m) return res.status(404).json({ error: 'No such price matrix' })
+  res.json({ matrix: m })
+}))
+
+/**
+ * Create a matrix — from scratch, or seeded from a starter template with `{ template: 'dtf' }`.
+ * A template is a starting point: the new matrix is the shop's own copy, editable to the last cell,
+ * with no link back to the template it came from.
+ */
+app.post('/api/matrices', requireRole('manager'), wrap((req, res) => {
+  const b = req.body || {}
+  try {
+    const m = b.template ? matrices.createFromTemplate(b.template, b) : matrices.createMatrix(b)
+    res.json({ matrix: m })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+}))
+
+/** Save a matrix. Send the whole grid; anything omitted keeps its current value. */
+app.put('/api/matrices/:id', requireRole('manager'), wrap((req, res) => {
+  try {
+    const m = matrices.updateMatrix(req.params.id, req.body || {})
+    if (!m) return res.status(404).json({ error: 'No such price matrix' })
+    res.json({ matrix: m })
+  } catch (e) { res.status(400).json({ error: e.message }) }
+}))
+
+/** Copy a matrix — the fast way to make a variant (a second brand, a wholesale sheet, 2026 prices). */
+app.post('/api/matrices/:id/duplicate', requireRole('manager'), wrap((req, res) => {
+  const m = matrices.duplicateMatrix(req.params.id, req.body?.name)
+  if (!m) return res.status(404).json({ error: 'No such price matrix' })
+  res.json({ matrix: m })
+}))
+
+/** Pre-select this matrix on new quotes. Exactly one matrix is the default at a time. */
+app.post('/api/matrices/:id/default', requireRole('manager'), wrap((req, res) => {
+  const m = matrices.setDefaultMatrix(req.params.id)
+  if (!m) return res.status(404).json({ error: 'No such price matrix' })
+  res.json({ matrix: m })
+}))
+
+app.delete('/api/matrices/:id', requireRole('manager'), wrap((req, res) => {
+  if (!matrices.deleteMatrix(req.params.id)) return res.status(404).json({ error: 'No such price matrix' })
+  res.json({ ok: true })
+}))
+
+/**
+ * Price lookup — the call the quote screen makes. `row` and `col` accept either an index or the
+ * header text, and omitting `row` while passing `qty` lets a quantity-banded matrix pick its own
+ * row ("144 pieces" → the 144–287 band). Returns 200 with `price: null` when the cell is simply
+ * empty, which is a real answer ("we don't price that combination"), not an error.
+ */
+app.get('/api/matrices/:id/price', wrap((req, res) => {
+  const m = matrices.getMatrix(req.params.id)
+  if (!m) return res.status(404).json({ error: 'No such price matrix' })
+  const hit = matrices.lookupPrice(m, { row: req.query.row, col: req.query.col, qty: req.query.qty })
+  res.json({
+    matrix: { id: m.id, name: m.name, unit: m.unit, rowLabel: m.rowLabel, colLabel: m.colLabel },
+    suggestedRow: matrices.rowIndexForQty(m.rows, req.query.qty),
+    ...(hit || { price: null }),
+  })
+}))
+
+/**
+ * Read a price sheet (CSV upload or pasted grid) into matrix shape. Headers are kept as TEXT, so
+ * "11 oz Mug" and "Both Sides" survive — the thing that made the old numbers-only importer useless
+ * for any trade but screen printing. Creates a new matrix unless `replace` names an existing one.
+ */
+app.post('/api/matrices/import', uploadMem.single('file'), reTenant, requireRole('manager'), wrap((req, res) => {
+  const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
+  if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV or paste your price grid.' })
+  let sheet
+  try { sheet = matrices.parseSheet(text) } catch (e) { return res.status(400).json({ error: e.message }) }
+  const replaceId = Number(req.body?.replace) || 0
+  const payload = {
+    rows: sheet.rows, cols: sheet.cols, cells: sheet.cells,
+    ...(sheet.cornerLabel ? { rowLabel: sheet.cornerLabel } : {}),
+  }
+  try {
+    const m = replaceId
+      ? matrices.updateMatrix(replaceId, payload)
+      : matrices.createMatrix({ ...payload, name: req.body?.name || 'Imported price sheet' })
+    if (!m) return res.status(404).json({ error: 'No such price matrix' })
+    res.json({ matrix: m, filled: sheet.filled })
+  } catch (e) { res.status(400).json({ error: e.message }) }
 }))
 
 /* ================= PRODUCTS / CATALOG ================= */

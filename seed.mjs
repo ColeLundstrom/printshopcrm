@@ -375,7 +375,16 @@ msg('Marcus Chen', 'in', 'email', 'Perfect. See you Saturday.', stamp(-12, 14), 
 // Terrence — an inbound question with no reply yet (a lead to work).
 msg('Terrence Wallace', 'in', 'email', 'Hi — following up on those summer camp shirts. Can you do safety green in youth sizes? Need a quote.', stamp(-1, 15), { subject: 'Summer camp shirts', read: 0, kind: 'inbound' })
 
+/* ---------- price matrices ----------
+ * Two on purpose, and deliberately different shapes: the screen-print sheet a demo shop expects,
+ * and a mug sheet that has nothing to do with ink colours. The second one IS the feature — a matrix
+ * carries no built-in meaning, so a shop can hold pricing for work this software never modelled.
+ */
+const { createFromTemplate } = await import('./lib/matrices.mjs')
+createFromTemplate('screen-print', { isDefault: true })
+createFromTemplate('drinkware')
+
 const n = (t) => get(`SELECT COUNT(*) AS c FROM ${t}`).c
-console.log(`\n  Seeded ${n('contacts')} customers · ${n('estimates')} estimates · ${n('invoices')} invoices · ${n('jobs')} jobs · ${n('art_versions')} proofs · ${n('activities')} activities`)
+console.log(`\n  Seeded ${n('contacts')} customers · ${n('estimates')} estimates · ${n('invoices')} invoices · ${n('jobs')} jobs · ${n('art_versions')} proofs · ${n('price_matrices')} price matrices · ${n('activities')} activities`)
 console.log(`  Revenue MTD: $${get(`SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE date(created_at) >= date('now','start of month')`).v.toFixed(2)}`)
 console.log(`  Run: npm start → http://localhost:3333\n`)

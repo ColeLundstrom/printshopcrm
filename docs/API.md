@@ -226,6 +226,90 @@ Use a constant-time comparison, as above — a plain `===` leaks the signature a
 
 ---
 
+## Price matrices
+
+Not part of `/api/v1` — these are session-authenticated app routes under `/api/matrices`, used by
+the Pricing screen and the quote editor. They are documented because the shape is the whole point of
+the feature and integrators ask for it.
+
+A matrix is a named grid with free-text headings and no built-in meaning. See
+[Price matrices](../README.md#price-matrices) for the concept.
+
+```json
+{
+  "id": 3,
+  "name": "Mug Printing",
+  "description": "All-in per-piece pricing.",
+  "rowLabel": "Quantity",
+  "colLabel": "Mug size",
+  "unit": "piece",
+  "isDefault": true,
+  "rows": ["1-11", "12-23", "24+"],
+  "cols": ["11 oz", "15 oz", "20 oz tumbler"],
+  "cells": [[18, 20, 26], [13, 14.5, 20], [11.5, 13, 18]]
+}
+```
+
+`cells` is dense and positional: `cells[rowIndex][colIndex]`, `null` for "no price set". It is
+always exactly `rows.length × cols.length` — send a grid the wrong size and the server squares it up
+rather than rejecting it, keeping every value that still has a home.
+
+`unit` is `"piece"` (multiply by quantity) or `"flat"` (the whole line charge, quantity ignored).
+
+| | |
+|---|---|
+| `GET /api/matrices` | Every matrix as a summary, plus the starter templates and the field limits. |
+| `GET /api/matrices/:id` | One matrix, with every cell. |
+| `POST /api/matrices` | Create. Send a full matrix, or `{"template": "dtf"}` to seed from a starter. Manager+. |
+| `PUT /api/matrices/:id` | Save. Omitted fields keep their current value. Manager+. |
+| `POST /api/matrices/:id/duplicate` | Copy, named `"<name> (copy)"` unless you pass `name`. Manager+. |
+| `POST /api/matrices/:id/default` | Pre-select it on new quotes. Exactly one matrix is the default. Manager+. |
+| `DELETE /api/matrices/:id` | Delete. If it was the default, the oldest remaining matrix takes over. Manager+. |
+| `POST /api/matrices/import` | Read a CSV upload or a pasted grid (`text`). Pass `replace: <id>` to overwrite an existing matrix, or `name` to create a new one. Manager+. |
+| `GET /api/matrices/:id/price` | Look one price up. |
+
+Template keys: `screen-print`, `dtf`, `embroidery`, `heat-press`, `drinkware`, `patches`, `laser`,
+`blank`.
+
+### Looking a price up
+
+```bash
+curl "https://shop.example.com/api/matrices/3/price?col=11%20oz&qty=30" -b cookies.txt
+```
+
+`row` and `col` each accept **an index or the heading text** (case-insensitive). Omit `row` and pass
+`qty`, and a matrix whose row headings read as quantity bands picks its own row:
+
+```json
+{
+  "matrix": { "id": 3, "name": "Mug Printing", "unit": "piece", "rowLabel": "Quantity", "colLabel": "Mug size" },
+  "suggestedRow": 2,
+  "price": 11.5,
+  "rowIndex": 2, "colIndex": 0,
+  "row": "24+", "col": "11 oz",
+  "unit": "piece",
+  "amount": 345
+}
+```
+
+An empty cell returns `200` with `"price": null`. That is a real answer — *we don't price that
+combination* — not an error, and callers must not treat it as zero.
+
+### Provenance on an estimate
+
+A line priced from a matrix carries an optional `matrix` object alongside the usual fields:
+
+```json
+{ "description": "Team mugs", "qty": 30, "unit_price": 11.5,
+  "matrix": { "id": 3, "name": "Mug Printing", "row": "24+", "col": "11 oz" } }
+```
+
+It records where the number came from, nothing more — the money is computed from `unit_price`
+exactly as it is for every other line, and the field never appears on a customer-facing document.
+Different lines on one estimate may cite different matrices.
+
+---
+
 ## Embed API
 
 Two unauthenticated endpoints back the embeddable gang-sheet builder. They resolve the shop by its

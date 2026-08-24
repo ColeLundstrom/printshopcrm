@@ -141,6 +141,80 @@ try {
   })
   chk('honeypot swallows bots', r.status, '^200$')
 
+  /* ---- custom price matrices ----
+     The shop invents its own price sheet. Nothing here may assume screen printing. */
+  r = await req('GET', '/api/matrices')
+  chk('a new shop starts with no matrices and a set of templates', `${r.json?.matrices?.length}|${r.json?.templates?.length >= 6}`, '^0\\|true$')
+
+  r = await req('POST', '/api/matrices', { body: { template: 'drinkware' } })
+  const mugId = r.json?.matrix?.id
+  chk('a starter template installs as the shop\'s own matrix', `${r.status}|${r.json?.matrix?.name}`, '^200\\|Mugs & Drinkware$')
+  chk('the first matrix a shop makes becomes its default', r.json?.matrix?.isDefault, '^true$')
+
+  // The headline requirement: any name, any headings. A shop that sells something this software
+  // has never modelled must be able to hold its real prices.
+  r = await req('POST', '/api/matrices', {
+    body: {
+      name: 'Rush Fees', rowLabel: 'Turnaround', colLabel: 'Order size', unit: 'flat',
+      rows: ['Same day', '2–3 days', '1 week'], cols: ['Under 50', '50–200', '200+'],
+      cells: [[250, 400, 750], [150, 250, 450], [0, 0, 0]],
+    },
+  })
+  const rushId = r.json?.matrix?.id
+  chk('a matrix can be named and shaped anything at all', `${r.json?.matrix?.name}|${r.json?.matrix?.rows?.length}x${r.json?.matrix?.cols?.length}`, '^Rush Fees\\|3x3$')
+  chk('a second matrix does not steal the default', r.json?.matrix?.isDefault, '^false$')
+
+  r = await req('GET', `/api/matrices/${rushId}/price?row=Same%20day&col=50%E2%80%93200&qty=120`)
+  chk('price lookup works by heading text', r.json?.price, '^400$')
+  chk('a flat matrix ignores quantity', r.json?.amount, '^400$')
+
+  r = await req('GET', `/api/matrices/${mugId}/price?col=0&qty=30`)
+  chk('a quantity-banded matrix picks its own row', `${r.json?.row}|${r.json?.price}`, '^24–47\\|11.5$')
+
+  // Adding a column must not disturb prices already typed in — the edit shops make most often.
+  r = await req('GET', `/api/matrices/${mugId}`)
+  const mug = r.json.matrix
+  r = await req('PUT', `/api/matrices/${mugId}`, {
+    body: { ...mug, cols: [...mug.cols, 'Pint glass'], cells: mug.cells.map((row) => [...row, null]) },
+  })
+  chk('a new column appends without moving existing prices', `${r.json?.matrix?.cols?.length}|${r.json?.matrix?.cells?.[0]?.[0]}`, '^6\\|18$')
+  // Blank, not 0 — a zero would quote the new column as free until someone noticed.
+  chk('the new column starts blank, not zero', r.json?.matrix?.cells?.[0]?.[5] === null, '^true$')
+
+  r = await req('POST', '/api/matrices/import', { body: { text: 'Quantity,11 oz Mug,20 oz Tumbler\n1-11,18.00,26.00\n12-23,13.00,20.00' } })
+  chk('an imported sheet keeps its headings as text', r.json?.matrix?.cols?.join(','), '^11 oz Mug,20 oz Tumbler$')
+
+  r = await req('POST', `/api/matrices/${rushId}/duplicate`)
+  const dupId = r.json?.matrix?.id
+  chk('duplicate names the copy so they can be told apart', r.json?.matrix?.name, '^Rush Fees \\(copy\\)$')
+
+  r = await req('POST', `/api/matrices/${rushId}/default`)
+  chk('the default can be moved', r.json?.matrix?.isDefault, '^true$')
+
+  // A quote priced off a matrix is a normal estimate — the provenance rides along, the money is
+  // computed by the same totals code as every other line.
+  r = await req('GET', '/api/contacts')
+  const buyerId = r.json?.contacts?.[0]?.id
+  r = await req('POST', '/api/estimates', {
+    body: {
+      contact_id: buyerId,
+      items: [
+        { description: 'Team mugs', detail: '24–47 · 11 oz mug', sizes: null, qty: 30, unit_price: 11.5, taxable: true, matrix: { id: mugId, name: 'Mugs & Drinkware', row: '24–47', col: '11 oz mug' } },
+        { description: 'Same-day rush', qty: 1, unit_price: 400, taxable: false, matrix: { id: rushId, name: 'Rush Fees', row: 'Same day', col: '50–200' } },
+      ],
+      tax_rate: 0,
+    },
+  })
+  chk('two different matrices price two lines of one estimate', r.json?.total, '^745$')
+  chk('the matrix a line came from is stored with it', r.text, 'Mugs & Drinkware')
+
+  r = await req('DELETE', `/api/matrices/${dupId}`)
+  chk('a matrix can be deleted', r.status, '^200$')
+  r = await req('GET', `/api/matrices/${dupId}`)
+  chk('a deleted matrix is gone', r.status, '^404$')
+  r = await req('POST', '/api/matrices', { body: { name: 'No grid', rows: [], cols: [] } })
+  chk('an empty grid is refused with a reason', r.text, 'at least one row')
+
   /* ---- public REST API (/api/v1) ---- */
   r = await req('POST', '/api/developers/key/rotate')
   const key = r.json?.api_key || ''
