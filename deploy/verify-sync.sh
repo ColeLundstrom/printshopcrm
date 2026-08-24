@@ -17,7 +17,11 @@ HOST="${1:-}"
 REMOTE="${2:-/opt/printshopcrm/current}"
 KEY="${3:-}"
 
-[ -n "$HOST" ] || { echo "usage: $0 <user@host> [remote-path] [ssh-key]" >&2; exit 1; }
+[ -n "$HOST" ] || { echo "usage: $0 <user@host|local> [path] [ssh-key]" >&2; exit 1; }
+# "local" reads the deployed path directly, for running this ON the server (where sshing to
+# yourself needs a key you probably haven't set up).
+LOCAL_MODE=0
+[ "$HOST" = "local" ] || [ "$HOST" = "localhost" ] && LOCAL_MODE=1
 SSH=(ssh); [ -n "$KEY" ] && SSH=(ssh -i "$KEY")
 
 command -v git >/dev/null || { echo "git required" >&2; exit 1; }
@@ -36,18 +40,22 @@ git ls-files \
 SHA=$(command -v sha256sum >/dev/null && echo sha256sum || echo "shasum -a 256")
 while read -r f; do $SHA "$f"; done < "$FILES" | awk '{print $1"  "$2}' | sort -k2 > "$LOCAL_SUMS"
 
-# shellcheck disable=SC2029
-"${SSH[@]}" "$HOST" "cd '$REMOTE' 2>/dev/null || exit 9; while read -r f; do if [ -f \"\$f\" ]; then sha256sum \"\$f\"; else echo \"MISSING  \$f\"; fi; done" \
-  < "$FILES" | awk '{print $1"  "$2}' | sort -k2 > "$REMOTE_SUMS"
+SUM_SCRIPT="cd '$REMOTE' 2>/dev/null || exit 9; while read -r f; do if [ -f \"\$f\" ]; then sha256sum \"\$f\"; else echo \"MISSING  \$f\"; fi; done"
+if [ "$LOCAL_MODE" = "1" ]; then
+  bash -c "$SUM_SCRIPT" < "$FILES" | awk '{print $1"  "$2}' | sort -k2 > "$REMOTE_SUMS"
+else
+  # shellcheck disable=SC2029
+  "${SSH[@]}" "$HOST" "$SUM_SCRIPT" < "$FILES" | awk '{print $1"  "$2}' | sort -k2 > "$REMOTE_SUMS"
+fi
 
 if [ ! -s "$REMOTE_SUMS" ]; then
-  echo "  could not read $REMOTE on $HOST" >&2
+  echo "  could not read $REMOTE${LOCAL_MODE:+ locally}" >&2
   exit 1
 fi
 
 TOTAL=$(wc -l < "$FILES" | tr -d ' ')
 if diff -q "$LOCAL_SUMS" "$REMOTE_SUMS" >/dev/null; then
-  echo "  ✓ in sync — all $TOTAL runtime files on $HOST match this working tree"
+  echo "  ✓ in sync — all $TOTAL runtime files at $REMOTE match this working tree"
   exit 0
 fi
 

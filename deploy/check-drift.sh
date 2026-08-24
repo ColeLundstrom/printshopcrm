@@ -26,6 +26,13 @@ SITE_PATH="${SITE_PATH:-/opt/printshopcrm/current}"
 
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10)
 [ -n "$SSH_KEY" ] && SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10)
+# APP_HOST=local reads the paths directly — for running this ON the server itself.
+LOCAL_MODE=0
+[ "$APP_HOST" = "local" ] || [ "$APP_HOST" = "localhost" ] && LOCAL_MODE=1
+readlink_rel() {
+  if [ "$LOCAL_MODE" = "1" ]; then basename "$(readlink -f "$1" 2>/dev/null)" 2>/dev/null || echo '?'
+  else "${SSH[@]}" "$APP_HOST" "basename \$(readlink -f '$1')" 2>/dev/null || echo '?'; fi
+}
 
 problems=()
 note() { printf '  %s\n' "$1"; }
@@ -62,10 +69,10 @@ if [ -n "$APP_HOST" ]; then
 
   # The app tells every user where its source is (AGPL §13). If that link is a repo whose
   # HEAD is not what the server runs, the offer the app makes is not true.
-  REL="$("${SSH[@]}" "$APP_HOST" "basename \$(readlink -f '$APP_PATH')" 2>/dev/null || echo '?')"
+  REL="$(readlink_rel "$APP_PATH")"
   note "app release   $REL"
 
-  SITE_REL="$("${SSH[@]}" "$APP_HOST" "basename \$(readlink -f '$SITE_PATH')" 2>/dev/null || echo '?')"
+  SITE_REL="$(readlink_rel "$SITE_PATH")"
   note "site release  $SITE_REL"
   [ "$SITE_REL" = "?" ] && bad "could not read the website release" || good "website is serving a named release"
 else
