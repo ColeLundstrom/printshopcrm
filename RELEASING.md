@@ -54,6 +54,18 @@ grep -rIn -i '<the feature>' --include='*.ts' --include='*.tsx' --include='*.js'
 
 Blog posts count. They are indexed, they rank, and they are the copy a stranger reads first. Rewrite the post rather than deleting it — the URL is earning traffic, and an honest article at that URL keeps it.
 
+## Branch protection
+
+`main` requires all six CI jobs green, a code-owner review, and resolved conversations before a PR
+merges. Force-push and branch deletion are off.
+
+`enforce_admins` is deliberately **off**: with one maintainer, requiring them to open a PR to
+approve their own work is friction with no second pair of eyes to gain. `deploy/ship.sh` pushes
+`main` directly and that is intended. The protection exists for *contributors'* PRs, which is where
+review actually adds something.
+
+If a second maintainer ever joins, turn `enforce_admins` on the same day.
+
 ## Checking without releasing
 
 ```bash
