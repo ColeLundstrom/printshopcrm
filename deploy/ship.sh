@@ -40,9 +40,16 @@ step "Checking the working tree"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$BRANCH" = "main" ] || die "on '$BRANCH' — releases ship from main"
 git fetch --quiet origin
-[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "main and origin/main differ — pull or push first"
+# Being AHEAD of origin/main is the normal state here — you commit, then you ship, and step 3 does
+# the push. Requiring HEAD == origin/main made the "one command" release impossible for the case it
+# exists to serve. What must be refused is being BEHIND or DIVERGED: shipping then would either
+# publish a tag missing someone else's commits, or fail the push halfway and leave GitHub, the tag
+# and the server disagreeing — the exact drift RELEASING.md is about.
+BEHIND="$(git rev-list --count HEAD..origin/main)"
+[ "$BEHIND" = "0" ] || die "main is $BEHIND commit(s) behind origin/main — pull (and re-run the gates) first"
+AHEAD="$(git rev-list --count origin/main..HEAD)"
 git rev-parse "$TAG" >/dev/null 2>&1 && die "$TAG already exists"
-echo "  clean, on main, in step with origin"
+echo "  clean, on main, $([ "$AHEAD" = "0" ] && echo 'in step with origin' || echo "$AHEAD commit(s) to push")"
 
 # ---------------------------------------------------------------- 2. tests
 step "Running the gates"
