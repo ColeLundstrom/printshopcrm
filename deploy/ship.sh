@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#
+# Ship a release: GitHub and the app server, in one pass, in the right order.
+#
+#   bash deploy/ship.sh v1.1.0 "what changed, in one line"
+#
+# Stops at the first failure and tells you what state you are in. See RELEASING.md.
+#
+# Env:
+#   APP_HOST   user@host of the app server        (required)
+#   SSH_KEY    identity file
+#   APP_ROOT   /opt/printshopcrm-pro
+#   SERVICE    printshopcrm-pro
+#   DATA_UPLOADS  path the release's public/uploads must symlink to
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+TAG="${1:-}"
+SUMMARY="${2:-}"
+APP_HOST="${APP_HOST:-}"
+SSH_KEY="${SSH_KEY:-}"
+APP_ROOT="${APP_ROOT:-/opt/printshopcrm-pro}"
+SERVICE="${SERVICE:-printshopcrm-pro}"
+DATA_UPLOADS="${DATA_UPLOADS:-$APP_ROOT/data/uploads}"
+
+die() { printf '\n  ✗ %s\n\n' "$1" >&2; exit 1; }
+step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+
+[ -n "$TAG" ] || die "usage: bash deploy/ship.sh <tag> \"summary\"   e.g. v1.1.0 \"fix overdue filter\""
+[ -n "$APP_HOST" ] || die "set APP_HOST=user@host"
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || die "tag should look like v1.2.3"
+
+SSH=(ssh); [ -n "$SSH_KEY" ] && SSH=(ssh -i "$SSH_KEY")
+RSYNC_E="ssh"; [ -n "$SSH_KEY" ] && RSYNC_E="ssh -i $SSH_KEY"
+
+# ---------------------------------------------------------------- 1. preconditions
+step "Checking the working tree"
+[ -z "$(git status --porcelain)" ] || die "uncommitted changes — commit or stash first"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+[ "$BRANCH" = "main" ] || die "on '$BRANCH' — releases ship from main"
+git fetch --quiet origin
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "main and origin/main differ — pull or push first"
+git rev-parse "$TAG" >/dev/null 2>&1 && die "$TAG already exists"
+echo "  clean, on main, in step with origin"
+
+# ---------------------------------------------------------------- 2. tests
+step "Running the gates"
+npm test || die "unit tests failed — nothing shipped"
+npm run test:e2e || die "end-to-end tests failed — nothing shipped"
+
+# ---------------------------------------------------------------- 3. GitHub
+step "Tagging and pushing to GitHub"
+git tag -a "$TAG" -m "${SUMMARY:-$TAG}" || die "could not create the tag"
+git push origin main --quiet || die "push failed"
+git push origin "$TAG" --quiet || die "tag push failed — GitHub and your tree now disagree"
+echo "  pushed $TAG (this also builds and publishes the container image)"
+
+# ---------------------------------------------------------------- 4. app server
+REL_NAME="${TAG}-$(date +%Y-%m-%d)"
+REL="$APP_ROOT/releases/$REL_NAME"
+step "Deploying to $APP_HOST as $REL_NAME"
+
+"${SSH[@]}" "$APP_HOST" "test ! -e '$REL'" || die "$REL already exists on the server"
+
+rsync -a -e "$RSYNC_E" \
+  --exclude node_modules --exclude .git --exclude data --exclude '.env' \
+  --exclude 'public/uploads' --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' \
+  --exclude 'docs/img' \
+  ./ "$APP_HOST:$REL/" || die "rsync failed — nothing was flipped"
+
+# shellcheck disable=SC2029
+"${SSH[@]}" "$APP_HOST" "
+  set -e
+  ln -sfn '$DATA_UPLOADS' '$REL/public/uploads'
+  cd '$REL' && npm ci --omit=dev >/dev/null 2>&1
+  node bin/gate.mjs >/dev/null || { echo 'GATE FAILED ON THE SERVER'; exit 1; }
+  PREV=\$(readlink -f '$APP_ROOT/current' 2>/dev/null || true)
+  [ -n \"\$PREV\" ] && echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
+  sudo ln -sfn '$REL' '$APP_ROOT/current'
+  sudo systemctl restart '$SERVICE'
+  sleep 4
+  if ! systemctl is-active --quiet '$SERVICE'; then
+    echo 'SERVICE FAILED TO START — rolling back'
+    [ -n \"\$PREV\" ] && sudo ln -sfn \"\$PREV\" '$APP_ROOT/current' && sudo systemctl restart '$SERVICE'
+    exit 1
+  fi
+" || die "server deploy failed — it rolled back, but GitHub is now AHEAD of the server. Fix and re-run, or revert the tag."
+echo "  live and healthy"
+
+# ---------------------------------------------------------------- 5. prove it
+step "Verifying the server runs exactly this source"
+bash deploy/verify-sync.sh "$APP_HOST" "$APP_ROOT/current" ${SSH_KEY:+"$SSH_KEY"} \
+  || die "server does not match the tag — investigate before announcing"
+
+# ---------------------------------------------------------------- 6. the website
+step "Website"
+cat <<EOF
+  The website is a separate release and is NOT updated by this script — marketing copy is a
+  judgement call, not a diff.
+
+  If $TAG added, removed or changed anything a customer can see, update the site too:
+    · a REMOVED feature is the dangerous one — the site will keep selling it
+    · grep the site source, blog posts included, before you call this shipped
+    · rewrite stale posts rather than deleting them; the URL is earning traffic
+
+  Then:  bash deploy/release.sh activate <site-release>      (see RELEASING.md)
+EOF
+
+step "Shipped $TAG"
+echo "  GitHub:  https://github.com/ColeLundstrom/printshopcrm/releases/tag/$TAG"
+echo "  Server:  $REL_NAME"
+echo "  Roll back: ln -sfn \$(cat $APP_ROOT/.previous-release) $APP_ROOT/current && sudo systemctl restart $SERVICE"
+echo
