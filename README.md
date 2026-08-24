@@ -267,6 +267,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before a code PR — it covers the setup
 the one hard rule: **a bug fix needs a failing test first.** Planning something large? Open a
 [discussion](https://github.com/ColeLundstrom/printshopcrm/discussions) first so it doesn't sit.
 
+**[GOVERNANCE.md](GOVERNANCE.md) is the public contract**: who decides, how long you should wait for
+a first response (5 working days on an issue, 7 on a PR, 3 on anything security-related), exactly
+what gets merged, what gets declined and why, and what protects you if this project ever goes
+quiet.
+
 By contributing you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Security issues: please report privately, see [SECURITY.md](SECURITY.md).

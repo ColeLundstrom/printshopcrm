@@ -1,0 +1,12 @@
+# Every change gets the maintainer as a reviewer automatically.
+# See GOVERNANCE.md for what review actually involves and how long it should take.
+*                       @ColeLundstrom
+
+# Money and multi-tenancy are the two places a mistake is expensive rather than annoying:
+# pricing is computed once and shared by server and browser, and tenant isolation is what keeps
+# one shop out of another's data. Flagged so they never get a quick skim.
+/public/js/shared/pricing.js   @ColeLundstrom
+/lib/db.mjs                    @ColeLundstrom
+/lib/tenants.mjs               @ColeLundstrom
+/lib/billing.mjs               @ColeLundstrom
+/bin/gate.mjs                  @ColeLundstrom
