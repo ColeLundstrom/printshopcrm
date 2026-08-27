@@ -47,7 +47,7 @@ import { nest, priceSheet } from './public/js/shared/gangnest.js'
 import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.mjs'
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
-import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY } from './lib/agent.mjs'
+import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
 import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailConfigured } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
@@ -2971,7 +2971,7 @@ app.post('/api/agent/draft', requireRole('staff'), wrap(async (req, res) => {
   if (!sess) return res.status(404).json({ error: 'Session not found' })
   const cfg = getBotConfig()
   const contact = sess.contact_id ? get('SELECT * FROM contacts WHERE id = ?', sess.contact_id) : null
-  const transcript = sessionMessages(sess.id).slice(-10).map((m) => `${m.role === 'visitor' ? 'Customer' : 'Shop'}: ${m.body}`).join('\n')
+  const transcript = transcriptFor(sess, 10, (m) => (m.role === 'visitor' ? 'Customer' : 'Shop'))
   const context = `You are the front desk of ${cfg.shop_name}, a custom apparel print shop. Draft a short, warm reply to the customer's latest message for a human teammate to review and send. Do not invent prices, dates, or policies. If you don't know, say the team will confirm.\n${cfg.knowledge ? `\nShop facts:\n${String(cfg.knowledge).slice(0, 1500)}\n` : ''}\nConversation so far:\n${transcript || '(no messages yet)'}`
   const out = await draftReply({ contact, context, intent: 'assist' })
   if (!out.text) return res.json({ ok: false, reason: out.ai_note || 'Add your AI key in Settings to draft replies.' })
@@ -4850,7 +4850,16 @@ app.post('/api/embed/chat/message', embedLimit(60, 'You are sending messages ver
   // switched off. respond() enforces the same rule, but say it here too so the widget gets a
   // clean `enabled:false` rather than a reply that looks like the bot is still working.
   if (!cfg.enabled) return res.json({ reply: OFFLINE_REPLY, quick: [], enabled: false })
-  const out = await respond(s, String(req.body?.text || ''), cfg)
+  // A real chat message is not four thousand characters. This is the public, unauthenticated
+  // endpoint a shop pastes onto its own website, and whatever arrives here is STORED and then
+  // replayed into every later model prompt on the shop's own API key — so the cost of one
+  // oversize message was paid again on every subsequent turn. Refuse it rather than truncate:
+  // silently dropping half of what someone typed is its own kind of wrong answer.
+  const text = String(req.body?.text || '')
+  if (text.length > MESSAGE_CAP) {
+    return res.json({ reply: 'That message is a bit long for me — could you send the short version?', quick: [], enabled: true })
+  }
+  const out = await respond(s, text, cfg)
   for (const ev of out.events) {
     rtBroadcast('notify', {
       kind: ev.type,

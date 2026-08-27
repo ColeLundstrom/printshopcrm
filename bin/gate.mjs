@@ -485,6 +485,52 @@ await t('quote → email → "no" advances to a closed reply, never re-quotes', 
   assert.ok(!isQuote(r5), 'final turn must not re-quote')
 })
 
+section('receptionist: one long message cannot become an unbounded prompt, forever')
+// Every DIRECT interpolation of the visitor's current message was bounded — 500 chars for intent,
+// 800 for a grounded answer, 1200 for extraction. The REPLAY of the conversation so far was not,
+// in any of the four places that built one, and neither was storage. So the bound only ever
+// applied to this turn: a 500 KB message was stored whole and re-sent in full on every subsequent
+// turn. The audit measured one 500 KB POST becoming 500,119 prompt chars that turn and ~4 MB by
+// the eighth. The bill lands on the SHOP's own API key, from the unauthenticated widget endpoint
+// a shop is told to paste onto its public website.
+await t('a huge message is truncated in the table and bounded in the replay', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); ag.initAgent(db)
+  ag.saveBotConfig({ shop_name: 'Test Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+  const sess = ag.startSession({ channel: 'web' })
+  const cur = () => ag.sessionByPublicId(sess.public_id)
+
+  const huge = 'a'.repeat(500_000)
+  await ag.respond(cur(), huge, ag.getBotConfig())
+  const stored = db.prepare("SELECT body FROM chat_messages WHERE role='visitor' ORDER BY id DESC LIMIT 1").get()
+  assert.ok(stored.body.length <= ag.MESSAGE_CAP, `stored body must be capped (got ${stored.body.length})`)
+
+  // Now the part that actually costs money: what the NEXT turn replays.
+  for (const line of ['b'.repeat(200_000), 'c'.repeat(200_000), 'how much for 100 tees?']) {
+    await ag.respond(cur(), line, ag.getBotConfig())
+  }
+  const replay = ag.transcriptFor(cur(), 8)
+  assert.ok(replay.length <= 4000, `the replayed transcript must be bounded (got ${replay.length})`)
+})
+await t('…while an ordinary conversation still replays in full', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); ag.initAgent(db)
+  ag.saveBotConfig({ shop_name: 'Test Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+  const sess = ag.startSession({ channel: 'web' })
+  const cur = () => ag.sessionByPublicId(sess.public_id)
+  await ag.respond(cur(), 'quote for 100 gildan 5000 tees screen print', ag.getBotConfig())
+  await ag.respond(cur(), '2 color front', ag.getBotConfig())
+  const replay = ag.transcriptFor(cur(), 8)
+  assert.match(replay, /100 gildan 5000 tees screen print/, 'a normal message must survive the cap intact')
+  assert.match(replay, /2 color front/)
+})
+
 section('receptionist: the off switch stops the conversations already open')
 // /api/embed/chat/start refused to open a session when the bot was off. /message never checked,
 // and cfg.enabled inside respond() only ever gated the MODEL — so a disabled receptionist kept
