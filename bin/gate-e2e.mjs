@@ -510,8 +510,31 @@ try {
     let parsed = null
     try { parsed = JSON.parse(r.text) } catch { /* leave null */ }
     chk('…and the streamed bytes are valid JSON', String(!!parsed), '^true$')
-    chk('…with every table present', Object.keys(parsed?.tables || {}).sort().join(','),
-      'activities,art_versions,contacts,estimates,invoices,jobs,line_items,payments')
+    // This assertion USED to be a hardcoded eight-name list, which is how "export everything" came
+    // to mean 7 of 26 tables while README, docs/API.md and the Settings card all promised the whole
+    // database — the gate certified the gap green every release. The list is derived from
+    // sqlite_master now, so name the tables that were actually missing and let a future table be
+    // included by default rather than silently dropped.
+    const got = Object.keys(parsed?.tables || {})
+    for (const missing of ['settings', 'price_matrices', 'opportunities', 'messages', 'email_log',
+      'job_scans', 'automations', 'purchase_orders', 'po_lines', 'chat_messages', 'chat_sessions',
+      'qbo_sync', 'webhook_subscriptions', 'bot_config']) {
+      chk(`…export includes ${missing}`, String(got.includes(missing)), '^true$')
+    }
+    // Credentials are not shop data and must never ride along in a file that gets emailed around.
+    for (const secret of ['sessions', 'password_resets']) {
+      chk(`…and never exports ${secret}`, String(got.includes(secret)), '^false$')
+    }
+    chk('…and says which tables it left out, and why', String(!!parsed?.excluded?.sessions), '^true$')
+    // A truncated export must never look like a finished one.
+    chk('…and marks itself complete', String(parsed?.complete), '^true$')
+    // The settings table carries the shop's price book AND every integration credential.
+    {
+      const rows = parsed?.tables?.settings || []
+      const leaked = rows.filter((x) => ['stripe_secret', 'smtp_pass', 'ai_api_key', 'qbo_refresh_token'].includes(x.key) && x.value)
+      chk('…with the shop\'s own settings included', String(rows.length > 0), '^true$')
+      chk('…but no credential in the file', String(leaked.length), '^0$')
+    }
     // The estimate created earlier must be in it — proving rows actually stream, not just the shell.
     chk('…and it contains the shop\'s real rows', String((parsed?.tables?.estimates || []).length > 0), '^true$')
   }

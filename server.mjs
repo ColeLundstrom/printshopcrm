@@ -8,7 +8,7 @@ import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, onContactCreated,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, onContactCreated, SECRET_KEYS,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -4316,35 +4316,113 @@ const STREAM_TABLES = {
   activities: 'SELECT * FROM activities ORDER BY id',
   art_versions: 'SELECT * FROM art_versions ORDER BY id',
 }
-app.get('/api/export/all.json', requireRole('manager'), wrap((_req, res) => {
+/**
+ * Wait for the socket to drain, so a big export costs one row of memory rather than the whole file.
+ *
+ * res.write() returning false means the kernel buffer is full and Node is now queueing the rest in
+ * USER space. The loop below ignored that return value and never yielded, so the event loop never
+ * turned and not one byte reached the wire until the last row had been generated: measured at 60k
+ * activity rows, the loop ended with 14.8 MB still sitting in socket.writableLength and RSS up
+ * from 45 MB to 175 MB. At 400k rows it was 99 MB queued and 440 MB RSS, and then the final flush
+ * failed with writev EINVAL — the client got zero bytes and the server log said nothing at all.
+ * v1.7.0 moved the copy off the heap and into the socket's write queue; it did not remove it.
+ *
+ * Rejects rather than hanging if the client goes away, so a cancelled download is not a wedged
+ * request holding a SQLite cursor open.
+ */
+const drainOnce = (res) => new Promise((resolve, reject) => {
+  const done = (err) => {
+    res.off('drain', ok); res.off('close', gone); res.off('error', fail)
+    err ? reject(err) : resolve()
+  }
+  const ok = () => done()
+  const gone = () => done(new Error('the download was cancelled'))
+  const fail = (e) => done(e)
+  res.once('drain', ok); res.once('close', gone); res.once('error', fail)
+})
+
+/**
+ * Tables deliberately left out of "export everything", and why. Anything NOT named here is
+ * exported — so a table added later is in the export by default rather than quietly missing from
+ * it, which is how this drifted to 7 of 26 in the first place.
+ */
+const EXPORT_SKIP = new Map([
+  ['sessions', 'live login sessions — credentials, not shop data'],
+  ['password_resets', 'single-use password reset tokens — credentials, not shop data'],
+  ['blank_cache', 'cached supplier catalogue — refetched from the supplier, not yours'],
+  ['garments', 'cached supplier catalogue — refetched from the supplier, not yours'],
+])
+
+/** Every table this shop's database actually has, minus credentials and refetchable cache. */
+const exportTableNames = () => all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+  .map((r) => r.name).filter((n) => !EXPORT_SKIP.has(n))
+
+app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) => {
   res.type('application/json').setHeader('Content-Disposition', 'attachment; filename="printshopcrm-export.json"')
-  res.write(`{\n  "exported_at": ${JSON.stringify(now())},\n  "shop": ${JSON.stringify(getSettings().shop_name)},\n  "tables": {\n`)
+  const write = async (chunk) => { if (!res.write(chunk)) await drainOnce(res) }
 
-  const tableNames = [...Object.keys(STREAM_TABLES), 'line_items']
-  tableNames.forEach((name, ti) => {
-    res.write(`    ${JSON.stringify(name)}: [`)
-    let first = true
-    const emit = (row) => { res.write(`${first ? '\n' : ',\n'}      ${JSON.stringify(row)}`); first = false }
+  const skipped = Object.fromEntries([...EXPORT_SKIP].map(([k, why]) => [k, why]))
+  await write(`{\n  "exported_at": ${JSON.stringify(now())},\n  "shop": ${JSON.stringify(getSettings().shop_name)},\n  "excluded": ${JSON.stringify(skipped)},\n  "tables": {\n`)
 
-    if (name === 'line_items') {
-      // Flatten every estimate's line items, contact name joined in — no per-row lookup.
-      for (const e of iterate('SELECT e.*, c.name AS customer, c.company FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id')) {
-        parse(e.items, []).forEach((it, i) => emit({
-          estimate_number: e.estimate_number, status: e.status, created_at: e.created_at,
-          customer: e.customer || '', company: e.company || '',
-          line: i + 1, description: it.description || '', detail: it.detail || '',
-          decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
-          qty: lineQty(it), unit_price: it.unit_price ?? 0,
-          taxable: it.taxable === false ? 'no' : 'yes',
-          amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
-        }))
+  // The export used to name seven tables from a hand-kept list while README, docs/API.md and the
+  // Settings card all promised "every table" / "the whole database" / "Everything is yours,
+  // complete" — and the e2e gate asserted "with every table present" against that same short list,
+  // so the gap shipped green every release. The list is derived from the schema now.
+  const tableNames = [...exportTableNames(), 'line_items']
+  let openArray = false
+  let firstTable = true
+  try {
+    for (const name of tableNames) {
+      await write(`${firstTable ? '' : ',\n'}    ${JSON.stringify(name)}: [`)
+      firstTable = false
+      openArray = true
+      let first = true
+      const emit = async (row) => { await write(`${first ? '\n' : ',\n'}      ${JSON.stringify(row)}`); first = false }
+
+      if (name === 'line_items') {
+        // Flatten every estimate's line items, contact name joined in — no per-row lookup.
+        for (const e of iterate('SELECT e.*, c.name AS customer, c.company FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id')) {
+          for (const [i, it] of parse(e.items, []).entries()) {
+            await emit({
+              estimate_number: e.estimate_number, status: e.status, created_at: e.created_at,
+              customer: e.customer || '', company: e.company || '',
+              line: i + 1, description: it.description || '', detail: it.detail || '',
+              decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
+              qty: lineQty(it), unit_price: it.unit_price ?? 0,
+              taxable: it.taxable === false ? 'no' : 'yes',
+              amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
+            })
+          }
+        }
+      } else if (name === 'settings') {
+        // The shop's own configuration is theirs and includes the price book — but the same row
+        // holds every integration credential, and an export file gets emailed around and dropped
+        // in Drive. Same allowlist the API redaction already uses.
+        for (const row of iterate('SELECT key, value FROM settings ORDER BY key')) {
+          await emit(SECRET_KEYS.includes(row.key) ? { key: row.key, value: '', redacted: true } : row)
+        }
+      } else {
+        for (const row of iterate(STREAM_TABLES[name] || `SELECT * FROM "${name}"`)) await emit(row)
       }
-    } else {
-      for (const row of iterate(STREAM_TABLES[name])) emit(row)
+      await write(`${first ? '' : '\n    '}]`)
+      openArray = false
     }
-    res.write(`${first ? '' : '\n    '}]${ti < tableNames.length - 1 ? ',' : ''}\n`)
-  })
-  res.end('  }\n}\n')
+    await write('\n  },\n  "complete": true\n}\n')
+  } catch (e) {
+    // The status line and the attachment header went out with the first row, so this cannot be
+    // turned into a 500 — the browser has already started saving a file. It CAN still be told the
+    // truth. Previously the terminal handler saw headersSent and returned without res.end(), so
+    // the shop was left holding a silently truncated file that looked complete, and the socket
+    // hung open until the client gave up (measured: 75s, one leaked socket and SQLite cursor per
+    // retry). Close the JSON, say complete:false, and name the failure.
+    if (openArray) { try { res.write('\n    ]') } catch { /* socket already gone */ } }
+    try {
+      res.write(`\n  },\n  "complete": false,\n  "error": ${JSON.stringify(String(e && e.message || e).slice(0, 300))}\n}\n`)
+    } catch { /* socket already gone */ }
+    console.error('export/all.json failed after headers:', e && e.message)
+  } finally {
+    res.end()
+  }
 }))
 
 /**
