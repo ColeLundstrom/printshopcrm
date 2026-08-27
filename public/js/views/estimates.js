@@ -23,12 +23,14 @@ export async function estimatesView() {
         <td class="num dim" data-label="Created" style="font-size:12px">${fmtDate(e.created_at)}</td>
       </tr>`).join('')}</tbody></table>`
       : empty('▤', 'No estimates', 'Quote a job and it shows up here.', '<a class="btn" href="#/autopilot">Paste a request → estimate</a>')
-    on($('#list'), '[data-id]', (_e, t) => go(`/estimates/${t.dataset.id}`))
   }
 
   $('#view').innerHTML = `<div class="searchbar"><div class="tabs" id="tabs">
       ${['all', 'draft', 'sent', 'approved'].map((s) => `<button data-s="${s}" class="${listFilter === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}
     </div></div><div class="card" id="list"></div>`
+  // Bound once. #list only has its innerHTML replaced by render(), so binding this inside render()
+  // stacked a new listener per tab switch — the same doubling bug as the customer list.
+  on($('#list'), '[data-id]', (_e, t) => go(`/estimates/${t.dataset.id}`))
   on($('#tabs'), '[data-s]', (_e, t) => {
     listFilter = t.dataset.s
     $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.s === listFilter))

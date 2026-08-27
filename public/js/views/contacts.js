@@ -20,16 +20,22 @@ export async function contactsView() {
       </tr>`).join('')}</tbody></table>`
       : empty('◉', 'No customers found', q || filterTag ? 'Try a different search or clear the tag filter.' : 'Add your first customer to get started.', q || filterTag ? '' : '<a class="btn" href="#/contacts?new=1">Add a customer</a>')
 
+    // Only the innerHTML is replaced here. The delegated listeners are bound ONCE below, on the
+    // persistent #list and #tags elements — binding them inside render() added a new listener on
+    // every render, and since the tag handler calls render(), one tag click fired 1→2→4→8… fetches.
+    // Ten clicks meant a thousand concurrent GET /api/contacts and a locked tab.
     $('#list').innerHTML = body
-    on($('#list'), '[data-id]', (_e, t) => go(`/contacts/${t.dataset.id}`))
     $('#tags').innerHTML = ['', ...d.tags].map((t) => `<button class="${filterTag === t ? 'on' : ''}" data-tag="${esc(t)}">${t ? esc(t) : 'All'}</button>`).join('')
-    on($('#tags'), '[data-tag]', (_e, t) => { filterTag = t.dataset.tag; render($('#q').value) })
   }
 
   $('#view').innerHTML = `<div class="searchbar">
       <input class="input" id="q" placeholder="Search name, company, email…" autocomplete="off">
       <div class="tabs" id="tags"></div>
     </div><div class="card" id="list"></div>`
+
+  // Bound once, on elements that outlive every render.
+  on($('#list'), '[data-id]', (_e, t) => go(`/contacts/${t.dataset.id}`))
+  on($('#tags'), '[data-tag]', (_e, t) => { filterTag = t.dataset.tag; render($('#q').value) })
 
   let t
   $('#q').oninput = (e) => { clearTimeout(t); t = setTimeout(() => render(e.target.value), 180) }

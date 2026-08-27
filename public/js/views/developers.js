@@ -8,11 +8,62 @@ import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate }
 export async function developersView() {
   setPage('Developers', '', '<span class="dim">More</span>')
   $('#view').innerHTML = '<div class="dim">Loading…</div>'
-  const d = await api.get('/api/developers')
-  render(d)
+  paint(await api.get('/api/developers'))
+
+  // Bind ONCE, and delegate on #view — which is shared by every screen and never replaced. These
+  // handlers used to be re-attached on every render, and each webhook toggle/delete re-entered the
+  // view, so "Rotate key" fired two, three, seven times and raced itself into showing a dead key.
+  // A re-fetch after an action now just repaints; the listeners stay put.
+  const refresh = async () => { try { paint(await api.get('/api/developers')) } catch (e) { toast(e.message, true) } }
+
+  on($('#view'), '#dev-rotate', async () => {
+    try {
+      const r = await api.post('/api/developers/key/rotate')
+      $('#dev-key-full').innerHTML = `<div class="dev-secret">Your new key — copy it now, it won't be shown again:<br><code>${esc(r.api_key)}</code></div>`
+      $('#dev-key').textContent = `${r.api_key.slice(0, 13)}…${r.api_key.slice(-4)}`
+      toast('New API key created')
+    } catch (e) { toast(e.message, true) }
+  })
+  on($('#view'), '#dev-revoke', async () => {
+    try { await api.post('/api/developers/key/revoke'); toast('API key revoked'); refresh() }
+    catch (e) { toast(e.message, true) }
+  })
+  on($('#view'), '#dev-add-wh', () => {
+    modal({
+      title: 'Add webhook',
+      body: `<label>URL<input name="url" placeholder="https://hooks.zapier.com/…" required /></label>
+             <label>Events <span class="dim">(comma list, or * for everything)</span><input name="events" value="*" /></label>`,
+      footer: '<button class="btn primary" id="wh-save">Add</button>',
+      onMount: (bg) => {
+        on(bg, '#wh-save', async () => {
+          try {
+            const r = await api.post('/api/developers/webhooks', formData(bg))
+            closeModal()
+            toast('Webhook added')
+            modal({
+              title: 'Signing secret',
+              body: `<p class="dim">Copy this now — it is shown once. Verify deliveries by recomputing the HMAC in <code>X-PSC-Signature</code>.</p><code class="dev-secret">${esc(r.secret)}</code>`,
+              footer: '<button class="btn" onclick="document.querySelector(\'.modal-bg\')?.remove()">Done</button>',
+            })
+            refresh()
+          } catch (e) { toast(e.message, true) }
+        })
+      },
+    })
+  })
+  on($('#view'), '[data-wh-toggle]', async (e) => {
+    const b = e.target.closest('[data-wh-toggle]')
+    try { await api.patch(`/api/developers/webhooks/${b.dataset.whToggle}`, { active: b.dataset.active !== '1' }); refresh() }
+    catch (err) { toast(err.message, true) }
+  })
+  on($('#view'), '[data-wh-del]', async (e) => {
+    const b = e.target.closest('[data-wh-del]')
+    try { await api.del(`/api/developers/webhooks/${b.dataset.whDel}`); refresh() }
+    catch (err) { toast(err.message, true) }
+  })
 }
 
-function render(d) {
+function paint(d) {
   $('#view').innerHTML = `
     <div class="card">
       <h2>API key</h2>
@@ -54,50 +105,4 @@ function render(d) {
         </tr>`).join('')}
       </table>
     </div>` : ''}`
-
-  on($('#view'), '#dev-rotate', async () => {
-    try {
-      const r = await api.post('/api/developers/key/rotate')
-      $('#dev-key-full').innerHTML = `<div class="dev-secret">Your new key — copy it now, it won't be shown again:<br><code>${esc(r.api_key)}</code></div>`
-      $('#dev-key').textContent = `${r.api_key.slice(0, 13)}…${r.api_key.slice(-4)}`
-      toast('New API key created')
-    } catch (e) { toast(e.message, true) }
-  })
-  on($('#view'), '#dev-revoke', async () => {
-    try { await api.post('/api/developers/key/revoke'); toast('API key revoked'); developersView() }
-    catch (e) { toast(e.message, true) }
-  })
-  on($('#view'), '#dev-add-wh', () => {
-    modal({
-      title: 'Add webhook',
-      body: `<label>URL<input name="url" placeholder="https://hooks.zapier.com/…" required /></label>
-             <label>Events <span class="dim">(comma list, or * for everything)</span><input name="events" value="*" /></label>`,
-      footer: '<button class="btn primary" id="wh-save">Add</button>',
-      onMount: (bg) => {
-        on(bg, '#wh-save', async () => {
-          try {
-            const r = await api.post('/api/developers/webhooks', formData(bg))
-            closeModal()
-            toast('Webhook added')
-            modal({
-              title: 'Signing secret',
-              body: `<p class="dim">Copy this now — it is shown once. Verify deliveries by recomputing the HMAC in <code>X-PSC-Signature</code>.</p><code class="dev-secret">${esc(r.secret)}</code>`,
-              footer: '<button class="btn" onclick="document.querySelector(\'.modal-bg\')?.remove()">Done</button>',
-            })
-            setTimeout(developersView, 100)
-          } catch (e) { toast(e.message, true) }
-        })
-      },
-    })
-  })
-  on($('#view'), '[data-wh-toggle]', async (e) => {
-    const b = e.target.closest('[data-wh-toggle]')
-    try { await api.patch(`/api/developers/webhooks/${b.dataset.whToggle}`, { active: b.dataset.active !== '1' }); developersView() }
-    catch (err) { toast(err.message, true) }
-  })
-  on($('#view'), '[data-wh-del]', async (e) => {
-    const b = e.target.closest('[data-wh-del]')
-    try { await api.del(`/api/developers/webhooks/${b.dataset.whDel}`); developersView() }
-    catch (err) { toast(err.message, true) }
-  })
 }
