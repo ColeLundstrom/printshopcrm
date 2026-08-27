@@ -1272,6 +1272,35 @@ await t('the in-flight claim blocks the second click but does not wedge the shop
   assert.equal(poAlreadySent({ status: 'submitting', updated_at: null }), false)
 })
 
+const { deliveryVerdict: deliveryVerdictSync } = await import('../lib/webhook.mjs')
+section('webhooks: only a 2xx means the payload arrived')
+// This read `statusCode < 400`, so a 3xx was written to the delivery log as 'delivered'. Redirects
+// are deliberately not followed — following one would re-open the SSRF via a Location the guard
+// never vetted — so the body reached nothing. An endpoint that moves is the ordinary case: a
+// re-pointed Zapier hook, an SSO login redirect in front of the handler, a plain http URL the host
+// now 301s to https. Every event for that subscription was dropped, never retried, and the shop's
+// Developers screen said it had been delivered.
+await t('a 2xx is delivered, a 3xx is not', async () => {
+  const { deliveryVerdict } = await import('../lib/webhook.mjs')
+  for (const code of [200, 201, 202, 204, 299]) {
+    assert.equal(deliveryVerdict(code).ok, true, `${code} must count as delivered`)
+    assert.equal(deliveryVerdict(code).error, null)
+  }
+  for (const code of [300, 301, 302, 303, 304, 307, 308]) {
+    assert.equal(deliveryVerdict(code).ok, false, `${code} must NOT count as delivered`)
+  }
+})
+await t('a redirect says why, so the shop can repoint the subscription', () => {
+  // "HTTP 301" alone reads as a server fault. The endpoint is fine; the URL moved.
+  assert.match(deliveryVerdictSync(301).error, /redirect/i)
+  assert.match(deliveryVerdictSync(301).error, /final URL/i)
+})
+await t('a 4xx and a 5xx are still failures, unchanged', () => {
+  assert.equal(deliveryVerdictSync(404).ok, false)
+  assert.equal(deliveryVerdictSync(500).ok, false)
+  assert.equal(deliveryVerdictSync(410).error, 'HTTP 410')
+})
+
 section('webhooks: the pinned lookup must speak the contract net.connect uses')
 // Round 1 closed a DNS-rebind window by pinning the connect-time lookup to the address the SSRF
 // guard had already vetted. The pin called back with the bare-string 3-argument form, which Node
