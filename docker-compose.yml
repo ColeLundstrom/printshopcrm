@@ -34,6 +34,12 @@ services:
       # from the internet; without it there is no login at all.
       PSC_AUTH: ${PSC_AUTH:-1}
 
+      # Reverse-proxy hops to trust. This compose file publishes the port directly, so if you put
+      # nginx/Caddy/Traefik in front (recommended for TLS) keep the default 1; if you expose 3333
+      # straight to the internet, set PSC_TRUST_PROXY=0 in .env, or a forged X-Forwarded-For dodges
+      # the rate limiters. See .env.example.
+      PSC_TRUST_PROXY: ${PSC_TRUST_PROXY:-1}
+
       # Your real external URL, e.g. https://shop.example.com. Without it the app trusts the
       # incoming Host header when building the links it emails to customers.
       PSC_PUBLIC_URL: ${PSC_PUBLIC_URL:-}

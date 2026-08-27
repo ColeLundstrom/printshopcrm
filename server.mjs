@@ -91,8 +91,19 @@ const UPLOADS = join(ROOT, 'public', 'uploads')
 mkdirSync(UPLOADS, { recursive: true })
 
 const app = express()
-// Behind nginx: trust X-Forwarded-* so req.protocol says https and customer links are built https.
-app.set('trust proxy', 1)
+// Trust X-Forwarded-* so req.protocol says https (customer links) and req.ip is the real client
+// (per-IP rate limiting). "1" means trust exactly one proxy hop — correct behind a single nginx/
+// Caddy/Fly/Render, which is every recommended deployment.
+//
+// It MUST be 0 if the app's port is exposed directly to the internet with no proxy in front (e.g.
+// `docker run -p 3333:3333` straight onto a public IP). With trust-proxy on and nothing stripping
+// the header, a client sets its own X-Forwarded-For and Express believes it — so a rotating XFF
+// walks straight past the login, signup and embed rate limiters, one fresh bucket per forged IP.
+// Configurable so a direct-exposure install can turn it off; defaults to 1 because behind-a-proxy
+// is the documented setup and flipping the default would break https link-building on every
+// existing proxied install. PSC_TRUST_PROXY also accepts a subnet or "true"/"false" per Express.
+const TRUST_PROXY = process.env.PSC_TRUST_PROXY ?? '1'
+app.set('trust proxy', /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY === 'false' ? false : TRUST_PROXY === 'true' ? true : TRUST_PROXY)
 // Express matches routes case-insensitively by default, but the auth gate below tested the path
 // with a case-sensitive startsWith('/api/'). That mismatch let `/API/contacts` slip past the gate
 // and still reach the handler — a full auth + paywall bypass. Make routing case-sensitive so a
@@ -809,6 +820,10 @@ app.post('/api/auth/password', rateLimit({ max: 10 }), wrap(async (req, res) => 
   // Owners also carry a legacy hash on the tenant row; leaving it stale would keep the old
   // password working through authTenant.
   if (req.role === 'owner' && req.tenant) await setPassword(req.tenant.id, next)
+  // setMemberPassword just signed out every session for this member, including this one. Mint a
+  // fresh session for the device that made the change, so the person changing their password stays
+  // signed in here while any other logged-in session — the one they are worried about — is dropped.
+  setSessionCookie(res, createSession(req.member.tenant_id, req.member.id), req)
   clearRateLimit(req)
   res.json({ ok: true })
 }))

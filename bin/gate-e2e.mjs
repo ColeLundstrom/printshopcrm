@@ -372,6 +372,24 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- changing your password keeps THIS device signed in ----------
+   * setMemberPassword now signs out every session (so a compromised one dies), and the route
+   * re-issues a fresh session for the current device. If the re-issue broke, a user would lock
+   * themselves out the instant they changed their password — so guard it. */
+  {
+    const before = cookieHeader()
+    r = await req('POST', '/api/auth/password', { body: { current_password: 'GatePass-123456', new_password: 'GatePass-654321' } })
+    chk('a password change succeeds', String(r.status), '^200$')
+    // The jar now holds the re-issued cookie; the current session must still be authed.
+    const me = await req('GET', '/api/auth/me')
+    chk('…and the current device stays signed in (re-issued session)', me.text, '"authed":true')
+    // The OLD cookie must no longer work — every prior session was invalidated.
+    const old = await req('GET', '/api/auth/me', { cookies: false, headers: { Cookie: before } })
+    chk('…while the pre-change session is invalidated', old.text, '"authed":false')
+    // Put the password back so any later test that assumes the original still works.
+    await req('POST', '/api/auth/password', { body: { current_password: 'GatePass-654321', new_password: 'GatePass-123456' } })
+  }
+
   /* ---------- signup never leaks a database error to the public page ----------
    * The email check and the slug generator are both check-then-insert, so a race collides at the
    * INSERT — and that used to surface "UNIQUE constraint failed: tenants.owner_email" verbatim on
