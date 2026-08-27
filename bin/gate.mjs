@@ -1623,6 +1623,52 @@ await t('the letterhead fields templates actually use still render', async () =>
   assert.equal(templateValue('not_a_field', {}, s), '')
 })
 
+section('a style number names one garment, not every garment it is a prefix of')
+// costFor() is the call that spends real money at the distributor — it picks the SKU and the cost
+// that go onto the purchase order. The style test was a bare `text.includes(style)` taking the
+// FIRST row that matched by rowid, and a style number is a prefix of other style numbers. So a
+// youth or premium garment was costed and ORDERED as the adult basic sitting earlier in the table,
+// with `matched: true` and no warning anywhere. Every one of these is in the shipped catalogue.
+await t('a youth or premium style is not ordered as the adult basic', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  for (const [text, sku] of [
+    ['Gildan 5000B youth tee, navy', 'G500B'],   // was G500   — adult, wrong price, wrong blank
+    ['Bella+Canvas 3001CVC in heather', 'BC3001CVC'], // was BC3001
+    ['Bella 3001Y', 'BC3001Y'],                  // was BC3001
+    ['Gildan 42000 performance', 'G420'],        // was G200   — "42000" contains "2000"
+  ]) {
+    assert.equal(sup.costFor(text)?.sku, sku, `${text} must order ${sku}`)
+  }
+})
+await t('…and the ordinary styles still match exactly as before', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  for (const [text, sku] of [
+    ['Gildan 5000 Tee — Black', 'G500'],
+    ['Comfort Colors 1717 in Blue', 'CC1717'],
+    ['Port & Company PC61 navy', 'PC61'],
+    ['Gildan 18500 hoodies', 'G185'],
+    ['24 black tees', 'G500'],                   // no style at all — falls through to type
+  ]) {
+    assert.equal(sup.costFor(text)?.sku, sku, `${text} must still order ${sku}`)
+  }
+})
+await t('a style has to sit on its own, not inside a longer run', async () => {
+  const { styleMatches } = await import('../lib/suppliers.mjs')
+  assert.equal(styleMatches('gildan 5000 tee', '5000'), true)
+  assert.equal(styleMatches('gildan 5000b tee', '5000'), false)
+  assert.equal(styleMatches('gildan 42000', '2000'), false)
+  assert.equal(styleMatches('bella 3001cvc', '3001'), false)
+  assert.equal(styleMatches('port & company pc61 navy', 'PC61'), true)
+})
+
 section('the estimate editor escapes what arrives as an object key')
 // public/js/views/estimates.js escapes every string field it knows about — description, detail,
 // qty, unit_price — and rendered three object-derived ones raw: the size-grid KEYS, the size-grid
