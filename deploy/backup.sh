@@ -26,6 +26,15 @@ DEST="$BACKUP_ROOT/$STAMP"
 command -v sqlite3 >/dev/null 2>&1 || { echo "sqlite3 is not installed — apt-get install -y sqlite3" >&2; exit 1; }
 [ -d "$DATA_ROOT" ] || { echo "no data directory at $DATA_ROOT (set DATA_ROOT)" >&2; exit 1; }
 
+# Refuse up front rather than half-succeeding. Roughly 2x the data size covers the uncompressed
+# snapshot plus its archive; failing here is a loud, actionable exit rather than a partial run.
+AVAIL="$(df -Pk "$(dirname "$BACKUP_ROOT")" 2>/dev/null | awk 'NR==2{print $4}')"
+NEED="$(du -sk "$DATA_ROOT" 2>/dev/null | cut -f1)"
+if [ -n "$AVAIL" ] && [ -n "$NEED" ] && [ "$AVAIL" -le $((NEED * 2)) ]; then
+  echo "not enough free space for a backup: ${AVAIL}K available, about $((NEED * 2))K needed" >&2
+  exit 1
+fi
+
 mkdir -p "$DEST"
 failed=0
 count=0
@@ -53,10 +62,24 @@ while IFS= read -r bk; do
   sqlite3 "$bk" 'PRAGMA quick_check;' >/dev/null 2>&1 || { echo "VERIFY FAILED: $bk is not a readable database" >&2; failed=$((failed + 1)); }
 done < <(find "$DEST" -name '*.db')
 
-tar czf "$DEST.tar.gz" -C "$BACKUP_ROOT" "$STAMP" 2>/dev/null && rm -rf "$DEST"
+# Test the tar. This used to be `tar ... 2>/dev/null && rm -rf "$DEST"`, with the exit status
+# never checked and the reason thrown away — so a failed archive (a full disk being the realistic
+# cause) still reached the "backup ok" line at the bottom and exited 0. Cron logged a clean run
+# every night while the newest archive was a truncated gzip, and you find out on the day you need
+# it. The `&&` also skipped the cleanup, leaving the uncompressed snapshot behind to consume more
+# of the disk that caused the failure, which retention never swept because it only matched *.tar.gz.
+if tar czf "$DEST.tar.gz" -C "$BACKUP_ROOT" "$STAMP"; then
+  rm -rf "$DEST"
+else
+  echo "FAILED to create $DEST.tar.gz — check free space on $BACKUP_ROOT" >&2
+  failed=$((failed + 1))
+  rm -rf "$DEST" "$DEST.tar.gz"
+fi
 
-# Retention.
+# Retention. Sweep stray snapshot DIRECTORIES too, not just archives — a night that failed before
+# the tar leaves one behind, and without this they accumulate forever.
 find "$BACKUP_ROOT" -maxdepth 1 -name '*.tar.gz' -mtime "+$KEEP_DAYS" -delete 2>/dev/null
+find "$BACKUP_ROOT" -maxdepth 1 -mindepth 1 -type d -mtime "+$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null
 
 SIZE="$(du -h "$DEST.tar.gz" 2>/dev/null | cut -f1)"
 
@@ -68,7 +91,7 @@ SIZE="$(du -h "$DEST.tar.gz" 2>/dev/null | cut -f1)"
 # A failed upload is reported but does NOT fail the local backup, which already succeeded.
 # ---------------------------------------------------------------------------
 APP_DIR="${APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-if [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ -f "$APP_DIR/bin/backup-drive.mjs" ]; then
+if [ -f "$DEST.tar.gz" ] && [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ -f "$APP_DIR/bin/backup-drive.mjs" ]; then
   if node --no-warnings "$APP_DIR/bin/backup-drive.mjs" upload "$DEST.tar.gz"; then
     offsite=" · copied off-site"
   else

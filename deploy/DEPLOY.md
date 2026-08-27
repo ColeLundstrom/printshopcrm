@@ -57,9 +57,13 @@ docker run -d --name printshopcrm \
   -e PSC_SECRET=your-generated-secret \
   -e PSC_AUTH=1 \
   -v printshopcrm-data:/data \
-  -v printshopcrm-uploads:/app/public/uploads \
   ghcr.io/colelundstrom/printshopcrm:latest
 ```
+
+Customer artwork lives under `/data/uploads` (symlinked from `public/uploads`), so the single
+`printshopcrm-data` volume covers both the database and the art. This matters on Fly and Render,
+which persist only what they mount — a second uploads mount is not needed and, if the platform
+does not honour it, would silently drop every proof on each deploy.
 
 Images are published for x86 and ARM, so this runs on a cheap ARM VPS or a Raspberry Pi too.
 

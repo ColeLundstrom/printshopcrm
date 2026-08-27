@@ -24,15 +24,25 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY . .
 
 # Data lives on a volume, never in the image or the app directory: a container rebuild must not
-# take the shop's database or its customer artwork with it.
-#   /data                 SQLite databases (PSC_DB)
-#   /app/public/uploads   customer artwork and shop logos
+# take the shop's database or its customer artwork with it. BOTH live under /data, and uploads
+# reach it through a symlink rather than a second mount.
+#
+# That is not tidiness. Fly and Render ignore a Dockerfile VOLUME entirely — they persist only
+# what their own config mounts, and both blueprints mount exactly one disk, at /data. So with
+# uploads declared as a separate VOLUME, every `fly deploy` and every Render deploy silently
+# deleted every art proof and shop logo the shop had ever uploaded. The database survived, so the
+# filenames were all still in art_versions and settings: the app came back up looking healthy,
+# with a broken image on every proof page, every customer approval link, and every PDF.
+#
+#   /data          SQLite databases (PSC_DB)
+#   /data/uploads  customer artwork and shop logos, symlinked from /app/public/uploads
 ENV PSC_DB=/data/printshop.db
-VOLUME ["/data", "/app/public/uploads"]
+VOLUME ["/data"]
 
 # `node` (uid 1000) ships with the base image. Running as root inside a container that serves the
 # internet is the kind of default nobody revisits later.
-RUN mkdir -p /data /app/public/uploads && chown -R node:node /data /app/public/uploads
+RUN mkdir -p /data/uploads && rm -rf /app/public/uploads && ln -s /data/uploads /app/public/uploads \
+    && chown -R node:node /data /app/public
 USER node
 
 EXPOSE 3333

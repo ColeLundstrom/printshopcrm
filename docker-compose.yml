@@ -47,7 +47,6 @@ services:
 
     volumes:
       - printshopcrm-data:/data
-      - printshopcrm-uploads:/app/public/uploads
 
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3333/health"]
@@ -60,4 +59,3 @@ volumes:
   # Named volumes, so `docker compose down` cannot take the shop's data with it.
   # `docker compose down -v` still will — that flag means "delete my data".
   printshopcrm-data:
-  printshopcrm-uploads:

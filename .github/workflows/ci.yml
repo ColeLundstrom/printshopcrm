@@ -119,6 +119,21 @@ jobs:
           docker exec psc sh -c 'test -f /data/printshop.db' \
             || { echo "::error::no database at /data — PSC_DB is not pointing at the volume"; exit 1; }
 
+      # Uploads are the half this job used to miss. Fly and Render ignore a Dockerfile VOLUME and
+      # persist only what their own config mounts — one disk, at /data — so while uploads were a
+      # separate VOLUME every deploy silently destroyed every art proof and shop logo, and the app
+      # came back up looking healthy with a broken image on every proof and every PDF.
+      - name: Customer artwork is on the persistent disk, not the container filesystem
+        run: |
+          docker exec psc sh -c 'test -L /app/public/uploads' \
+            || { echo "::error::/app/public/uploads is not a symlink — artwork is on the container filesystem and dies on every deploy"; exit 1; }
+          docker exec psc sh -c 'test -d /data/uploads' \
+            || { echo "::error::/data/uploads does not exist — the uploads symlink points nowhere"; exit 1; }
+          docker exec psc sh -c 'echo proof-bytes > /app/public/uploads/ci-proof.png'
+          docker exec psc sh -c 'test -f /data/uploads/ci-proof.png' \
+            || { echo "::error::a file written to public/uploads did not land on the volume"; exit 1; }
+          echo "uploads resolve onto the persistent volume"
+
       - name: Data survives a container replacement
         run: |
           docker rm -f psc
@@ -130,7 +145,13 @@ jobs:
           done
           docker exec psc2 sh -c 'test -f /data/printshop.db' \
             || { echo "::error::database did not survive the container being replaced"; exit 1; }
-          echo "database survived container replacement"
+          # The artwork written by the previous container must still be here and still reachable
+          # through the app's own path. A shop's proofs matter as much as its rows.
+          docker exec psc2 sh -c 'test -f /data/uploads/ci-proof.png' \
+            || { echo "::error::customer artwork did not survive the container being replaced"; exit 1; }
+          docker exec psc2 sh -c 'test -f /app/public/uploads/ci-proof.png' \
+            || { echo "::error::artwork survived on the volume but is not reachable at public/uploads"; exit 1; }
+          echo "database and customer artwork both survived container replacement"
 
       - name: docker compose brings the stack up
         run: |
