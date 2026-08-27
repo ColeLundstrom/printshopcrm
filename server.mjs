@@ -3863,6 +3863,17 @@ app.post('/api/v1/jobs/:id/stage', wrap((req, res) => {
 
 app.get('/api/v1/payments', wrap((req, res) => {
   const limit = v1Limit(req.query); const off = v1Offset(req.query)
+  // docs/API.md has documented `?invoice_id=` narrowing this list since the endpoint shipped, and
+  // the handler ignored it — so an integration reconciling one invoice was silently handed every
+  // payment in the shop and had no way to tell that its filter had not been applied.
+  const raw = req.query.invoice_id
+  if (raw !== undefined) {
+    const invoiceId = Number(raw)
+    if (!Number.isInteger(invoiceId) || invoiceId <= 0) {
+      return res.status(400).json({ error: 'invoice_id must be a positive whole number', code: 'invalid_invoice_id' })
+    }
+    return v1List(res, all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id DESC LIMIT ? OFFSET ?', invoiceId, limit + 1, off).map(v1Payment), limit)
+  }
   v1List(res, all('SELECT * FROM payments ORDER BY id DESC LIMIT ? OFFSET ?', limit + 1, off).map(v1Payment), limit)
 }))
 

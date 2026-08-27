@@ -316,6 +316,7 @@ try {
   chk('v1 refuses a unit_price that overflows the total', `${r.status} ${r.text}`, '^400 .*invalid_unit_price')
   chk('…rather than storing a null subtotal', String(r.json?.subtotal ?? 'none'), '^none$')
 
+
   /* ---------- an invoice raised by mistake must be recoverable from the UI ----------
    * There was no DELETE route, PUT edits only the due date and PO number, and the estimate behind
    * a converted invoice refuses to be deleted. So an invoice raised against the wrong customer
@@ -533,6 +534,38 @@ try {
     const list = await req('GET', `/api/jobs/${poJob}/purchase-orders`)
     chk('…and the job still has exactly one purchase order',
       String((list.json?.purchase_orders || []).length), '^1$')
+  }
+
+  /* ---------- a documented filter must actually filter ----------
+   * docs/API.md has documented `?invoice_id=` on GET /api/v1/payments since the endpoint shipped.
+   * The handler ignored it, so an integration reconciling ONE invoice was handed every payment in
+   * the shop — and had no way to tell its filter had not been applied. */
+  {
+    const mk = async (name, amount) => {
+      let x = await req('POST', '/api/contacts', { body: { name, email: `${name.toLowerCase().replace(/\W+/g, '-')}@e2e.test` } })
+      const cid = x.json?.id ?? x.json?.contact?.id
+      x = await req('POST', '/api/estimates', { body: { contact_id: cid, items: [{ description: 'tees', sizes: { M: 10 }, unit_price: amount / 10, taxable: false }] } })
+      const eid = x.json?.id ?? x.json?.estimate?.id
+      x = await req('POST', `/api/estimates/${eid}/convert`, { body: { due_date: '2026-09-01' } })
+      const iid = x.json?.invoice_id
+      await req('POST', `/api/invoices/${iid}/payments`, { body: { amount, method: 'check' } })
+      return iid
+    }
+    const invA = await mk('Filter Alpha', 100)
+    const invB = await mk('Filter Bravo', 250)
+
+    const all_ = await req('GET', '/api/v1/payments', asKey())
+    chk('v1 payments lists payments across invoices', String((all_.json?.data || []).length >= 2), '^true$')
+
+    const onlyA = await req('GET', `/api/v1/payments?invoice_id=${invA}`, asKey())
+    const rowsA = onlyA.json?.data || []
+    chk('v1 payments honours the documented ?invoice_id= filter',
+      `${rowsA.length}|${rowsA.every((p) => p.invoice_id === invA)}`, '^1\\|true$')
+    const onlyB = await req('GET', `/api/v1/payments?invoice_id=${invB}`, asKey())
+    chk('…and narrows to a different invoice too', String((onlyB.json?.data || [])[0]?.amount ?? ''), '^250$')
+
+    const bad = await req('GET', '/api/v1/payments?invoice_id=notanumber', asKey())
+    chk('…and refuses a filter it cannot apply rather than ignoring it', `${bad.status} ${bad.text}`, '^400 .*invalid_invoice_id')
   }
 
   /* ---------- an emailed link points at this install, not at whoever asked ----------
