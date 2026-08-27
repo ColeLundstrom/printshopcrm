@@ -1832,7 +1832,7 @@ app.post('/api/estimates/:id/mockups', upload.single('file'), reTenant, wrap((re
   if (!mockupGate(req, res)) return
   const eid = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', eid)
-  if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  if (!e) { dropUpload(req); return res.status(404).json({ error: 'Estimate not found' }) }
   if (!req.file) return res.status(400).json({ error: 'Choose a file' })
   const artErr = validArtFile(req.file)
   if (artErr) { try { unlinkSync(req.file.path) } catch { /* best effort */ } return res.status(400).json({ error: artErr }) }
@@ -2290,6 +2290,12 @@ app.get('/api/art', wrap((_req, res) => {
 // Art must actually be art: allowed types only, and the magic bytes must match — a text file or
 // a corrupt PNG must never become a customer-facing proof with a broken image.
 const ART_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'application/pdf'])
+// multer writes the upload to disk BEFORE the handler runs, so any early return that does not go
+// on to keep the file must delete it — otherwise every rejected upload leaks a file. The 404 paths
+// (uploading art against a job or estimate that does not exist) did not, so a loop of uploads to a
+// nonexistent id filled the disk. Call this on every non-keeping return from an upload route.
+const dropUpload = (req) => { if (req.file?.path) { try { unlinkSync(req.file.path) } catch { /* already gone */ } } }
+
 function validArtFile(file) {
   if (!ART_MIMES.has(file.mimetype)) return `Unsupported file type (${file.mimetype}) — use PNG, JPG, WebP, SVG, or PDF`
   try {
@@ -2308,7 +2314,7 @@ function validArtFile(file) {
 app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, res) => {
   const jobId = +req.params.id
   const j = get('SELECT * FROM jobs WHERE id = ?', jobId)
-  if (!j) return res.status(404).json({ error: 'Job not found' })
+  if (!j) { dropUpload(req); return res.status(404).json({ error: 'Job not found' }) }
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
   const artErr = validArtFile(req.file)
   if (artErr) { try { unlinkSync(req.file.path) } catch {} return res.status(400).json({ error: artErr }) }

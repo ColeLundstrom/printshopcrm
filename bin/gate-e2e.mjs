@@ -372,6 +372,14 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- signup never leaks a database error to the public page ----------
+   * The email check and the slug generator are both check-then-insert, so a race collides at the
+   * INSERT — and that used to surface "UNIQUE constraint failed: tenants.owner_email" verbatim on
+   * the public signup form. A duplicate must come back as a clean 409, never raw SQL. */
+  r = await req('POST', '/api/auth/signup', { cookies: false, body: { shop_name: 'Dupe Shop', owner_name: 'X', owner_email: 'gate@e2e.test', password: 'DupePass-123456' } })
+  chk('a duplicate-email signup is a clean 409', String(r.status), '^409$')
+  chk('…and never leaks the SQL constraint text', r.text, '^(?!.*(UNIQUE|SQLITE|constraint)).*$')
+
   /* ---------- the whole-data export streams valid JSON ----------
    * This is the anti-lock-in "get all your data out" path. It used to build the entire graph in
    * memory and pretty-print it into a second copy — ~34 MB of heap for one export on a box with a
