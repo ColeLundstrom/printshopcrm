@@ -259,6 +259,38 @@ try {
   })
   chk('v1 still allows an explicit zero-dollar line', r.text, 'EST-')
 
+  /* ---------- a resale account is never taxed, whichever door the estimate came in ----------
+   * taxRateFor() was extracted precisely so this could not be got wrong, and then two paths that
+   * could not import it grew their own copy of the arithmetic without the tax_exempt lookup. The
+   * AI receptionist and the in-app assistant both billed sales tax to wholesale customers — the
+   * one group of buyers guaranteed to notice. Storing the rate matters as much as computing it:
+   * an estimate saved with a NULL tax_rate is re-labelled from the shop's current setting on the
+   * public page and re-derived on every edit, so the error cannot be corrected by hand. */
+  r = await req('POST', '/api/contacts', {
+    body: { name: 'Northgate Resale', email: 'ap@northgate.test', tax_exempt: 1, tax_exempt_id: 'RESALE-9921' },
+  })
+  const exemptId = r.json?.id ?? r.json?.contact?.id
+  chk('a tax-exempt customer can be created', String(exemptId ?? ''), '^\\d+$')
+
+  r = await req('POST', '/api/estimates', {
+    body: { contact_id: exemptId, items: [{ description: '48 hoodies', sizes: { M: 48 }, unit_price: 32, taxable: true }] },
+  })
+  chk('estimates API: a resale account is quoted untaxed', String(r.json?.tax ?? r.json?.estimate?.tax ?? 'missing'), '^0$')
+
+  r = await req('POST', '/api/assistant', { body: { message: 'quote 48 navy hoodies, 2 color front, for Northgate' } })
+  chk('the assistant answers a quote request', String(r.status), '^200$')
+  {
+    // Read the estimate back off the API rather than trusting the chat text.
+    const list = await req('GET', '/api/estimates')
+    const rows = list.json?.estimates || list.json || []
+    const mine = (Array.isArray(rows) ? rows : []).filter((e) => e.contact_id === exemptId)
+    const drafted = mine.find((e) => Number(e.tax) === 0 && Number(e.tax_rate) === 0)
+    chk('assistant: the resale estimate carries no tax AND stores rate 0', String(!!drafted), '^true$')
+    // A stored NULL is the silent half of this bug: it reads as 0 in JSON but re-derives on edit.
+    const nullRate = mine.some((e) => e.tax_rate === null || e.tax_rate === undefined)
+    chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
+  }
+
   /* ---------- a failed start must LOOK like a failure ----------
    * This shipped broken: a fatal bind failure was logged by the uncaughtException handler, which
    * left no work on the event loop, so Node exited — with status 0. Docker, Fly, Render and any

@@ -8,7 +8,7 @@ import {
   all, get, run, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
-  scheduleFor, addBusinessDays, businessDaysBetween,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -384,7 +384,7 @@ function queueEmail({ contact, subject, template, vars, kind, deliver = true }) 
   const s = getSettings()
   const slug = curSlug()
   const merged = { first_name: String(contact?.name || '').split(' ')[0], ...vars }
-  const body = String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => merged[k] ?? s[k] ?? '')
+  const body = String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => templateValue(k, merged, s))
   const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     contact?.id ?? null, contact?.email ?? '', subject, body, kind, deliver ? 'logged' : 'draft', now()).lastInsertRowid)
   recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'email', subject, body, kind })
@@ -1399,11 +1399,8 @@ app.get('/api/contacts', wrap((req, res) => {
  * Extracted so new paths can't quietly forget the lookup (they did: the v56 reorder and API
  * routes both taxed exempt customers until this existed).
  */
-const taxRateFor = (contactId, override) => {
-  if (override != null && override !== '') return Number(override) || 0
-  const buyer = contactId ? get('SELECT tax_exempt FROM contacts WHERE id = ?', Number(contactId)) : null
-  return buyer?.tax_exempt ? 0 : Number(getSettings().tax_rate) || 0
-}
+// taxRateFor now lives in lib/db.mjs so lib/agent.mjs and lib/assistant.mjs can use the same
+// one — both of them were quoting sales tax to tax-exempt buyers because they could not reach it.
 
 /**
  * "Same as last time" — the reorder every shop hears weekly, as one click. Clones the
@@ -1552,8 +1549,7 @@ app.post('/api/estimates', wrap((req, res) => {
   // A wholesale/resale account is tax exempt, so every quote for it is untaxed unless the caller
   // explicitly passes a rate. Flagged on the customer so nobody has to remember per quote.
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
-  const buyer = get('SELECT tax_exempt FROM contacts WHERE id = ?', +b.contact_id)
-  const rate = b.tax_rate != null ? Number(b.tax_rate) || 0 : (buyer?.tax_exempt ? 0 : Number(s.tax_rate) || 0)
+  const rate = taxRateFor(+b.contact_id, b.tax_rate)
   const t = computeTotals(items, rate, getUpcharges())
   const num = nextEstimateNumber()
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',

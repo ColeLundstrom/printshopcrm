@@ -773,6 +773,42 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('templates: a merge field is not a way to read the settings row')
+// This shipped exploitable. Both renderers fell back to the whole settings row, so putting
+// {{stripe_secret}} in a message body rendered the shop's live Stripe key — and any user who
+// can reply to a conversation can write a body. The result is stored in the outbox and readable
+// back over the API, so it was a full credential dump with an email delivery option attached.
+await t('a credential named as a merge field renders empty, not as the secret', async () => {
+  const { templateValue, SECRET_KEYS } = await import('../lib/db.mjs')
+  const settings = { shop_name: 'Rebel Ink Press' }
+  for (const k of SECRET_KEYS) settings[k] = `SECRET-VALUE-${k}`
+  for (const k of SECRET_KEYS) {
+    assert.equal(templateValue(k, {}, settings), '', `${k} must not be reachable from a template`)
+  }
+})
+await t('every settings key that is not letterhead is unreachable too', async () => {
+  const { templateValue, TEMPLATE_SETTING_KEYS } = await import('../lib/db.mjs')
+  // A blocklist would have closed only the keys we knew about. Anything not named is refused,
+  // so the next integration's token is safe before anyone remembers to add it to a list.
+  const settings = { qbo_realm_id: 'RE4LM', smtp_user: 'ops@shop.test', stripe_publishable: 'pk_live_x' }
+  for (const k of Object.keys(settings)) {
+    assert.ok(!TEMPLATE_SETTING_KEYS.has(k), `${k} is not letterhead`)
+    assert.equal(templateValue(k, {}, settings), '')
+  }
+})
+await t('the letterhead fields templates actually use still render', async () => {
+  const { templateValue } = await import('../lib/db.mjs')
+  const s = { shop_name: 'Rebel Ink Press', shop_email: 'orders@example.com', shop_phone: '(714) 555-0142' }
+  assert.equal(templateValue('shop_name', {}, s), 'Rebel Ink Press')
+  assert.equal(templateValue('shop_email', {}, s), 'orders@example.com')
+  // Caller-supplied vars still win, and still beat a same-named setting.
+  assert.equal(templateValue('shop_name', { shop_name: 'Override' }, s), 'Override')
+  assert.equal(templateValue('first_name', { first_name: 'Dana' }, s), 'Dana')
+  // An unknown field is empty rather than left as literal {{…}}, which is the long-standing
+  // behaviour customers' templates already depend on.
+  assert.equal(templateValue('not_a_field', {}, s), '')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
