@@ -5062,22 +5062,44 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   }
 
   // Returning from Stripe → confirm the session actually paid, then record it (idempotent).
+  //
+  // The confirm used to be wrapped in a bare try/catch and the success page rendered regardless, so
+  // a thrown confirm — a rejected key, a network blip, Stripe being slow — printed "✓ Thank you,
+  // your payment went through" to a customer whose card HAD been charged (Stripe only redirects
+  // here after charging) while amount_paid never moved. It then offered a "Pay the remaining"
+  // button, which is how the same balance gets paid twice. Say which of the three things happened.
   if (req.query.session_id) {
+    let outcome = 'unconfirmed'
     try {
       const session = await confirmSession(s, String(req.query.session_id))
       if (session.paid && String(session.metadata?.invoice) === String(id)) {
         recordStripePayment(inv, session, String(req.query.session_id), session.metadata?.kind)
+        outcome = 'paid'
+      } else {
+        outcome = 'not_paid'
       }
-    } catch (e) { console.error('pay-confirm:', e.message) }
+    } catch (e) {
+      console.error('pay-confirm:', e.message)
+      // Loud, because the money may be real and only the shop can reconcile it.
+      logActivity('payment', `Could not confirm a card payment on ${inv.invoice_number} — check Stripe for session ${String(req.query.session_id).slice(0, 40)}`, { contact_id: inv.contact_id })
+    }
     const fresh = get('SELECT * FROM invoices WHERE id = ?', id)
     const bal = round2(fresh.amount_due - fresh.amount_paid)
-    return res.send(page('Payment received', `<div class="wrap"><div class="card">
-      <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${fresh.invoice_number}</div></div></div>
-      <div class="ok">✓ Thank you — your payment went through.</div>
+    const headline = outcome === 'paid'
+      ? '<div class="ok">✓ Thank you — your payment went through.</div>'
+      : outcome === 'not_paid'
+        ? `<div class="ok">This payment was not completed. Nothing has been charged — you can try again below.</div>`
+        : `<div class="ok">We could not confirm this payment just yet. <strong>Do not pay again.</strong> If your card was charged it will be applied to ${esc(fresh.invoice_number)}; ${esc(s.shop_name)} has been notified and will be in touch.</div>`
+    // Only invite another payment when we KNOW the first one did not happen. Offering it after a
+    // failed confirm is exactly how a customer pays the same balance twice.
+    const offerPay = bal > 0 && outcome === 'not_paid'
+    return res.send(page(outcome === 'paid' ? 'Payment received' : 'Payment status', `<div class="wrap"><div class="card">
+      <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">${outcome === 'paid' ? 'RECEIPT' : 'INVOICE'}</div><div class="num2">${fresh.invoice_number}</div></div></div>
+      ${headline}
       <div class="totals"><div><span>Invoice total</span><span>${money(fresh.amount_due)}</span></div>
         <div><span>Paid</span><span>${money(fresh.amount_paid)}</span></div>
         <div class="grand"><span>${bal > 0 ? 'Remaining balance' : 'Balance'}</span><span>${money(bal)}</span></div></div>
-      ${bal > 0 ? `<form method="GET" action="/p/pay/${id}"><input type="hidden" name="k" value="${req.query.k}">${req.query.s ? `<input type="hidden" name="s" value="${esc(req.query.s)}">` : ''}<button class="btn">Pay the remaining ${money(bal)}</button></form>` : ''}
+      ${offerPay ? `<form method="GET" action="/p/pay/${id}"><input type="hidden" name="k" value="${req.query.k}">${req.query.s ? `<input type="hidden" name="s" value="${esc(req.query.s)}">` : ''}<button class="btn">Pay the remaining ${money(bal)}</button></form>` : ''}
     </div><div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>`))
   }
 

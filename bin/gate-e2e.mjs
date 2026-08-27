@@ -598,6 +598,18 @@ try {
     try { poisonedLink = JSON.parse(poisoned)?.link || '' } catch { poisonedLink = poisoned }
     chk('an emailed link ignores a poisoned Host header', poisonedLink, '^http://127\\.0\\.0\\.1:')
     chk('…and never carries the attacker\'s host', poisonedLink.includes('evil.attacker.example') ? 'leaked' : 'clean', '^clean$')
+
+    /* ---------- the pay page must not claim a payment it could not confirm ----------
+     * The Stripe confirm was wrapped in a bare try/catch and the success page rendered regardless,
+     * so a rejected key or a network blip printed "✓ your payment went through" to a customer whose
+     * card HAD been charged (Stripe only redirects here after charging) while amount_paid never
+     * moved — and then offered a "Pay the remaining" button, which is how one balance gets paid
+     * twice. The gate shop has no Stripe configured, so the confirm fails: exactly that case. */
+    const payPath = poisonedLink.replace(/^https?:\/\/[^/]+/, '')
+    const back = await req('GET', `${payPath}&session_id=cs_test_gate_fake`, { cookies: false })
+    chk('an unconfirmable payment is not reported as successful', back.text.includes('your payment went through') ? 'claimed' : 'honest', '^honest$')
+    chk('…the customer is told not to pay it twice', back.text, 'Do not pay again')
+    chk('…and is not handed a button to do so', back.text.includes('Pay the remaining') ? 'offered' : 'withheld', '^withheld$')
   }
 
   /* ---------- ...and the SECOND copy of the cookie parser must survive it too ----------
