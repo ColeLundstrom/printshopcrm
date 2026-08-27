@@ -8,7 +8,7 @@ import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, onContactCreated,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -544,6 +544,11 @@ const fireAuto = (trigger, ctx) => {
   try { fire(trigger, ctx, autoDeps) } catch (e) { console.error('automation:', e.message) }
   try { dispatchSubscriptions(trigger, subscriptionData(ctx)) } catch (e) { console.error('webhook dispatch:', e.message) }
 }
+
+// AI-created contacts (receptionist, quick-quote/autopilot) create their rows inside lib/, which
+// cannot import this file — they emit a signal through db.mjs instead. Wire it to the same
+// automation dispatch the manual and API paths use, so a bot-captured lead gets the nurture drip.
+onContactCreated((contact) => { try { fireAuto('contact.created', { contact }) } catch (e) { console.error('contact.created:', e && e.message) } })
 
 /* ================= AUTH & MULTI-TENANCY =================
  * When PSC_AUTH=1, every request is resolved to a logged-in shop and run inside that shop's
