@@ -363,6 +363,23 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- the whole-data export streams valid JSON ----------
+   * This is the anti-lock-in "get all your data out" path. It used to build the entire graph in
+   * memory and pretty-print it into a second copy — ~34 MB of heap for one export on a box with a
+   * 40 MB budget for all 14 shops, i.e. an OOM exactly when a shop needed to leave. It now streams
+   * row by row; here we just prove the streamed bytes are still valid, complete JSON. */
+  r = await req('GET', '/api/export/all.json')
+  chk('the full export returns 200', String(r.status), '^200$')
+  {
+    let parsed = null
+    try { parsed = JSON.parse(r.text) } catch { /* leave null */ }
+    chk('…and the streamed bytes are valid JSON', String(!!parsed), '^true$')
+    chk('…with every table present', Object.keys(parsed?.tables || {}).sort().join(','),
+      'activities,art_versions,contacts,estimates,invoices,jobs,line_items,payments')
+    // The estimate created earlier must be in it — proving rows actually stream, not just the shell.
+    chk('…and it contains the shop\'s real rows', String((parsed?.tables?.estimates || []).length > 0), '^true$')
+  }
+
   /* ---------- a board-created job must count as real pieces ----------
    * The job form takes a free-text "24 S / 60 M / 80 L / 36 XL", stored as a string the piece
    * counter could not parse — so a job created on the board booked zero press minutes, printed a

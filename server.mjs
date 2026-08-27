@@ -5,7 +5,7 @@ import { mkdirSync, existsSync, readFileSync, statSync, unlinkSync } from 'node:
 import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  all, get, run, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
+  all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor,
@@ -4140,11 +4140,55 @@ app.get('/api/export/:table.csv', requireRole('manager'), wrap((req, res) => {
 }))
 
 /** Everything, as one JSON file. No support ticket, no fee, no waiting. */
+// The whole-shop export STREAMS, one row at a time. It used to load every table into memory and
+// then JSON.stringify(out, null, 2) the entire graph — building a second, pretty-printed copy of
+// everything at once. On a real shop (one prod tenant has 2,836 contacts; the largest table,
+// activities, runs to tens of thousands of rows) that was a ~17 MB string on top of the data, and
+// this app runs 14 shops in 40 MB. So the one feature whose entire job is "get all your data out,
+// no lock-in" was the one most likely to OOM at the moment a shop actually needed it. Streaming
+// bounds memory to a single row, and the AGPL anti-lock-in promise holds at any size.
+//
+// STREAM_TABLES carry a raw SQL string so they can be iterated; the derived line_items view is
+// streamed from the estimates cursor with the contact name JOINed in (the old code did a contact
+// lookup per estimate — an N+1). EXPORTS (used by the per-table CSV) stays as-is for small pulls.
+const STREAM_TABLES = {
+  contacts: 'SELECT * FROM contacts ORDER BY id',
+  estimates: 'SELECT * FROM estimates ORDER BY id',
+  invoices: 'SELECT * FROM invoices ORDER BY id',
+  payments: 'SELECT * FROM payments ORDER BY id',
+  jobs: 'SELECT * FROM jobs ORDER BY id',
+  activities: 'SELECT * FROM activities ORDER BY id',
+  art_versions: 'SELECT * FROM art_versions ORDER BY id',
+}
 app.get('/api/export/all.json', requireRole('manager'), wrap((_req, res) => {
-  const out = { exported_at: now(), shop: getSettings().shop_name, tables: {} }
-  for (const [k, fn] of Object.entries(EXPORTS)) out.tables[k] = fn()
   res.type('application/json').setHeader('Content-Disposition', 'attachment; filename="printshopcrm-export.json"')
-  res.send(JSON.stringify(out, null, 2))
+  res.write(`{\n  "exported_at": ${JSON.stringify(now())},\n  "shop": ${JSON.stringify(getSettings().shop_name)},\n  "tables": {\n`)
+
+  const tableNames = [...Object.keys(STREAM_TABLES), 'line_items']
+  tableNames.forEach((name, ti) => {
+    res.write(`    ${JSON.stringify(name)}: [`)
+    let first = true
+    const emit = (row) => { res.write(`${first ? '\n' : ',\n'}      ${JSON.stringify(row)}`); first = false }
+
+    if (name === 'line_items') {
+      // Flatten every estimate's line items, contact name joined in — no per-row lookup.
+      for (const e of iterate('SELECT e.*, c.name AS customer, c.company FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id')) {
+        parse(e.items, []).forEach((it, i) => emit({
+          estimate_number: e.estimate_number, status: e.status, created_at: e.created_at,
+          customer: e.customer || '', company: e.company || '',
+          line: i + 1, description: it.description || '', detail: it.detail || '',
+          decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
+          qty: lineQty(it), unit_price: it.unit_price ?? 0,
+          taxable: it.taxable === false ? 'no' : 'yes',
+          amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
+        }))
+      }
+    } else {
+      for (const row of iterate(STREAM_TABLES[name])) emit(row)
+    }
+    res.write(`${first ? '' : '\n    '}]${ti < tableNames.length - 1 ? ',' : ''}\n`)
+  })
+  res.end('  }\n}\n')
 }))
 
 /**

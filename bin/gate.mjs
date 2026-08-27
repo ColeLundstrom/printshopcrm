@@ -932,6 +932,17 @@ await t('lower(email) and lower(name) lookups use an index', async () => {
   assert.ok(planE.some((r) => /USING INDEX/.test(r.detail)), `email lookup is a scan: ${planE.map((r) => r.detail).join(' | ')}`)
   assert.ok(planN.some((r) => /USING INDEX/.test(r.detail)), `name lookup is a scan: ${planN.map((r) => r.detail).join(' | ')}`)
 })
+await t('the dashboard activity feed reads an index in order, not a scan-and-sort', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const plan = db.prepare('EXPLAIN QUERY PLAN SELECT * FROM activities ORDER BY created_at DESC, id DESC LIMIT 12').all()
+  const detail = plan.map((r) => r.detail).join(' | ')
+  assert.ok(/USING INDEX/.test(detail), `activity feed is a scan: ${detail}`)
+  // The whole point is avoiding the sort — an index in the right order means no temp B-tree.
+  assert.ok(!/TEMP B-TREE/.test(detail), `activity feed still sorts in memory: ${detail}`)
+})
 
 section('receptionist: the public chat parser cannot be made to hang, or to invent an order')
 // Both of these are reachable by an anonymous visitor on /api/embed/chat/message — no login, no
