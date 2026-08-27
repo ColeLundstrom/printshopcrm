@@ -400,6 +400,20 @@ try {
     await req('POST', '/api/auth/password', { body: { current_password: 'GatePass-654321', new_password: 'GatePass-123456' } })
   }
 
+  /* ---------- malformed field types must not 500 a write ----------
+   * node:sqlite refuses to bind an object/array/undefined, surfacing as a 500. Request bodies are
+   * external input, so a client that sends {} where a string goes must get a clean answer, not a
+   * crash — and a note against a customer another tab just deleted must be 404, not an FK 500. */
+  r = await req('POST', '/api/contacts', { body: { name: 'Coerce Co', email: {}, company: ['a', 'b'] } })
+  chk('a contact with object/array fields is accepted (coerced), not 500', String(r.status), '^(200|201)$')
+  const coId = r.json?.id ?? r.json?.contact?.id
+  r = await req('PUT', `/api/contacts/${coId}`, { body: { name: 'Coerce Co', phone: { nope: 1 } } })
+  chk('updating with a malformed field does not 500', String(r.status), '^200$')
+  r = await req('PUT', `/api/contacts/${coId}`, { body: { email: 'x@x.test' } })
+  chk('…and a nameless update is a clean 400', String(r.status), '^400$')
+  r = await req('POST', '/api/contacts/99999999/note', { body: { text: 'hi' } })
+  chk('a note on a deleted/missing customer is 404, not an FK 500', String(r.status), '^404$')
+
   /* ---------- signup never leaks a database error to the public page ----------
    * The email check and the slug generator are both check-then-insert, so a race collides at the
    * INSERT — and that used to surface "UNIQUE constraint failed: tenants.owner_email" verbatim on

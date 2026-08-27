@@ -337,6 +337,12 @@ const uploadMem = multer({ storage: multer.memoryStorage(), limits: { fileSize: 
 /* ---------- helpers ---------- */
 
 const parse = (s, fallback) => { try { return JSON.parse(s) } catch { return fallback } }
+// node:sqlite refuses to bind undefined, an object, or an array, and surfaces it as
+// "Provided value cannot be bound to SQLite parameter N" — a 500. Request bodies are external
+// input, so an omitted field, or a client that sends {} or [] where a string is expected, must not
+// crash the route. Coerce anything that isn't a usable scalar to a safe string before it is bound.
+const str = (v, fallback = '') =>
+  v == null ? fallback : typeof v === 'string' ? v : (typeof v === 'number' || typeof v === 'boolean') ? String(v) : fallback
 // HTML-escape for server-rendered customer-facing /p/ pages. Shop- and customer-entered strings
 // (names, notes, item descriptions — some from PUBLIC lead/gang-sheet forms) must never reach the
 // page as live markup, or a crafted name becomes stored XSS on the customer's proof/pay page.
@@ -1540,13 +1546,14 @@ app.get('/api/contacts/:id', wrap((req, res) => {
 
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
-  if (!b.name?.trim()) return res.status(400).json({ error: 'Name is required' })
-  const tags = Array.isArray(b.tags) ? b.tags.join(',') : (b.tags || '')
+  const name = str(b.name).trim()
+  if (!name) return res.status(400).json({ error: 'Name is required' })
+  const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
   const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    b.name.trim(), b.email || '', b.phone || '', b.company || '', b.notes || '', tags,
-    b.tax_exempt ? 1 : 0, b.tax_exempt_id || '', now(), now())
+    name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
+    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), now(), now())
   const id = Number(r.lastInsertRowid)
-  logActivity('contact', `Contact created — ${b.name}`, { contact_id: id })
+  logActivity('contact', `Contact created — ${name}`, { contact_id: id })
   fireAuto('contact.created', { contact: get('SELECT * FROM contacts WHERE id = ?', id) })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
@@ -1555,10 +1562,12 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const b = req.body || {}
   const id = +req.params.id
   if (!get('SELECT id FROM contacts WHERE id = ?', id)) return res.status(404).json({ error: 'Contact not found' })
-  const tags = Array.isArray(b.tags) ? b.tags.join(',') : (b.tags || '')
+  const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
+  const name = str(b.name).trim()
+  if (!name) return res.status(400).json({ error: 'A customer needs a name.' })
   run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, updated_at=? WHERE id=?',
-    b.name, b.email || '', b.phone || '', b.company || '', b.notes || '', tags,
-    b.tax_exempt ? 1 : 0, b.tax_exempt_id || '', now(), id)
+    name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
+    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), now(), id)
   logActivity('contact', 'Contact updated', { contact_id: id })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
@@ -1615,7 +1624,13 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, wrap((req, 
 
 app.post('/api/contacts/:id/note', wrap((req, res) => {
   const id = +req.params.id
-  logActivity('note', req.body?.text || '', { contact_id: id })
+  // activities.contact_id has a foreign key, so noting a customer a second tab just deleted (or a
+  // mistyped id) threw "FOREIGN KEY constraint failed" → 500. Check the contact exists, and refuse
+  // an empty note rather than recording a blank activity row.
+  if (!get('SELECT id FROM contacts WHERE id = ?', id)) return res.status(404).json({ error: 'Customer not found' })
+  const text = str(req.body?.text).trim()
+  if (!text) return res.status(400).json({ error: 'Write something to note.' })
+  logActivity('note', text, { contact_id: id })
   res.json({ ok: true })
 }))
 
