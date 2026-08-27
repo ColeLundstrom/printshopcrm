@@ -117,7 +117,24 @@ export function toast(msg, isErr = false) {
  *
  *   undoable('Job deleted', { commit: () => api.del(...), undo: () => redraw(), delay: 6000 })
  */
+// The undoable whose commit is still pending, if any. A deferred commit that never runs is a
+// change the UI confirmed and then silently dropped, so exactly one must be outstanding at a time
+// and it must be flushed before the page can go away.
+let pendingUndoable = null
+if (typeof window !== 'undefined' && !window.__pscUndoFlush) {
+  window.__pscUndoFlush = true
+  // pagehide fires on tab close, navigation and bfcache — the moment a pending commit would be
+  // lost. Flush it synchronously so the server gets the change the user already saw succeed.
+  window.addEventListener('pagehide', () => { try { pendingUndoable?.flush() } catch { /* leaving anyway */ } })
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { pendingUndoable?.flush() } catch { /* noop */ } } })
+}
+
 export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {}) {
+  // Starting a new undoable COMMITS the previous one rather than orphaning its timer. Before, a
+  // second toast in the 6s window removed the Undo element while the old timer kept running, so
+  // the user was shown they could undo and then could not; flushing makes the earlier change final
+  // and honest.
+  try { pendingUndoable?.flush() } catch { /* previous commit best-effort */ }
   $('.toast')?.remove()
   clearTimeout(toastTimer)
   let done = false
@@ -126,10 +143,13 @@ export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {
     <span class="toast-bar"><span class="toast-bar-fill"></span></span></div>`)
   document.body.appendChild(t)
   requestAnimationFrame(() => { const f = $('.toast-bar-fill', t); if (f) { f.style.transition = `width ${delay}ms linear`; f.style.width = '0%' } })
-  const timer = setTimeout(() => { if (done) return; done = true; t.remove(); try { commit?.() } catch (e) { console.error(e) } }, delay)
-  $('.toast-undo', t).onclick = () => { if (done) return; done = true; clearTimeout(timer); t.remove(); undo?.() }
-  // Committing early (e.g. on navigation) keeps data consistent — expose a flush.
-  return { flush: () => { if (done) return; done = true; clearTimeout(timer); t.remove(); commit?.() } }
+  const settle = (fn) => { if (done) return; done = true; clearTimeout(timer); t.remove(); if (pendingUndoable === handle) pendingUndoable = null; try { fn?.() } catch (e) { console.error(e) } }
+  const timer = setTimeout(() => settle(commit), delay)
+  $('.toast-undo', t).onclick = () => settle(undo)
+  // flush commits early — called on navigation/tab-close and when the next undoable begins.
+  const handle = { flush: () => settle(commit) }
+  pendingUndoable = handle
+  return handle
 }
 
 /* ---------- modal ---------- */

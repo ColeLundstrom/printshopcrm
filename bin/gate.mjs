@@ -807,6 +807,28 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('QuickBooks: an update never wipes the bookkeeper\'s fields')
+await t('an invoice UPDATE is sparse, so QBO merges instead of replacing', async () => {
+  const { pushInvoice } = await import('../lib/quickbooks.mjs')
+  const captured = []
+  // Stub fetch: record every body, answer every call ok. Account lookups return an id.
+  const fakeFetch = async (url, opts) => {
+    const body = opts?.body ? JSON.parse(opts.body) : null
+    captured.push({ url: String(url), body })
+    if (/query/.test(String(url))) return { ok: true, status: 200, json: async () => ({ QueryResponse: { Account: [{ Id: '77' }] } }) }
+    return { ok: true, status: 200, json: async () => ({ Invoice: { Id: '1042', SyncToken: '4' } }) }
+  }
+  // An UPDATE: the invoice already has a qboId and a token.
+  await pushInvoice({
+    realmId: 'r', accessToken: 't', apiBase: 'https://qbo.test',
+    invoice: { qboId: '1042', syncToken: '3', invoice_number: 'INV-1042', amount_due: 500, created_at: '2026-08-27' },
+    customer: 'C1', lines: [{ description: 'tees', amount: 500, qty: 1 }], fetch: fakeFetch,
+  })
+  const post = captured.find((c) => c.body && c.body.Id === '1042')
+  assert.ok(post, 'the invoice update was sent')
+  assert.equal(post.body.sparse, true, 'sparse:false on an update tells QBO to clear every field we omit — the bookkeeper\'s Class, terms and memo')
+})
+
 section('a PDF never blanks or mangles a customer\'s name')
 await t('accented names render, unrenderable scripts substitute rather than vanish', async () => {
   const pdf = await import('../lib/pdf.mjs')

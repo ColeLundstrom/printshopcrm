@@ -145,16 +145,22 @@ function wireDnd() {
     if (!col || col === s.from) return
     const stage = col.dataset.stage
     const fromCol = s.from
+    const fromStage = fromCol.dataset.stage
     col.querySelector('.col-b').appendChild(s.card)
     recount()
-    // The move shows instantly, but the server write is DEFERRED behind the undo window —
-    // undo means the card slides back and the API is never called. No confirm, no data risk.
+    // Commit the move to the server NOW, not on a 6-second timer. The old code deferred the write
+    // behind the undo window, and that write was lost entirely if the tab closed, the laptop shut,
+    // or an emailed link was clicked inside those six seconds — the board said "Moved to
+    // Production" and the job was back in Prepress on the next load. Undo issues the reverse move
+    // instead, so the server always holds what the operator last saw.
+    api.patch(`/api/jobs/${s.id}/stage`, { stage })
+      .then(() => { if (stage === 'complete') boardView() })
+      .catch((err) => { toast(err.message, true); boardView() })
     undoable(`Moved to ${col.querySelector('.nm').textContent}`, {
-      commit: async () => {
-        try { await api.patch(`/api/jobs/${s.id}/stage`, { stage }); if (stage === 'complete') boardView() }
-        catch (err) { toast(err.message, true); boardView() }
+      undo: async () => {
+        fromCol.querySelector('.col-b').appendChild(s.card); recount()
+        try { await api.patch(`/api/jobs/${s.id}/stage`, { stage: fromStage }) } catch (err) { toast(err.message, true); boardView() }
       },
-      undo: () => { fromCol.querySelector('.col-b').appendChild(s.card); recount() },
     })
   })
 }

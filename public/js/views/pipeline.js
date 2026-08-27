@@ -82,14 +82,18 @@ function wireDnd() {
     const stage = col.dataset.stage
     if (stage === 'lost') return promptLost(s.id, col, s.card) // capture why we lost it
     const fromCol = s.from
+    const fromStage = fromCol.dataset.stage
     col.querySelector('.col-b').appendChild(s.card); recount()
-    // Deferred write behind the undo window — same as the job board.
+    // Commit now, undo reverses — same fix as the job board. A deferred write was lost if the tab
+    // closed inside the undo window, so a deal the pipeline showed advanced silently snapped back.
+    api.patch(`/api/opportunities/${s.id}/stage`, { stage })
+      .then(() => { if (stage === 'won') pipelineView() })
+      .catch((e) => { toast(e.message, true); pipelineView() })
     undoable(`Moved to ${col.querySelector('.nm').textContent}`, {
-      commit: async () => {
-        try { await api.patch(`/api/opportunities/${s.id}/stage`, { stage }); if (stage === 'won') pipelineView() }
-        catch (e) { toast(e.message, true); pipelineView() }
+      undo: async () => {
+        fromCol.querySelector('.col-b').appendChild(s.card); recount()
+        try { await api.patch(`/api/opportunities/${s.id}/stage`, { stage: fromStage }) } catch (e) { toast(e.message, true); pipelineView() }
       },
-      undo: () => { fromCol.querySelector('.col-b').appendChild(s.card); recount() },
     })
   })
 }
