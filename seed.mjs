@@ -21,6 +21,20 @@ for (const t of ['payments', 'art_versions', 'activities', 'jobs', 'invoices', '
 run('DELETE FROM settings')
 seedSettings()
 
+// The demo shop's identity lives HERE, not in SETTING_DEFAULTS, because the defaults are what a
+// real self-hosted install starts from. When these were defaults, every shop that followed the
+// README quickstart sent invoices headed "Rebel Ink Press — (714) 555-0142" and charged its own
+// customers 7.75% California sales tax. Both were silent. Seeding is opt-in: you only get this
+// identity by asking for the demo data, and `npm run reset` is how you clear it.
+for (const [k, v] of Object.entries({
+  shop_name: 'Rebel Ink Press',
+  shop_tagline: 'Custom apparel since 2011',
+  shop_email: 'orders@example.com',
+  shop_phone: '(714) 555-0142',
+  shop_address: '500 Main Street, Springfield, IL 62701',
+  tax_rate: '7.75',
+})) run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, v)
+
 // The automation run log dedupes by entity id, so a reseed that left it in place would
 // suppress every timed rule against the fresh data. Clear the history, keep the rules.
 try {

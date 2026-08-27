@@ -773,6 +773,61 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('ROI: sales tax is not the shop\'s money')
+// jobRoi read invoices.amount_due / estimates.total, both tax-inclusive, and labelled the result
+// "what you actually keep". Every margin on the screen read high by roughly the tax rate, and the
+// target-margin flag cleared jobs that were under the floor.
+await t('margin is computed on the pre-tax subtotal, not the taxed total', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    // $1,000 of work, 7.75% tax, so the customer pays $1,077.50 and the shop keeps $1,000.
+    const items = [{ description: '100 tees', sizes: { M: 100 }, unit_price: 10, taxable: true, garment_cost: 3 }]
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+    dbm.run(
+      'INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+      'EST-2001', 'approved', JSON.stringify(items), 1000, 77.5, 1077.5, 7.75, dbm.now(),
+    )
+    dbm.run('INSERT INTO invoices (id, estimate_id, contact_id, invoice_number, amount_due, amount_paid, created_at) VALUES (1,1,1,?,?,?,?)',
+      'INV-2001', 1077.5, 0, dbm.now())
+    const roi = jobRoi({ id: 1, estimate_id: 1, invoice_id: 1 }, dbm.getSettings())
+    assert.equal(roi.revenue, 1000, 'the $77.50 of sales tax belongs to the state, not the shop')
+    assert.ok(roi.revenue < 1077.5, 'revenue must never be the tax-inclusive total')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
+section('a fresh install is nobody else\'s shop')
+// This shipped wrong for every self-hosted install. The demo shop's name, address, phone and its
+// 7.75% California sales tax were the DEFAULTS, and createTenant() blanked them only for
+// multi-tenant signups. Single-shop mode — the README quickstart, the local trial, the docker run
+// line, and a documented production mode — inherited all of it: invoices headed with another
+// business's name and CA tax charged to customers in Texas. Both silent, both money.
+await t('the shipped defaults carry no identity and no tax rate', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.seedSettings()
+    const s = dbm.getSettings()
+    for (const k of ['shop_name', 'shop_tagline', 'shop_email', 'shop_phone', 'shop_address']) {
+      assert.equal(String(s[k] ?? ''), '', `${k} must start blank — a document omits a blank field but prints a wrong one`)
+    }
+    // 0 is visibly missing. Any non-zero default is a jurisdiction guess charged to real customers.
+    assert.equal(Number(s.tax_rate), 0, 'tax_rate must start at 0')
+    // Guard the specific values that shipped, so a re-introduction is unmistakable in the diff.
+    assert.notEqual(s.shop_name, 'Rebel Ink Press')
+    assert.notEqual(String(s.shop_phone), '(714) 555-0142')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('templates: a merge field is not a way to read the settings row')
 // This shipped exploitable. Both renderers fell back to the whole settings row, so putting
 // {{stripe_secret}} in a message body rendered the shop's live Stripe key — and any user who
