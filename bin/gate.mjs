@@ -1020,6 +1020,46 @@ await t('a style number is not an order quantity either', async () => {
   }
 })
 
+section('the app never shows a shop owner a JSON parser error')
+// api.req ran a bare JSON.parse over every response body. Not everything that answers this app
+// speaks JSON: a proxy 502/504 during a deploy, Express's default HTML 404, "unknown shop" from
+// the tenant resolver. Each threw a SyntaxError that runRouter then rendered as the whole page —
+// "Unexpected token '<', "<html>Cann"... is not valid JSON". For the length of a restart that was
+// the answer to EVERY action in the product, and there is nothing an owner can do with it.
+//
+// public/js/core.js imports under plain Node (its window access is guarded, document appears only
+// in default parameters), so this is the real function with a stubbed fetch — not a source match.
+await t('a non-JSON response becomes something a human can act on', async () => {
+  const core = await import('../public/js/core.js')
+  const realFetch = globalThis.fetch
+  const answer = (status, body) => { globalThis.fetch = async () => new Response(body, { status }) }
+  const failure = async (url = '/api/estimates/1') => {
+    try { await core.api.get(url); return null } catch (e) { return e.message }
+  }
+  try {
+    answer(502, '<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>')
+    const restarting = await failure()
+    assert.doesNotMatch(restarting, /JSON|Unexpected token/, `got ${JSON.stringify(restarting)}`)
+    assert.match(restarting, /restarting/i, 'a deploy window has a true and actionable answer')
+
+    answer(404, '<!DOCTYPE html><html><body>Cannot GET /api/nope</body></html>')
+    const missing = await failure()
+    assert.doesNotMatch(missing, /JSON|Unexpected token|DOCTYPE/, `got ${JSON.stringify(missing)}`)
+
+    // server.mjs answers this one as plain text, not JSON, on the tenant-resolution path.
+    answer(404, 'unknown shop')
+    assert.doesNotMatch(await failure(), /JSON|Unexpected token/)
+
+    // A real JSON error still reaches the user verbatim — that message is the whole point.
+    answer(400, JSON.stringify({ error: "That's more than the $900.00 balance due." }))
+    assert.match(await failure(), /more than the \$900\.00 balance due/)
+
+    // And a good response is still parsed.
+    answer(200, JSON.stringify({ ok: true, id: 7 }))
+    assert.deepEqual(await core.api.get('/api/estimates/1'), { ok: true, id: 7 })
+  } finally { globalThis.fetch = realFetch }
+})
+
 section('the deploy safety rails must not report green when they failed')
 // check-drift.sh is the only monitoring in this repo. Both git reads were
 // `$(git rev-parse … || echo '?')`, so when git REFUSED the repo — dubious ownership, not a clone,

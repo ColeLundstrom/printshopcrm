@@ -1,5 +1,22 @@
 /* Shared plumbing: fetch wrapper, DOM helpers, modal, toast, hash router. */
 
+/**
+ * What to tell a human when the response body was not JSON we could read. The status is usually
+ * the whole story — and for the restart window specifically, "try again in a moment" is the true
+ * and actionable answer.
+ */
+function httpMessage(status, text) {
+  if (status === 502 || status === 503 || status === 504) return 'The server is restarting — try that again in a moment.'
+  if (status === 413) return 'That was too large to send.'
+  if (status === 429) return 'Too many requests just now — wait a moment and try again.'
+  if (status === 404) return 'Not found.'
+  if (status === 0 || !status) return 'No connection to the server.'
+  // A short plain-text body ("Not found", "unknown shop") is worth showing; a wall of HTML is not.
+  const plain = String(text || '').trim()
+  if (plain && plain.length <= 120 && !/^\s*</.test(plain)) return plain
+  return `Something went wrong (${status}).`
+}
+
 export const api = {
   async req(method, url, body) {
     const opts = { method, headers: {} }
@@ -9,8 +26,16 @@ export const api = {
     // Session expired or not signed in → bounce to the login page.
     if (r.status === 401 && !url.startsWith('/api/auth/')) { location.href = '/login'; throw new Error('Not signed in') }
     const text = await r.text()
-    const data = text ? JSON.parse(text) : null
-    if (!r.ok) throw new Error(data?.error || `Request failed (${r.status})`)
+    // Not everything that answers this app speaks JSON. A proxy 502/504 during a deploy, an
+    // Express default HTML 404 on a mistyped path, "unknown shop" from the tenant resolver — all
+    // came back through a bare JSON.parse, which threw a SyntaxError, and the router printed it as
+    // the whole page: "Unexpected token '<', "<html>Cann"... is not valid JSON". During a restart
+    // window that was the answer to EVERY action, and there is nothing a shop owner can do with it.
+    let data = null
+    let parsed = false
+    if (text) { try { data = JSON.parse(text); parsed = true } catch { /* not JSON — say something useful */ } }
+    if (!r.ok) throw new Error((parsed && data?.error) || httpMessage(r.status, text))
+    if (!parsed && text) throw new Error(httpMessage(r.status, text))
     return data
   },
   get: (u) => api.req('GET', u),
