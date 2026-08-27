@@ -66,7 +66,7 @@ export async function autopilotView() {
                 <button data-mode="review" class="${mode === 'review' ? 'on' : ''}">
                   <strong>Review first</strong><span>Drafts the quote &amp; mockup, then stops for you to send</span></button>
                 <button data-mode="auto" class="${mode === 'auto' ? 'on' : ''}">
-                  <strong>Full auto</strong><span>Sends, approves &amp; charges the deposit too</span></button>
+                  <strong>Full auto</strong><span>Sends the estimate for you — the customer approves, nothing is charged</span></button>
               </div>
             </div>
           </div>

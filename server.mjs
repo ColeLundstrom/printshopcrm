@@ -2789,31 +2789,21 @@ function commitAutopilot(estId, contact, { steps, jobId } = {}) {
   const mark = (key, label, detail, data) => steps?.push({ key, label, detail, ...(data || {}) })
   const s = getSettings()
 
+  // Autopilot SENDS the estimate and stops. It used to, in the very next line, mark the estimate
+  // 'approved' with "Customer said yes" and raise a real invoice — before the customer had any
+  // chance to reply. That fabricated a consent that never happened: a phantom unpaid invoice in
+  // A/R for money nobody agreed to, a "won" deal in the pipeline, and a job pushed to prepress on
+  // an order that might never come. The customer's approval is a real event — they click Approve
+  // on the estimate page (/p/estimate/:id/approve), which fires estimate.approved and is where the
+  // conversion belongs. Autopilot's job ends at a sent estimate and a visible "waiting on them".
   run(`UPDATE estimates SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), estId)
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'sent')
   queueEmail({ contact, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
     vars: { estimate_number: e.estimate_number, total: money(e.total) } })
-  run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), estId)
-  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'approved')
-  mark('approved', 'Sent · approved', 'Customer said yes', { estimate_id: estId })
-
-  const invNum = nextInvoiceNumber()
-  const due = new Date(Date.now() + 15 * 864e5).toISOString().slice(0, 10)
-  const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, created_at) VALUES (?,?,?,?,?,?,?,?)',
-    estId, contact.id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
+  logActivity('estimate', `Estimate ${e.estimate_number} sent to ${contact.name} by autopilot`, { contact_id: contact.id })
+  mark('sent', 'Estimate sent', 'Waiting on the customer’s approval', { estimate_id: estId, approve_link: shareUrl('estimate', estId) })
   const job = jobId ? get('SELECT * FROM jobs WHERE id = ?', jobId) : get('SELECT * FROM jobs WHERE estimate_id = ?', estId)
-  if (job) run(`UPDATE jobs SET invoice_id=?, stage='prepress', updated_at=? WHERE id=?`, invId, now(), job.id)
-  logActivity('invoice', `Estimate ${e.estimate_number} converted — invoice ${invNum}, job ${job?.job_number || ''}`, { contact_id: contact.id, job_id: job?.id })
-  mark('production', 'Job on the board', `${job?.job_number || ''} → Prepress`, { job_id: job?.id, job_number: job?.job_number })
-
-  // NO phantom charge. Autopilot never had a real card on file, so recording a "collected" deposit
-  // would silently lose the shop half the money while every report says it was paid. Instead the
-  // invoice stays genuinely unpaid and we surface the real pay link — the deposit is only ever
-  // recorded by recordStripePayment() after the customer actually pays (or a staffer records it).
-  const deposit = round2(e.total * 0.5)
-  const inv = get('SELECT * FROM invoices WHERE id = ?', invId)
-  mark('paid', 'Deposit invoice ready', `Send the ${money(deposit)} deposit request — nothing charged yet`, { invoice_id: invId, deposit, pay_link: shareUrl('pay', invId) })
-  return { invoice: inv, job: job ? get('SELECT * FROM jobs WHERE id = ?', job.id) : null, deposit, pay_link: shareUrl('pay', invId) }
+  return { invoice: null, job: job ? get('SELECT * FROM jobs WHERE id = ?', job.id) : null, sent: true }
 }
 
 /** Fire a reviewed draft: the human approved it, now run the customer-facing steps. */

@@ -122,6 +122,16 @@ try {
   chk('deadline honoured', r.text, '"due_hint":"2026-09-30"')
   const estId = r.json?.estimate?.id
 
+  // Autopilot commit SENDS the estimate and stops. It used to immediately mark it "approved —
+  // Customer said yes" and raise a real invoice before the customer ever replied — a fabricated
+  // consent, a phantom A/R balance, and a won deal on an order that might never come.
+  if (estId) {
+    r = await req('POST', '/api/autopilot/commit', { body: { estimate_id: estId } })
+    chk('autopilot commit sends the estimate', String(r.status), '^200$')
+    chk('…and does NOT fabricate a customer approval', String(r.json?.estimate?.status), '^sent$')
+    chk('…and raises no invoice until the customer actually approves', String(r.json?.invoice), '^null$')
+  }
+
   r = await req('PUT', '/api/pricebook', {
     body: { services: { Embroidery: { axis: 'stitches', base: 7.5, perUnit: 1, minPerPiece: 5, setup: { label: 'Digitizing', fee: 75, per: 'design' } } } },
   })
