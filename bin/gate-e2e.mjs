@@ -316,6 +316,41 @@ try {
   chk('v1 refuses a unit_price that overflows the total', `${r.status} ${r.text}`, '^400 .*invalid_unit_price')
   chk('…rather than storing a null subtotal', String(r.json?.subtotal ?? 'none'), '^none$')
 
+  // `taxable` was `it.taxable !== false` — a strict identity test against the boolean, so every
+  // other way an integration says no came out TAXABLE: the string "false" that an HTML form or a
+  // spreadsheet column posts, 0, "no". A resale or freight line arrived exempt and was taxed
+  // anyway, on a document the customer signs, with a 201 and no warning. Same class as the
+  // unit_price coercion above: reject, never guess.
+  // The two canonical strings are honoured, because that is what a form post and a spreadsheet
+  // column actually send; anything else is refused rather than guessed at.
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'freight', quantity: 1, unit_price: 100, taxable: 'false' }] },
+  })
+  chk('v1 reads taxable:"false" as exempt, not as taxable', String(r.json?.items?.[0]?.taxable ?? 'missing'), '^false$')
+  for (const [label, bad] of [['0', 0], ['"no"', 'no'], ['an empty string', ''], ['an object', {}]]) {
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'freight', quantity: 1, unit_price: 100, taxable: bad }] },
+    })
+    chk(`v1 refuses taxable given as ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_taxable')
+  }
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'freight', quantity: 1, unit_price: 100, taxable: false }] },
+  })
+  chk('…while a real boolean false still marks the line exempt', String(r.json?.items?.[0]?.taxable ?? 'missing'), '^false$')
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', quantity: 1, unit_price: 100, taxable: 'TRUE' }] },
+  })
+  chk('…and the two canonical strings still work, for form-encoded bridges', String(r.json?.items?.[0]?.taxable ?? 'missing'), '^true$')
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', quantity: 1, unit_price: 100 }] },
+  })
+  chk('…and an omitted taxable still defaults to taxable', String(r.json?.items?.[0]?.taxable ?? 'missing'), '^true$')
+
 
   /* ---------- an invoice raised by mistake must be recoverable from the UI ----------
    * There was no DELETE route, PUT edits only the due date and PO number, and the estimate behind

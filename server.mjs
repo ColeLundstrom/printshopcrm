@@ -3808,12 +3808,23 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     // subtotal and total were both null. Refuse a price no shop will ever charge instead.
     const PRICE_CAP = 1e7
     if (price > PRICE_CAP) return res.status(400).json({ error: `${where}.unit_price must be at most ${PRICE_CAP}`, code: 'invalid_unit_price' })
+    // Same "reject, never coerce" rule as unit_price above, and it was broken the same way.
+    // `it.taxable !== false` is a strict identity test against the boolean, so EVERY other way an
+    // integration expresses no came out taxable: the string "false" (a form post, a spreadsheet
+    // column, a Zapier text field), 0, "no", null. A resale or freight line arrived exempt and was
+    // taxed anyway, on a document the customer signs — 8.75% of it, silently, with a 201.
+    let taxable = true
+    if (it.taxable !== undefined && it.taxable !== null) {
+      if (typeof it.taxable === 'boolean') taxable = it.taxable
+      else if (typeof it.taxable === 'string' && /^(true|false)$/i.test(it.taxable.trim())) taxable = it.taxable.trim().toLowerCase() === 'true'
+      else return res.status(400).json({ error: `${where}.taxable must be true or false`, code: 'invalid_taxable' })
+    }
     items.push({
       description: String(it.description || 'Item').slice(0, 200),
       sizes,
       unit_price: Number.isFinite(price) ? price : 0,
       decoration: String(it.decoration || '').slice(0, 80),
-      taxable: it.taxable !== false,
+      taxable,
     })
   }
   const rate = taxRateFor(contact.id)
