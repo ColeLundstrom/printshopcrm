@@ -405,11 +405,11 @@ await t('quote → email → "no" advances to a closed reply, never re-quotes', 
   const dbm = await import('../lib/db.mjs')
   const ag = await import('../lib/agent.mjs')
   const db = new DatabaseSync(':memory:')
-  db.exec(`CREATE TABLE contacts(id INTEGER PRIMARY KEY, name TEXT, email TEXT, phone TEXT, tags TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE opportunities(id INTEGER PRIMARY KEY, contact_id INT, title TEXT, stage TEXT, value REAL, source TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE estimates(id INTEGER PRIMARY KEY, contact_id INT, estimate_number TEXT, status TEXT, items TEXT, subtotal REAL, tax REAL, total REAL, tax_rate REAL, notes TEXT, created_at TEXT);
-    CREATE TABLE activities(id INTEGER PRIMARY KEY, type TEXT, description TEXT, contact_id INT, job_id INT, created_at TEXT);
-    CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);`)
+  // Build it with the REAL schema, not a hand-written subset. The subset that used to live here
+  // had drifted: it was missing contacts.tax_exempt, so this test passed against a table shape no
+  // shop has ever run, and the first code to consult that column failed only here. A fixture that
+  // diverges from production tests nothing — initDb is what every install actually gets.
+  dbm.initDb(db)
   dbm.setDefaultDb(db)
   ag.initAgent(db)
   ag.saveBotConfig({ shop_name: 'Test Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
