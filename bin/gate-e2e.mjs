@@ -298,6 +298,23 @@ try {
     })
     chk(`v1 refuses a fractional quantity of ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_quantity')
   }
+  // A null element is what a Zapier/Make line-item mapping emits for a blank row. Every other
+  // malformed element already answered 400; only null reached `it.sizes` and threw a 500.
+  for (const [label, item] of [['null', null], ['a bare string', 'tees'], ['a number', 123], ['an array', []]]) {
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [item] },
+    })
+    chk(`v1 refuses a line item that is ${label}, without a 500`, String(r.status), '^400$')
+  }
+  // Number.isFinite(1e308) is true; 1e308 × 50 is not. computeTotals overflowed to Infinity and
+  // SQLite stored NULL, so the caller got 201 for an estimate with no subtotal and no total.
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', quantity: 50, unit_price: 1e308 }] },
+  })
+  chk('v1 refuses a unit_price that overflows the total', `${r.status} ${r.text}`, '^400 .*invalid_unit_price')
+  chk('…rather than storing a null subtotal', String(r.json?.subtotal ?? 'none'), '^none$')
 
   /* ---------- an invoice raised by mistake must be recoverable from the UI ----------
    * There was no DELETE route, PUT edits only the due date and PO number, and the estimate behind

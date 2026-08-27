@@ -3748,6 +3748,12 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   const items = []
   for (const [i, it] of b.items.entries()) {
     const where = `items[${i}]`
+    // A null element is what a Zapier or Make line-item mapping emits for a blank row, and it was
+    // the one malformed shape that reached `it.sizes` and threw — a 500 where every other bad
+    // element ("str", 123, [], true) already answered 400. The docs promise refusals, not crashes.
+    if (!it || typeof it !== 'object' || Array.isArray(it)) {
+      return res.status(400).json({ error: `${where} must be an object like {"description":"…","quantity":24,"unit_price":9.5}`, code: 'invalid_item' })
+    }
     let sizes
     if (it.sizes != null) {
       if (typeof it.sizes !== 'object' || Array.isArray(it.sizes)) return res.status(400).json({ error: `${where}.sizes must be an object like {"M":24}` })
@@ -3783,6 +3789,11 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     if (!priceGiven) return res.status(400).json({ error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
     const price = Number(it.unit_price)
     if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: `${where}.unit_price must be a number >= 0`, code: 'invalid_unit_price' })
+    // Number.isFinite(1e308) is true, but multiplying it by a quantity is not: computeTotals
+    // overflowed to Infinity, SQLite stored NULL, and the caller got a 201 for an estimate whose
+    // subtotal and total were both null. Refuse a price no shop will ever charge instead.
+    const PRICE_CAP = 1e7
+    if (price > PRICE_CAP) return res.status(400).json({ error: `${where}.unit_price must be at most ${PRICE_CAP}`, code: 'invalid_unit_price' })
     items.push({
       description: String(it.description || 'Item').slice(0, 200),
       sizes,
@@ -3793,6 +3804,11 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   }
   const rate = taxRateFor(contact.id)
   const t = computeTotals(items, rate, getUpcharges())
+  // Backstop: never store a total the arithmetic could not produce. A NULL subtotal on a document
+  // a customer can approve is worse than a refusal.
+  if (![t.subtotal, t.tax, t.total].every(Number.isFinite)) {
+    return res.status(400).json({ error: 'those line items do not add up to a representable total', code: 'invalid_total' })
+  }
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now()).lastInsertRowid)
   logActivity('estimate', `Estimate created via API for ${contact.name}`, { contact_id: contact.id })
