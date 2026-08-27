@@ -1054,6 +1054,66 @@ await t('margin is computed on the pre-tax subtotal, not the taxed total', async
   } finally { dbm.setDefaultDb(prev) }
 })
 
+section('ROI and the schedule cost the same job the same way')
+// colorsOf() read `it.locations` and `it.detail`. No quote this app writes has ever carried either
+// field, so every garment line fell through to ONE colour and the profitability page under-costed
+// press labour on every multi-colour job in the shop. The capacity engine had the identical bug
+// and it was fixed there and only there, so the two screens then disagreed about the same work:
+// 132 press-minutes on the schedule, 57 in the cost, and a 78.3% margin on a job nowhere near it.
+await t('a 4/0-front + 2/0-back run is costed at six colours, not one', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const { colorsFromItems } = await import('../lib/capacity.mjs')
+  const { pressMinutes } = await import('../public/js/shared/pricing.js')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    const items = [
+      { description: 'Gildan 5000 Heavy Cotton Tee — Black — 4/0 Front + 2/0 Back', sizes: { M: 300 }, unit_price: 18, taxable: true, garment_cost: 3 },
+      { description: 'Screen setup', qty: 6, unit_price: 25, taxable: true },
+    ]
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+    dbm.run(
+      'INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+      'EST-3001', 'approved', JSON.stringify(items), 5550, 0, 5550, 0, dbm.now(),
+    )
+    dbm.run('INSERT INTO invoices (id, estimate_id, contact_id, invoice_number, amount_due, amount_paid, created_at) VALUES (1,1,1,?,?,?,?)',
+      'INV-3001', 5550, 0, dbm.now())
+    const roi = jobRoi({ id: 1, estimate_id: 1, invoice_id: 1 }, dbm.getSettings())
+    assert.equal(roi.colors, 6, 'ROI must read the colours the description states')
+    assert.equal(roi.colors, colorsFromItems(items), 'cost and schedule must use ONE definition of colour')
+    assert.equal(roi.labor_planned_minutes, pressMinutes(300, 6, 'auto'),
+      'planned press minutes must be the six-colour figure the scheduler books')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
+await t('a garment line that states no colours still inherits the job\'s screen count', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    // The garment line says nothing about colour; the screen-setup line the shop billed for says 4.
+    const items = [
+      { description: 'Next Level 3600 — White', sizes: { M: 100 }, unit_price: 14, taxable: true, garment_cost: 3 },
+      { description: 'Screen setup', qty: 4, unit_price: 25, taxable: true },
+    ]
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+    dbm.run(
+      'INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+      'EST-3002', 'approved', JSON.stringify(items), 1500, 0, 1500, 0, dbm.now(),
+    )
+    const roi = jobRoi({ id: 1, estimate_id: 1 }, dbm.getSettings())
+    assert.equal(roi.colors, 4, 'the shop bought four screens; the job runs four colours')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('a fresh install is nobody else\'s shop')
 // This shipped wrong for every self-hosted install. The demo shop's name, address, phone and its
 // 7.75% California sales tax were the DEFAULTS, and createTenant() blanked them only for
