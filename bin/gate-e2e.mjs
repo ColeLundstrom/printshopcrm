@@ -499,6 +499,30 @@ try {
   chk('a duplicate-email signup is a clean 409', String(r.status), '^409$')
   chk('…and never leaks the SQL constraint text', r.text, '^(?!.*(UNIQUE|SQLITE|constraint)).*$')
 
+  /* ---------- the price book cannot be filled with junk one character at a time ----------
+   * `services` was walked with Object.entries on trust. Handed a STRING that yields one entry per
+   * character: PUT {"services":"Screen Print"} minted twelve $0.00 services named "0".."11", and a
+   * 20,000-character value minted twenty thousand of them in one 45ms request — after which
+   * GET /api/pricebook was 13.6 MB and /api/settings went from 4 KB to 3.6 MB, taking the Pricing
+   * and Settings screens with them. Undoing it meant twenty thousand deletions, one at a time. */
+  {
+    r = await req('GET', '/api/pricebook')
+    const before = Object.keys(r.json?.services || {}).length
+    for (const [label, bad] of [['a string', 'Screen Print'], ['an array', ['Screen Print']], ['a number', 7]]) {
+      r = await req('PUT', '/api/pricebook', { body: { services: bad } })
+      chk(`the price book refuses services given as ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_services')
+    }
+    r = await req('PUT', '/api/pricebook', { body: { services: { 'Screen Print': 'nope' } } })
+    chk('…and refuses a service that is not an object', `${r.status} ${r.text}`, '^400 .*invalid_services')
+    r = await req('PUT', '/api/pricebook', { body: { services: Object.fromEntries(Array.from({ length: 200 }, (_v, i) => [`Svc ${i}`, { base: 1 }])) } })
+    chk('…and refuses a price book of 200 services', `${r.status} ${r.text}`, '^400 .*too_many_services')
+    r = await req('GET', '/api/pricebook')
+    chk('…leaving the shop\'s price book exactly as it was', String(Object.keys(r.json?.services || {}).length), `^${before}$`)
+    // A real save still works.
+    r = await req('PUT', '/api/pricebook', { body: { services: { 'Screen Print': { base: 2.75 } } } })
+    chk('…while an ordinary one-service save still saves', String(r.status), '^200$')
+  }
+
   /* ---------- money must never be a number the arithmetic could not produce ----------
    * qty: 1e308 multiplied out to Infinity and round2's overflow fallback passed it through.
    * SQLite stored Infinity in estimates.total, /convert carried it to invoices.amount_due, and

@@ -3180,8 +3180,23 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
   res.json({ ok: true, service, cells, filled, cols: header })
 }))
 
+/** A plain JSON object — not an array, not a string, not null. */
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
+
 app.put('/api/pricebook', requireRole('manager'), wrap((req, res) => {
-  const incoming = req.body?.services || {}
+  // `services` was taken on trust and walked with Object.entries. Handed a STRING, that yields one
+  // entry per character: PUT {"services":"Screen Print"} minted twelve $0.00 services named "0"
+  // through "11", and a 20,000-character value minted twenty thousand of them in a single 45ms
+  // request. Every one is a full service object with an eight-row matrix, so GET /api/pricebook
+  // went to 13.6 MB, /api/settings from 4 KB to 3.6 MB, and the Pricing and Settings screens with
+  // them. Undoing it meant twenty thousand deletions one at a time.
+  const incoming = req.body?.services ?? {}
+  if (!isPlainObject(incoming)) {
+    return res.status(400).json({ error: 'services must be an object keyed by service name', code: 'invalid_services' })
+  }
+  if (Object.keys(incoming).length > 100) {
+    return res.status(400).json({ error: 'A price book can hold at most 100 services.', code: 'too_many_services' })
+  }
   const bands = Array.isArray(req.body?.bands) ? req.body.bands : null
   const numOr = (v, d) => (v === null || v === undefined || String(v).trim() === '' ? d : (Number(v) || 0))
   // MERGE, don't replace. The editor saves one service card at a time, so a body carrying only
@@ -3192,6 +3207,11 @@ app.put('/api/pricebook', requireRole('manager'), wrap((req, res) => {
   for (const [name, v] of Object.entries(incoming)) {
     const clean = String(name).trim().slice(0, 40)
     if (!clean) continue
+    // Each service must be an object too. A bare string or number here read every field as
+    // undefined and silently saved a $0.00 rate under that name.
+    if (!isPlainObject(v)) {
+      return res.status(400).json({ error: `services[${JSON.stringify(clean)}] must be an object`, code: 'invalid_services' })
+    }
     const stock = STOCK_SERVICES[clean]
     const entry = {
       axis: Object.values(AXIS).includes(v.axis) ? v.axis : (stock?.axis || AXIS.FLAT),
