@@ -5728,7 +5728,13 @@ server.headersTimeout = 35000
  */
 app.use((err, req, res, _next) => {
   console.error('unhandled:', req.method, req.path, err && err.message)
-  if (res.headersSent) return
+  // A route that throws AFTER it has started writing cannot be given a status any more — but it
+  // must still be finished. This returned without res.end(), so the socket stayed open with no FIN
+  // and no terminating chunk until the client gave up (measured at 75s on the export path), and
+  // every retry leaked another socket, response object and open SQLite cursor. Ending the response
+  // is the least a half-written reply is owed; a route that wants to say more about the failure
+  // has to do it before this point, as /api/export/all.json now does.
+  if (res.headersSent) { try { res.end() } catch { /* already gone */ } return }
   // multer throws a MulterError with a .code but no .status, so an over-size upload fell through to
   // the generic 500 "something went wrong" — when the real, actionable answer is "that file is too
   // big". Map its limit codes to the right status and a message the uploader can act on.

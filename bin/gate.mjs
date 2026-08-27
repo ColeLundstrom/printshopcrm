@@ -1623,6 +1623,29 @@ await t('the letterhead fields templates actually use still render', async () =>
   assert.equal(templateValue('not_a_field', {}, s), '')
 })
 
+section('a half-written reply is still finished')
+// Express's terminal error handler cannot set a status once a route has started writing, and it
+// returned at that point without res.end(). The socket then stayed open with no FIN and no
+// terminating chunk until the client gave up — measured at 75 seconds on /api/export/all.json —
+// and every retry leaked another socket, response object and open SQLite cursor. Ending the
+// response is the least a half-written reply is owed.
+//
+// A source-level assertion, because no route can be made to throw mid-write from outside the
+// process: the behaviour it guards is proved separately by the export's "complete": false marker
+// in bin/gate-e2e.mjs. This one exists so the branch cannot quietly go back to a bare return.
+await t('the terminal error handler ends a response whose headers already went out', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf('if (res.headersSent)')
+  assert.ok(i > 0, 'the terminal handler should still special-case a response already in flight')
+  // Everything up to the end of that branch — it must end the response before returning.
+  const branch = src.slice(i, src.indexOf('\n', src.indexOf('return', i)))
+  assert.match(branch, /res\.end\(\)/, `headersSent must not return without ending the socket — got: ${branch.trim()}`)
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
