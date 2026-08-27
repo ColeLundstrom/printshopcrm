@@ -786,6 +786,37 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('receptionist: the public chat parser cannot be made to hang, or to invent an order')
+// Both of these are reachable by an anonymous visitor on /api/embed/chat/message — no login, no
+// API key — and Node is single-threaded with every shop in one process.
+await t('a long message with no address does not blow up the email regex', async () => {
+  const { extract } = await import('../lib/agent.mjs')
+  // The old pattern had unbounded runs either side of the @ and backtracked the whole tail from
+  // every start position: 20 KB took 242 ms here, 1 MB took over a minute, with the health check
+  // timing out for every other shop on the box the whole time.
+  const started = Date.now()
+  for (const n of [10_000, 100_000, 400_000]) extract('a'.repeat(n), {})
+  const ms = Date.now() - started
+  assert.ok(ms < 1000, `parsing 510 KB of hostile input took ${ms}ms — the regex is backtracking again`)
+})
+await t('a real address is still found', async () => {
+  const { extract } = await import('../lib/agent.mjs')
+  assert.equal(extract('hi, reach me at dana.ruiz+shop@print-co.example.com thanks', {}).email,
+    'dana.ruiz+shop@print-co.example.com')
+})
+await t('a year in a sentence is not an order quantity', async () => {
+  const { extract } = await import('../lib/agent.mjs')
+  // This quoted 2026 pieces — over $13,000 — and drafted the estimate, because the unit noun was
+  // optional and any 2-4 digit number won.
+  assert.equal(extract('we need screen printed tees for our 2026 conference', {}).qty, undefined)
+  assert.equal(extract('ship to 1500 Industrial Blvd', {}).qty, undefined)
+  // …but a stated count in any of the forms a customer actually writes still lands.
+  assert.equal(extract('we need 250 tees', {}).qty, 250)
+  assert.equal(extract('qty 144 please', {}).qty, 144)
+  assert.equal(extract('500 x hoodies', {}).qty, 500)
+  assert.equal(extract('about 72 pcs', {}).qty, 72)
+})
+
 section('artwork never survives its estimate')
 // art_versions.estimate_id had no foreign key (ALTER TABLE cannot add one), and estimates.id is
 // the rowid, which SQLite reuses. A mockup outliving a deleted estimate re-attached itself to the
