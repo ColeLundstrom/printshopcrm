@@ -819,6 +819,35 @@ try {
     // contained "already in use", so asserting on that would have passed against the bug.
     chk('…and says what to do about it', rogueLog, 'PORT=8081')
   }
+  /* ---------- two mutating routes were missing the role check their siblings all have ----------
+   * POST /api/automations/tick fires the whole shop's automation sweep — real customer email
+   * through the shop's SMTP credentials and SMS through its Twilio token — and was reachable by
+   * any staff account. POST /api/import/contacts is the only bulk importer without a role check;
+   * its pricebook, matrices and orders siblings have all required manager since they were written,
+   * so a staff session could bulk-write the entire customer book (firing contact.created
+   * automations and webhooks for every row) while being unable to delete one contact. */
+  {
+    const ownerJar = new Map(jar)
+    r = await req('POST', '/api/members', { body: { name: 'Floor Staff', email: 'floor@e2e.test', password: 'FloorPass-123456', role: 'staff' } })
+    chk('a staff member can be added', String(r.status), '^200$')
+    r = await req('POST', '/api/auth/login', { body: { email: 'floor@e2e.test', password: 'FloorPass-123456' } })
+    chk('…and can sign in', String(r.status), '^200$')
+    const staffCookie = cookieHeader()
+    const asStaff = { cookies: false, headers: { Cookie: staffCookie } }
+
+    r = await req('GET', '/api/auth/me', asStaff)
+    chk('…as a staff role, not an owner', r.text, '"role":"staff"')
+    r = await req('POST', '/api/automations/tick', { ...asStaff, body: {} })
+    chk('staff cannot fire the shop-wide automation sweep', String(r.status), '^403$')
+    r = await req('POST', '/api/import/contacts', { ...asStaff, body: {} })
+    chk('staff cannot bulk-import the customer book', String(r.status), '^403$')
+
+    // Back to the owner, and prove the routes still work for someone who is allowed to use them.
+    jar.clear(); for (const [k, v] of ownerJar) jar.set(k, v)
+    r = await req('POST', '/api/automations/tick', { body: {} })
+    chk('…while an owner still can', String(r.status), '^200$')
+  }
+
   /* ---------- a backup that archived nothing must not report success ----------
    * With count=0 and failed=0 this script printed "backup ok — 0 database(s)" and exited 0. So a
    * typo'd DATA_ROOT, a moved PSC_DB or an unmounted volume produced a green cron line every night

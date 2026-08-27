@@ -1604,7 +1604,12 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
  * writing, so the shop sees exactly what will import first. Dedupe is by email (case-insensitive),
  * against both the existing book and within the file itself.
  */
-app.post('/api/import/contacts', uploadMem.single('file'), reTenant, wrap((req, res) => {
+// requireRole after multer+reTenant so a refused request has nothing on disk to clean up
+// (uploadMem is in-memory, so there is no file either way). Its three siblings — pricebook,
+// matrices and orders import — have all required manager since they were written; this one did
+// not, so a staff session could bulk-write the entire customer book, and fire contact.created
+// automations and webhooks for every row, while being unable to delete a single contact.
+app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole('manager'), wrap((req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
   const rows = parseCsv(text)
@@ -2666,7 +2671,10 @@ app.delete('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
 }))
 
 /** Run the timed triggers on demand — the same code the background tick calls. */
-app.post('/api/automations/tick', wrap((_req, res) => {
+// Every neighbouring route on this resource requires manager. This one fires the whole shop's
+// automation sweep — real customer email through the shop's SMTP credentials and SMS through its
+// Twilio token — and was reachable by any staff account.
+app.post('/api/automations/tick', requireRole('manager'), wrap((_req, res) => {
   res.json({ fired: tick(autoDeps) })
 }))
 
