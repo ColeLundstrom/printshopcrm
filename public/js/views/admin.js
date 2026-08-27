@@ -48,7 +48,7 @@ export async function adminView() {
       confirmModal(
         `Delete ${name}?`,
         `This permanently removes the shop and all its invoices, customers, and history. This can't be undone.`,
-        async () => { try { await api.delete(`/api/admin/shops/${id}`); toast('Shop deleted'); adminView() } catch (ex) { toast(ex.message, true) } },
+        async () => { try { await api.del(`/api/admin/shops/${id}`); toast('Shop deleted'); adminView() } catch (ex) { toast(ex.message, true) } },
         'Delete forever')
     }
   })

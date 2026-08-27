@@ -533,7 +533,7 @@ export async function settingsView() {
   }
   const logoClear = $('#logo-clear')
   if (logoClear) logoClear.onclick = async () => {
-    try { await api.delete('/api/settings/logo'); toast('Logo removed'); settingsView() }
+    try { await api.del('/api/settings/logo'); toast('Logo removed'); settingsView() }
     catch (e) { toast(e.message, true) }
   }
 

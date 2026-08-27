@@ -1623,6 +1623,40 @@ await t('the letterhead fields templates actually use still render', async () =>
   assert.equal(templateValue('not_a_field', {}, s), '')
 })
 
+section('every api.<verb>() a screen calls actually exists')
+// public/js/core.js exports the verb as `del`. Two screens called `api.delete(...)`, which is not
+// a function on that object — so the whole handler threw before it reached the server, and the
+// catch toasted "api.delete is not a function" at the shop owner. Settings -> Remove logo was
+// therefore permanently broken from the UI: the route works, but nothing could reach it, and the
+// wrong logo printed on every customer-facing document forever with no way to change it.
+// Control Room -> Delete forever was the other one.
+//
+// A whole-tree scan rather than two assertions, because this class of typo is invisible until a
+// user hits the one button that has it.
+await t('no screen calls a verb the api object does not have', async () => {
+  const { readFileSync, readdirSync, statSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const core = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+  const block = core.slice(core.indexOf('export const api = {'), core.indexOf('/* ---------- formatting'))
+  const verbs = new Set([...block.matchAll(/^\s{2}(?:async\s+)?([a-zA-Z]+)\s*[:(]/gm)].map((m) => m[1]))
+  assert.ok(verbs.has('del') && verbs.has('get') && verbs.has('post'), `parsed the api object wrong: ${[...verbs]}`)
+
+  const walk = (dir) => readdirSync(dir).flatMap((f) => {
+    const full = join(dir, f)
+    return statSync(full).isDirectory() ? walk(full) : (f.endsWith('.js') ? [full] : [])
+  })
+  const bad = []
+  for (const file of walk(join(root, 'public/js'))) {
+    const src = readFileSync(file, 'utf8')
+    for (const m of src.matchAll(/\bapi\.([a-zA-Z]+)\s*\(/g)) {
+      if (!verbs.has(m[1])) bad.push(`${file.slice(root.length + 1)} calls api.${m[1]}()`)
+    }
+  }
+  assert.deepEqual(bad, [], `these calls would throw before reaching the server:\n  ${bad.join('\n  ')}`)
+})
+
 section('a style number names one garment, not every garment it is a prefix of')
 // costFor() is the call that spends real money at the distributor — it picks the SKU and the cost
 // that go onto the purchase order. The style test was a bare `text.includes(style)` taking the
