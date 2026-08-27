@@ -349,6 +349,17 @@ try {
     r = await req('GET', '/api/invoices')
     const voided = (r.json?.invoices || r.json || []).find?.((i) => i.id === invId)
     chk('…and no money was recorded against it', String(voided ? round2e(voided.amount_paid) : 0), '^0$')
+
+    // The dashboard stopped counting the void; A/R aging, the mailed customer statement and the
+    // QuickBooks IIF export were the only three balance queries in the file that never got the
+    // filter, so Books said $900 due on an invoice the dashboard said was $0 — and the customer
+    // got a statement chasing an order the shop had already cancelled.
+    r = await req('GET', '/api/reports/ar-aging')
+    chk('A/R aging does not chase a voided invoice',
+      String(JSON.stringify(r.json || {}).includes('INV-1002')), '^false$')
+    r = await req('GET', '/api/export/quickbooks.iif')
+    chk('the QuickBooks export does not post a voided invoice to A/R',
+      String(r.text.includes('INV-1002')), '^false$')
   }
 
   /* ---------- being locked out must not be a dead end ----------

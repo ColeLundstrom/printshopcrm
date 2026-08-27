@@ -3461,9 +3461,11 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
  */
 app.get('/api/reports/ar-aging', wrap((_req, res) => {
   const today = new Date().toISOString().slice(0, 10)
+  // `status != 'void'` is load-bearing: without it this report chased invoices the shop had already
+  // cancelled, and disagreed with the dashboard about the same money.
   const open = all(`SELECT i.*, c.name AS contact_name, c.company, c.email FROM invoices i
     LEFT JOIN contacts c ON c.id = i.contact_id
-    WHERE (i.amount_due - i.amount_paid) > 0.005 ORDER BY i.due_date IS NULL, i.due_date`)
+    WHERE i.status != 'void' AND (i.amount_due - i.amount_paid) > 0.005 ORDER BY i.due_date IS NULL, i.due_date`)
   const daysPast = (i) => {
     const ref = i.due_date || String(i.created_at || '').slice(0, 10)
     return ref ? Math.floor((new Date(`${today}T00:00:00Z`) - new Date(`${ref}T00:00:00Z`)) / 864e5) : 0
@@ -3496,9 +3498,9 @@ app.get('/api/reports/ar-aging', wrap((_req, res) => {
 app.get('/api/contacts/:id/statement.pdf', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', +req.params.id)
   if (!c) return res.status(404).json({ error: 'Contact not found' })
-  const open = all(`SELECT * FROM invoices WHERE contact_id = ? AND (amount_due - amount_paid) > 0.005
+  const open = all(`SELECT * FROM invoices WHERE contact_id = ? AND status != 'void' AND (amount_due - amount_paid) > 0.005
     ORDER BY COALESCE(due_date, date(created_at)) ASC, id ASC`, c.id)
-  const settled = all(`SELECT * FROM invoices WHERE contact_id = ? AND (amount_due - amount_paid) <= 0.005
+  const settled = all(`SELECT * FROM invoices WHERE contact_id = ? AND status != 'void' AND (amount_due - amount_paid) <= 0.005
     AND created_at >= date('now', '-365 days')
     ORDER BY COALESCE(due_date, date(created_at)) DESC, id DESC LIMIT 60`, c.id)
   const invoices = [...open, ...settled]
@@ -4298,13 +4300,17 @@ app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) =
     '!SPL\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO',
     '!ENDTRNS',
   ]
-  for (const i of all(`SELECT i.*, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id ORDER BY i.id`)) {
+  // A voided invoice is not a receivable and must never be posted to Accounts Receivable / Sales
+  // Income. These three reports were the only balance queries in the file without the filter the
+  // other nine carry, so the dashboard said $0.00 outstanding while Books, the customer's mailed
+  // statement and the bookkeeper's IIF all still billed the cancelled invoice.
+  for (const i of all(`SELECT i.*, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY i.id`)) {
     const name = (i.cn || 'Customer').replace(/\t/g, ' ')
     lines.push(`TRNS\tINVOICE\t${d(i.created_at)}\tAccounts Receivable\t${name}\t${money2(i.amount_due)}\t${i.invoice_number}\tPrintShopCRM`)
     lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Income\t${name}\t${money2(-i.amount_due)}\t${i.invoice_number}\t`)
     lines.push('ENDTRNS')
   }
-  for (const p of all(`SELECT p.*, i.invoice_number, c.name AS cn FROM payments p JOIN invoices i ON i.id=p.invoice_id LEFT JOIN contacts c ON c.id=i.contact_id ORDER BY p.id`)) {
+  for (const p of all(`SELECT p.*, i.invoice_number, c.name AS cn FROM payments p JOIN invoices i ON i.id=p.invoice_id LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY p.id`)) {
     const name = (p.cn || 'Customer').replace(/\t/g, ' ')
     lines.push(`TRNS\tPAYMENT\t${d(p.created_at)}\tUndeposited Funds\t${name}\t${money2(p.amount)}\t${p.invoice_number}\t${p.method}`)
     lines.push(`SPL\tPAYMENT\t${d(p.created_at)}\tAccounts Receivable\t${name}\t${money2(-p.amount)}\t${p.invoice_number}\t`)
