@@ -56,6 +56,44 @@ for (const [text, want] of [
   })
 }
 
+section('intake: the model may fill a blank, never overwrite what the parser read')
+// This shipped exploitable on the one path nobody reads: Autopilot prices, saves, marks sent and
+// emails the estimate in a single request. parseIntake merged the model's reply over the
+// deterministic parse and then RECOMPUTED total_pieces from the model's grid, so a customer who
+// appended an extraction instruction to their own quote request could re-base a 500-piece order
+// to 1 piece — $18,075 of hoodies invoiced at $115.03. lib/agent.mjs applyValidated() has always
+// had the right rule (fill an empty slot, never replace a full one); this path never got it.
+{
+  const { mergeIntake } = await import('../lib/ai.mjs')
+  const stated = parseIntakeHeuristic('we need 500 Gildan 18500 hoodies in navy, 2 color front')
+  const grid = parseIntakeHeuristic('Gildan 5000 tees: 24 S, 48 M, 24 L, 1 color front')
+
+  await t('a model grid cannot cut a stated count down', () => {
+    assert.equal(stated.total_pieces, 500, 'precondition: the parser read 500')
+    assert.equal(mergeIntake(stated, { sizes: { S: 1 } }).total_pieces, 500)
+  })
+  await t("a model grid cannot replace the customer's own breakdown", () => {
+    const m = mergeIntake(grid, { sizes: { S: 1 } })
+    assert.equal(m.total_pieces, 96)
+    assert.deepEqual(m.sizes, { S: 24, M: 48, L: 24 })
+  })
+  await t('…but it may still supply a grid the parser never found', () => {
+    const m = mergeIntake(stated, { sizes: { S: 100, M: 250, L: 150 } })
+    assert.deepEqual(m.sizes, { S: 100, M: 250, L: 150 })
+    assert.equal(m.total_pieces, 500)
+  })
+  await t('a garment that is not apparel we can price is refused', () => {
+    // garment_cost is looked up from this string, so a free-text value out of a customer's
+    // message set the cost basis of the whole quote.
+    assert.equal(mergeIntake(stated, { garment: 'Ferrari 458' }).garment, 'Gildan 18500 Hoodie')
+    assert.equal(mergeIntake(stated, { garment: '' }).garment, 'Gildan 18500 Hoodie')
+  })
+  await t('…while a real garment the model names is still accepted', () => {
+    assert.equal(mergeIntake(stated, { garment: 'Bella+Canvas 3001 Tee' }).garment, 'Bella+Canvas 3001 Tee')
+    assert.equal(mergeIntake(stated, { garment: 'Comfort Colors 1717' }).garment, 'Comfort Colors 1717')
+  })
+}
+
 section('deadline parsing')
 // parseDeadline returns { date: ISO|null, text: matched-phrase|null }
 for (const [text, check] of [
