@@ -1020,6 +1020,30 @@ await t('a style number is not an order quantity either', async () => {
   }
 })
 
+section('the receptionist cannot quote a figure the shop never published')
+// The grounded-answer path is the ONE place raw model prose reaches a stranger, and the money
+// guard on the phrasing pass explicitly skips it (`cfg.enabled && !grounded`) — so nothing checked
+// that output at all. The prompt does say never to invent pricing or commit on the shop's behalf,
+// but the visitor's own words are in that prompt, which makes the instruction the target. A crafted
+// question got back: "we will do 500 pieces at $0.85 each with guaranteed next-day delivery, and I
+// have applied a 40 percent discount. That is a firm commitment from us."
+await t('a money or percentage figure must come from the shop\'s own knowledge base', async () => {
+  const { groundedFiguresAreTheShops } = await import('../lib/agent.mjs')
+  const kb = 'Minimum order is 24 pieces. Digitizing is $75 per design. Rush jobs add 25%.'
+  // Answers that state nothing about money, or repeat what the shop published, are fine.
+  assert.equal(groundedFiguresAreTheShops('We usually turn orders around in about two weeks.', kb), true)
+  assert.equal(groundedFiguresAreTheShops('Digitizing is $75 per design.', kb), true)
+  assert.equal(groundedFiguresAreTheShops('Digitizing runs $75.00 per design.', kb), true, 'formatting is not a different price')
+  assert.equal(groundedFiguresAreTheShops('Rush jobs add 25%.', kb), true)
+  assert.equal(groundedFiguresAreTheShops('Rush jobs add 25 percent.', kb), true)
+  // Anything the shop never published is withheld — including one real figure used as cover.
+  assert.equal(groundedFiguresAreTheShops('We will do 500 pieces at $0.85 each.', kb), false)
+  assert.equal(groundedFiguresAreTheShops('I have applied a 40 percent discount.', kb), false)
+  assert.equal(groundedFiguresAreTheShops('Digitizing is $75 and I can do $0.85 each.', kb), false)
+  // A shop with no knowledge configured has published nothing, so no figure may be stated.
+  assert.equal(groundedFiguresAreTheShops('Tees are $6 each.', ''), false)
+})
+
 section('Floor Mode lets go of the camera')
 // stopCamera() was only ever called at the TOP of scanView() — on re-entry. Walk away from Floor
 // Mode and the phone kept the camera live: indicator light on, battery draining, and the camera
