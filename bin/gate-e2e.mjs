@@ -83,6 +83,7 @@ process.on('exit', cleanup)
 process.on('SIGINT', () => { cleanup(); process.exit(130) })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const round2e = (n) => Math.round((Number(n) || 0) * 100) / 100
 
 async function waitForBoot() {
   // 90s, not 30s. A loaded CI runner (or a laptop building something else) can genuinely take
@@ -336,6 +337,18 @@ try {
     await req('POST', `/api/invoices/${invId2}/payments`, { body: { amount: 25, method: 'check' } })
     r = await req('POST', `/api/invoices/${invId2}/void`, { body: {} })
     chk('an invoice with payments against it refuses to be voided', `${r.status} ${r.text}`, '^409 .*invoice_has_payments')
+
+    // A voided invoice is a cancelled demand, not a discounted one. Recording money against it
+    // inserted a real payment row — counted in Revenue MTD, walked the order card to 'paid' and
+    // queued to QuickBooks — while syncInvoiceStatus deliberately refuses to move a void invoice,
+    // so the one document a human looks at still read $0.00 paid. The public pay page had the same
+    // hole: a customer holding the link emailed before the void could pay it over and over, each
+    // click opening a brand-new Stripe session so the idempotency guard never fired.
+    r = await req('POST', `/api/invoices/${invId}/payments`, { body: { amount: 100, method: 'check' } })
+    chk('a voided invoice refuses to take another dollar', `${r.status} ${r.text}`, '^409 .*invoice_void')
+    r = await req('GET', '/api/invoices')
+    const voided = (r.json?.invoices || r.json || []).find?.((i) => i.id === invId)
+    chk('…and no money was recorded against it', String(voided ? round2e(voided.amount_paid) : 0), '^0$')
   }
 
   /* ---------- being locked out must not be a dead end ----------

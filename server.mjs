@@ -2065,6 +2065,16 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
   const id = +req.params.id
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  // A voided invoice is a cancelled demand, not a discounted one. syncInvoiceStatus deliberately
+  // refuses to move a void invoice, so a payment recorded here inserted a real row, counted toward
+  // Revenue MTD and went to QuickBooks — while the invoice itself still read $0.00 paid. Money that
+  // exists in three places and nowhere on the document it belongs to is the worst kind of wrong.
+  if (inv.status === 'void') {
+    return res.status(409).json({
+      error: `${inv.invoice_number} was voided — raise a new invoice before recording money against it.`,
+      code: 'invoice_void',
+    })
+  }
   const amount = round2(req.body?.amount)
   if (!(amount > 0)) return res.status(400).json({ error: 'Payment amount must be greater than zero' })
   // Guard fat-finger over-payment: a manual entry can't exceed the remaining balance.
@@ -4943,6 +4953,18 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
 /** Record a confirmed Stripe payment against an invoice, idempotently (session id can't double-post). */
 function recordStripePayment(inv, session, sessionId, kind) {
   if (get('SELECT 1 FROM payments WHERE stripe_session = ?', sessionId)) return syncInvoiceStatus(inv.id) // already recorded (idempotent)
+  // The pay page and the checkout route both refuse a voided invoice now, so the only way to land
+  // here is a session that was already open when the shop voided it. That money is real and sitting
+  // at Stripe: record it so it is visible, keep the invoice void, and say plainly that it needs
+  // refunding. Swallowing it silently is how a customer ends up out of pocket with nothing on file.
+  const live = get('SELECT status FROM invoices WHERE id = ?', inv.id)
+  if (live?.status === 'void') {
+    const arrived = round2((Number(session.amountCents) || 0) / 100)
+    run('INSERT INTO payments (invoice_id, amount, method, note, stripe_session, created_at) VALUES (?,?,?,?,?,?)',
+      inv.id, arrived, 'card', `Payment arrived AFTER ${inv.invoice_number} was voided — refund at Stripe`, sessionId, now())
+    logActivity('payment', `${money(arrived)} arrived by card on VOIDED ${inv.invoice_number} — refund it at Stripe`, { contact_id: inv.contact_id })
+    return syncInvoiceStatus(inv.id)
+  }
   const paid = round2((Number(session.amountCents) || 0) / 100)
   // Never let the invoice show more than 100% paid — if two checkout tabs both completed, the
   // second records at most the remaining balance (the extra sits at Stripe for the shop to refund).
@@ -4970,6 +4992,18 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   if (!inv) return res.status(404).send(page('Not found', '<div class="wrap"><div class="card"><h1>Not found</h1></div></div>'))
   const s = escView(getSettings())
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
+
+  // The customer may still be holding a payment link that was emailed before the shop voided the
+  // invoice. Without this the page cheerfully showed the old balance and a Pay button, and every
+  // click opened a NEW Stripe session — so the same cancelled invoice could be paid over and over,
+  // each charge real and none of them visible on the invoice.
+  if (inv.status === 'void') {
+    return res.send(page('Invoice cancelled', `<div class="wrap"><div class="card">
+      <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">CANCELLED</div><div class="num2">${esc(inv.invoice_number)}</div></div></div>
+      <h1>This invoice was cancelled</h1>
+      <p>Nothing is owed on ${esc(inv.invoice_number)} and it can no longer be paid. If you were expecting to pay for this order, please contact us and we will send you a current invoice.</p>
+    </div><div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>`))
+  }
 
   // Returning from Stripe → confirm the session actually paid, then record it (idempotent).
   if (req.query.session_id) {
@@ -5035,6 +5069,8 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   if (!checkToken('pay', id, req.query.k)) return res.status(403).send('Forbidden')
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).send('Not found')
+  // Never open a Stripe session for a cancelled invoice — see the note on GET /p/pay/:id.
+  if (inv.status === 'void') return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const s = escView(getSettings())
   const balance = round2(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
