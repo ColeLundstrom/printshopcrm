@@ -819,6 +819,37 @@ try {
     // contained "already in use", so asserting on that would have passed against the bug.
     chk('…and says what to do about it', rogueLog, 'PORT=8081')
   }
+  /* ---------- one invoice, one status, whichever endpoint you ask ----------
+   * The stored `status` column does not know what day it is. The LIST endpoint computes the
+   * effective status — EFFECTIVE_STATUS_SQL turns an unpaid invoice past its due date into
+   * 'overdue' — and the DETAIL endpoint returned the stale column, as did the copy embedded in
+   * GET /api/v1/customers/:id. So one invoice was 'overdue' from the list, 'unpaid' from its own
+   * detail, and showed up under ?status=overdue while denying it. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Late Payer', email: 'late@e2e.test' } })
+    const lateId = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: lateId, items: [{ description: '50 tees', sizes: { M: 50 }, unit_price: 10, taxable: false }] } })
+    const lateEst = r.json?.id
+    // Convert with a due date already in the past. That route honours the date the shop picked and
+    // does NOT re-sync the stored status column, which is exactly the everyday shape of this bug:
+    // an invoice written while it was still current, whose due date has since gone by with nothing
+    // touching the row.
+    r = await req('POST', `/api/estimates/${lateEst}/convert`, { body: { due_date: '2026-01-05' } })
+    const lateInv = r.json?.invoice_id
+    chk('an invoice can be raised already past its due date', String(r.status), '^200$')
+    const raw = await req('GET', `/api/invoices/${lateInv}`)
+    chk('…and its stored status column is stale, as it would be in real life', String(raw.json?.status ?? raw.json?.invoice?.status ?? 'missing'), '^unpaid$')
+
+    const list = await req('GET', '/api/v1/invoices', asKey())
+    const fromList = (list.json?.data || []).find((x) => x.id === lateInv)
+    chk('the v1 list reports it overdue', String(fromList?.status ?? 'missing'), '^overdue$')
+    const detail = await req('GET', `/api/v1/invoices/${lateInv}`, asKey())
+    chk('…and its own detail endpoint agrees', String(detail.json?.status ?? 'missing'), '^overdue$')
+    const cust = await req('GET', `/api/v1/customers/${lateId}`, asKey())
+    const embedded = (cust.json?.recent_invoices || []).find((x) => x.id === lateInv)
+    chk('…and so does the copy on the customer', String(embedded?.status ?? 'missing'), '^overdue$')
+  }
+
   /* ---------- two mutating routes were missing the role check their siblings all have ----------
    * POST /api/automations/tick fires the whole shop's automation sweep — real customer email
    * through the shop's SMTP credentials and SMS through its Twilio token — and was reachable by

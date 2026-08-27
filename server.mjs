@@ -3804,7 +3804,9 @@ app.get('/api/v1/customers/:id', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', Number(req.params.id))
   if (!c) return res.status(404).json({ error: 'not_found' })
   const orders = all('SELECT * FROM jobs WHERE contact_id = ? ORDER BY created_at DESC LIMIT 20', c.id).map(v1Job)
-  const invoices = all('SELECT * FROM invoices WHERE contact_id = ? ORDER BY created_at DESC LIMIT 20', c.id).map(v1Invoice)
+  // Same effective status as the list and the detail endpoint — this embedded copy had the third
+  // spelling of the same invoice.
+  const invoices = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? ORDER BY i.created_at DESC LIMIT 20`, todayIso(), c.id).map(v1Invoice)
   res.json({ ...v1Customer(c), recent_jobs: orders, recent_invoices: invoices })
 }))
 app.post('/api/v1/customers', wrap((req, res) => {
@@ -3944,7 +3946,12 @@ app.get('/api/v1/invoices', wrap((req, res) => {
   v1List(res, rows.map(v1Invoice), limit)
 }))
 app.get('/api/v1/invoices/:id', wrap((req, res) => {
-  const i = get('SELECT * FROM invoices WHERE id = ?', Number(req.params.id))
+  // The stored `status` column does not know what day it is. The LIST endpoint computes the
+  // effective status (EFFECTIVE_STATUS_SQL turns an unpaid invoice past its due date into
+  // 'overdue'); the DETAIL endpoint returned the stale column. So one invoice reported 'overdue'
+  // from /invoices, came back 'unpaid' from /invoices/:id, and appeared under ?status=overdue
+  // while denying it — an integrator reconciling the two saw the API contradict itself.
+  const i = get(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.id = ?`, todayIso(), Number(req.params.id))
   if (!i) return res.status(404).json({ error: 'not_found' })
   res.json({ ...v1Invoice(i), payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id).map(v1Payment) })
 }))
