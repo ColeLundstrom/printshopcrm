@@ -47,7 +47,7 @@ import { nest, priceSheet } from './public/js/shared/gangnest.js'
 import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.mjs'
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
-import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply } from './lib/agent.mjs'
+import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY } from './lib/agent.mjs'
 import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailConfigured } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
@@ -4845,6 +4845,11 @@ app.post('/api/embed/chat/message', embedLimit(60, 'You are sending messages ver
   const s = sessionByPublicId(String(req.body?.session || ''))
   if (!s) return res.status(404).json({ error: 'Session expired' })
   const cfg = getBotConfig()
+  // /start refuses to open a session when the bot is off; this route never checked, so every
+  // widget already on a visitor's screen kept being answered by a receptionist the shop had
+  // switched off. respond() enforces the same rule, but say it here too so the widget gets a
+  // clean `enabled:false` rather than a reply that looks like the bot is still working.
+  if (!cfg.enabled) return res.json({ reply: OFFLINE_REPLY, quick: [], enabled: false })
   const out = await respond(s, String(req.body?.text || ''), cfg)
   for (const ev of out.events) {
     rtBroadcast('notify', {

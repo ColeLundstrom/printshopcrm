@@ -485,6 +485,52 @@ await t('quote → email → "no" advances to a closed reply, never re-quotes', 
   assert.ok(!isQuote(r5), 'final turn must not re-quote')
 })
 
+section('receptionist: the off switch stops the conversations already open')
+// /api/embed/chat/start refused to open a session when the bot was off. /message never checked,
+// and cfg.enabled inside respond() only ever gated the MODEL — so a disabled receptionist kept
+// running the deterministic engine against every widget already on a visitor's screen. It quoted
+// a per-piece price, created a contact and an opportunity, drafted a real numbered estimate and
+// fired the contact.created nurture email, from a shop that believed its bot was off. The off
+// switch is the only control a shop has when the bot misbehaves, and it did not work on the
+// conversations the owner was reaching for it about.
+await t('a disabled bot answers nothing and writes nothing', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  dbm.setDefaultDb(db)
+  ag.initAgent(db)
+  ag.saveBotConfig({ enabled: 0, shop_name: 'Test Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+  assert.equal(!!ag.getBotConfig().enabled, false, 'precondition: the bot is switched off')
+
+  const sess = ag.startSession({ channel: 'web' })
+  const cur = () => ag.sessionByPublicId(sess.public_id)
+  const say = async (m) => (await ag.respond(cur(), m, ag.getBotConfig())).reply || ''
+  const said = []
+  for (const line of ['quote for 100 gildan 5000 tees screen print', '2 color front', 'owner@example.com', 'looks good']) {
+    said.push(await say(line))
+  }
+  for (const r of said) assert.equal(r, ag.OFFLINE_REPLY, `a disabled bot must not answer (got ${JSON.stringify(r)})`)
+  for (const r of said) assert.ok(!/roughly \$|each|ballpark/i.test(r), 'a disabled bot must never quote a price')
+
+  const rows = (sql) => db.prepare(sql).all()
+  assert.equal(rows('SELECT id FROM contacts').length, 0, 'a disabled bot must not create a contact')
+  assert.equal(rows('SELECT id FROM opportunities').length, 0, 'a disabled bot must not open an opportunity')
+  assert.equal(rows('SELECT id FROM estimates').length, 0, 'a disabled bot must not draft an estimate')
+})
+await t("…but the owner's own preview still runs, so a bot can be tested before it is switched on", async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); ag.initAgent(db)
+  ag.saveBotConfig({ enabled: 0, shop_name: 'Test Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+  const sess = ag.startSession({ channel: 'preview' })
+  const r = await ag.respond(ag.sessionByPublicId(sess.public_id), 'quote for 100 gildan 5000 tees screen print', ag.getBotConfig())
+  assert.notEqual(r.reply, ag.OFFLINE_REPLY, 'the Settings preview is how a shop tests a bot it has not enabled yet')
+})
+
 /* ---------- v56: barcode (lib/barcode.mjs) ---------- */
 section('barcode: Code 128 encoding is spec-correct')
 await t('checksum and symbol values match hand computation for JOB-1042', async () => {
