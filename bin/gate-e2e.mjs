@@ -259,6 +259,26 @@ try {
   })
   chk('v1 still allows an explicit zero-dollar line', r.text, 'EST-')
 
+  // The `== null` guard above caught null and undefined — and nothing an integration actually
+  // sends. A form posts "", an unbound Zapier line-item mapping sends "" or [], a toggle sends
+  // false. Each coerced to 0 and returned a 201 with a $0 estimate a customer could approve.
+  for (const [label, bad] of [['an empty string', ''], ['an empty array', []], ['false', false], ['an object', {}]]) {
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: '50 tees', quantity: 50, unit_price: bad }] },
+    })
+    chk(`v1 refuses unit_price given as ${label}`, `${r.status} ${r.text}`, '^400 .*unit_price_required')
+  }
+  // Shirts do not come in halves. Rounding was wrong both ways: 0.4 → 0 pieces → a $0 estimate,
+  // and 2.5 → 3 units billed for a quantity nobody asked for.
+  for (const [label, q] of [['0.4 (rounds to zero pieces)', 0.4], ['2.5 (rounds up and overcharges)', 2.5]]) {
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', quantity: q, unit_price: 10 }] },
+    })
+    chk(`v1 refuses a fractional quantity of ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_quantity')
+  }
+
   /* ---------- a resale account is never taxed, whichever door the estimate came in ----------
    * taxRateFor() was extracted precisely so this could not be got wrong, and then two paths that
    * could not import it grew their own copy of the arithmetic without the tax_exempt lookup. The

@@ -428,7 +428,15 @@ async function openPO(id, jobNumber) {
         try {
           const r = await api.post(`/api/jobs/${id}/po/submit`, {})
           if (r.ok) { toast(`Order placed with ${r.supplier}${r.order_id ? ` — #${r.order_id}` : ''}`); closeModal(); jobDetailView(id) }
-          else if (r.pending) { $('#po-note', bg).innerHTML = esc(r.note); btn.textContent = 'Submit order to ' + esc(r.supplier); btn.disabled = false }
+          // The error branch used to be unreachable: a failed submit came back with pending:true
+          // and no note, so this rendered esc(undefined) — an empty line — and the shop saw the
+          // button quietly reset. Check for a real error FIRST, and show the distributor's own
+          // words, because "Could not place order" does not tell anyone which key expired.
+          else if (r.error) {
+            $('#po-note', bg).innerHTML = `<strong>Not ordered.</strong> ${esc(r.error)}`
+            toast(`Order NOT placed: ${r.error}`, true)
+            btn.disabled = false; btn.textContent = 'Retry'
+          } else if (r.pending) { $('#po-note', bg).innerHTML = esc(r.note || 'Submit this one by hand in the distributor’s portal, then mark it received here.'); btn.textContent = 'Submit order to ' + esc(r.supplier); btn.disabled = false }
           else { toast('Could not place order', true); btn.disabled = false; btn.textContent = 'Retry' }
         } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Retry' }
       }

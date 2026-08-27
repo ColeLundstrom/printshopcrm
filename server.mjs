@@ -3204,10 +3204,17 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   try {
     result = await submitPurchaseOrder(po, s, { dryRun: false, poNumber: po.po_number })
   } catch (e) { result = { ok: false, supplier: po.supplier, error: e.message, pending: true } }
-  const status = result.ok ? 'submitted' : 'placed_manually'
+  // 'placed_manually' means a human typed this order into the distributor's portal. It is NOT
+  // what an API failure means, and calling it that told the shop their blanks were on the way.
+  // With an expired S&S key the submit failed, the PO said "placed manually", the timeline said
+  // "recorded", and 240 shirts were never ordered — discovered on the due date.
+  //
+  // Only the genuinely-not-wired path (pending, with a note explaining it and no error) may claim
+  // placed_manually. A real error is 'failed', and says so everywhere a human might look.
+  const status = result.ok ? 'submitted' : (result.pending && !result.error ? 'placed_manually' : 'failed')
   run('UPDATE purchase_orders SET status = ?, order_id = ?, submitted_at = ? WHERE id = ?',
     status, result.order_id || null, result.ok ? now() : null, stored.id)
-  logActivity('note', `Blanks PO ${po.po_number} recorded${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs`, { job_id: j.id, contact_id: j.contact_id })
+  logActivity('note', `Blanks PO ${po.po_number} ${status === 'failed' ? 'NOT PLACED' : 'recorded'}${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs${result.error ? ` — submit failed: ${String(result.error).slice(0, 160)}` : ''}`, { job_id: j.id, contact_id: j.contact_id })
   res.json({ ...result, po, purchase_order: getPurchaseOrder(stored.id) })
 }))
 
@@ -3552,15 +3559,27 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     } else {
       // `qty` is the canonical name in public/js/shared/pricing.js; `quantity` is its documented alias.
       const q = Number(it.quantity ?? it.qty)
-      if (!Number.isFinite(q) || q <= 0) return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0` })
-      sizes = { M: Math.round(q) }
+      if (!Number.isFinite(q) || q <= 0) return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
+      // Reject a fraction rather than rounding it. Math.round() was wrong in both directions:
+      // 0.4 became 0 pieces and a $0 estimate, and 2.5 billed the caller for 3. Shirts do not
+      // come in halves, so a fractional quantity is a caller bug worth reporting, not guessing at.
+      if (!Number.isInteger(q)) return res.status(400).json({ error: `${where}.quantity must be a whole number (got ${q})`, code: 'invalid_quantity' })
+      sizes = { M: q }
     }
-    // Same reject-never-coerce rule as quantity, and for the same reason: an omitted unit_price
-    // used to default to 0, so a caller that forgot the field got a 201 and a $0 estimate a
-    // customer could approve. A free line is still expressible — pass unit_price: 0 explicitly.
+    // Reject, never coerce. An omitted unit_price used to default to 0, so a caller that forgot
+    // the field got a 201 and a $0 estimate a customer could approve. That was fixed with a
+    // `== null` check, which only catches null and undefined — and the values integrations
+    // actually send are neither. An HTML form posts "" for an empty field; a Zapier line-item
+    // mapping with nothing bound sends "" or []; a toggle sends false. All three coerced to 0 and
+    // shipped a $0 quote, which is the same bug wearing different clothes.
+    //
+    // So require a real number, or a string that says one. A free line is still expressible —
+    // pass unit_price: 0 explicitly, and that is what docs/API.md promises.
+    const priceGiven = typeof it.unit_price === 'number' ||
+      (typeof it.unit_price === 'string' && it.unit_price.trim() !== '')
+    if (!priceGiven) return res.status(400).json({ error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
     const price = Number(it.unit_price)
-    if (it.unit_price == null) return res.status(400).json({ error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
-    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: `${where}.unit_price must be a number >= 0` })
+    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: `${where}.unit_price must be a number >= 0`, code: 'invalid_unit_price' })
     items.push({
       description: String(it.description || 'Item').slice(0, 200),
       sizes,
@@ -3737,7 +3756,9 @@ const GDRIVE_REDIRECT = (req) => `${req.protocol}://${req.get('host')}/api/gdriv
 /** Is Google Drive connected for this shop? (drives the onboarding step + Settings state) */
 app.get('/api/gdrive/status', wrap((_req, res) => {
   const s = getSettings()
-  res.json({ connected: !!s.gdrive_refresh_token, configured: !!(s.gdrive_client_id && s.gdrive_client_secret) })
+  // Both signals, so the status card and the upload path can never disagree about whether Drive
+  // is on. They did: the card read gdrive_connected and the uploader read the refresh token.
+  res.json({ connected: !!(s.gdrive_refresh_token && s.gdrive_connected), configured: !!(s.gdrive_client_id && s.gdrive_client_secret) })
 }))
 
 /** Start the Google consent flow. Needs the platform Google app's client id/secret in settings. */
@@ -3764,7 +3785,15 @@ app.get('/api/gdrive/callback', wrap(async (req, res) => {
 
 /** Disconnect Drive (future uploads go back to local storage; existing Drive files stay in Drive). */
 app.post('/api/gdrive/disconnect', requireRole('manager'), wrap((_req, res) => {
-  applySettingsPatch({ gdrive_access_token: '', gdrive_refresh_token: '', gdrive_token_expires: '' })
+  // setSetting, NOT applySettingsPatch. The patch helper deliberately skips any SECRET_KEYS entry
+  // whose new value is empty, so that saving the settings form does not wipe a stored credential
+  // the form renders as blank. Both Drive tokens are SECRET_KEYS, so "Disconnect" wrote nothing:
+  // it cleared the gdrive_connected flag and left the refresh token in place. The UI said
+  // disconnected while the upload path — which gates on the token, not the flag — kept pushing
+  // customer artwork into the Drive the shop had just revoked, and kept deleting the local copy.
+  // A shop disconnects because someone left the company. That is the worst possible time to be
+  // still uploading to their account.
+  for (const k of ['gdrive_access_token', 'gdrive_refresh_token', 'gdrive_token_expires', 'gdrive_root_folder']) setSetting(k, '')
   setSetting('gdrive_connected', '')
   res.json({ ok: true })
 }))

@@ -773,6 +773,32 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('artwork never survives its estimate')
+// art_versions.estimate_id had no foreign key (ALTER TABLE cannot add one), and estimates.id is
+// the rowid, which SQLite reuses. A mockup outliving a deleted estimate re-attached itself to the
+// NEXT estimate created — so a brand-new quote showed the previous customer's art, already marked
+// approved, and the board said the proof was cleared. The shop prints someone else's design.
+await t('deleting an estimate takes its mockups with it, so a reused id cannot inherit them', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'First Customer', dbm.now(), dbm.now())
+    dbm.run('INSERT INTO estimates (id, contact_id, estimate_number, created_at) VALUES (1, 1, ?, ?)', 'EST-3001', dbm.now())
+    dbm.run('INSERT INTO art_versions (estimate_id, version, filename, status) VALUES (1, 1, ?, ?)', 'customer-a-logo.png', 'approved')
+    dbm.run('DELETE FROM estimates WHERE id = 1')
+    assert.equal(dbm.all('SELECT id FROM art_versions WHERE estimate_id = 1').length, 0,
+      'the mockup must not outlive the estimate it belonged to')
+    // Now prove the actual harm is gone: the id comes back, and it comes back clean.
+    dbm.run('INSERT INTO estimates (id, contact_id, estimate_number, created_at) VALUES (1, 1, ?, ?)', 'EST-3002', dbm.now())
+    assert.equal(dbm.all('SELECT id FROM art_versions WHERE estimate_id = 1').length, 0,
+      'a reused estimate id must not inherit the previous customer\'s artwork')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('ROI: sales tax is not the shop\'s money')
 // jobRoi read invoices.amount_due / estimates.total, both tax-inclusive, and labelled the result
 // "what you actually keep". Every margin on the screen read high by roughly the tax rate, and the
