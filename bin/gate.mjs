@@ -1000,6 +1000,26 @@ await t('a year in a sentence is not an order quantity', async () => {
   assert.equal(extract('about 72 pcs', {}).qty, 72)
 })
 
+await t('a style number is not an order quantity either', async () => {
+  const { extract } = await import('../lib/agent.mjs')
+  // Fixing the year bug by demanding the noun IMMEDIATELY after the number handed the order to
+  // the style number, because that is exactly where a style number sits. On the public widget
+  // "200 Gildan 5000 tees" was quoted and drafted as 5,000 pieces — $37,275 to a stranger.
+  assert.equal(extract('200 Gildan 5000 tees in black, 2 color front', {}).qty, 200)
+  assert.equal(extract('144 Bella+Canvas 3001 shirts, 1 color front', {}).qty, 144)
+  assert.equal(extract('72 Comfort Colors 1717 tees', {}).qty, 72)
+  assert.equal(extract('500 Gildan 18500 hoodies', {}).qty, 500)
+  // One adjective between the count and its noun was also enough to lose the count entirely.
+  assert.equal(extract('24 black tees', {}).qty, 24)
+  assert.equal(extract('qty 1,200 Next Level 3600 white', {}).qty, 1200)
+  // The receptionist and the deterministic intake parser must not disagree about the same
+  // sentence — this is the second copy of the rule that drifted.
+  const { parseIntakeHeuristic } = await import('../lib/ai.mjs')
+  for (const text of ['200 Gildan 5000 tees in black, 2 color front', '72 Comfort Colors 1717 tees']) {
+    assert.equal(extract(text, {}).qty, parseIntakeHeuristic(text).total_pieces, text)
+  }
+})
+
 section('artwork never survives its estimate')
 // art_versions.estimate_id had no foreign key (ALTER TABLE cannot add one), and estimates.id is
 // the rowid, which SQLite reuses. A mockup outliving a deleted estimate re-attached itself to the
