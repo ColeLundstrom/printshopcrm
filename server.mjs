@@ -3838,7 +3838,18 @@ app.get('/api/v1/estimates/:id', wrap((req, res) => {
 }))
 app.post('/api/v1/estimates', wrap((req, res) => {
   const b = req.body || {}
-  let contact = b.customer_id ? get('SELECT * FROM contacts WHERE id = ?', Number(b.customer_id)) : null
+  // A customer_id that names nobody used to fall through to the customer{} block and CREATE
+  // someone: `{"customer_id": 9999, "customer": {"name":"Ghost"}}` returned 201 with the estimate
+  // attached to a brand-new contact 3. The caller asked to bill an existing account and got a
+  // duplicate instead — a silent wrong write, which is worse than a refusal. An id that was
+  // supplied is authoritative: honour it or say it does not exist.
+  let contact = null
+  if (b.customer_id !== undefined && b.customer_id !== null && b.customer_id !== '') {
+    const cid = Number(b.customer_id)
+    if (!Number.isInteger(cid) || cid <= 0) return res.status(400).json({ error: 'customer_id must be a positive whole number', code: 'invalid_customer_id' })
+    contact = get('SELECT * FROM contacts WHERE id = ?', cid)
+    if (!contact) return res.status(404).json({ error: `customer_id ${cid} does not exist`, code: 'customer_not_found' })
+  }
   if (!contact && b.customer && b.customer.name) {
     const email = String(b.customer.email || '').trim().toLowerCase()
     contact = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
@@ -4016,7 +4027,22 @@ async function createWebhook(b) {
   const bad = (msg) => { const e = new Error(msg); e.status = 400; e.expose = true; return e }
   const url = String(b?.url || '').trim()
   try { await assertPublicUrl(url) } catch (e) { throw bad(e.message) }
-  const events = String(b?.events || '*').trim() || '*'
+  // `events: []` is not the same request as omitting `events`. An empty array is truthy in JS, so
+  // `[] || '*'` kept the array, String([]) made it '', and `'' || '*'` turned "subscribe to
+  // nothing" into "subscribe to everything" — the endpoint that asked for no events received all
+  // of them, with a 201 confirming it. Omitted still means all, as documented; explicitly empty is
+  // a caller mistake worth naming.
+  const rawEvents = b?.events
+  let events
+  if (rawEvents === undefined || rawEvents === null) events = '*'
+  else if (Array.isArray(rawEvents)) {
+    const list = rawEvents.map((x) => String(x).trim()).filter(Boolean)
+    if (!list.length) throw bad('events must name at least one event, or "*" for all — an empty list subscribes to nothing.')
+    events = list.join(',')
+  } else {
+    events = String(rawEvents).trim()
+    if (!events) throw bad('events must name at least one event, or "*" for all — an empty list subscribes to nothing.')
+  }
   if (events !== '*') {
     const unknown = events.split(',').map((x) => x.trim()).filter(Boolean).filter((e) => !WEBHOOK_EVENTS.includes(e))
     if (unknown.length) throw bad(`Unknown event(s): ${unknown.join(', ')}. Allowed: ${WEBHOOK_EVENTS.join(', ')} (or * for all).`)

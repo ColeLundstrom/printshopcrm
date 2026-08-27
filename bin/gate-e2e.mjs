@@ -819,6 +819,37 @@ try {
     // contained "already in use", so asserting on that would have passed against the bug.
     chk('…and says what to do about it', rogueLog, 'PORT=8081')
   }
+  /* ---------- the v1 API does what was asked, or refuses — it does not substitute ----------
+   * Two silent substitutions. A customer_id naming nobody fell through to the customer{} block and
+   * CREATED someone, so a caller asking to bill an existing account got a duplicate contact and a
+   * 201. And `events: []` on a webhook subscription became "*": an empty array is truthy in JS, so
+   * `[] || '*'` kept it, String([]) made it '', and '' || '*' turned "subscribe to nothing" into
+   * "subscribe to everything" — the endpoint that asked for no events received all of them. */
+  {
+    const before = await req('GET', '/api/v1/customers?limit=100', asKey())
+    const countBefore = (before.json?.data || []).length
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer_id: 999999, customer: { name: 'Ghost' }, items: [{ description: 'tees', quantity: 1, unit_price: 1 }] },
+    })
+    chk('a customer_id that names nobody is a 404, not a new customer', `${r.status} ${r.text}`, '^404 .*customer_not_found')
+    const after = await req('GET', '/api/v1/customers?limit=100', asKey())
+    chk('…and no contact was created behind the caller\'s back', String((after.json?.data || []).length), `^${countBefore}$`)
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer_id: 'abc', items: [{ description: 'tees', quantity: 1, unit_price: 1 }] },
+    })
+    chk('…and a non-numeric customer_id is refused', `${r.status} ${r.text}`, '^400 .*invalid_customer_id')
+
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-empty', events: [] } })
+    chk('a webhook subscribing to no events is refused, not subscribed to all', String(r.status), '^400$')
+    chk('…and says what to send instead', r.text, 'at least one event')
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-list', events: ['invoice.paid', 'contact.created'] } })
+    chk('…while the documented array form still subscribes to exactly those', String(r.json?.events ?? 'missing'), '^invoice.paid,contact.created$')
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-all' } })
+    chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
+  }
+
   /* ---------- one invoice, one status, whichever endpoint you ask ----------
    * The stored `status` column does not know what day it is. The LIST endpoint computes the
    * effective status — EFFECTIVE_STATUS_SQL turns an unpaid invoice past its due date into
