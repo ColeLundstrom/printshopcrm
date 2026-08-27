@@ -242,6 +242,15 @@ try {
   r = await req('GET', '/api/v1/customers', asKey())
   chk('v1 accepts the issued key', r.status, '^200$')
 
+  // Number('1e400') is Infinity, and binding that as a SQLite OFFSET threw a 500 — from a public,
+  // documented query parameter. A garbage paging value must degrade to the default, not crash.
+  for (const bad of ['1e400', '-5', 'abc', '9'.repeat(400)]) {
+    r = await req('GET', `/api/v1/customers?offset=${bad}`, asKey())
+    chk(`v1 survives offset=${bad.slice(0, 8)} (200, not 500)`, String(r.status), '^200$')
+  }
+  r = await req('GET', '/api/v1/customers?limit=99999', asKey())
+  chk('v1 caps an absurd limit instead of honouring it', String((r.json?.data || []).length <= 100), '^true$')
+
   // A line with no unit_price used to return 201 and a $0 estimate a customer could approve.
   r = await req('POST', '/api/v1/estimates', {
     ...asKey(),

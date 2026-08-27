@@ -3567,8 +3567,15 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
 
 // Must floor to an integer: node:sqlite refuses a fractional binding, so `?limit=2.5` would 500
 // the endpoint rather than paginate.
-const v1Limit = (q, cap = 100) => Math.min(Math.max(Math.floor(Number(q.limit)) || 25, 1), cap)
-const v1Offset = (q) => Math.max(Math.floor(Number(q.offset)) || 0, 0)
+// Number('1e400') is Infinity, and binding Infinity as a SQLite LIMIT/OFFSET throws — so
+// ?offset=1e400 returned a 500 from a public, documented query parameter. Coerce to a finite
+// integer and clamp; a non-finite or absurd value becomes the default rather than a crash.
+const v1int = (v, dflt, lo, hi) => {
+  const n = Math.floor(Number(v))
+  return Number.isFinite(n) ? Math.min(Math.max(n, lo), hi) : dflt
+}
+const v1Limit = (q, cap = 100) => v1int(q.limit, 25, 1, cap)
+const v1Offset = (q) => v1int(q.offset, 0, 0, 1_000_000_000)
 const v1List = (res, rows, limit) => res.json({ data: rows.slice(0, limit), has_more: rows.length > limit })
 
 const v1Customer = (c) => c && ({ id: c.id, name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', tags: c.tags || '', created_at: c.created_at })

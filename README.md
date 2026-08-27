@@ -117,7 +117,7 @@ Longer write-ups of the things people ask about most, on the project site:
 
 **Purchasing**
 - Garment catalog with real costs feeding the ROI engine
-- S&S Activewear and SanMar lookups when you connect an account, catalog fallback when you don't
+- S&S Activewear, SanMar and AlphaBroder lookups when you connect an account, catalog fallback when you don't
 - Purchase orders consolidated per style/size to avoid split shipments
 
 **Automation & integration**
@@ -263,8 +263,8 @@ grants no privilege they didn't already have, since the databases are right ther
 ## Tests
 
 ```bash
-npm test           # 61 unit tests, no network, runs in seconds
-npm run test:e2e   # 17 end-to-end checks against a throwaway database
+npm test           # 90+ unit tests, no network, runs in seconds
+npm run test:e2e   # 70+ end-to-end checks against a throwaway database
 npm run test:all   # both
 ```
 
