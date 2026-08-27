@@ -1623,6 +1623,45 @@ await t('the letterhead fields templates actually use still render', async () =>
   assert.equal(templateValue('not_a_field', {}, s), '')
 })
 
+section('a dead mail server does not hold the screen that fixes it')
+// nodemailer's own defaults are a 2-minute connection timeout and a TEN-minute socket timeout, and
+// sendMail() is awaited inside a request handler. Measured against a blackholed host the call took
+// 75.0 seconds to come back; against a host that accepts the connection and never greets, 30.0.
+// The screen an owner is looking at while that happens is Settings -> "Send a test email" — the
+// exact screen they opened in order to FIX their mail configuration. server.requestTimeout bounds
+// receiving a request, not producing the answer, so nothing else capped it.
+//
+// A real listener that accepts and stays silent, which is the failure mode a misconfigured relay
+// actually presents. The cap is turned down for the test so the gate stays fast.
+await t('a server that accepts and never greets is given up on, not waited out', async () => {
+  process.env.PSC_SMTP_TIMEOUT_MS = '1500'
+  const net = await import('node:net')
+  const { sendEmail, smtpTimeoutMs } = await import('../lib/notify.mjs')
+  assert.equal(smtpTimeoutMs(), 1500, 'the cap should be configurable so a slow relay can be allowed for')
+
+  const sockets = []
+  const srv = net.createServer((sock) => { sockets.push(sock) /* accept, then say nothing at all */ })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const port = srv.address().port
+  try {
+    const started = Date.now()
+    const out = await sendEmail({
+      to: 'someone@example.test',
+      subject: 'Test email',
+      body: 'hello',
+      settings: { smtp_host: '127.0.0.1', smtp_port: port, smtp_user: 'u', smtp_pass: 'p', smtp_from: 'shop@example.test', smtp_secure: 'false' },
+    })
+    const took = Date.now() - started
+    assert.ok(took < 10000, `sendEmail must give up quickly, took ${took}ms`)
+    assert.equal(out.delivered, false, 'and must report the failure rather than claim delivery')
+    assert.ok(out.error, 'with something the owner can act on')
+  } finally {
+    for (const s of sockets) { try { s.destroy() } catch { /* gone */ } }
+    srv.close()
+    delete process.env.PSC_SMTP_TIMEOUT_MS
+  }
+})
+
 section('every api.<verb>() a screen calls actually exists')
 // public/js/core.js exports the verb as `del`. Two screens called `api.delete(...)`, which is not
 // a function on that object — so the whole handler threw before it reached the server, and the
