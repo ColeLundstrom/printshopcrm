@@ -807,6 +807,22 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('a PDF never blanks or mangles a customer\'s name')
+await t('accented names render, unrenderable scripts substitute rather than vanish', async () => {
+  const pdf = await import('../lib/pdf.mjs')
+  const settings = { shop_name: 'Rebel Ink Press', shop_email: 'o@x.test', shop_address: '500 Main St', shop_phone: '' }
+  const doc = { estimate_number: 'EST-1001', number: 'EST-1001', subtotal: 500, tax: 0, total: 500, created_at: '2026-08-27', status: 'sent' }
+  const items = [{ description: 'Café tees — 2/0 Frente', qty: 50, unit_price: 10, sizes: { M: 50 } }]
+  // Latin-1 is exactly what WinAnsiEncoding + a latin1 buffer render, so the accents must survive
+  // byte-for-byte — the old code stripped them and printed "Jos Muoz".
+  const a = pdf.renderDocument('ESTIMATE', { doc, contact: { name: 'José Muñoz', email: 'j@x.test' }, settings, items }).toString('latin1')
+  assert.ok(a.includes('Jos\xe9 Mu\xf1oz'), 'an accented name must render with its accents intact')
+  // A script the base font has no glyphs for must not leave the BILL TO line empty — a blank name
+  // on an invoice is worse than a transliteration gap.
+  const b = pdf.renderDocument('ESTIMATE', { doc, contact: { name: '王小明', email: 'w@x.test' }, settings, items }).toString('latin1')
+  assert.ok(/\?\?\?/.test(b), 'an unrenderable name must be substituted, not dropped to blank')
+})
+
 section('reorder radar does not defame customers it cannot read')
 await t('clustered same-day orders do not become a confident short cadence', async () => {
   const { DatabaseSync } = await import('node:sqlite')

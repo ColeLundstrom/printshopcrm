@@ -3268,10 +3268,21 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   if (req.body?.dry_run) return res.json({ ok: true, dry_run: true, po })
   if (!po.lines.length) return res.status(400).json({ error: 'This job has no sized quantities to order.', po })
 
+  // Idempotency. The PO number is deterministic (PSC-<job>), and submitting places a REAL,
+  // chargeable order at the distributor. Without this, a double-click, a nervous re-click after a
+  // slow response, or a retry after a timeout each created another purchase_orders row and fired
+  // another order — four clicks, four shipments of the same blanks, billed to the shop. If this
+  // job's PO is already submitted, return it and do not send again.
+  const prior = get('SELECT * FROM purchase_orders WHERE job_id = ? AND po_number = ? ORDER BY id DESC LIMIT 1', j.id, po.po_number)
+  if (prior && prior.status === 'submitted') {
+    return res.json({ ok: true, already: true, supplier: prior.supplier, order_id: prior.order_id, po, purchase_order: getPurchaseOrder(prior.id) })
+  }
+
   // Persist FIRST — the local PO record is what receiving works against, and the shop needs it even
   // when they place the order by hand in the distributor's portal (no live connection, or no SKU
-  // matched yet). Auto-submission to the distributor is a best-effort layer on top.
-  const stored = createPurchaseOrder(j, po, { status: 'draft' })
+  // matched yet). Auto-submission to the distributor is a best-effort layer on top. Reuse the
+  // existing row on a retry rather than stacking duplicate draft/failed POs for the one job.
+  const stored = prior || createPurchaseOrder(j, po, { status: 'draft' })
   let result = { ok: false, supplier: po.supplier, pending: true }
   try {
     result = await submitPurchaseOrder(po, s, { dryRun: false, poNumber: po.po_number })
@@ -4433,10 +4444,24 @@ app.get('/api/embed/config', (req, res) => embedRun(req, res, () => {
  * (never trust the client), create the customer + estimate in this shop's account, and either
  * start a Stripe Checkout on the SHOP's account or record it as a quote for the shop to follow up.
  */
-app.post('/api/embed/gangsheet/order', (req, res) => embedRun(req, res, async () => {
+app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this connection. Try again shortly.'), (req, res) => embedRun(req, res, async () => {
     const b = req.body || {}
     const items = Array.isArray(b.items) ? b.items : []
     if (!items.length) return res.status(400).json({ error: 'Add at least one design' })
+    // This is a PUBLIC, unauthenticated endpoint that creates a contact and a sent estimate and
+    // fires the estimate.sent automations, so it needs bounds on both volume and geometry. The
+    // nester caps quantity and width, but height was unbounded: a design 1e15 inches tall priced
+    // the sheet in the quadrillions and stored it as a real estimate. No DTF design is taller than
+    // a few feet; refuse anything outside a sane envelope rather than nesting it.
+    if (items.length > 100) return res.status(400).json({ error: 'That is more designs than a single sheet holds.' })
+    const MAX_IN = 120 // 10 feet — comfortably past any real transfer, far short of an overflow
+    for (const it of items) {
+      const w = Number(it?.w), h = Number(it?.h), qty = Number(it?.qty)
+      if (!(w > 0 && w <= MAX_IN) || !(h > 0 && h <= MAX_IN)) {
+        return res.status(400).json({ error: 'A design size looks off — width and height must be between 0 and 120 inches.' })
+      }
+      if (!(qty >= 1 && qty <= 5000)) return res.status(400).json({ error: 'A design quantity looks off — it must be between 1 and 5000.' })
+    }
     const s = getSettings()
     const { usedHeight } = nest(items, { sheetWidth: Number(s.dtf_sheet_width) || 22 })
     const price = priceSheet(usedHeight, { pricePerInch: Number(s.dtf_price_per_inch) || 0.95, minCharge: Number(s.dtf_min_charge) || 10 })
