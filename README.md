@@ -10,6 +10,7 @@ file you can copy.
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Docker image](https://img.shields.io/badge/ghcr.io-printshopcrm-2496ed?logo=docker&logoColor=white)](https://github.com/ColeLundstrom/printshopcrm/pkgs/container/printshopcrm)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Website](https://img.shields.io/badge/website-printshopcrm.com-0B5FBF.svg)](https://printshopcrm.com/open-source/)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
 ```bash
@@ -77,6 +78,15 @@ Four more things it does that are unusual:
   breakdowns — plus everything as one JSON file. No ticket, no fee. The database is a single file.
 
 ---
+
+### Further reading
+
+Longer write-ups of the things people ask about most, on the project site:
+
+- [What you get, what self-hosting takes, and the catch stated plainly](https://printshopcrm.com/open-source/)
+- [Is it really free? Where the money actually goes](https://printshopcrm.com/services/free-print-shop-software/)
+- [Self-hosting: stack, install paths, and the persistent-volume trap](https://printshopcrm.com/services/self-hosted-print-shop-software/)
+- [Switching from Printavo without risking the shop](https://printshopcrm.com/services/switching-from-printavo/)
 
 ## Features
 
@@ -229,9 +239,9 @@ Secrets stored in settings are redacted out of any response sent to the browser.
 Self-hosting is fully supported and always will be — this repo is the whole product, not a teaser,
 and running it for your own shop is free forever.
 
-If you'd rather not run a server, **managed hosting and setup are available from MerchTroop**:
-backups, updates, SSL, monitoring, and data migration off your current tool. See
-**[HOSTING.md](HOSTING.md)**.
+If you'd rather not run a server, **managed hosting and setup are available**: backups, updates,
+SSL, monitoring, and data migration off your current tool — including on-site setup and training.
+See **[HOSTING.md](HOSTING.md)** or **[printshopcrm.com](https://printshopcrm.com/)**.
 
 That's the deal, plainly: the software is free and always will be, and paying us buys operations —
 not features. Hosted and self-hosted run identical code.
