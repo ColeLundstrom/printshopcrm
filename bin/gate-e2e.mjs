@@ -363,6 +363,20 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- a board-created job must count as real pieces ----------
+   * The job form takes a free-text "24 S / 60 M / 80 L / 36 XL", stored as a string the piece
+   * counter could not parse — so a job created on the board booked zero press minutes, printed a
+   * blank size table, ordered no blanks and reported no ROI. It must now carry a real size grid. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Board Job Co', email: 'board@e2e.test' } })
+    const cid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: cid, title: 'Board tees', decoration: 'Screen Print', quantities: '24 S / 60 M / 80 L / 36 XL', due_date: '2026-10-01' } })
+    chk('a board job is created', String(r.status), '^200$')
+    const sizes = (() => { try { return JSON.parse(r.json?.sizes || '{}') } catch { return {} } })()
+    const total = Object.values(sizes).reduce((a, b) => a + Number(b), 0)
+    chk('…and its free-text quantities became a real size grid (200 pieces)', String(total), '^200$')
+  }
+
   /* ---------- a malformed cookie must not lock the user out ----------
    * parseCookies ran decodeURIComponent on every cookie value, and that throws on a malformed
    * percent-escape. A cookie is attacker-controlled and this runs before the auth gate, so a

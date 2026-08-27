@@ -29,7 +29,7 @@ import {
   billingLive, setPlatformCredentials, LITE_PLAN_ORDER, PLAN_ORDER, litePlanAllows, isFreePlan,
 } from './lib/billing.mjs'
 import { initAutomations, seedAutomations, listAutomations, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
-import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS } from './lib/ai.mjs'
+import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS, parseSizeRun } from './lib/ai.mjs'
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
@@ -2102,14 +2102,24 @@ app.get('/api/jobs/:id', wrap((req, res) => {
   })
 }))
 
+// Turn the job form's free-text "24 S / 60 M / 80 L / 36 XL" into a real size grid, and store it
+// as `sizes`. A job created on the board never had one, so jobPieces() fell through to a
+// quantities field it could not parse and returned 0 — which meant the job booked zero press
+// minutes in the schedule, printed a blank size table, ordered no blanks, and reported no ROI.
+const gridFromQuantities = (q) => {
+  const g = parseSizeRun(String(q || ''))
+  return sizeTotal(g) > 0 ? JSON.stringify(g) : null
+}
+
 app.post('/api/jobs', wrap((req, res) => {
   const b = req.body || {}
   if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer first' })
   const num = nextJobNumber()
-  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, quantities, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  const grid = gridFromQuantities(b.quantities)
+  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     +b.contact_id, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
     STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', b.quantities || '',
-    b.due_date || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
+    grid || '{}', b.due_date || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
   logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: +b.contact_id, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
@@ -2119,8 +2129,14 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const b = req.body || {}
-  run('UPDATE jobs SET title=?, decoration=?, quantities=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
-    b.title ?? j.title, b.decoration ?? j.decoration, b.quantities ?? j.quantities, b.due_date ?? j.due_date,
+  // Re-derive the size grid when the quantities text changes — but never clobber a grid that came
+  // from a converted estimate (which is already structured) with an empty parse of an untouched
+  // free-text field. Only overwrite when the parse actually yields sizes.
+  const nextQuantities = b.quantities ?? j.quantities
+  const reparsed = b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
+  const nextSizes = reparsed || j.sizes || '{}'
+  run('UPDATE jobs SET title=?, decoration=?, quantities=?, sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
+    b.title ?? j.title, b.decoration ?? j.decoration, nextQuantities, nextSizes, b.due_date ?? j.due_date,
     b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush ? 1 : 0, now(), id)
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
