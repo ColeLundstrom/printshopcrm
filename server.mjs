@@ -452,22 +452,67 @@ function dispatchSubscriptions(event, data) {
   const slug = curSlug()
   const payload = { event, at: now(), data }
   for (const sub of subs) {
-    const deliveryId = Number(run('INSERT INTO webhook_deliveries (subscription_id, event, payload, status) VALUES (?,?,?,?)',
-      sub.id, event, JSON.stringify(payload), 'pending').lastInsertRowid)
-    const attempt = (n) => {
-      deliverWebhook(sub.url, payload, { secret: sub.secret, event }).then((r) => {
-        try {
-          withSlugDb(slug, () => {
-            if (r.ok) run("UPDATE webhook_deliveries SET status = 'delivered', attempts = ?, delivered_at = ?, last_error = NULL WHERE id = ?", n, now(), deliveryId)
-            else if (n < 3) run("UPDATE webhook_deliveries SET status = 'retrying', attempts = ?, last_error = ? WHERE id = ?", n, String(r.error || '').slice(0, 200), deliveryId)
-            else run("UPDATE webhook_deliveries SET status = 'failed', attempts = ?, last_error = ? WHERE id = ?", n, String(r.error || '').slice(0, 200), deliveryId)
-          })
-        } catch (e) { console.error('webhook delivery log:', e && e.message) }
-        if (!r.ok && n < 3) setTimeout(() => attempt(n + 1), n === 1 ? 30_000 : 300_000).unref?.()
-      }).catch(() => {})
-    }
-    attempt(1)
+    const deliveryId = Number(run('INSERT INTO webhook_deliveries (subscription_id, event, payload, status, next_attempt_at) VALUES (?,?,?,?,?)',
+      sub.id, event, JSON.stringify(payload), 'pending', now()).lastInsertRowid)
+    // One immediate attempt for responsiveness; every retry after that is owned by the tick drain
+    // (retryDueWebhooks), which reads next_attempt_at from the row — so a restart mid-wait resumes
+    // the retry instead of losing it. No in-process setTimeout to drop on a deploy.
+    attemptWebhookDelivery(slug, { id: deliveryId, url: sub.url, secret: sub.secret, event, payload, attempts: 0 })
   }
+}
+
+// Backoff schedule by attempt number (0-indexed): first retry ~30s out, then 5 minutes. Capped at
+// MAX_WEBHOOK_ATTEMPTS total tries, after which the delivery is 'failed' and stops.
+const MAX_WEBHOOK_ATTEMPTS = 3
+const webhookBackoffMs = (attempts) => (attempts <= 1 ? 30_000 : 300_000)
+
+// Deliver once, record the outcome, and — on a retryable failure — stamp next_attempt_at so the
+// tick can pick it up later. Runs after the response, so it must never throw into an empty stack.
+function attemptWebhookDelivery(slug, d) {
+  const n = (Number(d.attempts) || 0) + 1
+  deliverWebhook(d.url, d.payload, { secret: d.secret, event: d.event }).then((r) => {
+    try {
+      withSlugDb(slug, () => {
+        if (r.ok) {
+          run("UPDATE webhook_deliveries SET status = 'delivered', attempts = ?, delivered_at = ?, last_error = NULL, next_attempt_at = NULL WHERE id = ?", n, now(), d.id)
+        } else if (n < MAX_WEBHOOK_ATTEMPTS) {
+          const next = new Date(Date.now() + webhookBackoffMs(n)).toISOString().replace('T', ' ').slice(0, 19)
+          run("UPDATE webhook_deliveries SET status = 'retrying', attempts = ?, last_error = ?, next_attempt_at = ? WHERE id = ?", n, String(r.error || '').slice(0, 200), next, d.id)
+        } else {
+          run("UPDATE webhook_deliveries SET status = 'failed', attempts = ?, last_error = ?, next_attempt_at = NULL WHERE id = ?", n, String(r.error || '').slice(0, 200), d.id)
+        }
+      })
+    } catch (e) { console.error('webhook delivery log:', e && e.message) }
+  }).catch(() => {})
+}
+
+/**
+ * Drain webhook deliveries whose retry time has come. This is the durable half of the retry:
+ * dispatchSubscriptions does one immediate attempt, and everything after that is picked up here
+ * from next_attempt_at — so a deploy or crash during a backoff wait resumes the retry rather than
+ * stranding the delivery in 'retrying' forever. Rescues 'pending' rows too (a process that died
+ * between the INSERT and the first attempt). Runs inside a tenant context, like the QBO drain.
+ */
+function retryDueWebhooks(limit = 20) {
+  const due = all(
+    `SELECT d.id, d.attempts, d.payload, s.url, s.secret, d.event
+       FROM webhook_deliveries d JOIN webhook_subscriptions s ON s.id = d.subscription_id
+      WHERE s.active = 1 AND d.status IN ('retrying', 'pending')
+        AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)
+        AND d.attempts < ?
+      ORDER BY d.id LIMIT ?`,
+    now(), MAX_WEBHOOK_ATTEMPTS, limit,
+  )
+  const slug = curSlug()
+  for (const row of due) {
+    // Claim it so two overlapping ticks can't double-send: bump next_attempt_at forward first.
+    const hold = new Date(Date.now() + 60_000).toISOString().replace('T', ' ').slice(0, 19)
+    run("UPDATE webhook_deliveries SET next_attempt_at = ? WHERE id = ?", hold, row.id)
+    let payload
+    try { payload = JSON.parse(row.payload) } catch { payload = { event: row.event } }
+    attemptWebhookDelivery(slug, { id: row.id, url: row.url, secret: row.secret, event: row.event, payload, attempts: row.attempts })
+  }
+  return due.length
 }
 
 // Small, stable event payloads: ids + the human-facing numbers, never whole rows (a webhook
@@ -5489,6 +5534,10 @@ server.listen(PORT, () => {
           // extend the synchronous per-shop tick — the event loop stays free during each push.
           try { qboPushed += await withTenant(slug, () => processQboQueue()) }
           catch (e) { console.error(`  qbo queue failed for ${slug}:`, e.message) }
+          // Durable webhook retries: re-attempt any delivery whose backoff has elapsed. A retry
+          // used to be an in-process timer that a deploy dropped; now it survives a restart.
+          try { withTenant(slug, () => retryDueWebhooks()) }
+          catch (e) { console.error(`  webhook retry failed for ${slug}:`, e.message) }
           await new Promise((r) => setImmediate(r)) // hand the event loop back between shops
         }
         if (total) console.log(`  automations: ${total} fired across tenants`)
@@ -5499,6 +5548,7 @@ server.listen(PORT, () => {
         const fired = tick(autoDeps)
         if (fired.length) console.log(`  automations: ${fired.length} fired — ${fired.slice(0, 4).join(', ')}`)
         await processQboQueue().catch((e) => console.error('  qbo queue failed:', e.message))
+        try { retryDueWebhooks() } catch (e) { console.error('  webhook retry failed:', e.message) }
         if (dueForDailySweep()) {
           const n = pruneWebhookDeliveries()
           if (n) console.log(`  webhook history: ${n} old deliveries pruned`)

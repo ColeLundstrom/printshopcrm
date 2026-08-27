@@ -653,6 +653,31 @@ await t('old terminal deliveries are pruned, in-flight retries and recent ones s
   }
 })
 
+section('webhooks: a retry survives a restart')
+await t('a delivery stuck retrying with an elapsed backoff is due again; future and maxed-out are not', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb(); dbm.setDefaultDb(db)
+  try {
+    // next_attempt_at must exist — the whole point is that retry state is in the DB, not a timer
+    // that a deploy or crash drops. This is what strands a delivery in 'retrying' forever without it.
+    assert.ok(db.prepare("PRAGMA table_info(webhook_deliveries)").all().some((c) => c.name === 'next_attempt_at'),
+      'webhook_deliveries needs next_attempt_at for durable retries')
+    dbm.run("INSERT INTO webhook_subscriptions (id,url,events,secret,active,created_at) VALUES (1,?,?,?,1,?)", 'https://x.test/hook', '*', 's', dbm.now())
+    const at = (deltaMs) => new Date(Date.now() + deltaMs).toISOString().replace('T', ' ').slice(0, 19)
+    // The exact due-query retryDueWebhooks runs.
+    const Q = "SELECT d.id FROM webhook_deliveries d JOIN webhook_subscriptions s ON s.id=d.subscription_id WHERE s.active=1 AND d.status IN ('retrying','pending') AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?) AND d.attempts < 3 ORDER BY d.id"
+    dbm.run("INSERT INTO webhook_deliveries (id,subscription_id,event,payload,status,attempts,next_attempt_at,created_at) VALUES (1,1,?,?,'retrying',1,?,?)", 'e', '{}', at(-60000), dbm.now())
+    assert.equal(dbm.all(Q, dbm.now()).length, 1, 'an elapsed retry is picked up after a restart')
+    dbm.run("UPDATE webhook_deliveries SET next_attempt_at=? WHERE id=1", at(300000))
+    assert.equal(dbm.all(Q, dbm.now()).length, 0, 'a retry whose backoff has not elapsed waits')
+    dbm.run("UPDATE webhook_deliveries SET next_attempt_at=?, attempts=3 WHERE id=1", at(-60000))
+    assert.equal(dbm.all(Q, dbm.now()).length, 0, 'a delivery at max attempts stops retrying')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('off-site backup: Drive retention prunes the OLDEST, never the newest')
 await t('keeps the N most recent archives and deletes only the rest', async () => {
   // The listing is orderBy=createdTime desc, so index 0 is newest. slice(KEEP) must therefore be
