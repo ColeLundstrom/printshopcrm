@@ -1020,6 +1020,59 @@ await t('a style number is not an order quantity either', async () => {
   }
 })
 
+section('webhooks: the pinned lookup must speak the contract net.connect uses')
+// Round 1 closed a DNS-rebind window by pinning the connect-time lookup to the address the SSRF
+// guard had already vetted. The pin called back with the bare-string 3-argument form, which Node
+// only accepts when `all` is false — and autoSelectFamily has defaulted to TRUE since Node 20, so
+// net.connect always passes `{ all: true }` and expects an array of { address, family }. Every
+// delivery died with "Invalid IP address: undefined" before a packet left the box. package.json
+// requires node >=22, so the webhook feature reached no endpoint on any install at all.
+//
+// A live socket is what catches this: the guard, the signature and the retry ladder were all
+// correct and green, and none of them touch the connect path.
+await t('Node accepts what pinnedLookupFor returns, on a real socket', async () => {
+  const http = await import('node:http')
+  const netm = await import('node:net')
+  const { pinnedLookupFor } = await import('../lib/webhook.mjs')
+
+  const srv = http.createServer((_q, r) => { r.writeHead(200); r.end('ok') })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const port = srv.address().port
+  const hit = (lookup) => new Promise((resolve) => {
+    const rq = http.request({ hostname: 'pinned.invalid', port, path: '/hook', method: 'POST', lookup, timeout: 4000 },
+      (res) => { res.resume(); resolve(`HTTP ${res.statusCode}`) })
+    rq.on('error', (e) => resolve(`ERROR ${e.message}`))
+    rq.on('timeout', () => { rq.destroy(); resolve('TIMEOUT') })
+    rq.end('{}')
+  })
+  try {
+    // The shape that shipped. Asserting Node rejects it is what makes the fix below meaningful.
+    const old = await hit((_h, _o, cb) => cb(null, '127.0.0.1', 4))
+    assert.match(old, /Invalid IP address/, `the 3-arg lookup should be rejected by this Node (got ${old})`)
+
+    // The real factory, with the block-list check satisfied by a public address, must produce a
+    // result Node can actually connect with.
+    const lookup = pinnedLookupFor('203.0.113.7')
+    let handed = null
+    lookup('pinned.invalid', { all: true, family: 0 }, (err, addrs) => { if (!err) handed = addrs })
+    assert.ok(Array.isArray(handed), 'with { all: true } the callback must receive an array')
+    assert.deepEqual(handed, [{ address: '203.0.113.7', family: 4 }])
+
+    // …and that same array shape, driven through a real socket, connects where the old one could
+    // not. (The factory itself can only be pointed at a public address, and the block list refuses
+    // every locally-reachable one — by design — so the socket leg uses the shape it produces.)
+    const connected = await hit((_h, o, cb) => (o && o.all
+      ? cb(null, [{ address: '127.0.0.1', family: netm.isIP('127.0.0.1') }])
+      : cb(null, '127.0.0.1', 4)))
+    assert.equal(connected, 'HTTP 200', 'the array form must actually connect')
+
+    // The guard still refuses a private pin — the rebind defence must survive the fix.
+    let blocked = null
+    pinnedLookupFor('127.0.0.1')('x', { all: true }, (err) => { blocked = err })
+    assert.match(String(blocked?.message), /blocked address/, 'a loopback pin must still be refused')
+  } finally { srv.close() }
+})
+
 section('artwork never survives its estimate')
 // art_versions.estimate_id had no foreign key (ALTER TABLE cannot add one), and estimates.id is
 // the rowid, which SQLite reuses. A mockup outliving a deleted estimate re-attached itself to the
