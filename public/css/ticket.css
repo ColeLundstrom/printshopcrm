@@ -68,3 +68,14 @@ h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; margin: 
 .tk-bc svg { max-width: 180px; height: 44px; }
 .tk-bc-num { font: 700 9px/1.4 ui-monospace, monospace; color: #555; letter-spacing: .04em; }
 @media print { .tk-bc svg { max-width: 200px; } }
+
+/* Imprint block + fill-in specs (v1.5) — shown when there is no formal separation, so the
+   press operator still knows what prints where and has a place to record the run specs. */
+.tk-imp { width: 100%; border-collapse: collapse; margin: 4px 0 10px; }
+.tk-imp td { border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; vertical-align: top; }
+.tk-imp td.g { font-weight: 700; white-space: nowrap; width: 40%; }
+.tk-pl { display: inline-block; background: #f3f3f3; border-radius: 5px; padding: 2px 7px; margin: 0 4px 4px 0; font: 700 11px/1.3 ui-monospace, monospace; }
+.tk-specs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; margin: 6px 0 12px; }
+.tk-specs > div { display: flex; align-items: baseline; gap: 8px; }
+.tk-specs span { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; min-width: 96px; }
+.tk-specs .ln { flex: 1; border-bottom: 1px solid #bbb; height: 15px; }

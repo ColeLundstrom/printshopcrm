@@ -4926,12 +4926,27 @@ app.get('/p/ticket/:id', pPage((req, res) => {
   // It lives on the public /p/ namespace for one-click staff printing, so it MUST be token-gated
   // exactly like the other /p/ pages; the HMAC binds to the shop, closing the cross-tenant hole too.
   if (!checkToken('ticket', id, req.query.k)) return res.status(403).send('Forbidden')
-  const j = get(`SELECT j.*, c.name AS contact_name, c.company, c.phone, i.invoice_number, e.estimate_number
+  const j = get(`SELECT j.*, c.name AS contact_name, c.company, c.phone, i.invoice_number, e.estimate_number, e.items AS est_items
     FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id LEFT JOIN invoices i ON i.id=j.invoice_id
     LEFT JOIN estimates e ON e.id=j.estimate_id WHERE j.id=?`, +req.params.id)
   if (!j) return res.status(404).send('Not found')
   const s = getSettings()
   const grid = parse(j.sizes, {})
+  // The imprint the press actually runs, pulled from the quote. A formal separation exists on
+  // almost no real job, so the ticket used to show nothing about colours or placement unless one
+  // had been entered by hand — leaving the operator to guess. The quote already states it in the
+  // trade's shorthand ("Gildan 5000 — 3/0 Front + 1/0 Back"); surface that. Each garment line
+  // becomes a placement row with its colour count.
+  const estItems = parse(j.est_items, [])
+  const imprintLines = estItems
+    .filter((it) => it && it.sizes && !/screen|setup|digitiz/i.test(String(it.description || '')))
+    .map((it) => {
+      const desc = String(it.description || '')
+      const afterDash = desc.includes('—') ? desc.split('—').slice(1).join('—').trim() : desc
+      // Split "3/0 Front + 1/0 Back" into placements with their colour counts.
+      const placements = afterDash.split('+').map((p) => p.trim()).filter(Boolean)
+      return { garment: desc.split('—')[0].trim(), placements: placements.length ? placements : [afterDash || 'Print'] }
+    })
   const sizes = Object.entries(grid).filter(([, n]) => Number(n) > 0)
   const total = sizes.reduce((t, [, n]) => t + Number(n), 0)
   const art = all('SELECT * FROM art_versions WHERE job_id = ? ORDER BY version DESC', j.id)
@@ -4958,10 +4973,22 @@ app.get('/p/ticket/:id', pPage((req, res) => {
         <tr>${sizes.map(([, n]) => `<td>${esc(n)}</td>`).join('')}<td class="t">${total}</td></tr></table>
       ${(() => {
         const sep = parse(j.separation, null)
-        if (!sep) return ''
-        const chips = [...(sep.inks || []).map((i) => ({ name: i.name, hex: i.hex })), ...(sep.dark ? [{ name: 'Underbase', hex: '#f5f5f5' }] : [])]
-        return `<h2>Screens — ${sep.screens} · ${sep.mode === 'process' ? 'sim process' : 'spot color'}</h2>
-          <div class="tk-screens">${chips.map((c, i) => `<div class="tk-scr"><span class="dot" style="background:${esc(c.hex)}"></span>${i + 1}. ${esc(c.name)}</div>`).join('')}</div>`
+        if (sep) {
+          const chips = [...(sep.inks || []).map((i) => ({ name: i.name, hex: i.hex })), ...(sep.dark ? [{ name: 'Underbase', hex: '#f5f5f5' }] : [])]
+          return `<h2>Screens — ${sep.screens} · ${sep.mode === 'process' ? 'sim process' : 'spot color'}</h2>
+            <div class="tk-screens">${chips.map((c, i) => `<div class="tk-scr"><span class="dot" style="background:${esc(c.hex)}"></span>${i + 1}. ${esc(c.name)}</div>`).join('')}</div>`
+        }
+        // No formal separation: show the imprint from the quote so the operator knows what prints
+        // where, and give labelled BLANKS for the specs the system doesn't capture — the operator
+        // fills them at the press rather than the ticket pretending they don't matter.
+        if (!imprintLines.length) return ''
+        return `<h2>Imprint</h2>
+          <table class="tk-imp">
+            ${imprintLines.map((l) => `<tr><td class="g">${esc(l.garment)}</td><td>${l.placements.map((p) => `<span class="tk-pl">${esc(p)}</span>`).join('')}</td></tr>`).join('')}
+          </table>
+          <div class="tk-specs">
+            ${['Ink colours / PMS', 'Ink type', 'Mesh', 'Squeegee', 'Flash / cure', 'Platen'].map((k) => `<div><span>${esc(k)}</span><div class="ln"></div></div>`).join('')}
+          </div>`
       })()}
       <div class="tk-cols">
         <div><h2>Notes</h2><div class="tk-notes">${esc(j.notes || 'None.')}</div></div>
