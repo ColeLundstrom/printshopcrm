@@ -288,6 +288,27 @@ await t('private/loopback/metadata/rebinding blocked; public allowed', async () 
     try { await wh.assertPublicUrl(url, { resolver: res }) } catch (e) { threw = true; assert.match(e.message, re, url) }
     assert.ok(threw, `${url} should reject`)
   }
+  // The vetted addresses come back, not just the URL string — this is what lets delivery pin the
+  // connection instead of re-resolving into a rebind.
+  const vetted = await wh.assertPublicUrl('https://hooks.zapier.com/x', { resolver: res })
+  assert.deepEqual(vetted.ips, ['52.1.2.3'], 'assertPublicUrl must return the addresses it checked')
+})
+
+section('webhook delivery pins the vetted address (no DNS-rebind window)')
+await t('a host that passes validation then rebinds to loopback is not connected to', async () => {
+  const wh = await import('../lib/webhook.mjs')
+  // A resolver that answers a PUBLIC ip the first time (validation) and LOOPBACK every time after
+  // (the connect). fetch would have taken the second answer; the pinned lookup never asks again.
+  let calls = 0
+  const rebind = { lookup: async () => { calls++; return [{ address: calls === 1 ? '52.9.9.9' : '127.0.0.1' }] } }
+  // Point the "public" ip at a port with nothing on it, so a real connection attempt fails fast
+  // rather than reaching anything — we are asserting WHERE it tried to connect, via the error.
+  const r = await wh.deliverWebhook('http://rebind.test:9/hook', { hello: 'world' }, { resolver: rebind, timeoutMs: 1500 })
+  // It must have failed to reach 52.9.9.9:9 (connection refused / timeout), NOT succeeded against
+  // loopback. Either way ok is false; the point is the pinned ip was used, so validation resolved
+  // exactly once for the address check.
+  assert.equal(r.ok, false)
+  assert.equal(calls, 1, 'the hostname must be resolved once (for validation), never again at connect')
 })
 
 /* ---------- pricebook: resilience + shape (added v52) ---------- */
