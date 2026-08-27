@@ -807,6 +807,37 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('capacity: colours and press count are modelled the way a shop actually runs')
+await t('colorsFromItems reads the colour from where the quote actually stores it', async () => {
+  const { colorsFromItems } = await import('../lib/capacity.mjs')
+  // No estimate this app has written carries a numeric `colors` on the line — colour lives in the
+  // "N/0" description and the screen-setup line's qty. Reading only it.colors returned 0 for every
+  // real job, so everything scheduled at the flat 2-colour default.
+  assert.equal(colorsFromItems([{ description: 'Tee — 3/0 Front + 1/0 Back' }, { description: 'Screen setup — 4 screens', qty: 4 }]), 4)
+  assert.equal(colorsFromItems([{ description: 'Bella 3001 — 6/0 Front' }, { description: 'Screen setup — 6 screens', qty: 6 }]), 6)
+  assert.equal(colorsFromItems([{ description: 'Tee', sizes: { M: 50 }, colors: 5 }]), 5) // structured wins
+  assert.equal(colorsFromItems([{ description: 'Embroidered polo' }]), 0) // no screens → caller defaults
+})
+await t('one job cannot use more presses than it physically runs on', async () => {
+  const { schedule, jobMinutes } = await import('../lib/capacity.mjs')
+  const big = { id: 1, due: '2026-12-31', sizes: JSON.stringify({ M: 2000 }), colors: 6 }
+  const many = { capacity_stations: 8, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
+  const one = { capacity_stations: 1, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
+  const f8 = schedule([{ ...big, minutes: jobMinutes(big, many) }], many).jobs[0].projectedFinish
+  const f1 = schedule([{ ...big, minutes: jobMinutes(big, one) }], one).jobs[0].projectedFinish
+  // A single run occupies one press either way, so buying presses does not make THIS job finish
+  // sooner — the pooled model used to say it did, over-promising by the station count.
+  assert.equal(f8, f1, 'a single job must take the same time regardless of how many presses exist')
+})
+await t('but more presses still finish a BATCH of jobs sooner', async () => {
+  const { schedule, jobMinutes } = await import('../lib/capacity.mjs')
+  const many = { capacity_stations: 8, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
+  const one = { capacity_stations: 1, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
+  const jobs = Array.from({ length: 8 }, (_, i) => ({ id: i + 1, due: '2026-12-31', sizes: JSON.stringify({ M: 300 }), colors: 2 }))
+  const last = (s, set) => schedule(jobs.map((j) => ({ ...j, minutes: jobMinutes(j, set) })), set).jobs.map((j) => j.projectedFinish).sort().pop()
+  assert.ok(new Date(last(jobs, many)) < new Date(last(jobs, one)), 'parallel jobs must benefit from more presses')
+})
+
 section('contact lookup is indexed, not a full scan')
 // The CSV order import matches every row on lower(email)/lower(name), inside one synchronous
 // transaction. Without an index each match is a full table scan, so a few thousand rows meant
