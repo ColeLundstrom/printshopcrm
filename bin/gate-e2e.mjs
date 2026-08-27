@@ -486,6 +486,28 @@ try {
   r = await req('POST', '/api/auth/login', { cookies: false, headers: { Cookie: 'psc_session=%e0%a4' }, body: { email: 'nobody@e2e.test', password: 'x' } })
   chk('…and login still works past a broken cookie (401, not 500)', String(r.status), '^40[01]$')
 
+  /* ---------- ...and the SECOND copy of the cookie parser must survive it too ----------
+   * lib/realtime.mjs kept its own parseCookies with a bare decodeURIComponent. It runs on the /ws
+   * upgrade BEFORE any auth, so a malformed cookie threw out of the connection handler and the
+   * socket was never closed — the fd was never reaped. Repeated unauthenticated upgrades exhausted
+   * file descriptors for the whole shared multi-tenant process. The socket must be CLOSED, not
+   * orphaned, so this asserts a close actually arrives rather than merely that nothing 500'd. */
+  {
+    const { WebSocket } = await import('ws')
+    const closed = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve('never closed'), 8000)
+      let sock
+      try {
+        sock = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { Cookie: 'psc_session=%; junk=%zz' } })
+      } catch { clearTimeout(timer); return resolve('threw') }
+      sock.on('close', (code) => { clearTimeout(timer); resolve(`closed ${code}`) })
+      sock.on('error', () => { /* an unauthorized close surfaces here too; the close handler decides */ })
+    })
+    chk('a malformed cookie on the /ws upgrade closes the socket instead of leaking it', closed, '^closed ')
+    const h = await req('GET', '/health', { cookies: false })
+    chk('…and the server is still healthy afterwards', String(h.status), '^200$')
+  }
+
   /* ---------- one anonymous request must not be able to exhaust memory ----------
    * express.json runs before the auth gate and every rate limiter — a request's body is read
    * before anything can reject the request. At a 25 MB cap, 35 anonymous 24 MB POSTs to /login
