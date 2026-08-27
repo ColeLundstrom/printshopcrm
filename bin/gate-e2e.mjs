@@ -65,7 +65,7 @@ async function req(method, path, { body, headers = {}, cookies = true } = {}) {
 /* ---------- boot a server against a throwaway db ---------- */
 const server = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+  env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let serverLog = ''
@@ -485,6 +485,38 @@ try {
   chk('a malformed cookie does not 500 the request', String(r.status), '^200$')
   r = await req('POST', '/api/auth/login', { cookies: false, headers: { Cookie: 'psc_session=%e0%a4' }, body: { email: 'nobody@e2e.test', password: 'x' } })
   chk('…and login still works past a broken cookie (401, not 500)', String(r.status), '^40[01]$')
+
+  /* ---------- an emailed link points at this install, not at whoever asked ----------
+   * The link the shop mails out was built from the raw Host header, which the caller chooses. A
+   * request carrying `Host: evil.attacker.example` made the server mail the real owner a working
+   * password-reset link pointing at the attacker — one click and the shop was theirs. publicOrigin()
+   * already existed for exactly this and was used for the Slack links only. The payment-link route
+   * returns the link it just emailed, so it is the one that can be asserted end to end. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Link Buyer', email: 'link-buyer@e2e.test' } })
+    const linkCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: linkCid, items: [{ description: '50 tees', sizes: { M: 50 }, unit_price: 10, taxable: true }] },
+    })
+    const linkEst = r.json?.id ?? r.json?.estimate?.id
+    r = await req('POST', `/api/estimates/${linkEst}/convert`, { body: { due_date: '2026-06-01' } })
+    const linkInv = r.json?.invoice_id
+    // fetch() refuses to send a Host header (it is a forbidden header in undici), and a test that
+    // cannot actually poison the Host would pass against the bug. Use node:http, which lets us.
+    const { request: rawRequest } = await import('node:http')
+    const poisoned = await new Promise((resolve) => {
+      const rq = rawRequest({
+        host: '127.0.0.1', port: PORT, method: 'POST', path: `/api/invoices/${linkInv}/request-payment`,
+        headers: { Host: 'evil.attacker.example', 'Content-Type': 'application/json', 'Content-Length': '2', Cookie: cookieHeader() },
+      }, (resp) => { let b = ''; resp.on('data', (d) => { b += d }); resp.on('end', () => resolve(b)) })
+      rq.on('error', (e) => resolve(`error ${e.message}`))
+      rq.end('{}')
+    })
+    let poisonedLink = ''
+    try { poisonedLink = JSON.parse(poisoned)?.link || '' } catch { poisonedLink = poisoned }
+    chk('an emailed link ignores a poisoned Host header', poisonedLink, '^http://127\\.0\\.0\\.1:')
+    chk('…and never carries the attacker\'s host', poisonedLink.includes('evil.attacker.example') ? 'leaked' : 'clean', '^clean$')
+  }
 
   /* ---------- ...and the SECOND copy of the cookie parser must survive it too ----------
    * lib/realtime.mjs kept its own parseCookies with a bare decodeURIComponent. It runs on the /ws

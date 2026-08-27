@@ -804,7 +804,7 @@ app.post('/api/auth/signup', ipLimit(6), wrap(async (req, res) => {
     // founder to 'staff' mid-session) the day that owner is demoted.
     const owner = listMembers(t.id).find((m) => m.role === 'owner')
     setSessionCookie(res, createSession(t.id, owner?.id || null), req)
-    sendWelcomeEmail(t, `${req.protocol}://${req.get('host')}`) // fire-and-forget; delivers if platform SMTP is set
+    sendWelcomeEmail(t, publicOrigin(req)) // fire-and-forget; delivers if platform SMTP is set
     res.json({ ok: true, slug: t.slug, shop_name: t.shop_name, onboarding: true })
   } catch (e) {
     res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message })
@@ -871,7 +871,11 @@ app.post('/api/auth/forgot', ipLimit(6), rateLimit({ max: 4 }), wrap((req, res) 
   let r = null
   try { r = createPasswordReset(email) } catch (e) { console.error('reset create:', e.message) }
   if (!r) return res.json(generic) // unknown address — identical response, nothing sent
-  const origin = `${req.protocol}://${req.get('host')}`
+  // NEVER build this from the raw Host header. The link carries a one-time token that sets the
+  // account password, and Host is chosen by whoever sent the request — so `Host: evil.example`
+  // mailed the real owner a working reset link pointing at the attacker, who then owned the shop.
+  // publicOrigin() exists for exactly this and was already used for the Slack links.
+  const origin = publicOrigin(req)
   const link = `${origin}/reset?token=${encodeURIComponent(r.token)}`
   const body = `Hi${r.member.name ? ' ' + r.member.name : ''},
 
@@ -1889,7 +1893,7 @@ app.post('/api/mockups/:id/send', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', e?.contact_id)
   const s = getSettings()
   run(`UPDATE art_versions SET status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END, sent_at = COALESCE(sent_at, ?) WHERE id = ?`, now(), a.id)
-  const link = `${req.protocol}://${req.get('host')}${shareUrl('art', a.id)}`
+  const link = `${publicOrigin(req)}${shareUrl('art', a.id)}`
   // queueEmail records to the Outbox and delivers when the shop's email is connected — so a shop
   // with no email yet still gets a durable record plus the link to send by hand.
   if (c?.email) {
@@ -2051,7 +2055,7 @@ app.post('/api/invoices/:id/request-payment', wrap((req, res) => {
   if (!c?.email) return res.status(400).json({ error: 'No email on file for this customer' })
   const s = getSettings()
   const balance = round2(inv.amount_due - inv.amount_paid)
-  const origin = `${req.protocol}://${req.get('host')}`
+  const origin = publicOrigin(req)
   const link = origin + shareUrl('pay', id)
   const deliver = s.mode_followups !== 'manual'
   queueEmail({ contact: c, kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
@@ -4541,7 +4545,7 @@ app.post('/api/members', wrap(async (req, res) => {
     const member = await addMember(req.tenant.id, { name: b.name, email: b.email, password: b.password, role })
     // Fire-and-forget: hand the new member their own login. Uses the plaintext temp password the owner
     // just set (addMember only returns the hashed record), so send it before the response, not after.
-    sendStaffInviteEmail({ tenant: req.tenant, member, tempPassword: b.password, inviterName: req.member?.name, origin: `${req.protocol}://${req.get('host')}` })
+    sendStaffInviteEmail({ tenant: req.tenant, member, tempPassword: b.password, inviterName: req.member?.name, origin: publicOrigin(req) })
     res.json(member)
   } catch (e) { res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message }) }
 }))
@@ -5573,6 +5577,16 @@ server.listen(PORT, () => {
   const s = getSettings()
   console.log(`\n  ${s.brand_name} — ${s.brand_tagline}`)
   console.log(`  → http://localhost:${PORT}   (ws /ws live)\n`)
+
+  // Every link this server emails — password reset, staff invite, proof approval, pay page —
+  // has to name a host. Without PSC_PUBLIC_URL the only source is the request's own Host header,
+  // which is chosen by whoever sent the request. Say so once, plainly, with the fix: an install
+  // that is reachable from the internet and has not set this is one crafted request away from
+  // mailing its owner a password-reset link that points at somebody else.
+  if (AUTH_ENABLED && !String(process.env.PSC_PUBLIC_URL || '').trim()) {
+    console.warn('  ⚠ PSC_PUBLIC_URL is not set, so emailed links are built from the request Host header.')
+    console.warn(`     Set it to this install's real address:  PSC_PUBLIC_URL=https://shop.example.com\n`)
+  }
 
   // Time-based automations. Printavo sells these as a top-tier feature; here it's a loop.
   // Each timed trigger checks the run log before firing, so restarting won't re-nag anyone.
