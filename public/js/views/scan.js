@@ -15,6 +15,24 @@ let scanTimer = 0
 let lastCode = ''
 let lastCodeAt = 0
 
+// The camera has to go off when the page does.
+//
+// stopCamera() was only ever called at the TOP of scanView() — on re-entry. Walk away from Floor
+// Mode and the phone kept the camera live: the indicator light stays on, the battery drains, and
+// on iOS and Android the camera is held away from every other app until the tab is closed. The
+// 350ms detect loop kept running too, and its lookup() would render into a #scan-job that no
+// longer exists, popping "Cannot set properties of null" onto whatever page you had moved to.
+//
+// hashchange is this app's navigation (see public/js/app.js), and pagehide covers tab close,
+// bfcache and a real navigation away. Registered once, not per view render.
+if (typeof window !== 'undefined' && !window.__pscScanTeardown) {
+  window.__pscScanTeardown = true
+  const leaving = () => { if (!location.hash.startsWith('#/scan')) stopCamera() }
+  window.addEventListener('hashchange', leaving)
+  window.addEventListener('pagehide', () => stopCamera())
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') stopCamera() })
+}
+
 export async function scanView() {
   setPage('Floor Mode', '', '<span class="dim">Production</span>')
   stopCamera()
@@ -26,7 +44,7 @@ export async function scanView() {
         <div id="scan-cam-hint" class="dim" style="padding:14px">
           ${hasDetector ? '📷 Point the camera at a work-ticket barcode.' : 'Camera scanning needs Chrome on Android — type the job number below instead.'}
         </div>
-        ${hasDetector ? '<button class="btn" id="scan-start">Start camera</button>' : ''}
+        ${hasDetector ? '<button class="btn" id="scan-start">Start camera</button><button class="btn ghost" id="scan-stop" hidden>Stop camera</button>' : ''}
       </div>
       <form id="scan-form" class="scan-form" autocomplete="off">
         <input id="scan-input" name="code" inputmode="text" placeholder="Job number — e.g. JOB-1042" autofocus />
@@ -42,6 +60,8 @@ export async function scanView() {
       v.srcObject = stream
       v.style.display = 'block'
       $('#scan-cam-hint').textContent = 'Scanning…'
+      $('#scan-start').hidden = true
+      $('#scan-stop').hidden = false
       await v.play()
       const detector = new window.BarcodeDetector({ formats: ['code_128'] })
       scanTimer = setInterval(async () => {
@@ -58,8 +78,16 @@ export async function scanView() {
         } catch { /* a failed frame is not an error state */ }
       }, 350)
     } catch (e) {
+      stopCamera()
       toast(`Camera unavailable: ${e.message}`, true)
     }
+  })
+
+  // Without this the only way to switch the camera off while still on the page was to reload it.
+  on($('#view'), '#scan-stop', () => {
+    stopCamera()
+    const hint = $('#scan-cam-hint')
+    if (hint) hint.textContent = '📷 Point the camera at a work-ticket barcode.'
   })
 
   const form = $('#scan-form')
@@ -90,11 +118,14 @@ async function lookup(code) {
 }
 
 function renderJob(d, note) {
+  // A detect cycle can land after the view is gone; there is nothing to draw into then.
+  const host = $('#scan-job')
+  if (!host) return
   const mins = d.minutes_in_production
   const stageBtns = d.stages.map((s) => s.key === d.stage
     ? `<span class="scan-stage cur">${esc(s.label)}</span>`
     : `<button class="scan-stage" data-advance="${esc(s.key)}" data-job="${d.id}">${esc(s.label)}</button>`).join('')
-  $('#scan-job').innerHTML = `
+  host.innerHTML = `
     <div class="card scan-job-card">
       ${note ? `<div class="scan-done">✓ ${esc(note)}</div>` : ''}
       <div class="scan-job-head">
@@ -109,10 +140,15 @@ function renderJob(d, note) {
       ${mins > 0 ? `<div class="dim" style="margin-top:10px">⏱ ${mins} min measured in production${d.stage === 'production' ? ' so far' : ''}</div>` : ''}
       ${d.scans.length ? `<div class="scan-log">${d.scans.map((s) => `<div class="dim">${esc(s.to_stage.replace('_', ' '))} — ${esc(s.actor || '')} · ${esc(String(s.created_at).slice(5, 16))}</div>`).join('')}</div>` : ''}
     </div>`
-  $('#scan-job').scrollIntoView({ behavior: 'smooth', block: 'start' })
+  host.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function stopCamera() {
   if (scanTimer) { clearInterval(scanTimer); scanTimer = 0 }
   if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null }
+  lastCode = ''; lastCodeAt = 0
+  const v = $('#scan-video')
+  if (v) { v.srcObject = null; v.style.display = 'none' }
+  const start = $('#scan-start'); if (start) start.hidden = false
+  const stop = $('#scan-stop'); if (stop) stop.hidden = true
 }

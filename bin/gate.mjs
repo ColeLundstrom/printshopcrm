@@ -1020,6 +1020,66 @@ await t('a style number is not an order quantity either', async () => {
   }
 })
 
+section('Floor Mode lets go of the camera')
+// stopCamera() was only ever called at the TOP of scanView() — on re-entry. Walk away from Floor
+// Mode and the phone kept the camera live: indicator light on, battery draining, and the camera
+// held away from every other app until the tab was closed. There was also no stop control in the
+// markup at all, so it could not be turned off from the UI even while still on the page — the only
+// escape was a reload. The orphaned 350ms detect loop then rendered into a #scan-job that no longer
+// existed, popping "Cannot set properties of null" onto whatever page you had moved to.
+await t('navigating away from Floor Mode releases the camera', async () => {
+  // A DOM small enough to hold in your head, so the teardown can be exercised for real rather than
+  // matched as source text. No test dependency: this repo has no build step and adds no packages.
+  const saved = { window: globalThis.window, document: globalThis.document, location: globalThis.location }
+  const nodes = {}
+  const listeners = {}
+  for (const id of ['#scan-video', '#scan-start', '#scan-stop', '#scan-cam-hint', '#scan-job', '#view']) {
+    nodes[id] = { id, hidden: false, style: {}, srcObject: {}, textContent: '', scrollIntoView() {}, addEventListener() {} }
+  }
+  const listen = (ev, fn) => { (listeners[ev] ||= []).push(fn) }
+  try {
+    globalThis.window = { addEventListener: listen }
+    globalThis.document = { addEventListener: listen, querySelector: (sel) => nodes[sel] || null, querySelectorAll: () => [], visibilityState: 'visible' }
+    globalThis.location = { hash: '#/scan' }
+    await import(`../public/js/views/scan.js?camera=${Date.now()}`)
+
+    assert.ok(listeners.hashchange?.length, 'nothing was listening for the navigation that leaves this page')
+    assert.ok(listeners.pagehide?.length, 'a closed tab must release the camera too')
+
+    // Camera running…
+    nodes['#scan-start'].hidden = true
+    nodes['#scan-stop'].hidden = false
+    nodes['#scan-video'].style.display = 'block'
+
+    // …still on Floor Mode: a hash change within the page must NOT kill a live scan.
+    globalThis.location.hash = '#/scan'
+    for (const fn of listeners.hashchange) fn()
+    assert.equal(nodes['#scan-stop'].hidden, false, 'staying on Floor Mode must not stop the camera')
+
+    // …and navigating away releases it.
+    globalThis.location.hash = '#/dashboard'
+    for (const fn of listeners.hashchange) fn()
+    assert.equal(nodes['#scan-video'].srcObject, null, 'the video must let go of the stream')
+    assert.equal(nodes['#scan-video'].style.display, 'none')
+    assert.equal(nodes['#scan-start'].hidden, false, 'coming back must offer Start again')
+    assert.equal(nodes['#scan-stop'].hidden, true)
+  } finally {
+    globalThis.window = saved.window
+    globalThis.document = saved.document
+    globalThis.location = saved.location
+  }
+})
+
+await t('the camera can be switched off from the page itself', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/scan.js'), 'utf8')
+  assert.match(src, /id="scan-stop"/, 'there must be a stop control in the markup')
+  assert.match(src, /Stop camera/, 'and it has to say what it does')
+})
+
 section('the app never shows a shop owner a JSON parser error')
 // api.req ran a bare JSON.parse over every response body. Not everything that answers this app
 // speaks JSON: a proxy 502/504 during a deploy, Express's default HTML 404, "unknown shop" from
