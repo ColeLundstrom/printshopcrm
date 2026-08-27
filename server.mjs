@@ -499,7 +499,16 @@ const parseCookies = (req) => {
   const out = {}
   ;(req.headers.cookie || '').split(';').forEach((p) => {
     const i = p.indexOf('=')
-    if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim())
+    if (i <= 0) return
+    const raw = p.slice(i + 1).trim()
+    // decodeURIComponent THROWS on a malformed percent-escape ("%", "%zz", "%e0%a4"), and a cookie
+    // is attacker-controlled — a browser or a curl can send any bytes. This runs on every request
+    // before the auth gate, so one bad cookie 500'd every route, login included: a single
+    // malformed value locked the user out of their own shop until they cleared site data. Decode
+    // defensively and fall back to the raw value rather than taking down the request.
+    let val = raw
+    try { val = decodeURIComponent(raw) } catch { /* keep the raw bytes */ }
+    out[p.slice(0, i).trim()] = val
   })
   return out
 }

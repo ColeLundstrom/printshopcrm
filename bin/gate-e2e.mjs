@@ -363,6 +363,15 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- a malformed cookie must not lock the user out ----------
+   * parseCookies ran decodeURIComponent on every cookie value, and that throws on a malformed
+   * percent-escape. A cookie is attacker-controlled and this runs before the auth gate, so a
+   * single bad value 500'd every route — login included — until the user cleared site data. */
+  r = await req('GET', '/health', { cookies: false, headers: { Cookie: 'psc_session=%; junk=%zz' } })
+  chk('a malformed cookie does not 500 the request', String(r.status), '^200$')
+  r = await req('POST', '/api/auth/login', { cookies: false, headers: { Cookie: 'psc_session=%e0%a4' }, body: { email: 'nobody@e2e.test', password: 'x' } })
+  chk('…and login still works past a broken cookie (401, not 500)', String(r.status), '^40[01]$')
+
   /* ---------- one anonymous request must not be able to exhaust memory ----------
    * express.json runs before the auth gate and every rate limiter — a request's body is read
    * before anything can reject the request. At a 25 MB cap, 35 anonymous 24 MB POSTs to /login

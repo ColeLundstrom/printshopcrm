@@ -807,6 +807,47 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('reorder radar does not defame customers it cannot read')
+await t('clustered same-day orders do not become a confident short cadence', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { reorderRadar } = await import('../lib/reorder.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb(); dbm.setDefaultDb(db)
+  try {
+    const today = '2026-08-27'
+    const ago = (n) => new Date(new Date(today).getTime() - n * 864e5).toISOString().slice(0, 19).replace('T', ' ')
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Annual Cluster Co', ago(400), ago(400))
+    // Two orders a day apart ~300 days ago, then silence. Floored to a 21-day cadence, this read
+    // as "279 days overdue, high confidence" and the nudge emailed the customer.
+    dbm.run('INSERT INTO jobs (id, contact_id, job_number, title, status, stage, created_at, updated_at) VALUES (1,1,?,?,?,?,?,?)', 'J1', 'Run', 'complete', 'complete', ago(300), ago(300))
+    dbm.run('INSERT INTO jobs (id, contact_id, job_number, title, status, stage, created_at, updated_at) VALUES (2,1,?,?,?,?,?,?)', 'J2', 'Run', 'complete', 'complete', ago(299), ago(299))
+    const c = reorderRadar(today).candidates.find((x) => x.contact_id === 1)
+    assert.ok(c, 'the customer still appears as a gentle nudge')
+    assert.equal(c.confidence, 'low', 'no real reorder interval on record → low confidence, not high')
+    assert.notEqual(c.status, 'overdue', 'an unknown cadence must never be reported as overdue')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('a genuine monthly cadence is still read with confidence', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { reorderRadar } = await import('../lib/reorder.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb(); dbm.setDefaultDb(db)
+  try {
+    const today = '2026-08-27'
+    const ago = (n) => new Date(new Date(today).getTime() - n * 864e5).toISOString().slice(0, 19).replace('T', ' ')
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (2, ?, ?, ?)', 'Monthly Co', ago(200), ago(200))
+    ;[130, 100, 70].forEach((d, i) => dbm.run('INSERT INTO jobs (id, contact_id, job_number, title, status, stage, created_at, updated_at) VALUES (?,2,?,?,?,?,?,?)', 20 + i, 'M' + i, 'Monthly tee', 'complete', 'complete', ago(d), ago(d)))
+    const c = reorderRadar(today).candidates.find((x) => x.contact_id === 2)
+    assert.ok(c, 'a real repeat customer appears')
+    assert.ok(['high', 'medium'].includes(c.confidence), `a ~30-day cadence over 3 orders should be confident, got ${c.confidence}`)
+    assert.ok(c.cadence_days <= 40, `cadence should reflect the ~30-day interval, got ${c.cadence_days}`)
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('capacity: colours and press count are modelled the way a shop actually runs')
 await t('colorsFromItems reads the colour from where the quote actually stores it', async () => {
   const { colorsFromItems } = await import('../lib/capacity.mjs')
