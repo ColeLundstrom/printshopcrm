@@ -47,14 +47,37 @@ echo
 git fetch --quiet origin 2>/dev/null || true
 LOCAL="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 REMOTE="$(git rev-parse --short origin/main 2>/dev/null || echo '?')"
-DIRTY="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+# `git status --porcelain` printing nothing because git REFUSED to run looks exactly like a clean
+# tree, so capture git's own exit status rather than the emptiness of its output.
+DIRTY_RAW="$(git status --porcelain 2>/dev/null)"; DIRTY_OK=$?
+DIRTY="$(printf '%s' "$DIRTY_RAW" | grep -c . || true)"
 
 note "local HEAD    $LOCAL"
 note "origin/main   $REMOTE"
-[ "$LOCAL" = "$REMOTE" ] && good "GitHub matches this working tree" \
-  || bad "GitHub is out of step with this working tree ($LOCAL vs $REMOTE)"
-[ "$DIRTY" = "0" ] && good "working tree is clean" \
-  || bad "$DIRTY uncommitted change(s) — whatever is deployed is not fully in git"
+
+# A monitor must never report green because it failed to look.
+#
+# These were `$(git rev-parse … || echo '?')`, so when git refused the repo BOTH sides became '?',
+# '?' = '?' compared equal, and the drift check printed "✓ GitHub matches this working tree". That
+# is what was happening in production: root ran this against a repo git rejected for dubious
+# ownership, and /var/log/printshopcrm-drift.log shows `local HEAD ?` / `origin/main ?` followed by
+# two green ticks every night. The only monitoring in the repo was reporting success by failing.
+if [ "$LOCAL" = "?" ] || [ "$REMOTE" = "?" ]; then
+  bad "could not read git here — this check did not run (dubious ownership? not a clone? no origin?)"
+  note "      try: git config --global --add safe.directory \"$(pwd)\""
+elif [ "$LOCAL" = "$REMOTE" ]; then
+  good "GitHub matches this working tree"
+else
+  bad "GitHub is out of step with this working tree ($LOCAL vs $REMOTE)"
+fi
+
+if [ "$DIRTY_OK" -ne 0 ]; then
+  bad "could not read the working tree state — this check did not run"
+elif [ "$DIRTY" = "0" ]; then
+  good "working tree is clean"
+else
+  bad "$DIRTY uncommitted change(s) — whatever is deployed is not fully in git"
+fi
 
 # ---------------------------------------------------------------- app server
 if [ -n "$APP_HOST" ]; then

@@ -79,18 +79,22 @@ fi
 
 # --- flip ---------------------------------------------------------------------------------------
 PREVIOUS="$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)"
-ln -sfn "$RELEASE" "$APP_ROOT/current"
-echo "$PREVIOUS" > "$APP_ROOT/.previous-release"
+# sudo, like the rollback below and the restart after it: `current` is root-owned, so an unprivileged
+# flip fails with Permission denied. Without `set -e` on this line that failure was survivable and
+# silent — the script went on to restart the service, saw it come up on the OLD release, and printed
+# "✓ <tag> is live".
+sudo ln -sfn "$RELEASE" "$APP_ROOT/current" || { echo "✗ could not flip $APP_ROOT/current" >&2; exit 1; }
+echo "$PREVIOUS" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
 
 sudo systemctl restart "$SERVICE"
 sleep 2
 
 if systemctl is-active --quiet "$SERVICE"; then
   echo "✓ $TAG is live"
-  [ -n "$PREVIOUS" ] && echo "  roll back with: ln -sfn $PREVIOUS $APP_ROOT/current && sudo systemctl restart $SERVICE"
+  [ -n "$PREVIOUS" ] && echo "  roll back with: sudo ln -sfn $PREVIOUS $APP_ROOT/current && sudo systemctl restart $SERVICE"
 else
   echo "✗ service failed to start — rolling back" >&2
-  [ -n "$PREVIOUS" ] && ln -sfn "$PREVIOUS" "$APP_ROOT/current" && sudo systemctl restart "$SERVICE"
+  [ -n "$PREVIOUS" ] && sudo ln -sfn "$PREVIOUS" "$APP_ROOT/current" && sudo systemctl restart "$SERVICE"
   journalctl -u "$SERVICE" -n 30 --no-pager >&2
   exit 1
 fi

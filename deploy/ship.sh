@@ -86,14 +86,38 @@ rsync -a -e "$RSYNC_E" \
   [ -n \"\$PREV\" ] && echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
   sudo ln -sfn '$REL' '$APP_ROOT/current'
   sudo systemctl restart '$SERVICE'
-  sleep 4
-  if ! systemctl is-active --quiet '$SERVICE'; then
-    echo 'SERVICE FAILED TO START — rolling back'
-    [ -n \"\$PREV\" ] && sudo ln -sfn \"\$PREV\" '$APP_ROOT/current' && sudo systemctl restart '$SERVICE'
+
+  # is-active on a Type=simple unit goes true the moment the process FORKS — before the port is
+  # bound and before a single database is opened. It was the whole liveness gate, so a release that
+  # booted and then failed every request still counted as a successful deploy, and the automatic
+  # rollback never fired. Ask the app itself, over HTTP, the way a customer would.
+  PORT=\$(sed -n 's/^Environment=PORT=//p' /etc/systemd/system/'$SERVICE'.service | tail -1)
+  [ -n \"\$PORT\" ] || PORT=\$(sed -n 's/^PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tail -1)
+  HEALTHY=0
+  if [ -n \"\$PORT\" ]; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 2
+      if curl -fsS --max-time 5 \"http://127.0.0.1:\$PORT/health\" >/dev/null 2>&1; then HEALTHY=1; break; fi
+    done
+  else
+    echo 'WARNING: could not determine the service port — falling back to is-active only'
+    sleep 4
+    systemctl is-active --quiet '$SERVICE' && HEALTHY=1
+  fi
+
+  if [ \"\$HEALTHY\" != '1' ]; then
+    echo 'RELEASE IS NOT ANSWERING /health — rolling back'
+    if [ -n \"\$PREV\" ]; then
+      sudo ln -sfn \"\$PREV\" '$APP_ROOT/current'
+      sudo systemctl restart '$SERVICE'
+      echo 'rolled back to the previous release'
+    else
+      echo 'NO PREVIOUS RELEASE RECORDED — the service is left stopped/broken, fix it by hand'
+    fi
     exit 1
   fi
-" || die "server deploy failed — it rolled back, but GitHub is now AHEAD of the server. Fix and re-run, or revert the tag."
-echo "  live and healthy"
+" || die "server deploy failed — see the output above for whether it rolled back. GitHub is now AHEAD of the server: fix and re-run, or revert the tag."
+echo "  live and answering /health"
 
 # ---------------------------------------------------------------- 5. prove it
 step "Verifying the server runs exactly this source"
@@ -117,5 +141,5 @@ EOF
 step "Shipped $TAG"
 echo "  GitHub:  https://github.com/ColeLundstrom/printshopcrm/releases/tag/$TAG"
 echo "  Server:  $REL_NAME"
-echo "  Roll back: ln -sfn \$(cat $APP_ROOT/.previous-release) $APP_ROOT/current && sudo systemctl restart $SERVICE"
+echo "  Roll back: sudo ln -sfn \$(cat $APP_ROOT/.previous-release) $APP_ROOT/current && sudo systemctl restart $SERVICE"
 echo

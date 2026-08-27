@@ -1020,6 +1020,70 @@ await t('a style number is not an order quantity either', async () => {
   }
 })
 
+section('the deploy safety rails must not report green when they failed')
+// check-drift.sh is the only monitoring in this repo. Both git reads were
+// `$(git rev-parse … || echo '?')`, so when git REFUSED the repo — dubious ownership, not a clone,
+// no origin — both sides became '?', '?' equalled '?', and it printed "✓ GitHub matches this
+// working tree". That is what production was doing every night: the drift log shows `local HEAD ?`
+// followed by two green ticks. A monitor that reports success by failing to look is worse than no
+// monitor, because it is trusted.
+await t('check-drift.sh reports a problem when it cannot read git, not a tick', async () => {
+  const { mkdtempSync, rmSync, mkdirSync, copyFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-drift-'))
+  try {
+    mkdirSync(join(dir, 'deploy'))
+    copyFileSync(join(root, 'deploy/check-drift.sh'), join(dir, 'deploy/check-drift.sh'))
+    let out = '', code = 0
+    try {
+      out = execFileSync('bash', ['deploy/check-drift.sh'], { cwd: dir, encoding: 'utf8', env: { ...process.env, APP_HOST: '' } })
+    } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}`; code = e.status }
+    assert.doesNotMatch(out, /✓ GitHub matches/, 'it did not read git at all — it must not claim a match')
+    assert.doesNotMatch(out, /✓ working tree is clean/, 'an unreadable tree is not a clean tree')
+    assert.match(out, /could not read git here/, 'it has to say which check did not run')
+    assert.equal(code, 1, 'a check that could not run is drift, and must exit non-zero')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// The rollback the operator is told to run when a release goes bad. `current` is created with
+// `sudo ln -sfn` and is root-owned, but every printed hint left the sudo off the ln — so the
+// command failed with Permission denied and, being &&-chained, never restarted the service either.
+// The same broken line was in ship.sh, release.sh and RELEASING.md, so cross-checking did not help.
+await t('every rollback instruction we hand an operator actually runs as root', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const file of ['deploy/ship.sh', 'deploy/release.sh', 'RELEASING.md']) {
+    const text = readFileSync(join(root, file), 'utf8')
+    for (const line of text.split('\n')) {
+      if (!/\bln -sfn\b/.test(line)) continue
+      if (!/(current|\.previous-release|PREVIOUS)/.test(line)) continue // only the release-symlink flips
+      assert.match(line.trim(), /(^|[|&;"'\s])sudo ln -sfn/, `${file}: flipping the release symlink needs sudo — ${line.trim().slice(0, 110)}`)
+    }
+  }
+})
+
+// `ln -sfn target dir` where dir already EXISTS creates the link INSIDE it — public/uploads/uploads
+// — and exits 0. public/uploads ships as a real directory (tracked .gitkeep), so INSTALL.md's
+// sequence silently left artwork writing into the app directory while the backup archived an empty
+// data dir. Dockerfile and release.sh both rm -rf first; the hand-install path did not.
+await t('INSTALL.md clears public/uploads before symlinking it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const text = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+  const i = text.indexOf('ln -sfn /var/lib/printshopcrm/uploads')
+  assert.ok(i > 0, 'INSTALL.md should still document the uploads symlink')
+  const before = text.slice(Math.max(0, i - 600), i)
+  assert.match(before, /rm -rf \S*public\/uploads/, 'the existing directory must be removed first, or the link nests inside it')
+})
+
 section('purchasing: submitting twice must not order the blanks twice')
 // Submitting places a REAL, chargeable order. The guard tested for the single string 'submitted',
 // and status is not written until AFTER the awaited submit — so two clicks a second apart both

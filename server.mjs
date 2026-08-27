@@ -705,7 +705,21 @@ const reTenant = (req, _res, next) => (
 
 app.use(litePlanGate)
 
-app.get('/health', (_req, res) => res.json({ ok: true }))
+/**
+ * Liveness AND readiness. This answered `{ok:true}` unconditionally, which meant it stayed 200
+ * while the database behind it was unopenable — and deploy/ship.sh now rolls a release back on
+ * this endpoint, so a health check that cannot fail is a rollback that never fires. Touch the
+ * database: a locked, missing or closed handle is exactly the failure a restart needs to catch.
+ */
+app.get('/health', (_req, res) => {
+  try {
+    get('SELECT 1')
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('health:', e && e.message)
+    res.status(503).json({ ok: false, error: 'database unavailable' })
+  }
+})
 
 /**
  * Login/signup rate limiter — a brute-force brake. In-memory sliding window keyed by client IP

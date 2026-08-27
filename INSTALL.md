@@ -89,7 +89,14 @@ This matters more than it looks. Two things must live where an upgrade cannot to
 ```bash
 sudo mkdir -p /var/lib/printshopcrm/uploads
 sudo chown -R "$USER" /var/lib/printshopcrm
+# public/uploads ships as a real directory (it holds a tracked .gitkeep), and `ln -sfn` pointed at
+# an existing directory creates the link INSIDE it — you get public/uploads/uploads, exit status 0,
+# and no warning. Artwork then writes to the app directory, the backup archives an empty
+# /var/lib/printshopcrm/uploads, and both look fine until an upgrade deletes the originals.
+rm -rf /opt/printshopcrm/public/uploads
 ln -sfn /var/lib/printshopcrm/uploads /opt/printshopcrm/public/uploads
+# Verify: this must print the symlink, not a directory.
+ls -ld /opt/printshopcrm/public/uploads
 ```
 
 `public/uploads` holds customer artwork. If you leave it as a real directory inside the app and

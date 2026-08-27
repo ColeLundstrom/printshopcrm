@@ -78,7 +78,7 @@ bash deploy/verify-sync.sh user@host /opt/printshopcrm-pro/current
 ## Rolling back
 
 ```bash
-ssh user@host "ln -sfn \$(cat /opt/printshopcrm-pro/.previous-release) /opt/printshopcrm-pro/current && sudo systemctl restart printshopcrm-pro"
+ssh user@host "sudo ln -sfn \$(cat /opt/printshopcrm-pro/.previous-release) /opt/printshopcrm-pro/current && sudo systemctl restart printshopcrm-pro"
 ssh user@host "bash /opt/printshopcrm/current/deploy/release.sh rollback"   # website
 ```
 
