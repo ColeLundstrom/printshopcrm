@@ -1020,6 +1020,32 @@ await t('a style number is not an order quantity either', async () => {
   }
 })
 
+section('purchasing: submitting twice must not order the blanks twice')
+// Submitting places a REAL, chargeable order. The guard tested for the single string 'submitted',
+// and status is not written until AFTER the awaited submit — so two clicks a second apart both
+// read 'draft' and both sent. Receiving then overwrites status with 'partial', which is exactly
+// when a manager hits Submit again to chase a short delivery: it re-ordered the whole run.
+await t('a PO that has gone out is never sent again, whatever receiving did to its status', async () => {
+  const { poAlreadySent } = await import('../lib/suppliers.mjs')
+  // Nothing reached the distributor — retrying is correct and must stay possible.
+  assert.equal(poAlreadySent({ status: 'draft' }), false)
+  assert.equal(poAlreadySent({ status: 'failed' }), false)
+  // These all mean the order is out there. Receiving writes the last two.
+  for (const status of ['submitted', 'placed_manually', 'partial', 'received', 'closed']) {
+    assert.equal(poAlreadySent({ status }), true, `${status} must not re-order`)
+  }
+})
+await t('the in-flight claim blocks the second click but does not wedge the shop forever', async () => {
+  const { poAlreadySent } = await import('../lib/suppliers.mjs')
+  const at = (msAgo) => new Date(Date.now() - msAgo).toISOString().slice(0, 19).replace('T', ' ')
+  // The claim taken synchronously before the await — this is the double-click case.
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(1000) }), true)
+  // A row stuck here means the process died mid-send. A PO the shop can neither place nor clear
+  // is exactly the dead end this codebase refuses to ship.
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(6 * 60 * 1000) }), false)
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: null }), false)
+})
+
 section('webhooks: the pinned lookup must speak the contract net.connect uses')
 // Round 1 closed a DNS-rebind window by pinning the connect-time lookup to the address the SSRF
 // guard had already vetted. The pin called back with the bare-string 3-argument form, which Node

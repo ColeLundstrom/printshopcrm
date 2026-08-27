@@ -36,7 +36,7 @@ import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { ask } from './lib/assistant.mjs'
-import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder } from './lib/suppliers.mjs'
+import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
 import * as qbo from './lib/quickbooks.mjs'
 import * as gdrive from './lib/gdrive.mjs'
@@ -3380,7 +3380,10 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // another order — four clicks, four shipments of the same blanks, billed to the shop. If this
   // job's PO is already submitted, return it and do not send again.
   const prior = get('SELECT * FROM purchase_orders WHERE job_id = ? AND po_number = ? ORDER BY id DESC LIMIT 1', j.id, po.po_number)
-  if (prior && prior.status === 'submitted') {
+  // "Has it already gone out?" — not "is the status exactly 'submitted'?". See poAlreadySent().
+  // The row is then claimed synchronously before anything is awaited: node:sqlite is synchronous
+  // and there is no await between the read and the claim, so a concurrent request cannot slip past.
+  if (prior && poAlreadySent(prior)) {
     return res.json({ ok: true, already: true, supplier: prior.supplier, order_id: prior.order_id, po, purchase_order: getPurchaseOrder(prior.id) })
   }
 
@@ -3389,6 +3392,8 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // matched yet). Auto-submission to the distributor is a best-effort layer on top. Reuse the
   // existing row on a retry rather than stacking duplicate draft/failed POs for the one job.
   const stored = prior || createPurchaseOrder(j, po, { status: 'draft' })
+  // Claim it before the await — see the note on ALREADY_SENT above.
+  run("UPDATE purchase_orders SET status = 'submitting', updated_at = ? WHERE id = ?", now(), stored.id)
   let result = { ok: false, supplier: po.supplier, pending: true }
   try {
     result = await submitPurchaseOrder(po, s, { dryRun: false, poNumber: po.po_number })
@@ -3401,8 +3406,8 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // Only the genuinely-not-wired path (pending, with a note explaining it and no error) may claim
   // placed_manually. A real error is 'failed', and says so everywhere a human might look.
   const status = result.ok ? 'submitted' : (result.pending && !result.error ? 'placed_manually' : 'failed')
-  run('UPDATE purchase_orders SET status = ?, order_id = ?, submitted_at = ? WHERE id = ?',
-    status, result.order_id || null, result.ok ? now() : null, stored.id)
+  run('UPDATE purchase_orders SET status = ?, order_id = ?, submitted_at = ?, updated_at = ? WHERE id = ?',
+    status, result.order_id || null, result.ok ? now() : null, now(), stored.id)
   logActivity('note', `Blanks PO ${po.po_number} ${status === 'failed' ? 'NOT PLACED' : 'recorded'}${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs${result.error ? ` — submit failed: ${String(result.error).slice(0, 160)}` : ''}`, { job_id: j.id, contact_id: j.contact_id })
   res.json({ ...result, po, purchase_order: getPurchaseOrder(stored.id) })
 }))

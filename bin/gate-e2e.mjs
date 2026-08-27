@@ -486,6 +486,38 @@ try {
   r = await req('POST', '/api/auth/login', { cookies: false, headers: { Cookie: 'psc_session=%e0%a4' }, body: { email: 'nobody@e2e.test', password: 'x' } })
   chk('…and login still works past a broken cookie (401, not 500)', String(r.status), '^40[01]$')
 
+  /* ---------- submitting a purchase order twice must not order the blanks twice ----------
+   * Submitting places a REAL, chargeable order at the distributor. The guard tested for the single
+   * string 'submitted', and status is not written until AFTER the awaited submit — so two clicks a
+   * second apart both read 'draft' and both sent. Worse, receiving overwrites status with 'partial',
+   * which is precisely when a manager hits Submit again to chase a short delivery: it re-ordered
+   * the whole run. The question the guard has to ask is "has this gone out?", not "is it in exactly
+   * this one state?". */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'PO Buyer', email: 'po-buyer@e2e.test' } })
+    const poCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: poCid, items: [{ description: 'Gildan 5000 Heavy Cotton Tee — Black', sizes: { S: 24, M: 60, L: 80 }, unit_price: 11, taxable: true }] },
+    })
+    const poEst = r.json?.id ?? r.json?.estimate?.id
+    r = await req('POST', `/api/estimates/${poEst}/convert`, { body: { due_date: '2026-07-01' } })
+    const poJob = r.json?.job_id
+
+    r = await req('POST', `/api/jobs/${poJob}/po/submit`, { body: {} })
+    const firstStatus = r.json?.purchase_order?.status ?? ''
+    chk('a purchase order can be submitted', `${r.status}`, '^200$')
+
+    // The gate shop has no distributor connected, so this settles at 'failed' — which is
+    // legitimately retryable, nothing was ordered. What must NOT happen either way is a second
+    // purchase_orders row: the retry has to reuse the one record receiving works against.
+    r = await req('POST', `/api/jobs/${poJob}/po/submit`, { body: {} })
+    chk('…and a retry reuses the record rather than stacking a second one', `${firstStatus}|${r.status}`, '\\|200$')
+
+    const list = await req('GET', `/api/jobs/${poJob}/purchase-orders`)
+    chk('…and the job still has exactly one purchase order',
+      String((list.json?.purchase_orders || []).length), '^1$')
+  }
+
   /* ---------- an emailed link points at this install, not at whoever asked ----------
    * The link the shop mails out was built from the raw Host header, which the caller chooses. A
    * request carrying `Host: evil.attacker.example` made the server mail the real owner a working
