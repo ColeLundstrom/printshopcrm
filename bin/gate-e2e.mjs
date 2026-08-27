@@ -363,6 +363,17 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- one anonymous request must not be able to exhaust memory ----------
+   * express.json runs before the auth gate and every rate limiter — a request's body is read
+   * before anything can reject the request. At a 25 MB cap, 35 anonymous 24 MB POSTs to /login
+   * drove RSS past a gigabyte and OOMed the box for every shop; the 401s bought the memory anyway.
+   * The cap is the defence, and it must bite on the UNAUTHENTICATED routes specifically. */
+  {
+    const big = 'x'.repeat(3 * 1024 * 1024) // 3 MB, over the 1 MB cap, well under the old 25 MB
+    r = await req('POST', '/api/auth/login', { cookies: false, body: { email: 'a@b.test', password: big } })
+    chk('an oversize body to an anonymous route is refused, not buffered', String(r.status), '^413$')
+  }
+
   /* ---------- a failed start must LOOK like a failure ----------
    * This shipped broken: a fatal bind failure was logged by the uncaughtException handler, which
    * left no work on the event loop, so Node exited — with status 0. Docker, Fly, Render and any

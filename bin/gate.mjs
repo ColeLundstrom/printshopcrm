@@ -786,6 +786,22 @@ await t('every starter template is a valid, complete grid', async () => {
   }
 })
 
+section('contact lookup is indexed, not a full scan')
+// The CSV order import matches every row on lower(email)/lower(name), inside one synchronous
+// transaction. Without an index each match is a full table scan, so a few thousand rows meant
+// thousands of scans and the event loop froze for the whole fleet for seconds to minutes. The
+// query plan must use an index, or that regression is back.
+await t('lower(email) and lower(name) lookups use an index', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const planE = db.prepare('EXPLAIN QUERY PLAN SELECT * FROM contacts WHERE lower(email) = lower(?)').all('a@b.test')
+  const planN = db.prepare('EXPLAIN QUERY PLAN SELECT * FROM contacts WHERE lower(name) = lower(?)').all('a')
+  assert.ok(planE.some((r) => /USING INDEX/.test(r.detail)), `email lookup is a scan: ${planE.map((r) => r.detail).join(' | ')}`)
+  assert.ok(planN.some((r) => /USING INDEX/.test(r.detail)), `name lookup is a scan: ${planN.map((r) => r.detail).join(' | ')}`)
+})
+
 section('receptionist: the public chat parser cannot be made to hang, or to invent an order')
 // Both of these are reachable by an anonymous visitor on /api/embed/chat/message — no login, no
 // API key — and Node is single-threaded with every shop in one process.

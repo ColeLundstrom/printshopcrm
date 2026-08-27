@@ -295,7 +295,16 @@ app.post('/api/slack/:key/command', slackLimit, slackRaw, (req, res) => slackRun
 }))
 
 
-app.use(express.json({ limit: '25mb' }))
+// 1 MB, not 25. This parser runs on every JSON route, and it runs BEFORE the auth gate and every
+// rate limiter — there is no way to authenticate a request before its body is read. At 25 MB, 35
+// anonymous POSTs of a 24 MB body to /api/auth/login took the process from 38 MB to 1.08 GB of RSS
+// and the 401s cost the memory anyway: one unauthenticated loop OOMed the box for all 14 shops.
+//
+// Nothing legitimate needs more than a fraction of this. File uploads and CSV imports go through
+// multer, not here; the largest JSON body the app sends is a pasted price matrix, far under 1 MB.
+// Express answers an oversize body with 413 as soon as the declared length exceeds the cap, so the
+// giant payload is refused, not buffered. PSC_JSON_LIMIT can raise it for an unusual integration.
+app.use(express.json({ limit: process.env.PSC_JSON_LIMIT || '1mb' }))
 
 const upload = multer({
   limits: { fileSize: 40 * 1024 * 1024 },
