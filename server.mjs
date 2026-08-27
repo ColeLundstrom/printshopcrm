@@ -1537,6 +1537,7 @@ app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   const items = parse(last.items, [])
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
+  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     c.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate,
     `Reorder — same as ${last.estimate_number}`, now()).lastInsertRowid)
@@ -1672,6 +1673,22 @@ app.get('/api/estimates/:id', wrap((req, res) => {
     invoice: get('SELECT * FROM invoices WHERE estimate_id = ?', e.id) })
 }))
 
+/**
+ * Money must never be a number the arithmetic could not produce.
+ *
+ * `qty: 1e308` on a line item multiplied out to Infinity, and round2's overflow fallback passed it
+ * straight through. SQLite stored Infinity in estimates.total, converting carried it to
+ * invoices.amount_due, and from there SUM(amount_due) poisoned the whole shop: the Outstanding KPI
+ * and EVERY total in the A/R aging report went blank — not just that customer's. The estimate then
+ * refused to delete ("can't delete a converted estimate"), so the only way out from the UI was to
+ * void an invoice that looked real.
+ *
+ * The v1 API already refuses this, with a comment describing this exact failure. The routes the
+ * app's own screens post to never got the same guard.
+ */
+const representableTotals = (t) => [t.subtotal, t.tax, t.total].every(Number.isFinite)
+const NOT_REPRESENTABLE = { error: 'Those line items do not add up to an amount we can store — check the quantities and prices.', code: 'invalid_total' }
+
 app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
   if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer first' })
@@ -1682,6 +1699,7 @@ app.post('/api/estimates', wrap((req, res) => {
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
   const rate = taxRateFor(+b.contact_id, b.tax_rate)
   const t = computeTotals(items, rate, getUpcharges())
+  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     +b.contact_id, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', now())
@@ -1708,6 +1726,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // editing a note on last quarter's resale-exempt quote silently re-taxes it at today's rate.
   const rate = Number(b.tax_rate ?? e.tax_rate ?? s.tax_rate) || 0
   const t = computeTotals(items, rate, getUpcharges())
+  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=? WHERE id=?',
     b.contact_id ?? e.contact_id, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes, id)
   res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
@@ -1846,6 +1865,7 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   const contactId = Number(req.body?.contact_id) || src.contact_id
   const items = parse(src.items, [])
   const t = computeTotals(items, src.tax_rate, getUpcharges())
+  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
   const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,

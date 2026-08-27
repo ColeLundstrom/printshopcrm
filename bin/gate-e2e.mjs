@@ -499,6 +499,32 @@ try {
   chk('a duplicate-email signup is a clean 409', String(r.status), '^409$')
   chk('…and never leaks the SQL constraint text', r.text, '^(?!.*(UNIQUE|SQLITE|constraint)).*$')
 
+  /* ---------- money must never be a number the arithmetic could not produce ----------
+   * qty: 1e308 multiplied out to Infinity and round2's overflow fallback passed it through.
+   * SQLite stored Infinity in estimates.total, /convert carried it to invoices.amount_due, and
+   * SUM(amount_due) then poisoned the WHOLE shop: the Outstanding KPI and every total in the A/R
+   * aging report went blank, not just that customer's. The estimate would not delete afterwards
+   * ("can't delete a converted estimate"), so the only exit from the UI was voiding an invoice
+   * that looked real. The v1 API already refused exactly this; the app's own screens did not. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Overflow Buyer', email: 'overflow@e2e.test' } })
+    const ovId = r.json?.id ?? r.json?.contact?.id
+    for (const [label, item] of [
+      ['a quantity of 1e308', { description: 'boom', qty: 1e308, unit_price: 10 }],
+      ['a unit price of 1e308', { description: 'boom', qty: 10, unit_price: 1e308 }],
+      ['both at 1e308', { description: 'boom', qty: 1e308, unit_price: 1e308 }],
+    ]) {
+      r = await req('POST', '/api/estimates', { body: { contact_id: ovId, items: [item], tax_rate: 0 } })
+      chk(`an estimate with ${label} is refused, not stored`, `${r.status} ${r.text}`, '^400 .*invalid_total')
+    }
+    // A sales tax rate is a percentage; 100000% was accepted and produced a real tax line.
+    r = await req('POST', '/api/estimates', { body: { contact_id: ovId, items: [{ description: 'tees', qty: 10, unit_price: 10 }], tax_rate: 100000 } })
+    chk('an absurd tax rate is clamped rather than billed', String(r.json?.tax ?? 'missing'), '^100$')
+    // …and the shop's own money screens still add up.
+    r = await req('GET', '/api/dashboard')
+    chk('the dashboard still reports a real Outstanding figure', String(Number.isFinite(Number(r.json?.outstanding ?? r.json?.kpis?.outstanding ?? 0))), '^true$')
+  }
+
   /* ---------- the whole-data export streams valid JSON ----------
    * This is the anti-lock-in "get all your data out" path. It used to build the entire graph in
    * memory and pretty-print it into a second copy — ~34 MB of heap for one export on a box with a
