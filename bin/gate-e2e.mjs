@@ -819,6 +819,54 @@ try {
     // contained "already in use", so asserting on that would have passed against the bug.
     chk('…and says what to do about it', rogueLog, 'PORT=8081')
   }
+  /* ---------- a backup that archived nothing must not report success ----------
+   * With count=0 and failed=0 this script printed "backup ok — 0 database(s)" and exited 0. So a
+   * typo'd DATA_ROOT, a moved PSC_DB or an unmounted volume produced a green cron line every night
+   * and thirty days of empty archives — and you find out on the day you need it. Separately, the
+   * app's public/uploads is SYMLINKED onto the data volume per INSTALL.md, and plain `tar cz`
+   * stores a symlink as one link entry: the archive was written, tar exited 0, and not one piece
+   * of customer artwork was in it.
+   *
+   * This runs the real script, because both faults are in its exit status and neither shows up by
+   * reading it. */
+  {
+    const { execFileSync } = await import('node:child_process')
+    const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, rmSync } = await import('node:fs')
+    const sh = (env, cwd) => {
+      try {
+        const out = execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], { env: { ...process.env, ...env }, cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        return { code: 0, out }
+      } catch (e) { return { code: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` } }
+    }
+    const box = mkdtempSync(join(tmpdir(), 'psc-backup-'))
+    try {
+      // 1 — a data root with no databases in it at all.
+      mkdirSync(join(box, 'empty'), { recursive: true })
+      mkdirSync(join(box, 'out1'), { recursive: true })
+      let r1 = sh({ DATA_ROOT: join(box, 'empty'), BACKUP_ROOT: join(box, 'out1') })
+      chk('a backup that found no databases exits non-zero', String(r1.code), '^[1-9]')
+      chk('…and says so, so cron mail names the cause', r1.out, 'no databases found')
+
+      // 2 — a real database plus a SYMLINKED uploads directory, the shape INSTALL.md produces.
+      const data = join(box, 'data')
+      mkdirSync(data, { recursive: true })
+      mkdirSync(join(box, 'art'), { recursive: true })
+      writeFileSync(join(box, 'art', 'proof.png'), 'not really a png')
+      symlinkSync(join(box, 'art'), join(data, 'uploads'))
+      execFileSync('sqlite3', [join(data, 'printshop.db'), 'create table t(a); insert into t values(1);'])
+      mkdirSync(join(box, 'out2'), { recursive: true })
+      const r2 = sh({ DATA_ROOT: data, BACKUP_ROOT: join(box, 'out2') })
+      chk('a real backup still succeeds', String(r2.code), '^0$')
+      const archive = readdirSync(join(box, 'out2')).find((f) => f.endsWith('.tar.gz'))
+      chk('…and produced an archive', String(!!archive), '^true$')
+      // Unpack it and prove the artwork is actually inside, not just a dangling symlink entry.
+      execFileSync('tar', ['xzf', join(box, 'out2', archive), '-C', join(box, 'out2')])
+      const stamp = readdirSync(join(box, 'out2')).find((f) => !f.endsWith('.tar.gz'))
+      execFileSync('tar', ['xzf', join(box, 'out2', stamp, 'uploads.tar.gz'), '-C', join(box, 'out2')])
+      chk('…with the customer artwork really in it, not a dangling symlink', readdirSync(join(box, 'out2', 'uploads')).join(','), 'proof.png')
+    } finally { rmSync(box, { recursive: true, force: true }) }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

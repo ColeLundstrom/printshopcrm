@@ -52,9 +52,36 @@ while IFS= read -r db; do
   fi
 done < <(find "$DATA_ROOT" -name '*.db' -not -name '*-wal' -not -name '*-shm')
 
+# A backup of nothing is not a backup. With count=0 and failed=0 this script printed
+# "backup ok - 0 database(s)" and exited 0, so a typo'd DATA_ROOT, a moved PSC_DB or an unmounted
+# volume produced a green cron line every night and thirty days of empty archives. You find out on
+# the day you need it, which is the one day it must not be a surprise.
+if [ "$count" -eq 0 ]; then
+  echo "FAILED: no databases found under $DATA_ROOT — is DATA_ROOT right, and is the volume mounted?" >&2
+  failed=$((failed + 1))
+fi
+
 # Customer artwork. Without it, restored proofs come back as broken images.
-if [ -d "$DATA_ROOT/uploads" ]; then
-  tar czf "$DEST/uploads.tar.gz" -C "$DATA_ROOT" uploads 2>/dev/null || { echo "FAILED to archive uploads" >&2; failed=$((failed + 1)); }
+#
+# -h so that a SYMLINKED uploads directory is archived by CONTENT. INSTALL.md has the app's
+# public/uploads symlinked onto the data volume, and plain `tar cz` stores a symlink as one link
+# entry: the archive was created, tar exited 0, and not one piece of artwork was in it.
+if [ -e "$DATA_ROOT/uploads" ]; then
+  if tar czhf "$DEST/uploads.tar.gz" -C "$DATA_ROOT" uploads 2>/dev/null; then
+    art_src="$(find -L "$DATA_ROOT/uploads" -type f 2>/dev/null | wc -l | tr -d ' ')"
+    art_arc="$(tar tzf "$DEST/uploads.tar.gz" 2>/dev/null | grep -vc '/$' || true)"
+    if [ "$art_src" -gt 0 ] && [ "$art_arc" -eq 0 ]; then
+      echo "FAILED: $art_src artwork file(s) on disk but none in the archive" >&2
+      failed=$((failed + 1))
+    fi
+  else
+    echo "FAILED to archive uploads" >&2
+    failed=$((failed + 1))
+  fi
+else
+  # Not a failure on a brand-new install that has never had an upload — but never silent, because
+  # the alternative is discovering it during a restore.
+  echo "WARNING: no artwork directory at $DATA_ROOT/uploads — restored proofs will be broken images" >&2
 fi
 
 # Verify what we just wrote actually opens. A backup nobody has ever restored is a hope, not a plan.
