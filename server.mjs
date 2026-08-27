@@ -5502,6 +5502,13 @@ server.headersTimeout = 35000
 app.use((err, req, res, _next) => {
   console.error('unhandled:', req.method, req.path, err && err.message)
   if (res.headersSent) return
+  // multer throws a MulterError with a .code but no .status, so an over-size upload fell through to
+  // the generic 500 "something went wrong" — when the real, actionable answer is "that file is too
+  // big". Map its limit codes to the right status and a message the uploader can act on.
+  if (err?.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'That file is too large.' })
+    return res.status(400).json({ error: 'That upload was rejected — check the file and try again.' })
+  }
   const status = Number(err?.status || err?.statusCode) || 500
   // Deliberate 4xx errors carry a message the caller needs to act on ("url must be http(s)",
   // "unknown event"). Only 5xx gets the generic text — those can leak internals.
