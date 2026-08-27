@@ -45,7 +45,8 @@
     input:focus { outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent); }
     .btn { width:100%; min-height:44px; margin-top:18px; padding:12px; border:0; border-radius:10px; background:var(--accent); color:var(--accent-ink); font-size:15px; font-weight:700; cursor:pointer; }
     .btn:disabled { opacity:.6; cursor:default; }
-    .err { background:color-mix(in srgb, var(--red) 12%, transparent); color:var(--red); border:1px solid color-mix(in srgb, var(--red) 32%, transparent); border-radius:10px; padding:9px 11px; font-size:13px; margin-top:14px; display:none; }
+    /* pre-wrap so a server error can hand back a multi-line recovery command the user can copy. */
+    .err { background:color-mix(in srgb, var(--red) 12%, transparent); color:var(--red); border:1px solid color-mix(in srgb, var(--red) 32%, transparent); border-radius:10px; padding:9px 11px; font-size:13px; margin-top:14px; display:none; white-space:pre-wrap; }
     .foot { text-align:center; color:var(--dim); font-size:12px; margin-top:16px; }
     .foot a { color:var(--accent); text-decoration:none; }
     .hide { display:none; }
@@ -143,7 +144,13 @@
       try {
         const r = await fetch(URLS[M], { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
         const d = await r.json()
-        if (!r.ok) throw new Error(d.error || 'Something went wrong')
+        if (!r.ok) {
+          // Carry the server's recovery instructions through the throw. Without this the useful
+          // half of a "we cannot email you" answer is dropped and the user is simply stuck.
+          const ex = new Error(d.error || 'Something went wrong')
+          if (d.fix) ex.fix = d.fix
+          throw ex
+        }
         if (M === 'forgot') {
           // Deliberately the same message whether or not that address has an account.
           $('notice').textContent = d.message || 'If that email has an account, a reset link is on its way.'
@@ -153,7 +160,8 @@
         }
         location.href = d.onboarding ? '/#/welcome' : '/'
       } catch (ex) {
-        err.textContent = ex.message; err.style.display = 'block'
+        err.textContent = ex.fix ? `${ex.message}\n\n${ex.fix}` : ex.message
+        err.style.display = 'block'
         btn.disabled = false; btn.textContent = TITLES[M]
       }
       return false

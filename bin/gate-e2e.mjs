@@ -279,6 +279,58 @@ try {
     chk(`v1 refuses a fractional quantity of ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_quantity')
   }
 
+  /* ---------- an invoice raised by mistake must be recoverable from the UI ----------
+   * There was no DELETE route, PUT edits only the due date and PO number, and the estimate behind
+   * a converted invoice refuses to be deleted. So an invoice raised against the wrong customer
+   * counted toward money owed forever, chased that customer on every overdue scan, and was pushed
+   * to QuickBooks — with sqlite3 on the server as the only way out. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Wrong Customer', email: 'wrong@e2e.test' } })
+    const wrongId = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: wrongId, items: [{ description: '100 tees', sizes: { M: 100 }, unit_price: 9, taxable: true }] },
+    })
+    const estId = r.json?.id ?? r.json?.estimate?.id
+    r = await req('POST', `/api/estimates/${estId}/convert`, { body: { due_date: '2026-01-01' } })
+    const invId = r.json?.invoice_id
+    chk('an estimate converts to an invoice', String(invId ?? ''), '^\\d+$')
+
+    // Unpaid, so it counts toward outstanding right up until the void. (Using `outstanding`
+    // rather than `overdue` keeps the assertion independent of what today's date happens to be.)
+    const before = await req('GET', '/api/dashboard')
+    const owedBefore = Number(before.json?.kpis?.outstanding ?? 0)
+
+    r = await req('POST', `/api/invoices/${invId}/void`, { body: { reason: 'raised against the wrong customer' } })
+    chk('an unpaid invoice can be voided', String(r.status), '^200$')
+
+    const after = await req('GET', '/api/dashboard')
+    const owedAfter = Number(after.json?.kpis?.outstanding ?? 0)
+    chk('a voided invoice stops counting as money owed',
+      String(owedBefore > 0 && owedAfter === Number((owedBefore - 900).toFixed(2))), '^true$')
+
+    // The point of voiding is to be able to put it right, which means the quote must come free.
+    r = await req('POST', `/api/estimates/${estId}/convert`, { body: { due_date: '2026-02-01' } })
+    chk('voiding frees the estimate so it can be invoiced correctly', String(r.status), '^200$')
+
+    // Money already recorded is a bookkeeping fact — voiding around it would orphan the payment.
+    const invId2 = r.json?.invoice_id
+    await req('POST', `/api/invoices/${invId2}/payments`, { body: { amount: 25, method: 'check' } })
+    r = await req('POST', `/api/invoices/${invId2}/void`, { body: {} })
+    chk('an invoice with payments against it refuses to be voided', `${r.status} ${r.text}`, '^409 .*invoice_has_payments')
+  }
+
+  /* ---------- being locked out must not be a dead end ----------
+   * The gate runs with no mail configured, which is also how most self-hosted installs start.
+   * Forgot-password answered "a reset link is on its way", sent nothing, and logged the actual
+   * fix to stdout — where an owner running under systemd or Docker never sees it. They wait,
+   * retry, hit the 4/hour limit, and are locked out of a database sitting on their own disk.
+   * Whether this install can send mail at all is not a per-address fact, so saying so plainly
+   * gives away nothing about which accounts exist. */
+  r = await req('POST', '/api/auth/forgot', { body: { email: 'gate@e2e.test' } })
+  chk('with no mail configured, forgot-password does not promise a link', String(r.status), '^503$')
+  chk('…it says why', r.text, 'no email configured')
+  chk('…and hands over the command that actually unlocks the account', r.text, 'admin -- reset-password')
+
   /* ---------- a resale account is never taxed, whichever door the estimate came in ----------
    * taxRateFor() was extracted precisely so this could not be got wrong, and then two paths that
    * could not import it grew their own copy of the arithmetic without the tax_exempt lookup. The

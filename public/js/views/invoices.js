@@ -28,7 +28,7 @@ export async function invoicesView() {
   }
 
   $('#view').innerHTML = `<div class="searchbar">
-      <div class="tabs" id="tabs">${['all', 'unpaid', 'partial', 'paid'].map((s) => `<button data-s="${s}" class="${filter === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
+      <div class="tabs" id="tabs">${['all', 'unpaid', 'overdue', 'partial', 'paid', 'void'].map((s) => `<button data-s="${s}" class="${filter === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
       <div class="sp"></div><div id="sum" style="align-self:center"></div>
     </div><div class="card" id="list"></div>`
   on($('#tabs'), '[data-s]', (_e, t) => {
@@ -51,7 +51,8 @@ export async function invoiceDetailView(id) {
     ${bal > 0 ? `<button class="btn" id="reqpay">Request Payment</button>` : ''}
     ${bal > 0 ? `<button class="btn ghost" id="pay">Record Payment</button>` : ''}
     <button class="btn ghost" id="send">Email Invoice</button>
-    <a class="btn ghost" href="/api/invoices/${id}/pdf" target="_blank">PDF</a>`,
+    <a class="btn ghost" href="/api/invoices/${id}/pdf" target="_blank">PDF</a>
+    ${i.status === 'void' ? '' : `<button class="btn ghost" id="void">Void</button>`}`,
     `<a href="#/invoices">Invoices</a> /`)
 
   $('#view').innerHTML = `<div class="cols">
@@ -159,6 +160,17 @@ export async function invoiceDetailView(id) {
     },
   }))
   $('#send').onclick = async () => { await api.post(`/api/invoices/${id}/send`); toast('Invoice emailed. Check the Outbox') }
+  // The way back from an invoice raised against the wrong customer or for the wrong amount. Until
+  // this existed the only fix was sqlite3 on the server, so the mistake counted toward money owed
+  // and chased the wrong customer for as long as the shop kept using the software.
+  if ($('#void')) $('#void').onclick = () => confirmModal(
+    'Void this invoice?',
+    'It stops counting toward money owed and stops chasing the customer. The record stays for your books, and the estimate behind it is freed so you can invoice it again correctly.',
+    async () => {
+      try { await api.post(`/api/invoices/${id}/void`, {}) } catch (e) { return toast(e.message, true) }
+      toast('Invoice voided')
+      invoiceDetailView(id)
+    })
   $('#reqpay')?.addEventListener('click', async () => {
     try {
       const r = await api.post(`/api/invoices/${id}/request-payment`)

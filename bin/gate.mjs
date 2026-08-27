@@ -580,14 +580,27 @@ await t('an invoice that passes its due date reads as overdue with no write in b
 
   assert.equal(eff(1), 'overdue', 'past due and unpaid must read overdue even though nothing wrote to it')
   assert.equal(eff(2), 'unpaid', 'a future due date is not overdue')
-  assert.equal(eff(3), 'partial', 'partial outranks overdue, matching syncInvoiceStatus')
+  // Overdue beats partial. A deposit does not make a late invoice on time, and while partial won
+  // this invoice was reported in a bucket no screen could show: the Invoices list called it
+  // partial, so it never appeared under Overdue, while the dashboard's money-at-risk KPI and the
+  // follow-up scan both counted it as overdue. The dashboard said money was late and no list
+  // could say which invoice.
+  assert.equal(eff(3), 'overdue', 'past due wins over a part payment — being late is the fact to act on')
   assert.equal(eff(4), 'paid', 'paid outranks everything')
   assert.equal(eff(5), 'unpaid', 'a null due date is never overdue')
   assert.equal(eff(6), 'unpaid', 'a blank due date is never overdue')
+  // A part-paid invoice that is NOT yet due is still partial.
+  db.exec(`INSERT INTO invoices (id, amount_due, amount_paid, due_date, status) VALUES (7, 100, 40, '2099-01-01', 'partial')`)
+  assert.equal(eff(7), 'partial', 'a part payment on an invoice that is not yet due is partial')
+  // A voided invoice is not a demand for money, whatever its dates say.
+  db.exec(`INSERT INTO invoices (id, amount_due, amount_paid, due_date, status) VALUES (8, 100, 0, '2026-01-01', 'void')`)
+  assert.equal(eff(8), 'void', 'a voided invoice never reads as overdue')
 
-  // The actual symptom: "$X overdue" on the dashboard, nothing under Invoices → Overdue.
+  // The actual symptom: "$X overdue" on the dashboard, nothing under Invoices → Overdue. Compare
+  // against the dashboard's REAL predicate, not a hand-written one — the old version of this test
+  // used `amount_paid = 0`, which quietly agreed with the bug instead of catching it.
   const filtered = db.prepare(`SELECT i.id FROM invoices i WHERE ${EFFECTIVE_STATUS_SQL} = ?`).all(today, 'overdue').map((r) => r.id)
-  const dashboard = db.prepare(`SELECT i.id FROM invoices i WHERE i.amount_paid = 0 AND i.due_date IS NOT NULL AND i.due_date != '' AND i.due_date < ?`).all(today).map((r) => r.id)
+  const dashboard = db.prepare(`SELECT i.id FROM invoices i WHERE i.status NOT IN ('paid','void') AND i.due_date IS NOT NULL AND i.due_date != '' AND i.due_date < ?`).all(today).map((r) => r.id)
   assert.deepEqual(filtered, dashboard, 'the Overdue filter and the dashboard must return the same invoices')
 })
 

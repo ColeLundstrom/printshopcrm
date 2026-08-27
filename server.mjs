@@ -48,7 +48,7 @@ import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply } from './lib/agent.mjs'
-import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead } from './lib/notify.mjs'
+import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailConfigured } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
 import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor } from './lib/pricebook.mjs'
@@ -763,6 +763,21 @@ app.post('/api/auth/forgot', ipLimit(6), rateLimit({ max: 4 }), wrap((req, res) 
   if (!AUTH_ENABLED) return res.status(400).json({ error: 'Password reset is unavailable in single-tenant mode' })
   const email = String(req.body?.email || '').trim()
   const generic = { ok: true, message: 'If that email has an account, a reset link is on its way.' }
+  // Before promising a link, check that this install can send one at all. Reset mail goes out on
+  // the platform relay (`platform: true` below, with no shop SMTP behind it), so with no relay
+  // configured the answer is always "nothing will arrive" — and the owner sat waiting, retried,
+  // hit the 4/hour limit, and was locked out of a database sitting on their own disk. The fix was
+  // logged to stdout, where someone running under systemd or Docker will never see it.
+  //
+  // This is an install-wide fact, not a per-address one, so answering honestly reveals nothing
+  // about whether the account exists — the enumeration guard below still stands.
+  if (!platformEmailConfigured()) {
+    return res.status(503).json({
+      ok: false,
+      error: 'This install has no email configured, so a reset link cannot be sent.',
+      fix: `Whoever runs this server can set the password directly:\n  npm run admin -- reset-password ${email || '<your-email>'}\n\nThen sign in and connect email under Settings → Sending Email so this works next time.`,
+    })
+  }
   if (!email) return res.json(generic)
   let r = null
   try { r = createPasswordReset(email) } catch (e) { console.error('reset create:', e.message) }
@@ -1185,9 +1200,9 @@ app.get('/api/dashboard', wrap((_req, res) => {
   const revenue_mtd = round2(get(
     `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE date(p.created_at) >= ?`, monthStart).v)
   const outstanding = round2(get(
-    `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status != 'paid'`).v)
+    `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void')`).v)
   const overdue = round2(get(
-    `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status != 'paid' AND due_date < ?`, today).v)
+    `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today).v)
   const open_estimates = round2(get(
     `SELECT COALESCE(SUM(total), 0) AS v FROM estimates WHERE status IN ('draft','sent')`).v)
 
@@ -1221,7 +1236,7 @@ app.get('/api/dashboard', wrap((_req, res) => {
     awaiting_art: all(`SELECT j.*, c.name AS contact_name FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.stage='art_approval' ORDER BY j.due_date LIMIT 6`),
     outstanding_invoices: all(`SELECT i.*, c.name AS contact_name FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id
-      WHERE i.status != 'paid' ORDER BY i.due_date LIMIT 8`),
+      WHERE i.status NOT IN ('paid','void') ORDER BY i.due_date LIMIT 8`),
     activity: all(`SELECT a.*, c.name AS contact_name FROM activities a LEFT JOIN contacts c ON c.id=a.contact_id
       ORDER BY a.created_at DESC, a.id DESC LIMIT 12`),
     // Roll the other pillars up onto the home screen so it reflects the whole shop.
@@ -1294,7 +1309,7 @@ app.get('/api/today', wrap((req, res) => {
 
   // Money at risk — overdue invoices, biggest first.
   for (const i of all(`SELECT i.*, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id
-      WHERE i.status!='paid' AND i.due_date < ? ORDER BY (i.amount_due-i.amount_paid) DESC LIMIT 6`, today)) {
+      WHERE i.status NOT IN ('paid','void') AND i.due_date < ? ORDER BY (i.amount_due-i.amount_paid) DESC LIMIT 6`, today)) {
     const bal = round2(i.amount_due - i.amount_paid)
     add({ kind: 'collect', icon: '💸', priority: (production ? 40 : 90) + Math.min(20, bal / 200),
       title: `Collect ${money(bal)} from ${i.cn || 'customer'}`, sub: `${i.invoice_number} · overdue since ${i.due_date}`,
@@ -1334,7 +1349,7 @@ app.get('/api/today', wrap((req, res) => {
 
   actions.sort((a, b) => b.priority - a.priority)
 
-  const overdue = round2(get(`SELECT COALESCE(SUM(amount_due-amount_paid),0) AS v FROM invoices WHERE status!='paid' AND due_date < ?`, today).v)
+  const overdue = round2(get(`SELECT COALESCE(SUM(amount_due-amount_paid),0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today).v)
   res.json({
     role, date: today,
     pulse: {
@@ -1382,7 +1397,7 @@ app.get('/api/contacts', wrap((req, res) => {
   let sql = `SELECT c.*,
       (SELECT COUNT(*) FROM jobs j WHERE j.contact_id = c.id) AS job_count,
       (SELECT COALESCE(SUM(i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id) AS lifetime_value,
-      (SELECT COALESCE(SUM(i.amount_due - i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id AND i.status != 'paid') AS balance
+      (SELECT COALESCE(SUM(i.amount_due - i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id AND i.status NOT IN ('paid','void')) AS balance
     FROM contacts c WHERE (lower(c.name) LIKE ? OR lower(COALESCE(c.company,'')) LIKE ? OR lower(COALESCE(c.email,'')) LIKE ?)`
   const params = [q, q, q]
   if (tag) { sql += ` AND ',' || c.tags || ',' LIKE ?`; params.push(`%,${tag},%`) }
@@ -1434,7 +1449,7 @@ app.get('/api/contacts/:id', wrap((req, res) => {
     activities: all('SELECT * FROM activities WHERE contact_id = ? ORDER BY created_at DESC, id DESC LIMIT 40', c.id),
     stats: {
       lifetime: round2(get('SELECT COALESCE(SUM(amount_paid),0) AS v FROM invoices WHERE contact_id = ?', c.id).v),
-      balance: round2(get(`SELECT COALESCE(SUM(amount_due-amount_paid),0) AS v FROM invoices WHERE contact_id = ? AND status != 'paid'`, c.id).v),
+      balance: round2(get(`SELECT COALESCE(SUM(amount_due-amount_paid),0) AS v FROM invoices WHERE contact_id = ? AND status NOT IN ('paid','void')`, c.id).v),
       orders: get('SELECT COUNT(*) AS c FROM jobs WHERE contact_id = ?', c.id).c,
     },
   })
@@ -1566,7 +1581,9 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   // Once an estimate has become an invoice + job, its totals are locked — editing the line items
   // here would silently desync the invoice's amount_due from what the customer will be billed.
-  const inv = get('SELECT invoice_number FROM invoices WHERE estimate_id = ?', id)
+  // A VOIDED invoice does not lock its estimate. Voiding exists so a wrongly-raised invoice can be
+  // taken back; if the quote behind it stayed frozen, the shop still could not put things right.
+  const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — edit the invoice, not the estimate.` })
   const b = req.body || {}
   const s = getSettings()
@@ -1581,9 +1598,15 @@ app.put('/api/estimates/:id', wrap((req, res) => {
 }))
 
 app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
-  const inv = get('SELECT invoice_number FROM invoices WHERE estimate_id = ?', +req.params.id)
+  const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", +req.params.id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — can't delete a converted estimate.` })
-  run('DELETE FROM estimates WHERE id = ?', +req.params.id)
+  // One transaction with its artwork. The migration's trigger already handles the cascade, but
+  // doing both writes atomically means a failure cannot leave mockups pointing at an id that is
+  // about to be handed to the next estimate.
+  tx(() => {
+    run('DELETE FROM art_versions WHERE estimate_id = ?', +req.params.id)
+    run('DELETE FROM estimates WHERE id = ?', +req.params.id)
+  })
   res.json({ ok: true })
 }))
 
@@ -1795,7 +1818,7 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
-  const existing = get('SELECT * FROM invoices WHERE estimate_id = ?', id)
+  const existing = get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (existing) return res.status(409).json({ error: `Already invoiced as ${existing.invoice_number}` })
 
   // Honor the date the shop actually picked. The convert dialog has asked for a due date all along
@@ -1889,6 +1912,37 @@ app.put('/api/invoices/:id', requireRole('manager'), wrap((req, res) => {
   syncInvoiceStatus(id)
   if (due && due !== inv.due_date) logActivity('invoice', `${inv.invoice_number} due date changed ${inv.due_date} → ${due}`, { contact_id: inv.contact_id })
   res.json(get('SELECT * FROM invoices WHERE id = ?', id))
+}))
+
+/**
+ * Void an invoice — the way out of an invoice raised against the wrong customer or amount.
+ *
+ * There was no way out. No DELETE route existed, PUT edits only the due date and PO number, and
+ * the estimate behind it refuses to be deleted once converted. So an invoice sent to Lakeside High
+ * that was meant for Harbor City Brewfest counted toward money owed forever, chased the wrong
+ * customer on every overdue scan, and got pushed to QuickBooks — and the only fix was sqlite3 on
+ * the server, which the owner of a shop does not have and should not need.
+ *
+ * Void rather than delete, deliberately: the invoice number was issued and a customer may have
+ * seen it, so the record stays and says what happened. It simply stops being a demand for money.
+ */
+app.post('/api/invoices/:id/void', requireRole('manager'), wrap((req, res) => {
+  const id = +req.params.id
+  const inv = get('SELECT * FROM invoices WHERE id = ?', id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (inv.status === 'void') return res.json({ ok: true, already: true, invoice: inv })
+  // Money already recorded against it is a bookkeeping fact, and voiding around it would leave a
+  // payment attached to nothing. Say which payments and let the human decide.
+  if (Number(inv.amount_paid) > 0) {
+    return res.status(409).json({
+      error: `${inv.invoice_number} has ${money(inv.amount_paid)} in payments recorded against it. Remove those payments first, then void it.`,
+      code: 'invoice_has_payments',
+    })
+  }
+  const reason = String(req.body?.reason || '').slice(0, 200)
+  run("UPDATE invoices SET status = 'void', voided_at = ?, void_reason = ? WHERE id = ?", now(), reason, id)
+  logActivity('invoice', `${inv.invoice_number} voided${reason ? ` — ${reason}` : ''}`, { contact_id: inv.contact_id })
+  res.json({ ok: true, invoice: get('SELECT * FROM invoices WHERE id = ?', id) })
 }))
 
 app.post('/api/invoices/:id/request-payment', wrap((req, res) => {
@@ -2302,7 +2356,7 @@ app.get('/api/followups', wrap((_req, res) => {
 
   const overdue = all(`SELECT i.*, c.name AS contact_name, c.email, c.phone
     FROM invoices i LEFT JOIN contacts c ON c.id = i.contact_id
-    WHERE i.status != 'paid' AND i.due_date < ? ORDER BY (i.amount_due - i.amount_paid) DESC`, today)
+    WHERE i.status NOT IN ('paid','void') AND i.due_date < ? ORDER BY (i.amount_due - i.amount_paid) DESC`, today)
     .map((i) => ({ ...i, age: days(i.due_date), balance: round2(i.amount_due - i.amount_paid) }))
 
   // Proofs sitting with the customer — these block production, so they cost days.
@@ -3833,12 +3887,18 @@ function enqueueQbo(invoiceId) {
  * payments.qbo_id) is read before a multi-second network call and written after it — a textbook
  * read-check-write race that would post the same invoice to the books twice.
  */
+// This map is process-wide and every shop shares it, so the key MUST carry the tenant. Keyed on
+// the invoice id alone, shop B asking for its invoice 5 was handed shop A's in-flight promise for
+// a completely different invoice: B's push never happened, and B's row was then marked ok and
+// stamped with A's QuickBooks id. Invoice ids start at 1 in every shop's own database, so this
+// was not a rare collision — it was the common case whenever two shops synced at the same moment.
 const qboInFlight = new Map()
 function syncInvoiceToQbo(invoiceId) {
-  const key = Number(invoiceId)
+  const id = Number(invoiceId)
+  const key = `${curSlug()}#${id}`
   const running = qboInFlight.get(key)
   if (running) return running
-  const p = syncInvoiceToQboInner(key).finally(() => qboInFlight.delete(key))
+  const p = syncInvoiceToQboInner(id).finally(() => qboInFlight.delete(key))
   qboInFlight.set(key, p)
   return p
 }
