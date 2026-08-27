@@ -1674,6 +1674,46 @@ app.get('/api/estimates/:id', wrap((req, res) => {
 }))
 
 /**
+ * Scrub the two item fields that reach the browser as raw markup.
+ *
+ * POST/PUT /api/estimates stored `items` with JSON.stringify and no validation, and the editor
+ * renders three object-derived fields WITHOUT escaping: the size-grid keys, the size-grid values,
+ * and item.matrix.{name,row,col} inside a title attribute. Everything the editor knows to be a
+ * string it escapes; these are the ones that arrive as object keys and nested fields, so they were
+ * missed. Any staff account can write an estimate — neither route has a role check — and the owner
+ * opens it, so this was staff -> owner stored XSS, rendered through innerHTML under
+ * script-src 'self' 'unsafe-inline'.
+ *
+ * The /api/v1 twin already validates sizes correctly. This is the same rule, applied where the
+ * app's own screens post. Escaping in the editor as well is defence in depth, not the fix — the
+ * PDF, the public estimate page and the pay page all render these too.
+ */
+function sanitizeEstimateItems(items) {
+  return items.map((it) => {
+    if (!it || typeof it !== 'object' || Array.isArray(it)) return {}
+    const out = { ...it }
+    if (out.sizes != null) {
+      const sizes = {}
+      if (typeof out.sizes === 'object' && !Array.isArray(out.sizes)) {
+        for (const [k, v] of Object.entries(out.sizes)) {
+          if (!SIZES.includes(k)) continue // the editor only ever writes keys from SIZES
+          const n = Math.trunc(Number(v))
+          if (Number.isFinite(n) && n >= 0) sizes[k] = n
+        }
+      }
+      out.sizes = sizes
+    }
+    if (out.matrix != null) {
+      const m = out.matrix
+      if (typeof m === 'object' && !Array.isArray(m)) {
+        out.matrix = { id: Number(m.id) || null, name: String(m.name ?? '').slice(0, 60), row: String(m.row ?? '').slice(0, 40), col: String(m.col ?? '').slice(0, 48) }
+      } else delete out.matrix
+    }
+    return out
+  })
+}
+
+/**
  * Money must never be a number the arithmetic could not produce.
  *
  * `qty: 1e308` on a line item multiplied out to Infinity, and round2's overflow fallback passed it
@@ -1693,7 +1733,10 @@ app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
   if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer first' })
   const s = getSettings()
-  const items = b.items || []
+  // A non-array here (a bare object, a string, or a duplicated JSON key collapsing to one value)
+  // reached computeTotals and threw a 500 on the app's main create path.
+  if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
+  const items = sanitizeEstimateItems(b.items || [])
   // A wholesale/resale account is tax exempt, so every quote for it is untaxed unless the caller
   // explicitly passes a rate. Flagged on the customer so nobody has to remember per quote.
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
@@ -1721,7 +1764,8 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — edit the invoice, not the estimate.` })
   const b = req.body || {}
   const s = getSettings()
-  const items = b.items ?? parse(e.items, [])
+  if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
+  const items = sanitizeEstimateItems(b.items ?? parse(e.items, []))
   // Fall back to the estimate's OWN stored rate before the shop's current setting — otherwise
   // editing a note on last quarter's resale-exempt quote silently re-taxes it at today's rate.
   const rate = Number(b.tax_rate ?? e.tax_rate ?? s.tax_rate) || 0

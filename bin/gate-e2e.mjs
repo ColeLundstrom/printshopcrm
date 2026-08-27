@@ -499,6 +499,46 @@ try {
   chk('a duplicate-email signup is a clean 409', String(r.status), '^409$')
   chk('…and never leaks the SQL constraint text', r.text, '^(?!.*(UNIQUE|SQLITE|constraint)).*$')
 
+  /* ---------- an estimate's line items cannot carry markup into the owner's browser ----------
+   * The editor escapes every string field it knows about, and rendered three object-derived ones
+   * raw: the size-grid KEYS, the size-grid VALUES, and item.matrix.{name,row,col} inside a title
+   * attribute. Neither POST nor PUT /api/estimates has a role check, so any staff account could
+   * write them and the owner opened the estimate — staff -> owner stored XSS through innerHTML
+   * under script-src 'self' 'unsafe-inline'. The /api/v1 twin already validated sizes correctly. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'XSS Buyer', email: 'xss@e2e.test' } })
+    const xid = r.json?.id ?? r.json?.contact?.id
+    const payload = '"><img src=x onerror=alert(1)>'
+    r = await req('POST', '/api/estimates', {
+      body: {
+        contact_id: xid,
+        items: [{
+          description: 'tees',
+          sizes: { M: 10, [payload]: 5 },
+          unit_price: 10,
+          matrix: { id: 1, name: payload, row: payload, col: payload },
+        }],
+      },
+    })
+    chk('an estimate with a hostile size key is accepted but scrubbed', String(r.status), '^200$')
+    chk('…the size key is dropped, not stored', String(Object.keys(r.json?.items?.[0]?.sizes || {}).join(',')), '^M$')
+    chk('…and the real size survives', String(r.json?.items?.[0]?.sizes?.M ?? 'missing'), '^10$')
+    // A matrix NAME is the shop's own free text and cannot have '<' banned from it — its fix is
+    // escaping at every render site, asserted in bin/gate.mjs. What must hold here is that it is
+    // stored as a bounded string in a known shape, never as an arbitrary nested object.
+    const mx = r.json?.items?.[0]?.matrix
+    chk('…the matrix provenance keeps only its four known fields', Object.keys(mx || {}).sort().join(','), '^col,id,name,row$')
+    // Read it back the way the editor does, to be sure the size key does not revive on the trip.
+    const eid = r.json?.id
+    r = await req('GET', `/api/estimates/${eid}`)
+    chk('…and the size key is still gone when the editor loads it', String(Object.keys(r.json?.items?.[0]?.sizes || {}).join(',')), '^M$')
+    // A non-array items body reached computeTotals and threw a 500 on the main create path.
+    for (const [label, bad] of [['an object', { a: 1 }], ['a string', 'tees'], ['a number', 7]]) {
+      r = await req('POST', '/api/estimates', { body: { contact_id: xid, items: bad } })
+      chk(`items given as ${label} is refused, not a 500`, String(r.status), '^400$')
+    }
+  }
+
   /* ---------- the price book cannot be filled with junk one character at a time ----------
    * `services` was walked with Object.entries on trust. Handed a STRING that yields one entry per
    * character: PUT {"services":"Screen Print"} minted twelve $0.00 services named "0".."11", and a

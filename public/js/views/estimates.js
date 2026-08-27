@@ -122,15 +122,15 @@ export async function estimateEditor(id) {
         : `<input class="input num" data-f="qty" type="number" min="0" value="${esc(it.qty)}">`}
       <div class="rate-cell">
         <input class="input num" data-f="unit_price" type="number"${gridded ? ' min="0"' : ''} step="0.01" value="${esc(it.unit_price)}">
-        <button class="mx-btn" data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${it.matrix.name}: ${it.matrix.row} × ${it.matrix.col}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
+        <button class="mx-btn" data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${esc(it.matrix.name)}: ${esc(it.matrix.row)} × ${esc(it.matrix.col)}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
       </div>
       <div class="amt">${money(lineAmount(it, up))}</div>
       <button class="del" data-del="${i}" title="Remove line">&times;</button>
     </div>
     ${gridded ? `<div class="sizegrid" data-sg="${i}">
       ${sizesFor(it).map((s) => `<label class="sz ${Number(it.sizes[s]) > 0 ? 'on' : ''}">
-        <span>${s}${up[s] ? `<em>+$${up[s]}</em>` : ''}</span>
-        <input type="number" min="0" data-size="${s}" data-i="${i}" value="${it.sizes[s] || ''}" placeholder="0">
+        <span>${esc(s)}${up[s] ? `<em>+$${esc(up[s])}</em>` : ''}</span>
+        <input type="number" min="0" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0">
       </label>`).join('')}
       <button class="sz-more" data-more="${i}" title="Add another size">+</button>
       <div class="sz-sum">${lineQty(it)} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}</div>

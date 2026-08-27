@@ -1623,6 +1623,35 @@ await t('the letterhead fields templates actually use still render', async () =>
   assert.equal(templateValue('not_a_field', {}, s), '')
 })
 
+section('the estimate editor escapes what arrives as an object key')
+// public/js/views/estimates.js escapes every string field it knows about — description, detail,
+// qty, unit_price — and rendered three object-derived ones raw: the size-grid KEYS, the size-grid
+// VALUES, and item.matrix.{name,row,col} inside a title attribute. Neither POST nor PUT
+// /api/estimates has a role check, so any staff account could write them and the owner opened the
+// estimate: staff -> owner stored XSS, through innerHTML, under script-src 'self' 'unsafe-inline'.
+//
+// The server now drops any size key that is not a real size (proved end-to-end in gate-e2e), but a
+// matrix NAME is the shop's own free text and cannot have '<' banned from it. Escaping is its only
+// fix, so assert it at the source — the file needs a DOM and core.js to execute.
+await t('every interpolation in the size grid and the matrix tooltip is escaped', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/estimates.js'), 'utf8')
+
+  const tooltip = src.split('\n').find((l) => l.includes('Priced from'))
+  assert.ok(tooltip, 'the matrix tooltip should still be there')
+  for (const field of ['name', 'row', 'col']) {
+    assert.match(tooltip, new RegExp(`esc\\(it\\.matrix\\.${field}\\)`), `it.matrix.${field} must be escaped in the tooltip`)
+  }
+  const grid = src.slice(src.indexOf('sizesFor(it).map('), src.indexOf('sz-more'))
+  assert.ok(grid.length > 40, 'the size grid should still be there')
+  assert.ok(!/\$\{s\}/.test(grid), 'the size key must not be interpolated raw')
+  assert.ok(!/\$\{it\.sizes\[s\] \|\| ''\}/.test(grid), 'the size value must not be interpolated raw')
+  assert.match(grid, /esc\(s\)/, 'the size key must go through esc()')
+})
+
 section('a half-written reply is still finished')
 // Express's terminal error handler cannot set a status once a route has started writing, and it
 // returned at that point without res.end(). The socket then stayed open with no FIN and no
