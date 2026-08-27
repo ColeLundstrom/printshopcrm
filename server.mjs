@@ -5128,14 +5128,59 @@ app.get('/{*any}', (req, res) => {
 
 if (!existsSync(join(ROOT, 'public', 'index.html'))) console.warn('! public/index.html missing')
 
-// R2: last-resort safety net. Node 22 exits the process on an unhandled rejection or uncaught
-// exception, and every tenant shares this one process — so a stray throw in an after-response
-// callback (a delivery bookkeeping write, a timer) would take the whole fleet down. Log and keep
-// serving; these are bugs to fix, not reasons to drop every shop's in-flight request.
+// Has the HTTP server actually reached "listening"? This single flag decides whether a stray
+// error is survivable or fatal, and the distinction matters more than it looks.
+//
+// AFTER startup: every tenant shares this one process, so a throw in an after-response callback
+// (a delivery bookkeeping write, a timer) must not take the whole fleet down — log and keep serving.
+//
+// BEFORE startup: the opposite. A failure here means the app never bound a port, so there is no
+// event loop work left and Node exits — *with status 0*, because the handler below "handled" it.
+// A zero exit is a lie to every supervisor there is: Docker, Fly, Render and any systemd unit with
+// Restart=on-failure all read it as "finished successfully" and do not restart or raise an alarm.
+// The shop owner sees a container that exited cleanly, no error, and no app. So a startup failure
+// exits 1, loudly, with something the operator can act on.
+let httpUp = false
+// What an operator should DO about it, keyed off the error code. A startup failure a shop owner
+// cannot act on is the same as no message at all, and these two account for almost all of them.
+// Node may deliver a bind failure either as a synchronous throw from listen() or as an 'error'
+// event on the server, so the advice lives here, on the one path both of them reach.
+const startupAdvice = (err, port) => {
+  if (err?.code === 'EADDRINUSE') {
+    return (
+      `Port ${port} is already in use.\n` +
+      `  Another copy of PrintShopCRM is probably still running — stop it, or start this one\n` +
+      `  on a different port:  PORT=8081 npm start`
+    )
+  }
+  if (err?.code === 'EACCES') {
+    return (
+      `Permission denied binding port ${port}.\n` +
+      `  Ports below 1024 need root. Use PORT=8080 and put nginx in front of it.`
+    )
+  }
+  if (err?.code === 'SQLITE_CANTOPEN' || /SQLITE_CANTOPEN|unable to open database/i.test(err?.message || '')) {
+    return (
+      `The database file could not be opened.\n` +
+      `  Check that PSC_DB points somewhere this user can write, and that the directory exists.`
+    )
+  }
+  if (err?.code === 'EROFS' || err?.code === 'EACCES_FS') return 'The data directory is read-only.'
+  return null
+}
+const fatalStartup = (what, err) => {
+  console.error(`\n  PrintShopCRM could not start — ${what}`)
+  const advice = startupAdvice(err, PORT)
+  if (advice) console.error(`\n  ${advice}\n`)
+  console.error(`  ${(err && (err.stack || err.message)) || err}\n`)
+  process.exit(1)
+}
 process.on('unhandledRejection', (reason) => {
+  if (!httpUp) return fatalStartup('an unhandled rejection during startup', reason)
   console.error('unhandledRejection:', reason && (reason.stack || reason.message || reason))
 })
 process.on('uncaughtException', (err) => {
+  if (!httpUp) return fatalStartup('an uncaught exception during startup', err)
   console.error('uncaughtException:', err && (err.stack || err.message || err))
 })
 // Graceful shutdown so a deploy drains in-flight work instead of hard-killing it.
@@ -5153,7 +5198,12 @@ process.on('SIGINT', () => shutdown('SIGINT'))
 const server = createServer(app)
 initRealtime(server, { authEnabled: AUTH_ENABLED, getSessionTenant })
 // WS server + HTTP server error listeners, so a socket-level error can't become an uncaught throw.
-server.on('error', (e) => console.error('http server error:', e && e.message))
+// A bind failure is not a socket hiccup though — it means we are not serving anyone, so say which
+// port and what to do about it, and exit non-zero so the supervisor treats it as the failure it is.
+server.on('error', (e) => {
+  if (!httpUp) return fatalStartup(`the HTTP server could not start on port ${PORT}`, e)
+  console.error('http server error:', e && e.message)
+})
 // Bound outbound-connection safety: cap how long a request can occupy the process.
 server.requestTimeout = 30000
 server.headersTimeout = 35000
@@ -5172,6 +5222,7 @@ app.use((err, req, res, _next) => {
 })
 
 server.listen(PORT, () => {
+  httpUp = true // from here on, a stray throw is survivable — see the note by fatalStartup
   const s = getSettings()
   console.log(`\n  ${s.brand_name} — ${s.brand_tagline}`)
   console.log(`  → http://localhost:${PORT}   (ws /ws live)\n`)

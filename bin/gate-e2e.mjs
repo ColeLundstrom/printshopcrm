@@ -15,7 +15,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const PORT = Number(process.argv[2]) || 4390
+// Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
+// `PSC_GATE_PORT=4391 npm run test:e2e` is reachable where an npm-script argv is not.
+const PORT = Number(process.argv[2] || process.env.PSC_GATE_PORT) || 4390
 const BASE = `http://127.0.0.1:${PORT}`
 const TMP = mkdtempSync(join(tmpdir(), 'psc-e2e-'))
 
@@ -83,12 +85,24 @@ process.on('SIGINT', () => { cleanup(); process.exit(130) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 async function waitForBoot() {
-  for (let i = 0; i < 60; i++) {
+  // 90s, not 30s. A loaded CI runner (or a laptop building something else) can genuinely take
+  // longer than 30s to open a database and run migrations, and a gate that fails on load teaches
+  // people to re-run it until it goes green — which is how a real regression gets waved through.
+  const LIMIT_MS = Number(process.env.PSC_GATE_BOOT_MS) || 90000
+  const started = Date.now()
+  while (Date.now() - started < LIMIT_MS) {
     if (server.exitCode !== null) throw new Error(`server exited early (${server.exitCode})\n${serverLog}`)
     try { if ((await fetch(`${BASE}/health`)).ok) return } catch { /* not up yet */ }
     await sleep(500)
   }
-  throw new Error(`server never became healthy on ${BASE}\n${serverLog}`)
+  // Whoever reads this is debugging a red gate with no other clue, so say what we know.
+  const secs = Math.round((Date.now() - started) / 1000)
+  throw new Error(
+    `server never became healthy on ${BASE} after ${secs}s.\n` +
+      `  It was still running, so it hung during startup rather than crashing.\n` +
+      `  Raise the budget with PSC_GATE_BOOT_MS if the machine is just slow.\n` +
+      `  Server output:\n${serverLog.trim() || '  (the server printed nothing at all)'}`,
+  )
 }
 
 /* ================================ the run ================================ */
@@ -244,6 +258,33 @@ try {
     body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'comped sample', sizes: { M: 1 }, unit_price: 0 }] },
   })
   chk('v1 still allows an explicit zero-dollar line', r.text, 'EST-')
+
+  /* ---------- a failed start must LOOK like a failure ----------
+   * This shipped broken: a fatal bind failure was logged by the uncaughtException handler, which
+   * left no work on the event loop, so Node exited — with status 0. Docker, Fly, Render and any
+   * systemd unit using Restart=on-failure all read a zero exit as "ran to completion", so the app
+   * stayed down with no restart and no alarm. The exit code is the whole contract with the
+   * supervisor; assert it, and assert the operator is told what to actually do about it. */
+  {
+    const rogue = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      // Deliberately the port the harness server already holds.
+      env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'rogue.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let rogueLog = ''
+    rogue.stdout.on('data', (d) => { rogueLog += d })
+    rogue.stderr.on('data', (d) => { rogueLog += d })
+    const code = await new Promise((resolve) => {
+      rogue.on('exit', resolve)
+      setTimeout(() => { try { rogue.kill() } catch { /* gone */ } resolve('timeout') }, 20000)
+    })
+    chk('a second copy on a taken port exits non-zero, not 0', String(code), '^[1-9]')
+    chk('…and names the port so the operator can act on it', rogueLog, String(PORT))
+    // Match the advice, not the raw errno text — the old build printed a stack trace that also
+    // contained "already in use", so asserting on that would have passed against the bug.
+    chk('…and says what to do about it', rogueLog, 'PORT=8081')
+  }
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++
