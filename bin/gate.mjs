@@ -4630,6 +4630,43 @@ await t('the source link is not faded below the readable minimum', async () => {
  *              tab switch: by the sixth tab one click on a row ran go() six times.
  *   Dashboard— a raw addEventListener on #view, the most-visited screen in the app: the fourth
  *              visit fired go() four times per click. */
+section('the live layer comes back, however long it has been down')
+/* The board reshuffling by itself, notifications arriving, a conversation updating while you look
+ * at it — all of it rides one WebSocket, and the client gave up on it after 40 attempts. With the
+ * backoff that is about eight minutes: a shop with a floor tablet left open all day had a dead
+ * live layer by mid-morning, with nothing on screen saying so and nothing short of a manual
+ * refresh bringing it back. The app "still works on refresh", which is exactly why nobody notices.
+ *
+ * The other half is a stale-closure bug in the same handlers: they closed over the module-level
+ * `ws`, so a close arriving late from a socket that had already been replaced nulled out the NEWER
+ * one — a reconnect that took the live layer down with it. */
+await t('the realtime socket never stops trying to reconnect', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/app.js'), 'utf8')
+  const fn = src.slice(src.indexOf('function connectRealtime'), src.indexOf('function handleRealtime'))
+  assert.ok(fn.length > 100, 'found connectRealtime')
+  assert.doesNotMatch(fn, /wsTries\s*<\s*\d+/, 'a retry ceiling means the live layer dies for good')
+  assert.match(fn, /setTimeout\(connectRealtime/, 'and it still has to schedule the retry')
+  // The late-close guard: the handler must check it is still the current socket.
+  assert.match(fn, /if \(ws !== sock\) return/, 'a close from a replaced socket must not kill the live one')
+})
+await t('…and comes straight back when the network or the tab does', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/app.js'), 'utf8')
+  assert.match(src, /addEventListener\('online'/, "wifi coming back is the commonest recovery and it was not a trigger")
+  assert.match(src, /addEventListener\('visibilitychange'/, 'a laptop shut for lunch is the other one')
+  // Two triggers plus the backoff timer can fire together; without this every wake-up opens
+  // another socket and the tab receives every message once per socket it has accumulated.
+  const fn = src.slice(src.indexOf('function connectRealtime'), src.indexOf('function handleRealtime'))
+  assert.match(fn, /readyState === WebSocket\.(OPEN|CONNECTING)/, 'reconnect must not stack a second socket')
+})
+
 section('a second click cannot post the same thing twice')
 /* The dialog stays open for the whole round trip, so on shop wifi an impatient second click posts
  * again before the first answer lands.

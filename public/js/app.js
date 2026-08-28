@@ -420,20 +420,43 @@ function updateTrialBar(b) {
  * arrive live: badges refresh, the board reshuffles, and notifications toast. Purely additive —
  * if the socket never connects the app still works on refresh.
  */
-let ws = null, wsTries = 0
+let ws = null, wsTries = 0, wsTimer = null
 function connectRealtime() {
+  // Already connected or on the way — the reconnect triggers below can all fire at once (a laptop
+  // waking up is 'online' AND 'visibilitychange'), and two sockets per tab is two of every message.
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+  clearTimeout(wsTimer); wsTimer = null
   try {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/ws`)
-    ws.onopen = () => { wsTries = 0 }
-    ws.onmessage = (e) => {
+    // Held locally as well as on `ws`. The handlers used to close over the module-level variable,
+    // so a close arriving late from a socket that had already been replaced nulled out the NEWER
+    // one and took the live layer down with it.
+    const sock = new WebSocket(`${proto}://${location.host}/ws`)
+    ws = sock
+    sock.onopen = () => { wsTries = 0 }
+    sock.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data) } catch { return }
       handleRealtime(m)
     }
-    ws.onclose = () => { ws = null; wsTries++; if (wsTries < 40) setTimeout(connectRealtime, Math.min(15000, 1000 * wsTries)) }
-    ws.onerror = () => { try { ws.close() } catch {} }
-  } catch { /* ignore — no live layer, app still fine */ }
+    sock.onclose = () => {
+      if (ws !== sock) return // a later connection already took over
+      ws = null
+      wsTries++
+      // Keep retrying, forever. This used to give up after 40 attempts — about eight minutes — and
+      // never try again: the board stopped reshuffling, notifications stopped arriving, and nothing
+      // on screen said so. A shop on a floor tablet leaves that tab open all day, so the live layer
+      // was reliably dead by mid-morning and only a manual refresh brought it back. Backing off to
+      // 30s costs nothing while the server is down and reconnects promptly when it returns.
+      wsTimer = setTimeout(connectRealtime, Math.min(30000, 1000 * wsTries))
+    }
+    sock.onerror = () => { try { sock.close() } catch { /* already closing */ } }
+  } catch { wsTimer = setTimeout(connectRealtime, 5000) }
 }
+// The two moments a dropped socket is worth retrying immediately rather than on the next backoff
+// tick: the network came back, or the tab did. Both are the ordinary shop cases — wifi dropping in
+// the back of the shop, and a laptop that was shut for lunch.
+addEventListener('online', () => { wsTries = 0; connectRealtime() })
+addEventListener('visibilitychange', () => { if (!document.hidden) { wsTries = 0; connectRealtime() } })
 
 function handleRealtime(m) {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
