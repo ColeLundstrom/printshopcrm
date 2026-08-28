@@ -186,14 +186,20 @@ export async function estimateEditor(id) {
 
   // Wholesale accounts are tax exempt. Picking one zeroes the rate and says why, so nobody has to
   // remember; it stays editable in case a particular order really is taxable.
+  // `userPicked` only: opening a NEW estimate from a wholesale customer's own page preselects the
+  // contact without a pick, so the note said "Sales tax off" above a field still holding the
+  // shop's 7.75% — and the save always sends that field. Zero it whenever the buyer is exempt and
+  // the estimate carries no deliberately-stored rate of its own.
   const syncTaxExempt = (userPicked) => {
     const c = contacts.find((x) => x.id === +$('#contact').value)
     const exempt = !!(c && c.tax_exempt)
     $('#tax-note').style.display = exempt ? '' : 'none'
-    if (exempt && userPicked) $('#tax').value = 0
+    if (exempt && (userPicked || est.tax_rate == null)) $('#tax').value = 0
     else if (!exempt && userPicked) $('#tax').value = settings.tax_rate
     totals()
   }
+  /** Is the buyer on screen tax exempt right now? Used to mark a deliberate override on save. */
+  const buyerIsExempt = () => !!contacts.find((x) => x.id === +$('#contact').value)?.tax_exempt
   // Quote-first onboarding: a brand-new shop's first move is often a quote, before any customer
   // exists. Rather than bounce them to Customers and lose the estimate, add one inline right here.
   const addCustomerInline = () => {
@@ -322,6 +328,9 @@ export async function estimateEditor(id) {
       items: items.filter((i) => i.description.trim() || i.unit_price),
       notes: $('#notes').value,
       tax_rate: +$('#tax').value,
+      // The server refuses to tax an exempt buyer unless told the shop meant it. Typing a rate
+      // ON an exempt customer is the shop saying so; carrying the default is not.
+      tax_exempt_override: buyerIsExempt() && +$('#tax').value > 0,
     }
     if (!payload.contact_id) return toast('Choose a customer for this estimate first', true)
     if (!payload.items.length) return toast('Add at least one line item', true)

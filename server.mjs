@@ -1762,9 +1762,11 @@ app.post('/api/estimates', wrap((req, res) => {
   if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
   const items = sanitizeEstimateItems(b.items || [])
   // A wholesale/resale account is tax exempt, so every quote for it is untaxed unless the caller
-  // explicitly passes a rate. Flagged on the customer so nobody has to remember per quote.
+  // says, in as many words, that this particular order really is taxable. Merely carrying a
+  // `tax_rate` is not saying so — the editor's field always carries the shop's default, which is
+  // how every quote written from a wholesale customer's own page came out taxed.
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
-  const rate = taxRateFor(+b.contact_id, b.tax_rate)
+  const rate = taxRateFor(+b.contact_id, b.tax_rate, { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
@@ -1797,7 +1799,10 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // pre-fills from the stored value and this expression falls back to it, any LATER edit that
   // simply omitted tax_rate re-applied the bad rate. These columns feed A/R, the dashboard, the
   // customer-facing PDF and the invoice's amount_due at convert.
-  const rate = clampRate(b.tax_rate ?? e.tax_rate ?? s.tax_rate)
+  // ...and it must go through the same door POST does, or retargeting an estimate onto a
+  // tax-exempt buyer keeps the taxable rate: PUT never consulted tax_exempt at all.
+  const rate = taxRateFor(b.contact_id ?? e.contact_id, b.tax_rate ?? e.tax_rate ?? s.tax_rate,
+    { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=? WHERE id=?',
@@ -1937,13 +1942,16 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   if (!src) return res.status(404).json({ error: 'Estimate not found' })
   const contactId = Number(req.body?.contact_id) || src.contact_id
   const items = parse(src.items, [])
-  const t = computeTotals(items, src.tax_rate, getUpcharges())
+  // Copying a taxed estimate onto a DIFFERENT buyer must re-derive the rate against that buyer —
+  // otherwise "duplicate this for the wholesale account" carries the taxable rate across.
+  const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null)
+  const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
   const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total,
-    src.notes || '', src.tax_rate, src.quote_meta || '{}', now()).lastInsertRowid)
+    src.notes || '', rate, src.quote_meta || '{}', now()).lastInsertRowid)
   logActivity('estimate', `${num} created from ${src.estimate_number}`, { contact_id: contactId })
   res.json({ ok: true, id, estimate_number: num })
 }))

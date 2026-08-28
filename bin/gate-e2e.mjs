@@ -445,6 +445,41 @@ try {
   })
   chk('estimates API: a resale account is quoted untaxed', String(r.json?.tax ?? r.json?.estimate?.tax ?? 'missing'), '^0$')
 
+  /* The case above omits tax_rate — and the browser NEVER does. public/js/views/estimates.js
+   * always sends `tax_rate: +$('#tax').value`, and opening a new estimate from a wholesale
+   * customer's own page preselects the buyer without zeroing that field, so the save carried the
+   * shop's default rate. taxRateFor checked the override BEFORE reading the buyer, so the
+   * exemption was never consulted: $310.00 of sales tax on a $4,000 resale quote, under a screen
+   * reading "Wholesale account. Sales tax off." The gate passed green over it for six releases
+   * because it only ever tested the shape the browser cannot produce. */
+  {
+    const line = [{ description: 'Blank tees for resale', sizes: { M: 500 }, unit_price: 8, taxable: true }]
+    r = await req('POST', '/api/estimates', { body: { contact_id: exemptId, tax_rate: 7.75, items: line } })
+    chk('a resale account is untaxed even when the editor sends the shop rate', String(r.json?.tax ?? 'missing'), '^0$')
+    chk('…and rate 0 is what gets STORED, so an edit cannot re-derive the tax', String(r.json?.tax_rate ?? 'missing'), '^0$')
+
+    // The deliberate escape still works — a resale customer buying something they are not
+    // reselling. It has to be said in as many words, not carried by a form default.
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: exemptId, tax_rate: 7.75, tax_exempt_override: true, items: line },
+    })
+    chk('…but a shop that says it means it can still tax an exempt buyer', String(Number(r.json?.tax) > 0), '^true$')
+
+    // Retargeting: PUT never consulted tax_exempt at all, so moving a taxed estimate onto the
+    // wholesale account kept the tax.
+    r = await req('POST', '/api/estimates', { body: { contact_id: 1, tax_rate: 7.75, items: line } })
+    const taxedId = r.json?.id
+    chk('a taxable buyer is still taxed', String(Number(r.json?.tax) > 0), '^true$')
+    r = await req('PUT', `/api/estimates/${taxedId}`, { body: { contact_id: exemptId } })
+    chk('retargeting an estimate onto a resale account drops the tax', String(r.json?.tax ?? 'missing'), '^0$')
+
+    // Duplicate copied src.tax_rate verbatim regardless of who the copy was for.
+    r = await req('POST', `/api/estimates/${taxedId}/duplicate`, { body: { contact_id: exemptId } })
+    const copyId = r.json?.id
+    r = await req('GET', `/api/estimates/${copyId}`)
+    chk('duplicating onto a resale account drops the tax too', String(r.json?.tax ?? 'missing'), '^0$')
+  }
+
   r = await req('POST', '/api/assistant', { body: { message: 'quote 48 navy hoodies, 2 color front, for Northgate' } })
   chk('the assistant answers a quote request', String(r.status), '^200$')
   {
