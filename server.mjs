@@ -2608,7 +2608,15 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   // said 100. The print package contradicted itself on one screen.
   let nextLines = explicitLines ? JSON.stringify(explicitLines) : j.line_sizes
   if (reparsed) {
-    const stored = parse(j.line_sizes, [])
+    // jobLines(), not the raw column. line_sizes is '[]' on every job written before that column
+    // existed, and on those the per-garment split lives on the estimate — jobLines() is the
+    // function that knows all three sources. Reading the column alone saw "no garments here",
+    // took the single-garment branch below, and MERGED a tees-and-hats job into one style: the
+    // purchase order then bought 60 more tees in a size that style does not come in, at the tee's
+    // price, with every warning the correct PO carried gone, and no undo. On an upgraded install
+    // that is every job the shop has — and it made the split editor unreachable, because the
+    // editor only opens from the 409 that could never fire.
+    const stored = jobLines(j)
     const lines = Array.isArray(stored) ? stored.filter((l) => l && sizeTotal(l.sizes || {}) > 0) : []
     if (lines.length <= 1) {
       const one = lines[0] || { description: j.garment || '', garment: j.garment || '' }

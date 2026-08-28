@@ -1596,6 +1596,45 @@ try {
     chk('…and the print package no longer contradicts itself', String(pkgLines), '^150$')
   }
 
+  /* ---------- an ordinary quantity bump does not collapse a two-garment job ----------
+   * The 409 that refuses a flat grid over two garments read jobs.line_sizes RAW. That column
+   * arrived by migration, so it is '[]' on every job written before it, and on those the
+   * per-garment split lives on the estimate — jobLines() is the function that knows this, and the
+   * guard did not use it. '[]' read as "no garments", took the single-line branch, and MERGED a
+   * tees-and-hats job into one style: the purchase order then bought 60 more tees in a size that
+   * style does not come in, at the tee's price, with every warning the correct PO carried gone.
+   * On an upgraded install that is every job the shop has. It also made the split editor
+   * unreachable, because the editor only opens from the 409 that could never fire. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Brewfest Staff', email: 'brewfest@e2e.test' } })
+    const preC = r.json?.id
+    r = await req('POST', '/api/estimates', {
+      body: {
+        contact_id: preC,
+        items: [
+          { description: 'Next Level 6210 Tee — Forest — 1/0 Front', sizes: { S: 12, M: 30, L: 40 }, unit_price: 9 },
+          { description: 'Richardson 112 Trucker — Black — Patch', sizes: { OSFA: 60 }, unit_price: 14 },
+        ],
+      },
+    })
+    const preE = r.json?.id
+    await req('POST', `/api/estimates/${preE}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${preE}/convert`, { body: { due_date: '2026-11-20' } })
+    const preJ = r.json?.job_id
+    // Exactly the shape of a job written before the line_sizes column existed: the split is on the
+    // estimate and the column is empty. This is what an upgraded shop's whole board looks like.
+    shopDb('gate-shop', (db) => db.prepare("UPDATE jobs SET line_sizes = '[]' WHERE id = ?").run(preJ))
+    let prePo = (await req('GET', `/api/jobs/${preJ}/po`)).json || {}
+    chk('a pre-migration job still buys both garments', JSON.stringify(prePo.lines || []), '112')
+
+    r = await req('PUT', `/api/jobs/${preJ}`, { body: { quantities: '12 S / 40 M / 40 L / 60 OSFA' } })
+    chk('bumping one size on it is refused, not silently merged', String(r.status), '^409$')
+    chk('…and both garments come back so the split editor can open', String((r.json?.lines || []).length), '^2$')
+    prePo = (await req('GET', `/api/jobs/${preJ}/po`)).json || {}
+    chk('…and the hats are still on the purchase order', JSON.stringify(prePo.lines || []), '112')
+    chk('…at the count they were quoted at', String(prePo.total_units), '^142$')
+  }
+
   /* ---------- a share link dies with the record it was minted for ----------
    * token() is HMAC(kind:id:slug) — a pure function of a ROWID, and SQLite hands a freed rowid to
    * the next INSERT. So the estimate link already sitting in one customer's inbox opens the NEXT
