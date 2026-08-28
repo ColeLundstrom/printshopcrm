@@ -1794,7 +1794,7 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
 // matrices and orders import — have all required manager since they were written; this one did
 // not, so a staff session could bulk-write the entire customer book, and fire contact.created
 // automations and webhooks for every row, while being unable to delete a single contact.
-app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole('manager'), wrap((req, res) => {
+app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
   const rows = parseCsv(text)
@@ -1819,13 +1819,26 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
     return res.json({ preview: true, columns, total_rows: rows.length, to_import: toAdd.length, duplicates: dupes, skipped: skippedNoName, sample: toAdd.slice(0, 8) })
   }
 
+  // Batched, and handing the event loop back between batches, for the same reason the order
+  // importer is — see the comment there. A 2.94MB customer book (well inside the 8MB upload cap)
+  // was 4.65 SECONDS of unbroken blocking, with /health answering three times in the window and
+  // every other shop on the box waiting behind it. The per-row try/catch stays exactly where it
+  // was: a constraint violation is caught inside the transaction, so one bad row still skips
+  // itself rather than sinking its batch.
   let created = 0
-  for (const c of toAdd) {
-    try {
-      run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-        c.name, c.email, c.phone, c.company, c.notes, c.tags, now(), now())
-      created++
-    } catch (e) { /* one bad row shouldn't sink the import */ }
+  const BATCH = 500
+  for (let i = 0; i < toAdd.length; i += BATCH) {
+    const batch = toAdd.slice(i, i + BATCH)
+    tx(() => {
+      for (const c of batch) {
+        try {
+          run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+            c.name, c.email, c.phone, c.company, c.notes, c.tags, now(), now())
+          created++
+        } catch (e) { /* one bad row shouldn't sink the import */ }
+      }
+    })
+    if (i + BATCH < toAdd.length) await new Promise((r) => setImmediate(r))
   }
   if (created) logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {})
   res.json({ preview: false, created, duplicates: dupes, skipped: skippedNoName, total_rows: rows.length })

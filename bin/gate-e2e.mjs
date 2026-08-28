@@ -1628,6 +1628,44 @@ try {
     chk('…recognising every batch that had already landed', String(body2.skipped_duplicates), '^9000$')
   }
 
+  /* ---------- and neither does one importing its customer book ----------
+   * The same defect on the importer a switching shop reaches FIRST. This one was not even in a
+   * transaction — one autocommitted INSERT per row, in a synchronous loop. A 2.94MB customer book,
+   * again inside the 8MB cap, blocked for 4.65 seconds with /health answering three times.
+   * Batching it is also 5.7x FASTER (2318ms -> 408ms on the 30,000 rows below), because 30,000
+   * autocommits became 60 transactions — the responsiveness was not bought with throughput. */
+  {
+    const crows = ['Name,Email,Phone,Company']
+    for (let i = 1; i <= 30000; i++) crows.push(`Bulk Person ${i},bulk${i}@e2e.test,555-0100,Bulk Co ${i % 200}`)
+    const cbig = crows.join('\n')
+
+    const clat = []
+    let cpolling = true
+    const cprobe = (async () => {
+      while (cpolling) {
+        const t = Date.now()
+        try { await fetch(`${BASE}/health`) } catch { /* still a data point */ }
+        clat.push(Date.now() - t)
+      }
+    })()
+
+    const cform = new FormData()
+    cform.append('file', new Blob([cbig], { type: 'text/csv' }), 'book.csv')
+    const ct0 = Date.now()
+    const cup = await fetch(`${BASE}/api/import/contacts`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: cform })
+    const cwall = Date.now() - ct0
+    cpolling = false
+    await cprobe
+    const cbody = await cup.json().catch(() => ({}))
+    const cworst = Math.max(...clat)
+
+    chk("a 30,000-row customer book imports", String(cbody.created), "^30000$")
+    chk(`…while the app keeps answering other requests (${clat.length} health probes served in ${cwall}ms, was 3)`,
+      String(clat.length >= 10), '^true$')
+    chk(`…and nobody waits the length of the import for a page (worst ${cworst}ms, was ${cwall}ms)`,
+      String(cworst < 1500), '^true$')
+  }
+
   /* ---------- an imported order is worth what the file says it was worth ----------
    * Two defects, one arithmetic. A `Total` column is either the ORDER total repeated on every
    * line, or THAT LINE's extended total, and the fold took the largest value it saw — so a real
