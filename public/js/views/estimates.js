@@ -402,6 +402,7 @@ export async function estimateDetailView(id) {
     ${e.status === 'sent' ? `<button class="btn ghost" id="approve">Mark Approved</button>` : ''}
     ${canConvert ? `<button class="btn" id="convert">${window.__EDITION === 'lite' ? 'Convert to Invoice' : 'Convert to Invoice + Job'}</button>` : ''}
     ${e.invoice ? `<a class="btn ghost" href="#/invoices/${e.invoice.id}">View Invoice</a>` : ''}
+    ${(e.voided_invoices || []).map((v) => `<a class="btn ghost" href="#/invoices/${v.id}" title="${esc(v.void_reason || 'cancelled')}">${esc(v.invoice_number)} · voided</a>`).join('')}
     <button class="btn ghost" id="dup">Duplicate</button>
     <a class="btn ghost" href="/api/estimates/${id}/pdf" target="_blank">PDF</a>`,
     `<a href="#/estimates">Estimates</a> /`)

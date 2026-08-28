@@ -1676,8 +1676,17 @@ app.get('/api/estimates', wrap((req, res) => {
 app.get('/api/estimates/:id', wrap((req, res) => {
   const e = get(`SELECT e.*, c.name AS contact_name FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id WHERE e.id=?`, +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  // A VOIDED invoice is not the estimate's invoice. Without this filter, voiding froze the
+  // estimate behind it: the editor gates Edit, Send, Mark Approved, Convert and Delete on
+  // `e.invoice`, so all five disappeared at once and the screen was left with Duplicate, PDF and
+  // a link to the cancelled invoice. The server would have allowed the fix all along — /convert
+  // and DELETE both filter `status != 'void'` — so the whole void feature was defeated by one
+  // missing WHERE clause on the read side, on the exact path the feature exists for (an invoice
+  // raised against the wrong customer). The voided ones are still returned, so the history is
+  // visible rather than hidden.
   res.json({ ...estimateView(e), share_url: shareUrl('estimate', e.id),
-    invoice: get('SELECT * FROM invoices WHERE estimate_id = ?', e.id) })
+    invoice: get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void' ORDER BY id DESC", e.id),
+    voided_invoices: all("SELECT id, invoice_number, voided_at, void_reason FROM invoices WHERE estimate_id = ? AND status = 'void' ORDER BY id", e.id) })
 }))
 
 /**
@@ -2162,7 +2171,12 @@ app.post('/api/invoices/:id/void', requireRole('manager'), wrap((req, res) => {
   }
   const reason = String(req.body?.reason || '').slice(0, 200)
   run("UPDATE invoices SET status = 'void', voided_at = ?, void_reason = ? WHERE id = ?", now(), reason, id)
-  logActivity('invoice', `${inv.invoice_number} voided${reason ? ` — ${reason}` : ''}`, { contact_id: inv.contact_id })
+  // The convert that raised this invoice also raised a production job, and the job kept pointing
+  // at the cancelled invoice — so the board still showed work billed to nothing. Don't delete it
+  // (the shop may already be printing) — just unhook it, so re-converting the estimate does not
+  // leave two jobs fighting over one invoice, and say so on the timeline.
+  const freed = run('UPDATE jobs SET invoice_id = NULL WHERE invoice_id = ?', id).changes
+  logActivity('invoice', `${inv.invoice_number} voided${reason ? ` — ${reason}` : ''}${freed ? ' · its job is no longer billed to it' : ''}`, { contact_id: inv.contact_id })
   res.json({ ok: true, invoice: get('SELECT * FROM invoices WHERE id = ?', id) })
 }))
 

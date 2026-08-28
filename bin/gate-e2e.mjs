@@ -395,7 +395,17 @@ try {
     chk('a voided invoice stops counting as money owed',
       String(owedBefore > 0 && owedAfter === Number((owedBefore - 900).toFixed(2))), '^true$')
 
-    // The point of voiding is to be able to put it right, which means the quote must come free.
+    /* The point of voiding is to be able to put it right, which means the quote must come free.
+     * The route allowed it all along — and the SCREEN did not. GET /api/estimates/:id read the
+     * invoice without filtering void, and the editor gates Edit, Send, Mark Approved, Convert and
+     * Delete on `e.invoice`, so voiding made all five buttons disappear at once and left the
+     * owner with Duplicate, PDF and a link to the cancelled invoice. The assertion below has
+     * passed since it was written, over a screen from which the call it makes was unreachable —
+     * so drive the browser's own read FIRST. */
+    r = await req('GET', `/api/estimates/${estId}`)
+    chk('a voided invoice does not hide the estimate from its own screen', String(r.json?.invoice ?? 'null'), '^null$')
+    chk('…and the cancelled invoice is still shown as history, not erased', String((r.json?.voided_invoices || []).length > 0), '^true$')
+
     r = await req('POST', `/api/estimates/${estId}/convert`, { body: { due_date: '2026-02-01' } })
     chk('voiding frees the estimate so it can be invoiced correctly', String(r.status), '^200$')
 
