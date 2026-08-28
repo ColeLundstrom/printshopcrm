@@ -948,6 +948,42 @@ try {
     chk('…and rush can still be turned off deliberately', String(!!(await req('GET', `/api/jobs/${rushJ}`)).json?.rush), '^false$')
   }
 
+  /* ---------- an owner can change their own password from inside the app ----------
+   * POST /api/auth/password has existed, complete and correct, since logins shipped: it verifies
+   * the current password, enforces the minimum, clears the owner's legacy tenant hash, and re-mints
+   * a session for THIS device while dropping every other one. It had zero callers anywhere in
+   * public/. The only way to change a password was to sign out, claim you had forgotten it, and
+   * wait for an email — which needs SMTP configured, so on a shop that had not set up mail yet
+   * there was no way at all. A shared password nobody can rotate is a security hole with no exit. */
+  {
+    const { readFileSync } = await import('node:fs')
+    const EMAIL = 'gate@e2e.test', PASSWORD = 'GatePass-123456'
+    const ui = readFileSync(join(ROOT, 'public/js/views/misc.js'), 'utf8')
+    chk('Settings offers a control that changes your password', String(/api\/auth\/password/.test(ui)), '^true$')
+
+    // And the route it calls has to behave, since nothing had ever exercised it end to end.
+    r = await req('POST', '/api/auth/password', { body: { current_password: 'wrong-password', new_password: 'NewGatePass-98765' } })
+    chk('…a wrong current password is refused', String(r.status), '^401$')
+    r = await req('POST', '/api/auth/password', { body: { current_password: PASSWORD, new_password: 'short' } })
+    chk('…and a too-short new one is refused', String(r.status), '^400$')
+
+    r = await req('POST', '/api/auth/password', { body: { current_password: PASSWORD, new_password: 'NewGatePass-98765' } })
+    chk('…the right one goes through', String(r.status), '^200$')
+    chk('…and this device stays signed in', String((await req('GET', '/api/dashboard')).status), '^200$')
+
+    // The old password must really be dead, including the owner's legacy tenant hash.
+    const tryLogin = async (pw) => (await fetch(`${BASE}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, redirect: 'manual',
+      body: JSON.stringify({ email: EMAIL, password: pw }),
+    })).status
+    chk('…the old password no longer signs anyone in', String(await tryLogin(PASSWORD)), '^401$')
+    chk('…and the new one does', String(await tryLogin('NewGatePass-98765')), '^200$')
+
+    // Put it back, so everything after this block still holds the password the suite signed up with.
+    r = await req('POST', '/api/auth/password', { body: { current_password: 'NewGatePass-98765', new_password: PASSWORD } })
+    chk('…and it can be changed back', String(r.status), '^200$')
+  }
+
   /* ---------- the forecast counts what the shop keeps, not what it collects for the state ----------
    * syncFromEstimate stored `estimate.total` as the deal value — subtotal PLUS sales tax. So every
    * forecast number in the product carried tax as revenue: the board columns, open/weighted/won

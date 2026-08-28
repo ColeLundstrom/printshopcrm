@@ -149,6 +149,7 @@ function staffCard(d, me, esc) {
     : 'No logins yet'
   return `<div class="card">
     <div class="card-h"><h3>Staff & Logins</h3><span class="pill green">unlimited seats</span><div class="spacer"></div>
+      <button class="btn ghost sm" id="chg-pass">Change my password</button>
       ${canManage ? '<button class="btn ghost sm" id="add-user">+ Invite</button>' : ''}</div>
     <div class="card-b">
       <details class="disc" style="margin-top:0"><summary>${esc(roster)}</summary>
@@ -766,6 +767,40 @@ export async function settingsView() {
     const r = await api.post('/api/notify/test', { to, channel: 'sms' }).catch((e) => ({ delivered: false, error: e.message }))
     $('#sms-test-note').textContent = r.delivered ? 'Sent ✓' : `Not sent: ${r.error || 'add Twilio credentials'}`
   }
+
+  // Change your own password.
+  //
+  // POST /api/auth/password has existed, complete and correct, since logins shipped — it verifies
+  // the current password, enforces the minimum length, clears the owner's legacy tenant hash, and
+  // re-mints a session for THIS device while dropping every other one. It had zero callers. The
+  // only way to change a password was to sign out, claim you had forgotten it, and wait for an
+  // email — which needs SMTP configured, so on a shop that has not set up mail yet there was no
+  // way at all.
+  const passBtn = $('#chg-pass')
+  if (passBtn) passBtn.onclick = () => modal({
+    title: 'Change my password',
+    body: `<div class="field"><label for="cp-cur">Current password</label>
+        <input class="input" id="cp-cur" name="current_password" type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="cp-new">New password</label>
+        <input class="input" id="cp-new" name="new_password" type="password" minlength="8" autocomplete="new-password" placeholder="at least 8 characters"></div>
+      <div class="field"><label for="cp-again">New password again</label>
+        <input class="input" id="cp-again" name="confirm" type="password" autocomplete="new-password"></div>
+      <p class="dim" style="font-size:11.5px;margin-top:6px">You stay signed in on this device. Every other session — including one you are worried about — is signed out immediately.</p>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="cpgo">Change password</button>`,
+    onMount: (bg) => {
+      $('#cpgo', bg).onclick = async () => {
+        const body = formData(bg)
+        if (!body.current_password || !body.new_password) { toast('Enter your current password and a new one', true); return }
+        if (String(body.new_password).length < 8) { toast('The new password needs at least 8 characters', true); return }
+        if (body.new_password !== body.confirm) { toast('The two new passwords do not match', true); return }
+        const btn = $('#cpgo', bg); btn.disabled = true; btn.textContent = 'Changing…'
+        try {
+          await api.post('/api/auth/password', { current_password: body.current_password, new_password: body.new_password })
+          closeModal(); toast('Password changed — other sessions signed out')
+        } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Change password' }
+      }
+    },
+  })
 
   const addBtn = $('#add-user')
   if (addBtn) addBtn.onclick = () => modal({
