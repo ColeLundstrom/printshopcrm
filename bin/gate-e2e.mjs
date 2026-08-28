@@ -899,6 +899,29 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- a partial update does not quietly clear what it did not mention ----------
+   * PUT /api/jobs/:id read every field with `??` — keep what is there unless told otherwise — and
+   * `rush` with `b.rush ? 1 : 0`, which reads an absent field as false. So saving a note took the
+   * job off RUSH: it dropped down the board's sort order, lost its badge on the work ticket and on
+   * Today, and stopped being counted by the Rush filter. Nothing said so, and nothing on the job
+   * records that it ever was one. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Rush Rita', email: 'rush-rita@e2e.test' } })
+    const rushC = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: rushC, title: 'Hot job', quantities: '48 M', rush: true } })
+    const rushJ = r.json?.id
+    chk('a job can be marked rush', String(!!(await req('GET', `/api/jobs/${rushJ}`)).json?.rush), '^true$')
+
+    await req('PUT', `/api/jobs/${rushJ}`, { body: { notes: 'customer called about the deadline' } })
+    r = await req('GET', `/api/jobs/${rushJ}`)
+    chk('…and saving a note does not take it off rush', String(!!r.json?.rush), '^true$')
+    chk('…while the note it was actually asked to save is saved', String(r.json?.notes || ''), 'customer called')
+
+    // Turning it off is still possible — the field just has to be the one that was sent.
+    await req('PUT', `/api/jobs/${rushJ}`, { body: { rush: false } })
+    chk('…and rush can still be turned off deliberately', String(!!(await req('GET', `/api/jobs/${rushJ}`)).json?.rush), '^false$')
+  }
+
   /* ---------- the forecast counts what the shop keeps, not what it collects for the state ----------
    * syncFromEstimate stored `estimate.total` as the deal value — subtotal PLUS sales tax. So every
    * forecast number in the product carried tax as revenue: the board columns, open/weighted/won

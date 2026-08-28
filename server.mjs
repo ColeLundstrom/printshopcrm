@@ -2772,7 +2772,11 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   }
   run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
     b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, nextLines, b.due_date ?? j.due_date,
-    b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush ? 1 : 0, now(), id)
+    // `??` on every other field, and `b.rush ? 1 : 0` on this one — so any partial update cleared
+    // it. PUT /api/jobs/:id {notes:"..."} took a job off RUSH: it dropped down the board's sort,
+    // lost its badge on the work ticket and on Today, and stopped being counted by the Rush filter.
+    // Nothing said so, and nothing on the job records that it ever was one.
+    b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), id)
   // A split change moves what the shop BUYS, on a job that may already have blanks on order, so
   // it goes on the timeline rather than happening silently between two screens.
   if (explicitLines && nextLines !== j.line_sizes) {
