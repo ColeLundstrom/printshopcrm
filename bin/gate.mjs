@@ -2086,6 +2086,61 @@ section('the board and the pipeline are usable without a mouse')
   })
 }
 
+section('the daily retention sweep actually runs daily')
+// markDailySweepDone() sat OUTSIDE the `if (dueForDailySweep())` on the multi-tenant path, after
+// the tenant loop, so it reset the clock on EVERY 5-minute tick. dueForDailySweep() (>24h since the
+// last mark) was therefore only ever true on the very first tick after boot: webhook delivery
+// history was pruned once per process lifetime and never again. Every real install runs that path;
+// the single-tenant branch below it had it right, which is why it looked fine.
+//
+// Modelled rather than waited on — the bug is in WHEN the flag is set relative to the branch, so
+// the two shapes are run side by side over a simulated week of 5-minute ticks.
+{
+  const DAY = 24 * 60 * 60 * 1000
+  const TICK = 5 * 60 * 1000
+  const WEEK_OF_TICKS = (7 * DAY) / TICK
+
+  // The shipped shape: decide once before the loop, mark only if it swept.
+  // `lastDailySweep` starts at 0 against a real epoch clock, so the first tick is always due.
+  const runWeek = (shape) => {
+    let last = 0, now = 1.7e12, sweeps = 0
+    for (let i = 0; i < WEEK_OF_TICKS; i++) {
+      now += TICK
+      const due = () => now - last > DAY
+      if (shape === 'fixed') {
+        const sweepDue = due()
+        if (sweepDue) sweeps++
+        if (sweepDue) last = now
+      } else {
+        if (due()) sweeps++
+        last = now // the bug: marked unconditionally, every tick
+      }
+    }
+    return sweeps
+  }
+
+  await t('a week of ticks sweeps once a day, not once ever', () => {
+    assert.equal(runWeek('broken'), 1, 'precondition: the old shape swept exactly once, then never')
+    assert.equal(runWeek('fixed'), 7, 'a week must sweep seven times')
+  })
+
+  await t('the tenant loop asks once, not per shop', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+    const i = src.indexOf('for (const slug of automationTenantSlugs')
+    assert.ok(i > 0, 'the multi-tenant tick loop should still exist')
+    const loop = src.slice(i, src.indexOf('markDailySweepDone', i))
+    assert.ok(!/dueForDailySweep\(\)/.test(loop),
+      'asking per shop lets a pass crossing the 24h boundary sweep some shops and not others')
+    // …and the mark must be conditional, or the clock resets on every tick.
+    const after = src.slice(src.indexOf('markDailySweepDone()', i) - 40, src.indexOf('markDailySweepDone()', i) + 30)
+    assert.match(after, /if \(sweepDue\)/, 'the sweep must only be marked done when it actually swept')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

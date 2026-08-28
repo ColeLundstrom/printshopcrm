@@ -6019,12 +6019,19 @@ server.listen(PORT, () => {
         let total = 0
         let qboPushed = 0
         let pruned = 0
+        // Decide ONCE, before the loop. Two bugs lived in asking per-shop and marking after:
+        // markDailySweepDone() below sat OUTSIDE the `if`, so it reset the clock on EVERY 5-minute
+        // tick and dueForDailySweep() was therefore only ever true on the first tick after boot —
+        // the retention sweep ran once per process lifetime and then never again, on the
+        // multi-tenant path that every real install runs. And re-evaluating it per shop meant a
+        // pass that crossed the 24h boundary swept some shops and not others.
+        const sweepDue = dueForDailySweep()
         for (const slug of automationTenantSlugs({ lite: EDITION === 'lite' })) {
           try { total += withTenant(slug, () => tick(autoDeps)).length }
           catch (e) { console.error(`  tick failed for ${slug}:`, e.message) }
           // Webhook history retention. Once a day, not every tick — it's housekeeping, and on a
           // large fleet running it every 5 minutes is a lot of scanning for nothing.
-          if (dueForDailySweep()) {
+          if (sweepDue) {
             try { pruned += withTenant(slug, () => pruneWebhookDeliveries()) }
             catch (e) { console.error(`  webhook prune failed for ${slug}:`, e.message) }
           }
@@ -6041,7 +6048,7 @@ server.listen(PORT, () => {
         if (total) console.log(`  automations: ${total} fired across tenants`)
         if (qboPushed) console.log(`  qbo: ${qboPushed} invoice(s) synced`)
         if (pruned) console.log(`  webhook history: ${pruned} old deliver{y,ies} pruned`)
-        markDailySweepDone()
+        if (sweepDue) markDailySweepDone() // only when it actually swept
       } else if (EDITION !== 'lite') {
         const fired = tick(autoDeps)
         if (fired.length) console.log(`  automations: ${fired.length} fired — ${fired.slice(0, 4).join(', ')}`)
