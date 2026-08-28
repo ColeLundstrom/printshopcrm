@@ -1909,6 +1909,54 @@ try {
     chk('a hostile customer name does not break the row shape', String(/ENDTRNS\tPrintShopCRM/.test(iif.text)), '^false$')
   }
 
+  /* ---------- the public gang-sheet builder cannot write on a real customer ----------
+   * lib/agent.mjs:593 states the rule for the public chat widget — "a visitor on the public widget
+   * may be LINKED to an existing customer, and may not WRITE on one" — and enforces it. Its twin,
+   * the gang-sheet order endpoint, matched on email and then wrote unconditionally. Both are
+   * unauthenticated and both are reached with nothing but the shop's embed key, which ships inside
+   * the snippet the shop pastes on its own website. So anyone who scrapes that key and knows one
+   * customer's address can attach a real, sequence-consuming estimate marked 'sent' to that
+   * account, put its value in the shop's forecast, and fire the shop's estimate.sent automations
+   * — which means the customer gets email from their printer about an order they never placed. */
+  {
+    const meE = await req('GET', '/api/auth/me')
+    const gsKey = meE.json?.embed_key
+    chk('the shop publishes an embed key, as the snippet needs', String(!!gsKey), '^true$')
+    r = await req('POST', '/api/contacts', { body: { name: 'Real Customer Rae', email: 'rae@real.test' } })
+    const raeId = r.json?.id
+
+    const before = ((await req('GET', '/api/estimates')).json || []).length
+    const gs = await fetch(`${BASE}/api/embed/gangsheet/order?shop=${encodeURIComponent(gsKey)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Not Really Rae', email: 'rae@real.test', items: [{ w: 10, h: 10, qty: 50 }] }),
+    })
+    const gsBody = await gs.json().catch(() => ({}))
+    chk('a stranger can still get a price from the public builder', String(gs.status), '^200$')
+
+    const ests = (await req('GET', '/api/estimates')).json || []
+    chk('…and it is recorded, not silently dropped', String(ests.length), `^${before + 1}$`)
+    const mine = ests.find((e) => e.estimate_number === gsBody.estimate)
+    chk('…on the customer whose address was typed', String(mine?.contact_id), `^${raeId}$`)
+    chk('…but NOT marked sent on that real customer', String(mine?.status), '^draft$')
+    chk('…and it says nobody has confirmed who the visitor is', String(mine?.notes || ''), 'UNVERIFIED')
+    const pipe = (await req('GET', '/api/pipeline')).json || {}
+    const opp = (pipe.columns || []).flatMap((c) => (c.opps || []).map((o) => ({ ...o, stage: c.key ?? c.stage }))).find((o) => String(o.title || '').includes('gang sheet'))
+    // 'quoted' is where an ordinary DRAFT quote sits; 'sent' is the column the forecast reads.
+    chk('…and it is not counted in the forecast as a sent quote', String(opp?.stage ?? 'none'), '^(quoted|none)$')
+    const runs = ((await req('GET', '/api/automations')).json?.runs || [])
+      .filter((x) => x.trigger === 'estimate.sent' && String(x.entity_label || '') === String(gsBody.estimate))
+    chk('…and did not fire the shop\'s estimate.sent automations in their name', String(runs.length), '^0$')
+
+    // A visitor who is NOT an existing customer is their own record — that path is unchanged.
+    const gs2 = await fetch(`${BASE}/api/embed/gangsheet/order?shop=${encodeURIComponent(gsKey)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Brand New Bea', email: 'bea@brandnew.test', items: [{ w: 10, h: 10, qty: 50 }] }),
+    })
+    const gs2Body = await gs2.json().catch(() => ({}))
+    const fresh = ((await req('GET', '/api/estimates')).json || []).find((e) => e.estimate_number === gs2Body.estimate)
+    chk('a brand-new visitor\'s own order is untouched by all this', String(fresh?.status), '^sent$')
+  }
+
   /* ---------- the platform admin address cannot be claimed from the signup form ----------
    * requireAdmin() grants the Control Room on one test: isAdminEmail(req.tenant.owner_email).
    * tenants.owner_email is written in exactly one place — createTenant(), reached from the

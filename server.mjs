@@ -5593,6 +5593,15 @@ app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this
 
     // Find or create the customer in this shop's CRM.
     let contact = email ? get('SELECT * FROM contacts WHERE lower(email)=lower(?)', email) : null
+    // A stranger on the public builder may be LINKED to an existing customer and may NOT write on
+    // one — the rule lib/agent.mjs enforces for the chat widget, which this twin never got. Both
+    // are unauthenticated and both are reached with nothing but the shop's embed key, which ships
+    // inside the snippet the shop pastes on its own website. So anyone who scrapes that key and
+    // knows one customer's address could burn a real estimate number onto that account, mark it
+    // sent, put its value in the shop's forecast, and fire the shop's estimate.sent automations —
+    // which means the customer receives email from their printer about an order they never placed.
+    // A brand-new visitor is their own record, and that path is unchanged.
+    const unverified = !!contact
     if (!contact) {
       const id = Number(run('INSERT INTO contacts (name, email, tags, created_at, updated_at) VALUES (?,?,?,?,?)', name, email, 'website,gang-sheet', now(), now()).lastInsertRowid)
       contact = get('SELECT * FROM contacts WHERE id = ?', id)
@@ -5605,10 +5614,16 @@ app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this
     const t = computeTotals(estItems, s.tax_rate, getUpcharges())
     const num = nextEstimateNumber()
     const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, sent_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      contact.id, num, 'sent', JSON.stringify(estItems), t.subtotal, t.tax, t.total, 'Gang sheet from the website', now(), now()).lastInsertRowid)
-    logActivity('estimate', `Gang-sheet order ${num} from the website — ${money(t.total)}`, { contact_id: contact.id })
-    syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'sent')
-    fireAuto('estimate.sent', { estimate: get('SELECT * FROM estimates WHERE id = ?', estId), contact, total: t.total })
+      contact.id, num, unverified ? 'draft' : 'sent', JSON.stringify(estItems), t.subtotal, t.tax, t.total,
+      unverified
+        ? '⚠ UNVERIFIED — a website visitor gave this customer’s email address; nobody has confirmed they are them. Gang sheet from the website'
+        : 'Gang sheet from the website',
+      unverified ? null : now(), now()).lastInsertRowid)
+    logActivity('estimate', `Gang-sheet order ${num} from the website${unverified ? ' — UNVERIFIED, the visitor supplied only this customer’s email' : ''} — ${money(t.total)}`, { contact_id: contact.id })
+    // 'created' is what an ordinary DRAFT quote does (see POST /api/estimates), which lands the
+    // deal in 'quoted' rather than the 'sent' column the shop's forecast is read from.
+    syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), unverified ? 'created' : 'sent')
+    if (!unverified) fireAuto('estimate.sent', { estimate: get('SELECT * FROM estimates WHERE id = ?', estId), contact, total: t.total })
 
     if (paymentsReady(s)) {
       const origin = `${req.protocol}://${req.get('host')}`
