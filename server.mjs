@@ -2379,6 +2379,11 @@ app.get('/api/invoices/:id', wrap((req, res) => {
   const est = i.estimate_id ? get('SELECT * FROM estimates WHERE id = ?', i.estimate_id) : null
   res.json({
     ...i, items: est ? parse(est.items, []) : [], payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id),
+    // The invoice's own totals block prints these line items and then asks for amount_due, which is
+    // subtotal + tax — so without the breakdown the screen shows a table that does not add up to the
+    // number beside it. The invoice carries no subtotal/tax of its own; they live on the estimate it
+    // was converted from, and this is the only route that can reach them.
+    subtotal: est ? est.subtotal : null, tax: est ? est.tax : null, tax_rate: est ? est.tax_rate : null,
     pay_link: shareUrl('pay', i.id), stripe_ready: paymentsReady(getSettings()),
   })
 }))
@@ -6062,6 +6067,37 @@ function itemsTable(inv) {
   return `<table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>`
 }
 
+/**
+ * The totals block for the customer-facing invoice pages.
+ *
+ * itemsTable() above prints the estimate's lines, and those lines sum to the SUBTOTAL. The page
+ * then asked for `amount_due`, which is subtotal + tax — so on an $798.00 order carrying $50.22 of
+ * tax the customer read a table totalling $798.00 and a demand for $848.22, with nothing anywhere
+ * on the page accounting for the $50.22. This is the document customers actually pay from; the PDF
+ * and /p/estimate have always broken it out correctly.
+ *
+ * The breakdown is only printed when subtotal + tax genuinely reconciles to amount_due. An invoice
+ * whose amount_due came from somewhere else — an imported invoice, an Autopilot invoice with no
+ * estimate behind it — keeps the single-line form, because a breakdown that does not add up is a
+ * worse lie than no breakdown at all.
+ */
+function invoiceTotals(inv, balance, s, c) {
+  const e = inv.estimate_id ? get('SELECT subtotal, tax, tax_rate FROM estimates WHERE id = ?', inv.estimate_id) : null
+  const sub = Number(e?.subtotal)
+  const tax = Number(e?.tax) || 0
+  const reconciles = !!e && Number.isFinite(sub)
+    && Math.abs(round2(sub + tax) - (Number(inv.amount_due) || 0)) <= 0.005
+  const head = reconciles
+    ? `<div><span>Subtotal</span><span>${money(sub)}</span></div>`
+      + (Math.abs(tax) > 0.005
+        ? `<div><span>Tax (${esc(e.tax_rate ?? s.tax_rate)}%)</span><span>${money(tax)}</span></div>`
+        : `<div><span>Tax</span><span>${c?.tax_exempt ? 'Exempt (resale)' : money(0)}</span></div>`)
+    : ''
+  return `<div class="totals">${head}<div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>`
+    + `${inv.amount_paid > 0 ? `<div><span>Already paid</span><span>${money(inv.amount_paid)}</span></div>` : ''}`
+    + `<div class="grand"><span>Balance due</span><span>${money(balance)}</span></div></div>`
+}
+
 const SAFE_UPLOAD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/
 const logoImg = (s) => {
   const f = String(s?.shop_logo || '')
@@ -6282,9 +6318,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
         <div class="right"><div class="doc">INVOICE</div><div class="num2">${inv.invoice_number}</div></div></div>
       ${billedTo(inv, c)}
       ${itemsTable(inv)}
-      <div class="totals"><div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>
-        ${inv.amount_paid > 0 ? `<div><span>Already paid</span><span>${money(inv.amount_paid)}</span></div>` : ''}
-        <div class="grand"><span>Balance due</span><span>${money(balance)}</span></div></div>
+      ${invoiceTotals(inv, balance, s, c)}
       <div class="notes"><strong>How to pay</strong><p>Card payment isn't switched on for this shop yet — please contact ${s.shop_name} to settle this invoice.</p></div>
       <div class="terms">${esc(getSettings().invoice_terms || '')}</div>
       <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
@@ -6298,9 +6332,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
     <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">INVOICE</div><div class="num2">${inv.invoice_number}</div></div></div>
     ${billedTo(inv, c)}
     ${itemsTable(inv)}
-    <div class="totals"><div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>
-      ${inv.amount_paid > 0 ? `<div><span>Already paid</span><span>${money(inv.amount_paid)}</span></div>` : ''}
-      <div class="grand"><span>Balance due</span><span>${money(balance)}</span></div></div>
+    ${invoiceTotals(inv, balance, s, c)}
     <form method="POST" action="/p/pay/${id}/checkout?k=${req.query.k}${sQ(req)}" style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
       ${depositBtn}
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>

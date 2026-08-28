@@ -56,6 +56,11 @@ export async function invoiceDetailView(id) {
   const up = (() => { try { return JSON.parse(cfg.settings.size_upcharges) } catch { return {} } })()
   const bal = i.amount_due - i.amount_paid
   const pct = i.amount_due ? Math.min(100, (i.amount_paid / i.amount_due) * 100) : 0
+  // Only break the total out when subtotal + tax genuinely reconciles to what the invoice asks for.
+  // An imported invoice, or one raised with no estimate behind it, has no breakdown to show — and a
+  // breakdown that does not add up is worse than none.
+  const reconciles = i.subtotal != null
+    && Math.abs(Math.round((Number(i.subtotal) + (Number(i.tax) || 0)) * 100) / 100 - (Number(i.amount_due) || 0)) <= 0.005
 
   setPage(i.invoice_number, `
     ${bal > 0 ? `<button class="btn" id="reqpay">Request Payment</button>` : ''}
@@ -81,6 +86,8 @@ export async function invoiceDetailView(id) {
         }).join('')}</tbody></table>` : ''}
       <div class="card-b">
         <div class="totbox" style="margin-top:0">
+          ${reconciles ? `<div><span>Subtotal</span><span>${money(i.subtotal)}</span></div>
+          <div><span>Tax${i.tax_rate ? ` (${i.tax_rate}%)` : ''}</span><span>${money(i.tax)}</span></div>` : ''}
           <div><span>Invoice total</span><span>${money(i.amount_due)}</span></div>
           <div><span>Paid to date</span><span style="color:var(--accent)">-${money(i.amount_paid)}</span></div>
           <div class="g"><span>Balance due</span><span style="${bal > 0 ? 'color:var(--amber)' : 'color:var(--accent)'}">${money(bal)}</span></div>

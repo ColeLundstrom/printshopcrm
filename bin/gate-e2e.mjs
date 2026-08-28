@@ -2574,6 +2574,49 @@ try {
     chk('re-sending an approved estimate does not un-approve it', String(r.json?.estimate?.status), '^approved$')
   }
 
+  /* ---------- the page a customer pays from has to add up ----------
+   * /p/pay/:id printed itemsTable() — the estimate's lines, which sum to the SUBTOTAL — and then
+   * asked for amount_due, which is subtotal + tax. On the seeded shop that was a table totalling
+   * $798.00 above a demand for $848.22, with the $50.22 of tax appearing NOWHERE on the page. The
+   * PDF and /p/estimate both broke it out correctly; this is the one document customers actually
+   * pay from, and it was the one that did not reconcile. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Pay Page Math', email: 'paymath@e2e.test' } })
+    const payC = r.json?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: payC, tax_rate: 6.29, items: [{ description: '100 tees', qty: 100, unit_price: 7.98 }] },
+    })
+    const payEst = r.json?.id
+    const eSub = Number(r.json?.subtotal), eTax = Number(r.json?.tax), eTot = Number(r.json?.total)
+    chk('a taxed estimate exists to invoice', String(eSub === 798 && eTax > 0 && eTot > eSub), '^true$')
+
+    r = await req('POST', `/api/estimates/${payEst}/convert`, { body: { due_date: '2026-09-01' } })
+    const payInv = r.json?.invoice_id
+    r = await req('GET', `/api/invoices/${payInv}`)
+    const payLink = String(r.json?.pay_link || '').replace(/^https?:\/\/[^/]+/, '')
+    chk('the invoice hands back a pay link', String(/^\/p\/pay\//.test(payLink)), '^true$')
+
+    const payHtml = await (await fetch(BASE + payLink)).text()
+    // Every dollar figure the customer can read on the page.
+    const shown = [...payHtml.matchAll(/\$([0-9][0-9,]*\.[0-9]{2})/g)].map((m) => Number(m[1].replace(/,/g, '')))
+    chk('the pay page shows the subtotal the line items add up to', String(shown.includes(eSub)), '^true$')
+    chk('the pay page shows the tax it is charging on top', String(shown.includes(Math.round(eTax * 100) / 100)), '^true$')
+    chk('…and the amount it asks for', String(shown.includes(Math.round(eTot * 100) / 100)), '^true$')
+    // The actual defect, stated as arithmetic: what it asks for must be accounted for by what it
+    // prints. Before the fix the page showed 798.00 and 848.22 and nothing bridging them.
+    const bridges = shown.some((a) => shown.some((b) => Math.abs(a + b - eTot) < 0.005 && a > 0 && b > 0))
+    chk('the pay page accounts for every dollar it asks for', String(bridges), '^true$')
+
+    // The shop's OWN invoice screen has the same table above the same total, and the route it reads
+    // did not return a subtotal or a tax at all — so the number could not have been shown even if
+    // the view had wanted to. public/js/views/invoices.js renders these three fields.
+    r = await req('GET', `/api/invoices/${payInv}`)
+    chk('the invoice route returns the subtotal its line items add up to', String(round2e(r.json?.subtotal)), `^${eSub}$`)
+    chk('…and the tax that bridges it to the amount due', String(round2e(r.json?.tax)), `^${round2e(eTax)}$`)
+    chk('…which together reconcile to what the shop is asking for',
+      String(Math.abs(round2e(Number(r.json?.subtotal) + Number(r.json?.tax)) - round2e(r.json?.amount_due)) < 0.005), '^true$')
+  }
+
   /* ---------- /health answers for the databases that actually hold shops ----------
    * canWrite() with no tenant context probes the DEFAULT database — which in multi-tenant mode
    * holds no shop at all, and is perfectly writable. So a release whose migration threw on ONE
