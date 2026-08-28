@@ -1206,6 +1206,28 @@ await t('…and an ordinary job still schedules to a real date', async () => {
   assert.ok(!out.beyondHorizon)
 })
 
+/* JSON.parse(null) is JSON.parse('null'), which SUCCEEDS and returns null — so a LEFT JOIN that
+ * missed defeated parse()'s fallback entirely and the caller's .filter threw. That is how the
+ * work ticket, the page the press operator runs the job from, returned a bare 500 for every job
+ * with no estimate behind it — including JOB-1007 in the shipped demo data. */
+section('a JSON column that is SQL NULL reads as the fallback, not as null')
+await t('parse() hands back the fallback for a NULL column', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const m = src.match(/const parse = (\(s, fallback\) => \{[^\n]+\})/)
+  assert.ok(m, 'server.mjs should still define parse(s, fallback) on one line')
+  const parse = eval(m[1]) // eslint-disable-line no-eval -- the shipped helper, run as written
+  assert.deepEqual(parse(null, []), [], 'a NULL column must not come back as null')
+  assert.deepEqual(parse('null', []), [], 'neither must the literal string')
+  assert.deepEqual(parse(undefined, []), [])
+  assert.deepEqual(parse('not json', []), [])
+  assert.deepEqual(parse('[1,2]', []), [1, 2], 'real JSON still parses')
+  assert.equal(parse('{"a":1}', []).a, 1)
+})
+
 section('contact lookup is indexed, not a full scan')
 // The CSV order import matches every row on lower(email)/lower(name), inside one synchronous
 // transaction. Without an index each match is a full table scan, so a few thousand rows meant

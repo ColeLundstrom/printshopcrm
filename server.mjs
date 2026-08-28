@@ -336,7 +336,17 @@ const uploadMem = multer({ storage: multer.memoryStorage(), limits: { fileSize: 
 
 /* ---------- helpers ---------- */
 
-const parse = (s, fallback) => { try { return JSON.parse(s) } catch { return fallback } }
+/**
+ * Read a JSON blob column, with a fallback for anything unreadable.
+ *
+ * The `v == null` clause is load-bearing: a LEFT JOIN that misses hands back SQL NULL, and
+ * `JSON.parse(null)` is `JSON.parse('null')`, which SUCCEEDS and returns null. So the fallback
+ * never fired and the caller's `.filter` / `.map` threw. That is how the work ticket — the page
+ * the press operator runs the job from — returned a bare 500 for every job with no estimate
+ * behind it, including one in the shipped demo data. The two call sites that pass `null` as the
+ * fallback are unaffected: null is what they wanted anyway.
+ */
+const parse = (s, fallback) => { try { const v = JSON.parse(s); return v == null ? fallback : v } catch { return fallback } }
 
 /**
  * The largest piece count any single line or capacity question may carry. A million shirts in one

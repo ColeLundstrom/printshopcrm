@@ -1117,6 +1117,28 @@ try {
     chk('the print package carries both garments', String((pkg.lines || []).length), '^2$')
   }
 
+  /* ---------- the press can print the work ticket for a job typed onto the board ----------
+   * The handler LEFT JOINs estimates and reads e.items. With no estimate that column is SQL NULL,
+   * and JSON.parse(null) is JSON.parse('null') — which SUCCEEDS and returns null, so parse()'s
+   * `[]` fallback never fired and the next .filter() threw. GET /p/ticket/:id answered 500 with a
+   * body of exactly "Error" for every job with no estimate behind it: every walk-in typed onto
+   * the board, every job whose estimate was later deleted, and JOB-1007 in the shipped demo data.
+   * That is the page the press operator runs the job from. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Walk In Wanda', email: 'walkin@e2e.test' } })
+    r = await req('POST', '/api/jobs', {
+      body: { contact_id: r.json?.id, title: 'Rush 60 hoodies for the fair', quantities: '20 M / 20 L / 20 XL' },
+    })
+    const boardJob = r.json?.id ?? r.json?.job?.id
+    chk('a job can be typed straight onto the board', String(boardJob ?? ''), '^\\d+$')
+    const jr = (await req('GET', `/api/jobs/${boardJob}`)).json || {}
+    const ticket = String(jr.ticket_url || jr.job?.ticket_url || '')
+    chk('…and it carries a work-ticket link', String(!!ticket), '^true$')
+    const tr = await req('GET', ticket.replace(/^https?:\/\/[^/]+/, ''), { cookies: false })
+    chk('the work ticket prints for a job with no estimate behind it', String(tr.status), '^200$')
+    chk('…and it is a real ticket, not an error page', tr.text, 'Size Breakdown|Work Ticket|JOB-')
+  }
+
   /* ---------- one bad opportunity value must not blank the whole pipeline ----------
    * round2's non-finite fallback returned Infinity, so `value: "1e400"` stored Inf in the money
    * column. SUM() over that column then made the shop's Open Pipeline and Weighted Pipeline KPIs
