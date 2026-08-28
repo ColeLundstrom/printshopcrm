@@ -3374,6 +3374,9 @@ await t('the job form opens the per-garment editor instead of toasting a dead en
   const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
   assert.match(src, /multi_garment_quantities/, 'board.js never handles the 409 it provokes')
   assert.match(src, /line_sizes/, 'board.js never sends the structure that 409 hands it')
+  // Each garment's STYLE has to be nameable there too: it is the only screen that can post a
+  // corrected line on a multi-garment job, and the style is what the purchase order buys.
+  assert.match(src, /data-garment=/, 'the split editor names each garment but cannot correct it')
 })
 
 /* ---------- an order is worth what it is worth, once (v10) ----------

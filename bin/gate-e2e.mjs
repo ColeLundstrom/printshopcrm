@@ -1596,6 +1596,34 @@ try {
     chk('…and the print package no longer contradicts itself', String(pkgLines), '^150$')
   }
 
+  /* ---------- the job form's Garment field reaches the purchase order ----------
+   * A quote's line description is free text a human writes for a customer to read — "Tee", not a
+   * catalogue style. Convert it and the PO comes back sku:null, costed off a fallback style, and
+   * Submit refuses: "match the exact style first." The job form HAS the field for that, captioned
+   * "What the purchase order buys" — and jobLines() reads line_sizes first, so on every converted
+   * job jobs.garment was written and then ignored. Every other exit is shut: the estimate is
+   * 409-locked by its invoice, the invoice PUT edits only a due date, and the split editor opens
+   * only for two or more garments. The shop cannot buy blanks through the app for a job it made
+   * with the app's own documented flow. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Vague Vic', email: 'vague@e2e.test' } })
+    const vagueC = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: vagueC, items: [{ description: 'Tee', sizes: { M: 50 }, unit_price: 10 }] } })
+    const vagueE = r.json?.id
+    await req('POST', `/api/estimates/${vagueE}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${vagueE}/convert`, { body: { due_date: '2026-09-30' } })
+    const vagueJ = r.json?.job_id
+    let vpo = (await req('GET', `/api/jobs/${vagueJ}/po`)).json || {}
+    chk('a free-text garment line quotes with no SKU', String(vpo.lines?.[0]?.sku ?? 'null'), '^null$')
+
+    r = await req('PUT', `/api/jobs/${vagueJ}`, { body: { garment: 'Gildan 5000 Heavy Cotton Tee — Black' } })
+    chk('the job accepts the exact style, in the field labelled for it', String(r.status), '^200$')
+    vpo = (await req('GET', `/api/jobs/${vagueJ}/po`)).json || {}
+    chk('…and the purchase order now buys that style', String(vpo.lines?.[0]?.sku ?? 'null'), '^(?!null$)\\w')
+    chk('…for the quantity it was quoted at', String(vpo.total_units), '^50$')
+    chk('…with no "match the exact style first" warning left', JSON.stringify(vpo.warnings || []), '^(?![\\s\\S]*exact style)')
+  }
+
   /* ---------- a print package with approved art says so ----------
    * ready/note gated on jobs.separation — a column NOTHING in the running product writes (only
    * seed.mjs does, so the demo shop is the one install where this looks fine). Every real job

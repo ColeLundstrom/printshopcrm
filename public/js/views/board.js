@@ -245,7 +245,13 @@ function splitForm(job, lines, rest, after) {
   // Every size any garment on the job uses, so a shop can move pieces BETWEEN sizes, plus the
   // standard run of sizes so it can add one that was not quoted.
   const cols = SIZES.filter((s) => lines.some((l) => Number(l.sizes?.[s]) > 0) || ['S', 'M', 'L', 'XL', '2XL'].includes(s))
-  const rowOf = (l, i) => `<tr><td style="padding:6px 8px;font-size:12.5px">${esc(l.garment || l.description || `Garment ${i + 1}`)}</td>
+  // The garment is an INPUT, not a caption. This is the only screen that can post a corrected
+  // line, and on a two-garment job it is the only place the exact style can be named — which is
+  // what the purchase order spends money on. A quote line says "Tee" because it was written for a
+  // customer to read; the distributor needs "Gildan 5000".
+  const rowOf = (l, i) => `<tr><td style="padding:4px 8px"><input class="input" data-garment="${i}"
+        value="${esc(l.garment || l.description || '')}" placeholder="Gildan 5000 Heavy Cotton"
+        style="width:190px;padding:5px;font-size:12.5px"></td>
       ${cols.map((sz) => `<td style="padding:4px"><input class="input" data-line="${i}" data-size="${esc(sz)}" type="number" min="0" step="1"
         style="width:64px;padding:5px;text-align:center" value="${Number(l.sizes?.[sz]) > 0 ? Number(l.sizes[sz]) : ''}"></td>`).join('')}</tr>`
   modal({
@@ -260,13 +266,16 @@ function splitForm(job, lines, rest, after) {
       <div class="dim" style="font-size:12px;margin-top:9px" id="split-total"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="split-save">Save split</button>`,
     onMount: (bg) => {
-      const read = () => lines.map((l, i) => ({
-        description: l.description || l.garment || '',
-        garment: l.garment || '',
-        sizes: Object.fromEntries($$(`[data-line="${i}"]`, bg)
-          .map((inp) => [inp.dataset.size, Math.trunc(Number(inp.value) || 0)])
-          .filter(([, n]) => n > 0)),
-      }))
+      const read = () => lines.map((l, i) => {
+        const style = $(`[data-garment="${i}"]`, bg)?.value?.trim() || l.garment || l.description || ''
+        return {
+          description: style,
+          garment: style,
+          sizes: Object.fromEntries($$(`[data-line="${i}"]`, bg)
+            .map((inp) => [inp.dataset.size, Math.trunc(Number(inp.value) || 0)])
+            .filter(([, n]) => n > 0)),
+        }
+      })
       const total = () => read().reduce((t, l) => t + Object.values(l.sizes).reduce((a, n) => a + n, 0), 0)
       const paint = () => { $('#split-total', bg).textContent = `${total()} pieces across ${lines.length} garments` }
       $$('input[data-line]', bg).forEach((inp) => inp.addEventListener('input', paint))

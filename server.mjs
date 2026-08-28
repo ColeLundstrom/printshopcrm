@@ -2633,6 +2633,21 @@ app.put('/api/jobs/:id', wrap((req, res) => {
     }
   }
   const nextGarment = b.garment !== undefined ? (str(b.garment).trim() || null) : j.garment
+  // …and the style has to reach the line the PURCHASE ORDER reads. jobLines() takes line_sizes
+  // first, so on every estimate-converted job this column was written and then ignored: the job
+  // form's Garment field is captioned "What the purchase order buys", the shop typed the exact
+  // style, and the PO still came back sku:null with "match the exact style first" — advice no
+  // screen could follow, because the estimate behind it is 409-locked by its own invoice, the
+  // invoice PUT edits only a due date, and the split editor opens only for two or more garments.
+  // A quote line says "Tee", not a catalogue style, because it is written for a customer to read.
+  // When the job carries exactly ONE garment line, the style just typed IS that line's style;
+  // with two or more, the split editor is where each one is named.
+  if (!explicitLines && b.garment !== undefined && nextGarment && nextGarment !== j.garment) {
+    const cur = jobLines({ ...j, line_sizes: nextLines })
+    if (Array.isArray(cur) && cur.length === 1) {
+      nextLines = JSON.stringify([{ ...cur[0], description: nextGarment, garment: nextGarment }])
+    }
+  }
   run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
     b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, nextLines, b.due_date ?? j.due_date,
     b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush ? 1 : 0, now(), id)
