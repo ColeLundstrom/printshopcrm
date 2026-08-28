@@ -157,6 +157,33 @@ app.use((req, res, next) => {
   next()
 })
 
+/**
+ * CORS for the embed API, and ONLY the embed API.
+ *
+ * These three routes exist to be called from the shop's OWN website — that is the entire feature,
+ * and the app hands the shop a one-line script tag with "paste this before </body> on any page".
+ * No Access-Control header was ever sent, so the browser blocked every call and the widget showed
+ * the visitor "Sorry, chat is unavailable right now." Verified in real headless Chrome from a
+ * second origin: `BLOCKED Failed to fetch`. The same request over curl returned 200 and a live
+ * session, which is why it looked fine in the app — /embed/chatdemo is same-origin.
+ *
+ * '*' is correct here and nowhere else: these routes take no cookie, and the credential is the
+ * public shop key that is published in the shop's own page source. Allow-Credentials is
+ * deliberately absent, and the path prefix must never widen beyond /api/embed — every other /api
+ * route is cookie-authenticated and leans on SameSite=Lax plus the same-origin policy. The
+ * per-IP+shop limiter still bounds abuse.
+ *
+ * Registered before express.json so a preflight is answered without parsing a body.
+ */
+app.use('/api/embed', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Max-Age', '600')
+  if (req.method === 'OPTIONS') return res.status(204).end()
+  next()
+})
+
 // Stripe webhook needs the RAW body for signature verification — register it before express.json,
 // which then skips re-parsing (body-parser sets req._body). This route bypasses the auth gate.
 app.post('/webhooks/stripe', express.raw({ type: '*/*' }), (req, res) => stripeWebhook(req, res))

@@ -1009,6 +1009,36 @@ try {
     chk('…while a real temporary password is still accepted', String(r.status), '^200$')
   }
 
+  /* ---------- the widget a shop pastes on its own website can actually reach the app ----------
+   * The whole embed feature is "paste this one line before </body> on any page". The app sent no
+   * Access-Control header on /api/embed at all, so the browser blocked every call from the shop's
+   * own site and the visitor was shown "Sorry, chat is unavailable right now." Verified in real
+   * headless Chrome from a second origin: BLOCKED Failed to fetch. It looked fine in the app only
+   * because the preview at /embed/chatdemo is same-origin. */
+  {
+    const preflight = await fetch(`${BASE}/api/embed/chat/start`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://shopsite.example', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
+    })
+    chk('the embed API answers a browser preflight', String(preflight.status), '^204$')
+    chk('…allowing the shop\'s own site to call it', String(preflight.headers.get('access-control-allow-origin')), '^\\*$')
+    chk('…including the Content-Type the widget sends', String(preflight.headers.get('access-control-allow-headers')), 'Content-Type')
+
+    const posted = await fetch(`${BASE}/api/embed/chat/start`, {
+      method: 'POST', headers: { Origin: 'https://shopsite.example', 'Content-Type': 'application/json' }, body: '{}',
+    })
+    chk('…and the real response carries it too, not just the preflight',
+      String(posted.headers.get('access-control-allow-origin')), '^\\*$')
+
+    // Scope. Every other /api route is cookie-authenticated and relies on the same-origin policy;
+    // if this shim ever widens to /api, that protection is gone.
+    const guarded = await fetch(`${BASE}/api/settings`, { headers: { Origin: 'https://evil.example', Cookie: cookieHeader() } })
+    chk('the authenticated API is NOT opened up to other origins',
+      String(guarded.headers.get('access-control-allow-origin') ?? 'none'), '^none$')
+    chk('…and credentials are never allowed cross-origin',
+      String(posted.headers.get('access-control-allow-credentials') ?? 'none'), '^none$')
+  }
+
   /* ---------- switching a rule off pauses its queue, it does not delete it ----------
    * The drip resume loop DELETEd the automation_pending row before checking whether the rule was
    * still enabled, and committed that delete in autocommit. So an owner who paused a rule for an
