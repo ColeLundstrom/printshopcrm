@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, fmtDate, setPage, toast, go, on, modal, closeModal, formData } from '../core.js'
+import { api, $, $$, esc, money, fmtDate, setPage, toast, go, on, modal, closeModal, formData, daysOut } from '../core.js'
 
 /**
  * Order board — the lite edition's whiteboard. Five columns (Estimate → Paid → Mockup Approved →
@@ -17,7 +17,12 @@ export async function ordersView() {
   const d = await api.get('/api/orders')
 
   const card = (c) => {
-    const late = c.due_date && c.balance > 0 && new Date(c.due_date) < new Date()
+    // new Date('2026-08-28') is midnight UTC, so comparing it to `now` made an order due TODAY
+    // overdue from the first second of the day — in every timezone, including UTC itself. This
+    // was the last raw date comparison left in public/js; 629f4dc corrected core.js and every
+    // view that imports from it, and missed this one because it does its own arithmetic.
+    // daysOut() is the shop's own calendar day, the same predicate the job board already uses.
+    const late = c.due_date && c.balance > 0 && daysOut(c.due_date) < 0
     return `<div class="jcard" data-id="${c.id}">
       <div class="jc-h">
         <span class="jc-num">${esc(c.invoice_number || c.estimate_number)}</span>
@@ -25,7 +30,7 @@ export async function ordersView() {
       </div>
       <div class="jc-who">${esc(c.contact_name || '—')}${c.company ? ` · ${esc(c.company)}` : ''}</div>
       <div class="jc-tags">
-        ${c.balance > 0 ? `<span class="tag ${late ? 'red' : ''}">${money(c.balance)} due</span>`
+        ${c.balance > 0 ? `<span class="tag ${late ? 'red' : ''}">${late ? '⚠ overdue · ' : ''}${money(c.balance)} due</span>`
           : c.invoice_id ? '<span class="tag green">paid</span>' : '<span class="tag">not invoiced</span>'}
         ${c.mockup_status === 'approved' ? '<span class="tag green">art ok</span>' : ''}
         ${c.mockup_status === 'sent' ? '<span class="tag amber">art out</span>' : ''}

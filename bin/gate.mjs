@@ -1420,6 +1420,66 @@ for (const [tz, stored, want, why] of [
     assert.equal(out.trim(), want)
   })
 }
+/* ---------- the Orders board can show which orders are late ----------
+ * Two defects on one line, hiding each other.
+ *
+ * The tag was rendered as `class="tag red"` and there has never been a `.tag.red` rule in the
+ * stylesheet — only `.pill.red` — so an overdue card's tag was byte-identically the style of an
+ * on-time one, with identical text ("$450.00 due"), on a board that has no other lateness signal:
+ * no due-date row, no warning glyph, no ordering by date.
+ *
+ * And the lateness was wrong anyway. `new Date('2026-08-28') < new Date()` compares midnight UTC
+ * to now, so an order due TODAY read as overdue from the first second of the day, in every
+ * timezone including UTC. This was the last raw date comparison left in public/js — 629f4dc fixed
+ * core.js and every view that imports from it, and missed this one because it did its own
+ * arithmetic. Fixing only the CSS would therefore have lit the warning on every order due today,
+ * which is why both had to land together. */
+section('the Orders board can tell the shop which orders are late')
+for (const tz of ['America/Los_Angeles', 'America/New_York', 'Europe/Berlin', 'Asia/Tokyo', 'UTC']) {
+  await t(`${tz}: an order due today is not overdue, and yesterday's is`, async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      const t = m.today()
+      const day = (n) => { const d = new Date(\`\${t}T12:00:00\`); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
+      // The predicate orders.js uses, evaluated the way orders.js evaluates it.
+      process.stdout.write(JSON.stringify([m.daysOut(day(0)) < 0, m.daysOut(day(-1)) < 0, m.daysOut(day(1)) < 0]))
+    `], { env: { ...process.env, TZ: tz }, encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(out), [false, true, false], `due today must not be late in ${tz}`)
+  })
+}
+await t('…and the board really uses that predicate, not a raw date comparison', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/orders.js'), 'utf8')
+  assert.doesNotMatch(src, /new Date\(c\.due_date\) < new Date\(\)/,
+    "new Date('YYYY-MM-DD') is midnight UTC — an order due today read as overdue all day long")
+  assert.match(src, /daysOut\(c\.due_date\) < 0/, "lateness has to be the shop's own calendar day")
+  assert.match(src, /overdue/, 'and it has to say so in words — colour is never the only cue')
+})
+await t('…and every tag colour the board emits has a rule behind it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const css = readFileSync(join(root, 'public/css/app.css'), 'utf8')
+  const emitted = new Set()
+  for (const f of ['public/js/views/orders.js', 'public/js/views/board.js']) {
+    const src = readFileSync(join(root, f), 'utf8')
+    for (const m of src.matchAll(/class="tag (green|amber|red)"/g)) emitted.add(m[1])
+    for (const m of src.matchAll(/class="tag \$\{[^}]*'(green|amber|red)'/g)) emitted.add(m[1])
+  }
+  assert.ok(emitted.size > 0, 'the board should still be colouring its tags')
+  for (const tone of emitted) {
+    assert.match(css, new RegExp(`\\.tag\\.${tone}\\s*\\{`), `.tag.${tone} is rendered with no rule behind it, so it looks like every other tag`)
+  }
+})
+
 await t('fmtDate and relTime never disagree about which day a value falls on', async () => {
   const { execFileSync } = await import('node:child_process')
   const { join, dirname } = await import('node:path')
