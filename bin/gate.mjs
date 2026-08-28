@@ -3476,6 +3476,47 @@ section('every shareable row is stamped with its own share key')
   })
 }
 
+/* ---------- profitability does not scan the jobs table once per job (v10) ----------
+ * The split-order fix asks each run "which other runs share my order?", which is one query per
+ * job. Without an index on jobs(estimate_id) that is a full SCAN per job — on a five-year shop
+ * with 15,000 jobs, 15,000 scans, and /api/roi blocked the single-threaded event loop for 18.7s
+ * with /health failing. Correct arithmetic on a page nobody can wait for is not a fix. */
+section('the profitability sweep asks the database a bounded number of questions')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  sup.initSuppliers(mem)
+  const roi = await import('../lib/roi.mjs')
+
+  await t('the sibling-run lookup is served by an index, not a table scan', () => {
+    const plan = mem.prepare('EXPLAIN QUERY PLAN SELECT id, sizes FROM jobs WHERE estimate_id = 1').all()
+      .map((r) => String(r.detail || '')).join(' | ')
+    assert.ok(/USING (COVERING )?INDEX/.test(plan) && !/SCAN jobs\b/.test(plan), `plan was: ${plan}`)
+  })
+
+  dbmod.run(`INSERT INTO contacts (id, name) VALUES (1, 'Volume Co')`)
+  const N = 200
+  for (let i = 1; i <= N; i++) {
+    dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, items, subtotal, total) VALUES (?,?,1,'approved',?,500,500)`,
+      i, `EST-${1000 + i}`, JSON.stringify([{ description: 'Gildan 5000 Tee — Black', sizes: { M: 50 }, unit_price: 10 }]))
+    dbmod.run(`INSERT INTO jobs (id, job_number, contact_id, estimate_id, title, stage, status, sizes) VALUES (?,?,1,?,?,'production','active',?)`,
+      i, `JOB-${1000 + i}`, i, 'run', JSON.stringify({ M: 50 }))
+  }
+  const realPrepare = mem.prepare.bind(mem)
+  let statements = 0
+  mem.prepare = (sql) => { statements++; return realPrepare(sql) }
+  try { roi.shopRoi() } finally { mem.prepare = realPrepare }
+  await t(`${N} jobs do not cost a query each for their siblings (${statements} statements)`, () => {
+    // Before the prefetch: 3 per job plus the sweep. The ceiling is deliberately loose — this is
+    // guarding an order of magnitude, not a specific plan.
+    assert.ok(statements < N, `shopRoi issued ${statements} prepares for ${N} jobs`)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
