@@ -1096,6 +1096,36 @@ try {
     chk('…and a negative rate cannot write negative tax', String(Number(doc.tax) >= 0), '^true$')
   }
 
+  /* ---------- a payment method cannot forge a QuickBooks journal entry ----------
+   * IIF is tab-delimited and newline-terminated, and `${p.method}` went into it raw. payments.method
+   * is free text a STAFF account writes, so a staff member could splice a complete, correctly
+   * delimited TRNS/GENERAL JOURNAL/ENDTRNS record into the file the owner imports into their
+   * books — money moved in QuickBooks by editing a payment method in the CRM. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'IIF Co\tInjected\nENDTRNS', email: 'iif@e2e.test' } })
+    const iifCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: iifCid, items: [{ description: 'tees', qty: 10, unit_price: 10, taxable: false }] },
+    })
+    const iifEst = r.json?.id ?? r.json?.estimate?.id
+    r = await req('POST', `/api/estimates/${iifEst}/convert`, { body: { due_date: '2026-11-01' } })
+    const iifInv = r.json?.invoice_id
+
+    const evil = 'cash\tPrintShopCRM\nENDTRNS\nTRNS\tGENERAL JOURNAL\t1/1/2026\tOwner Draw\tThief\t9999.00\t\t\nENDTRNS'
+    r = await req('POST', `/api/invoices/${iifInv}/payments`, { body: { amount: 50, method: evil } })
+    chk('a payment records with a hostile method string', String(r.status), '^200$')
+
+    const iif = await req('GET', '/api/export/quickbooks.iif')
+    chk('the export still generates', String(iif.status), '^200$')
+    chk('…and no forged journal entry reached it', String(/GENERAL JOURNAL/.test(iif.text)), '^false$')
+    chk('…and no forged Owner Draw account either', String(/Owner Draw/.test(iif.text)), '^false$')
+    // Every record must still be exactly the 8 tab-separated columns the header declares.
+    const bad = iif.text.split('\n').filter((l) => /^(TRNS|SPL)\t/.test(l)).filter((l) => l.split('\t').length !== 8)
+    chk('…and every row still has the columns the header declares', String(bad.length), '^0$')
+    // The tab/newline in the CUSTOMER name must not have split a record either.
+    chk('a hostile customer name does not break the row shape', String(/ENDTRNS\tPrintShopCRM/.test(iif.text)), '^false$')
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

@@ -2671,13 +2671,32 @@ app.get('/api/automations', wrap((_req, res) => {
 
 // An automation sends real customer email and SMS on the shop's behalf, so authoring one is a
 // manager call even though reading the list is not.
+/**
+ * An automation's `params` are stored with a bare JSON.stringify and rendered into the rules list.
+ * `params.days` was interpolated into innerHTML UNESCAPED — while `params.stage`, on the same line
+ * of the same template, was escaped. A manager could store `<img src=x onerror=...>` there and it
+ * ran in the OWNER's browser, reaching owner-only actions (add another owner, rotate the API key).
+ * The view escapes it now; this makes the stored value match its only actual use, since every
+ * consumer in lib/automations.mjs already reads it through Number().
+ */
+const sanitizeAutoParams = (p) => {
+  const out = (p && typeof p === 'object' && !Array.isArray(p)) ? { ...p } : {}
+  if (out.days != null) {
+    const n = Number(out.days)
+    if (!Number.isFinite(n)) delete out.days
+    else out.days = Math.max(0, Math.trunc(n))
+  }
+  if (out.stage != null) out.stage = String(out.stage).slice(0, 40)
+  return out
+}
+
 app.post('/api/automations', requireRole('manager'), wrap((req, res) => {
   const b = req.body || {}
   if (!b.name?.trim()) return res.status(400).json({ error: 'Give the automation a name' })
   if (!TRIGGERS.some((t) => t.key === b.trigger)) return res.status(400).json({ error: 'Pick a trigger' })
   if (!Array.isArray(b.actions) || !b.actions.length) return res.status(400).json({ error: 'Add at least one action' })
   const id = Number(run('INSERT INTO automations (name, enabled, trigger, params, conditions, actions, created_at) VALUES (?,?,?,?,?,?,?)',
-    b.name.trim(), b.enabled === false ? 0 : 1, b.trigger, JSON.stringify(b.params || {}),
+    b.name.trim(), b.enabled === false ? 0 : 1, b.trigger, JSON.stringify(sanitizeAutoParams(b.params)),
     JSON.stringify(b.conditions || []), JSON.stringify(b.actions), now()).lastInsertRowid)
   res.json(get('SELECT * FROM automations WHERE id = ?', id))
 }))
@@ -2688,7 +2707,7 @@ app.put('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
   const b = req.body || {}
   run('UPDATE automations SET name=?, enabled=?, trigger=?, params=?, conditions=?, actions=? WHERE id=?',
     b.name ?? a.name, b.enabled === undefined ? a.enabled : (b.enabled ? 1 : 0), b.trigger ?? a.trigger,
-    JSON.stringify(b.params ?? parse(a.params, {})), JSON.stringify(b.conditions ?? parse(a.conditions, [])),
+    JSON.stringify(sanitizeAutoParams(b.params ?? parse(a.params, {}))), JSON.stringify(b.conditions ?? parse(a.conditions, [])),
     JSON.stringify(b.actions ?? parse(a.actions, [])), a.id)
   res.json(get('SELECT * FROM automations WHERE id = ?', a.id))
 }))
@@ -4633,6 +4652,15 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
 app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) => {
   const d = (s) => { const x = new Date(String(s).replace(' ', 'T')); return `${x.getMonth() + 1}/${x.getDate()}/${x.getFullYear()}` }
   const money2 = (n) => (Number(n) || 0).toFixed(2)
+  // IIF is tab-delimited and newline-terminated, so a tab or a newline inside ANY field ends the
+  // field or the record early and everything after it is read by QuickBooks as new columns or a new
+  // transaction. payments.method went in raw and is free text a STAFF account writes; the customer
+  // name stripped tabs but not newlines, and a contact name is writable by an unauthenticated
+  // stranger holding the shop's public embed key. Either one could splice a complete, correctly
+  // delimited TRNS/SPL/ENDTRNS journal entry into the file the owner imports into their books.
+  // Every field goes through this — the delimiters are what must not survive, not the characters
+  // a real customer's name might legitimately contain.
+  const iif = (v, max = 80) => String(v ?? '').replace(/[\t\r\n]+/g, ' ').trim().slice(0, max)
   const lines = [
     '!TRNS\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO',
     '!SPL\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO',
@@ -4643,15 +4671,17 @@ app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) =
   // other nine carry, so the dashboard said $0.00 outstanding while Books, the customer's mailed
   // statement and the bookkeeper's IIF all still billed the cancelled invoice.
   for (const i of all(`SELECT i.*, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY i.id`)) {
-    const name = (i.cn || 'Customer').replace(/\t/g, ' ')
-    lines.push(`TRNS\tINVOICE\t${d(i.created_at)}\tAccounts Receivable\t${name}\t${money2(i.amount_due)}\t${i.invoice_number}\tPrintShopCRM`)
-    lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Income\t${name}\t${money2(-i.amount_due)}\t${i.invoice_number}\t`)
+    const name = iif(i.cn || 'Customer')
+    const docnum = iif(i.invoice_number, 32)
+    lines.push(`TRNS\tINVOICE\t${d(i.created_at)}\tAccounts Receivable\t${name}\t${money2(i.amount_due)}\t${docnum}\tPrintShopCRM`)
+    lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Income\t${name}\t${money2(-i.amount_due)}\t${docnum}\t`)
     lines.push('ENDTRNS')
   }
   for (const p of all(`SELECT p.*, i.invoice_number, c.name AS cn FROM payments p JOIN invoices i ON i.id=p.invoice_id LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY p.id`)) {
-    const name = (p.cn || 'Customer').replace(/\t/g, ' ')
-    lines.push(`TRNS\tPAYMENT\t${d(p.created_at)}\tUndeposited Funds\t${name}\t${money2(p.amount)}\t${p.invoice_number}\t${p.method}`)
-    lines.push(`SPL\tPAYMENT\t${d(p.created_at)}\tAccounts Receivable\t${name}\t${money2(-p.amount)}\t${p.invoice_number}\t`)
+    const name = iif(p.cn || 'Customer')
+    const docnum = iif(p.invoice_number, 32)
+    lines.push(`TRNS\tPAYMENT\t${d(p.created_at)}\tUndeposited Funds\t${name}\t${money2(p.amount)}\t${docnum}\t${iif(p.method, 40)}`)
+    lines.push(`SPL\tPAYMENT\t${d(p.created_at)}\tAccounts Receivable\t${name}\t${money2(-p.amount)}\t${docnum}\t`)
     lines.push('ENDTRNS')
   }
   res.type('text/plain').setHeader('Content-Disposition', 'attachment; filename="printshopcrm-quickbooks.iif"')

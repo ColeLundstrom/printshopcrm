@@ -2204,6 +2204,68 @@ section('/health reports a database that cannot be written to')
   })
 }
 
+section('untrusted text cannot become structure in a document we generate')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  // A manager could store `<img src=x onerror=...>` in an automation's params.days and it ran in
+  // the OWNER's browser — reaching owner-only actions (add another owner, rotate the API key).
+  // params.stage, on the SAME LINE of the same template, was escaped; days was not.
+  await t('the automations list escapes every value it interpolates', () => {
+    const src = readFileSync(join(root, 'public/js/views/automations.js'), 'utf8')
+    const i = src.indexOf('class="au-when"')
+    assert.ok(i > 0, 'the trigger summary should still render')
+    const line = src.slice(i, src.indexOf('\n', i))
+    // Every ${...} on this line must be wrapped in esc(), except pure ternary conditions.
+    const raw = [...line.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1])
+      .filter((x) => /a\.params|a\.trigger|c\.value/.test(x))
+      .filter((x) => !/esc\(/.test(x))
+    assert.deepEqual(raw, [], `unescaped interpolation(s) in the automations list: ${JSON.stringify(raw)}`)
+  })
+
+  await t('…and the server stores days as the number it is only ever used as', async () => {
+    const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+    assert.match(src, /sanitizeAutoParams/, 'automation params should be coerced on write')
+    const i = src.indexOf('const sanitizeAutoParams')
+    const fn = src.slice(i, src.indexOf('\n}', i))
+    assert.match(fn, /Number\.isFinite/, 'days must be a real number or absent')
+  })
+
+  // IIF is tab-delimited and newline-terminated: a tab or newline inside any field ends the field
+  // or the record, and everything after it is read by QuickBooks as new columns or a NEW
+  // transaction. payments.method went in raw and is free text a STAFF account writes; the customer
+  // name stripped tabs but not newlines, and a contact name is writable by an unauthenticated
+  // stranger holding the shop's public embed key.
+  await t('the QuickBooks IIF export strips the delimiters from every field', () => {
+    const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+    const i = src.indexOf("app.get('/api/export/quickbooks.iif'")
+    assert.ok(i > 0, 'the IIF export should still exist')
+    const route = src.slice(i, src.indexOf('\n}))', i))
+    assert.ok(!/\$\{p\.method\}/.test(route), 'payments.method must not be spliced in raw')
+    assert.ok(!/\.replace\(\/\\t\/g, ' '\)/.test(route), 'stripping only tabs leaves newlines, which end the record')
+    assert.match(route, /const iif = /, 'there should be one sanitiser for every field')
+    // and it must remove all three delimiters
+    const san = route.slice(route.indexOf('const iif = '))
+    assert.match(san.slice(0, 200), /\\t\\r\\n/, 'tab, CR and LF must all be removed')
+  })
+
+  await t('…and that sanitiser really neutralises an injected journal entry', () => {
+    const iif = (v, max = 80) => String(v ?? '').replace(/[\t\r\n]+/g, ' ').trim().slice(0, max)
+    const attack = 'cash\tPrintShopCRM\nENDTRNS\nTRNS\tGENERAL JOURNAL\t1/1/2026\tOwner Draw\tThief\t9999.00\t\t\nENDTRNS'
+    const out = iif(attack, 40)
+    assert.ok(!out.includes('\t'), 'no tab may survive')
+    assert.ok(!out.includes('\n'), 'no newline may survive')
+    assert.ok(!out.includes('\r'))
+    assert.equal(out.split(/\s/).length > 0, true)
+    // A legitimate name is left readable.
+    assert.equal(iif("O'Brien & Sons, Inc."), "O'Brien & Sons, Inc.")
+    assert.equal(iif('José Muñoz'), 'José Muñoz')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
