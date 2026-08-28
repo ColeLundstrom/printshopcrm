@@ -1015,6 +1015,37 @@ try {
     chk('the print package carries both garments', String((pkg.lines || []).length), '^2$')
   }
 
+  /* ---------- one bad opportunity value must not blank the whole pipeline ----------
+   * round2's non-finite fallback returned Infinity, so `value: "1e400"` stored Inf in the money
+   * column. SUM() over that column then made the shop's Open Pipeline and Weighted Pipeline KPIs
+   * render blank — every card on the dashboard, not just the offending one — and nothing on screen
+   * pointed at the row responsible. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Pipeline Co', email: 'pipe@e2e.test' } })
+    const pipeCid = r.json?.id ?? r.json?.contact?.id
+    await req('POST', '/api/opportunities', { body: { contact_id: pipeCid, title: 'Good deal', value: 5000 } })
+
+    r = await req('POST', '/api/opportunities', { body: { contact_id: pipeCid, title: 'InfOpp', value: '1e400' } })
+    chk('an opportunity value that is not a number is refused', String(r.status), '^400$')
+
+    const board = (await req('GET', '/api/pipeline')).json || {}
+    const stats = board.stats || board
+    chk('…and the shop-wide Open Pipeline KPI is still a real number',
+      String(Number.isFinite(Number(stats.open_value))), '^true$')
+    chk('…as is the Weighted Pipeline KPI',
+      String(Number.isFinite(Number(stats.weighted_value))), '^true$')
+
+    // The board orders cards by sort_order; an object 500'd and "1e400" wrote Infinity into it.
+    const opp = (await req('GET', '/api/pipeline')).json
+    const anyId = (opp?.columns || []).flatMap((c) => c.opps || []).map((o) => o.id)[0]
+    if (anyId) {
+      r = await req('PATCH', `/api/opportunities/${anyId}/stage`, { body: { stage: 'lead', sort_order: { a: 1 } } })
+      chk('a non-numeric sort_order is refused rather than 500ing', String(r.status), '^400$')
+      r = await req('PATCH', `/api/opportunities/${anyId}/stage`, { body: { stage: 'lead', sort_order: '1e400' } })
+      chk('…and so is one that is not finite', String(r.status), '^400$')
+    } else say('·', 'no opportunity id found on the board — sort_order checked without failing')
+  }
+
   /* ---------- a job title is not a garment ----------
    * The per-garment PO lookup falls back through jobs.garment for a job created on the board with
    * no estimate behind it. That fallback must NOT reach for jobs.title: the string it produces is

@@ -1537,7 +1537,7 @@ app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   const items = parse(last.items, [])
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
-  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     c.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate,
     `Reorder — same as ${last.estimate_number}`, now()).lastInsertRowid)
@@ -1732,6 +1732,23 @@ function sanitizeEstimateItems(items) {
  * app's own screens post to never got the same guard.
  */
 const representableTotals = (t) => [t.subtotal, t.tax, t.total].every(Number.isFinite)
+
+/**
+ * …and the same question asked of the LINE INPUTS, before any rounding touches them.
+ *
+ * This used to be answered implicitly: round2() leaked Infinity, so an overflowing line carried it
+ * into the totals and representableTotals() above caught it there. round2 now floors a non-finite
+ * value to 0 (it is the money helper — it must not emit Infinity into a money column), which would
+ * have turned a refusal into a silently stored $0 estimate. That is the worse of the two failures,
+ * so the overflow is checked where it happens instead of being inferred downstream.
+ */
+const representableLines = (items) => (items || []).every((it) => {
+  if (!it || typeof it !== 'object') return true
+  const qty = lineQty(it)
+  const price = Number(it.unit_price ?? 0)
+  if (!Number.isFinite(qty) || !Number.isFinite(price)) return false
+  return Number.isFinite(qty * price)
+})
 const NOT_REPRESENTABLE = { error: 'Those line items do not add up to an amount we can store — check the quantities and prices.', code: 'invalid_total' }
 
 app.post('/api/estimates', wrap((req, res) => {
@@ -1747,7 +1764,7 @@ app.post('/api/estimates', wrap((req, res) => {
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
   const rate = taxRateFor(+b.contact_id, b.tax_rate)
   const t = computeTotals(items, rate, getUpcharges())
-  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     +b.contact_id, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', now())
@@ -1775,7 +1792,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // editing a note on last quarter's resale-exempt quote silently re-taxes it at today's rate.
   const rate = Number(b.tax_rate ?? e.tax_rate ?? s.tax_rate) || 0
   const t = computeTotals(items, rate, getUpcharges())
-  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=? WHERE id=?',
     b.contact_id ?? e.contact_id, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes, id)
   res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
@@ -1914,7 +1931,7 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   const contactId = Number(req.body?.contact_id) || src.contact_id
   const items = parse(src.items, [])
   const t = computeTotals(items, src.tax_rate, getUpcharges())
-  if (!representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
   const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -2688,9 +2705,22 @@ const syncPipeline = (estimate, event) => { try { pipeline.syncFromEstimate(esti
 
 app.get('/api/pipeline', wrap((_req, res) => res.json(pipeline.pipelineBoard())))
 
+/**
+ * A money figure a client sent us, or null if it is not one.
+ *
+ * round2() now floors a non-finite input to 0, which stops Infinity reaching a money column — but
+ * silently booking a $0 deal in place of what the caller sent is its own wrong answer. Refuse it
+ * instead, so the caller is told rather than left to discover a $0 row later.
+ */
+const moneyIn = (v) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? round2(n) : null
+}
+
 app.post('/api/opportunities', wrap((req, res) => {
   const b = req.body || {}
   if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer' })
+  if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'Value must be a number', code: 'invalid_value' })
   const id = Number(run(`INSERT INTO opportunities (contact_id, title, stage, value, source, notes, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?)`,
     +b.contact_id, b.title || 'New opportunity', pipeline.STAGE_KEYS.includes(b.stage) ? b.stage : 'lead',
@@ -2703,8 +2733,9 @@ app.put('/api/opportunities/:id', wrap((req, res) => {
   const o = get('SELECT * FROM opportunities WHERE id = ?', +req.params.id)
   if (!o) return res.status(404).json({ error: 'Opportunity not found' })
   const b = req.body || {}
+  if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'Value must be a number', code: 'invalid_value' })
   run('UPDATE opportunities SET title=?, value=?, notes=?, updated_at=? WHERE id=?',
-    b.title ?? o.title, b.value != null ? round2(b.value) : o.value, b.notes ?? o.notes, now(), o.id)
+    b.title ?? o.title, b.value != null ? moneyIn(b.value) : o.value, b.notes ?? o.notes, now(), o.id)
   res.json(get('SELECT * FROM opportunities WHERE id = ?', o.id))
 }))
 
@@ -2713,7 +2744,13 @@ app.patch('/api/opportunities/:id/stage', wrap((req, res) => {
   if (!o) return res.status(404).json({ error: 'Opportunity not found' })
   const stage = req.body?.stage
   if (!pipeline.STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `Unknown stage: ${stage}` })
-  if (req.body?.sort_order != null) run('UPDATE opportunities SET sort_order = ? WHERE id = ?', req.body.sort_order, o.id)
+  // sort_order went straight to the binding: an object 500'd (node:sqlite cannot bind one) and
+  // "1e400" wrote Infinity into the column the board orders cards by.
+  if (req.body?.sort_order != null) {
+    const so = Number(req.body.sort_order)
+    if (!Number.isFinite(so)) return res.status(400).json({ error: 'sort_order must be a number', code: 'invalid_sort_order' })
+    run('UPDATE opportunities SET sort_order = ? WHERE id = ?', so, o.id)
+  }
   const updated = pipeline.setStage(o.id, stage, { lost_reason: req.body?.lost_reason })
   if (stage !== o.stage) {
     const label = pipeline.STAGES.find((s) => s.key === stage).label

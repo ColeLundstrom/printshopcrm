@@ -12,7 +12,18 @@ export const COMMON_SIZES = ['S', 'M', 'L', 'XL', '2XL', '3XL']
 /** Standard extended-size upcharges. Shops charge more for big garments; this is per-piece. */
 export const DEFAULT_UPCHARGES = { '2XL': 2, '3XL': 3, '4XL': 4, '5XL': 5 }
 
-export const round2 = (n) => { n = Number(n) || 0; const v = Number(Math.round(n + 'e2') + 'e-2'); return Number.isFinite(v) ? v : Math.round(n * 100) / 100 }
+// The fallback existed because the `n + 'e2'` string trick returns NaN for very large or very
+// small magnitudes — but `Math.round(Infinity * 100) / 100` is Infinity, so this money helper
+// happily handed Infinity back to its callers. One opportunity created with value "1e400" put Inf
+// in the column, and SUM() over it then blanked the WHOLE shop's Open Pipeline and Weighted KPIs —
+// not just that card. A money helper must only ever return a finite number.
+export const round2 = (n) => {
+  n = Number(n) || 0
+  const v = Number(Math.round(n + 'e2') + 'e-2')
+  if (Number.isFinite(v)) return v
+  const w = Math.round(n * 100) / 100
+  return Number.isFinite(w) ? w : 0
+}
 
 export const upchargeFor = (size, upcharges) => Number((upcharges || DEFAULT_UPCHARGES)[size]) || 0
 

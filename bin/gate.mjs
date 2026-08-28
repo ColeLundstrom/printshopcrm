@@ -1910,6 +1910,33 @@ section('a two-garment order stays two garments all the way to the purchase orde
   })
 }
 
+section('the money helper can only ever return a finite number')
+// round2 is THE money-coercion helper — every money write in the app goes through it. Its fallback
+// existed because the `n + 'e2'` string trick returns NaN at extreme magnitudes, but
+// `Math.round(Infinity * 100) / 100` is Infinity, so it handed Infinity straight back. One
+// opportunity created with value "1e400" wrote Inf into the column, and SUM() over it then blanked
+// the WHOLE shop's Open Pipeline and Weighted Pipeline KPIs — every card, not just that one — with
+// nothing on screen pointing at the row that did it.
+{
+  const { round2 } = await import('../lib/db.mjs')
+  await t('a non-finite input cannot come back out of round2', () => {
+    for (const bad of ['1e400', Infinity, -Infinity, 1e308 * 10, NaN, 'abc', {}, []]) {
+      const out = round2(bad)
+      assert.ok(Number.isFinite(out), `round2(${String(bad)}) returned ${out}`)
+    }
+  })
+  await t('…and ordinary money still rounds exactly as before', () => {
+    for (const [inp, want] of [[1.005, 1.01], [2.675, 2.68], [-0.5, -0.5], [0, 0], [1918, 1918], ['12.345', 12.35]]) {
+      assert.equal(round2(inp), want, `round2(${inp})`)
+    }
+  })
+  await t('the browser copy of round2 agrees with the server copy', async () => {
+    const browser = await import('../public/js/shared/pricing.js')
+    for (const bad of ['1e400', Infinity, NaN]) assert.ok(Number.isFinite(browser.round2(bad)))
+    for (const good of [1.005, 2.675, -0.5, 1918]) assert.equal(browser.round2(good), round2(good))
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
