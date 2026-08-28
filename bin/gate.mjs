@@ -3517,6 +3517,31 @@ section('the profitability sweep asks the database a bounded number of questions
   })
 }
 
+/* ---------- the Outbox can send everything the server will send (v10) ----------
+ * fb0de24 gave the Outbox a Send button for 'draft' and 'error'. It left out 'logged' — which is
+ * the state of EVERY message a shop queues before it wires SMTP, i.e. all of week one, on the card
+ * whose own copy reads "nothing vanishes… add SMTP and the same calls go out for real". The same
+ * calls go out for NEW messages; the dozen already in the Outbox never do. The route delivers them
+ * perfectly well; only the button's condition was left behind. Evaluate the shipped predicate
+ * rather than grepping for a string, so this asserts the behaviour and not the spelling. */
+section('the Outbox offers a Send on every message the server would send')
+await t('a message queued before the shop wired SMTP can still be sent', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/misc.js'), 'utf8')
+  const line = /const sendable = (\(m\) => [^\n]+)/.exec(src)
+  assert.ok(line, 'the Outbox no longer has a sendable() predicate — this assertion needs rewriting')
+  // eslint-disable-next-line no-new-func
+  const sendable = new Function(`return ${line[1]}`)()
+  assert.equal(sendable({ via: 'logged', delivered: 0 }), true, "a 'logged' row gets no Send button")
+  assert.equal(sendable({ via: 'draft', delivered: 0 }), true)
+  assert.equal(sendable({ via: 'error', delivered: 0 }), true)
+  assert.equal(sendable({ via: 'smtp', delivered: 1 }), false, 'a delivered message must not offer to send again')
+  assert.equal(sendable({ via: 'logged', delivered: 1 }), false)
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

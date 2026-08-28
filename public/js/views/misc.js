@@ -68,7 +68,13 @@ export async function outboxView() {
     if (m.via === 'draft') return `<span class="deliv"><span class="dot"></span>draft — needs sending</span>`
     return `<span class="deliv"><span class="dot"></span>logged</span>`
   }
-  const sendable = (m) => !m.delivered && (m.via === 'draft' || m.via === 'error')
+  // 'logged' belongs here as much as 'draft' and 'error' do. It is the state of EVERY message a
+  // shop queues before it wires SMTP — all of week one — and the card above promises "nothing
+  // vanishes… add SMTP and the same calls go out for real". The same calls go out for NEW
+  // messages; the dozen estimates already sitting here never did, because only the button's
+  // condition was left behind when the route was added. POST /api/outbox/:id/send delivers a
+  // 'logged' row perfectly well, and answers 502 with the reason when mail is still not wired.
+  const sendable = (m) => !m.delivered && (m.via === 'draft' || m.via === 'error' || m.via === 'logged')
   $('#view').innerHTML = `
     <div class="card" style="margin-bottom:14px;border-color:var(--line-2)"><div class="card-b">
       <strong style="font-size:13px">${live ? '✉ Delivery is live' : '▤ Logging only'}</strong>
