@@ -8,7 +8,7 @@ import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, onContactCreated, SECRET_KEYS,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, SECRET_KEYS,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -1790,7 +1790,12 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const items = sanitizeEstimateItems(b.items ?? parse(e.items, []))
   // Fall back to the estimate's OWN stored rate before the shop's current setting — otherwise
   // editing a note on last quarter's resale-exempt quote silently re-taxes it at today's rate.
-  const rate = Number(b.tax_rate ?? e.tax_rate ?? s.tax_rate) || 0
+  // clampRate, or the edit path is a hole straight through the 0-100 guard every other write has:
+  // PUT {tax_rate: 100000} wrote $1,918,000 of tax onto a $1,918 estimate, and because the editor
+  // pre-fills from the stored value and this expression falls back to it, any LATER edit that
+  // simply omitted tax_rate re-applied the bad rate. These columns feed A/R, the dashboard, the
+  // customer-facing PDF and the invoice's amount_due at convert.
+  const rate = clampRate(b.tax_rate ?? e.tax_rate ?? s.tax_rate)
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=? WHERE id=?',

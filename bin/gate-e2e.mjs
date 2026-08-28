@@ -1068,6 +1068,34 @@ try {
     } else say('·', `could not create a board job (${r.status}) — title-as-SKU checked without failing`)
   }
 
+  /* ---------- the edit path clamps the tax rate like every other write ----------
+   * A prior round put a 0-100 clamp on the tax rate and applied it in taxRateFor(), which the
+   * CREATE path uses. The EDIT path built its own rate expression and never got it, so
+   * PUT {tax_rate: 100000} wrote $1,918,000 of tax onto a $1,918 estimate. Worse than a one-off
+   * typo: the editor pre-fills the field from the stored value and the expression falls back to it,
+   * so any later edit that simply omitted tax_rate silently re-applied the bad rate. Those columns
+   * feed A/R, the dashboard, the customer-facing PDF and the invoice amount_due at convert. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Tax Edit Co', email: 'taxedit@e2e.test' } })
+    const txCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: txCid, items: [{ description: 'tees', qty: 100, unit_price: 10, taxable: true }] },
+    })
+    const txEst = r.json?.id ?? r.json?.estimate?.id
+
+    r = await req('PUT', `/api/estimates/${txEst}`, { body: { tax_rate: 100000 } })
+    let row = (await req('GET', `/api/estimates/${txEst}`)).json || {}
+    let doc = row.estimate || row
+    chk('an edit cannot set a tax rate above 100%', String(Number(doc.tax_rate) <= 100), '^true$')
+    chk('…and the tax it stores matches the rate it stored',
+      String(Math.abs(Number(doc.tax) - Number(doc.subtotal) * Number(doc.tax_rate) / 100) < 0.02), '^true$')
+
+    await req('PUT', `/api/estimates/${txEst}`, { body: { tax_rate: -50 } })
+    row = (await req('GET', `/api/estimates/${txEst}`)).json || {}
+    doc = row.estimate || row
+    chk('…and a negative rate cannot write negative tax', String(Number(doc.tax) >= 0), '^true$')
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++
