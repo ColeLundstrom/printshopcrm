@@ -373,6 +373,32 @@ try {
     })
     chk(`v1 refuses a fractional quantity of ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_quantity')
   }
+  // Number(true) is 1 and Number([24]) is 24, and both pass Number.isInteger — so a quantity that
+  // was never a number reached the money arithmetic and came back a priced, 201'd estimate. The
+  // caller sees a valid document and a wrong dollar figure. `taxable: 1` one field over has always
+  // been a 400, which is the standard the rest of the endpoint was already holding.
+  for (const [label, q] of [['true', true], ['false', false], ['an array', [24]], ['an empty array', []], ['an object', {}], ['an empty string', '']]) {
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', quantity: q, unit_price: 10 }] },
+    })
+    chk(`v1 refuses a quantity given as ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_quantity')
+  }
+  for (const [label, v] of [['true', true], ['an array', [24]], ['an empty string', '']]) {
+    r = await req('POST', '/api/v1/estimates', {
+      ...asKey(),
+      body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', sizes: { M: v }, unit_price: 10 }] },
+    })
+    chk(`v1 refuses a size count given as ${label}`, `${r.status} ${r.text}`, '^400 .*invalid_quantity')
+  }
+  // A numeric string is still a number an integration may legitimately send — a form field, a CSV
+  // column. It must keep working, or this becomes a different kind of wrong.
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'API Buyer', email: 'api-buyer@e2e.test' }, items: [{ description: 'tees', quantity: '24', unit_price: 10 }] },
+  })
+  chk('…while a numeric string is still accepted', `${r.status} ${JSON.stringify(r.json?.items?.[0]?.sizes || {})}`, '^201 .*"M":24')
+
   // A null element is what a Zapier/Make line-item mapping emits for a blank row. Every other
   // malformed element already answered 400; only null reached `it.sizes` and threw a 500.
   for (const [label, item] of [['null', null], ['a bare string', 'tees'], ['a number', 123], ['an array', []]]) {

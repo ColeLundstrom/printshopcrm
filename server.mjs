@@ -4696,8 +4696,14 @@ app.post('/api/v1/estimates', wrap((req, res) => {
       sizes = {}
       for (const [k, v] of Object.entries(it.sizes)) {
         if (!SIZES.includes(k)) return res.status(400).json({ error: `${where}.sizes has unknown size "${k}" — allowed: ${SIZES.join(', ')}` })
+        // The same "reject, never coerce" rule unit_price gets below. Number(true) is 1 and
+        // Number([24]) is 24, and both pass Number.isInteger — so {"M":true} booked one piece and
+        // {"M":[24]} booked twenty-four, each with a 201 and no way for the caller to see it.
+        if (typeof v !== 'number' && !(typeof v === 'string' && v.trim() !== '')) {
+          return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
+        }
         const n = Number(v)
-        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0` })
+        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
         // Number.isInteger(1e300) is true. Uncapped, that reached the money arithmetic and came
         // back a stored subtotal of 1e302. The app's own screens clamp to MAX_PIECES; the public
         // API refuses instead, because an integration must never see a silently-changed quantity.
@@ -4707,7 +4713,14 @@ app.post('/api/v1/estimates', wrap((req, res) => {
       if (!Object.values(sizes).some((n) => n > 0)) return res.status(400).json({ error: `${where}.sizes must contain at least one quantity greater than zero` })
     } else {
       // `qty` is the canonical name in public/js/shared/pricing.js; `quantity` is its documented alias.
-      const q = Number(it.quantity ?? it.qty)
+      // Same rule as unit_price: a real number or a string that says one. Number(true) is 1 and
+      // Number([24]) is 24, so `quantity: true` used to book one piece and `quantity: [24]`
+      // twenty-four, both with a 201 — while `taxable: 1` one field over was already a 400.
+      const rawQ = it.quantity ?? it.qty
+      if (typeof rawQ !== 'number' && !(typeof rawQ === 'string' && rawQ.trim() !== '')) {
+        return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
+      }
+      const q = Number(rawQ)
       if (!Number.isFinite(q) || q <= 0) return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
       // Reject a fraction rather than rounding it. Math.round() was wrong in both directions:
       // 0.4 became 0 pieces and a $0 estimate, and 2.5 billed the caller for 3. Shirts do not
