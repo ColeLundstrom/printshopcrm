@@ -51,6 +51,8 @@ const SHORTCUTS = [
 ]
 
 const isTyping = (e) => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable
+/** True while a modal, the search palette, the help overlay or the mobile drawer is up. */
+const dialogOpen = () => !!($('#modal-root')?.firstElementChild || $('.kbd-help') || $('.cmd-bg') || $('#sidebar')?.classList.contains('open'))
 const path = () => location.hash.replace(/^#/, '').split('?')[0] || '/'
 
 let awaitingG = false
@@ -63,6 +65,16 @@ export function wireKeys() {
     // close and immediately reopen the palette on the same keystroke.
     if (e.metaKey || e.ctrlKey || e.altKey) return
     if (isTyping(e)) return
+
+    // The help overlay had no keyboard close at all: Escape did nothing and the only exits were
+    // clicking its × or its backdrop.
+    if (e.key === 'Escape') { $('.kbd-help')?.remove(); return }
+
+    // A dialog owns the keyboard while it is open. These are single, unmodified keys and
+    // isTyping() only covers a focused INPUT/TEXTAREA/SELECT — so with focus on the Delete button
+    // of a confirm dialog, `n` navigated the page out from under the dialog, `t` flipped the
+    // theme mid-form and `g` armed a jump the user never asked for.
+    if (dialogOpen()) return
 
     // `g` then a letter = go to a page.
     if (awaitingG) {

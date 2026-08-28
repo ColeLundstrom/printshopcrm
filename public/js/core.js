@@ -175,11 +175,61 @@ export function onOnce(root, sel, fn, evt = 'click') {
 
 /* ---------- toast ---------- */
 
+/**
+ * There is not one aria-live region, role="status" or role="alert" anywhere in public/. Every
+ * answer this app gives a non-visual user — "Matrix saved", "Estimate sent", "The server is
+ * restarting", and the message the unhandledrejection net puts on screen for all 24 write
+ * handlers — is a <div> that appears silently in a corner and removes itself 3.4 seconds later.
+ * A screen-reader user presses Email Invoice on a $4,200 invoice and is told nothing at all, in
+ * either direction, so the only safe thing to do is press it again.
+ *
+ * A live region is only announced if it was ALREADY in the document when its text changed:
+ * inserting a <div aria-live> that already contains its message is silent in NVDA and JAWS and
+ * unreliable in VoiceOver. So the regions are created empty at boot and the words are written
+ * INTO them. Two of them, because politeness cannot be flipped on a live element and reliably
+ * honoured — 'polite' waits for a pause, 'assertive' interrupts, which is what an error is for.
+ */
+let liveRegions = null
+function liveRegion(assertive) {
+  // A partial DOM (bin/gate.mjs stubs one; this module must import under plain Node) has no live
+  // region and does not need one — say nothing rather than throw.
+  if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') return null
+  if (!liveRegions) {
+    const make = (id, role, politeness) => {
+      const r = document.createElement('div')
+      if (!r || typeof r.setAttribute !== 'function') return null
+      r.setAttribute('id', id)
+      r.setAttribute('class', 'sr-only')
+      r.setAttribute('role', role)
+      r.setAttribute('aria-live', politeness)
+      r.setAttribute('aria-atomic', 'true')
+      document.body.appendChild(r)
+      return r
+    }
+    liveRegions = { polite: make('psc-live', 'status', 'polite'), assertive: make('psc-live-alert', 'alert', 'assertive') }
+  }
+  return assertive ? liveRegions.assertive : liveRegions.polite
+}
+
+/**
+ * Say something to a screen reader without putting it on screen. Exported so a view can announce
+ * a result that has no toast — a filtered count, a finished upload.
+ */
+export function announce(msg, assertive = false) {
+  const r = liveRegion(assertive)
+  if (!r) return
+  // The same sentence twice running is not re-announced unless the region is cleared first, and
+  // "Saved" twice in a row is exactly what this app says.
+  r.textContent = ''
+  setTimeout(() => { r.textContent = String(msg ?? '') }, 60)
+}
+
 let toastTimer
 export function toast(msg, isErr = false) {
   $('.toast')?.remove()
-  const t = el(`<div class="toast ${isErr ? 'err' : ''}">${esc(msg)}</div>`)
+  const t = el(`<div class="toast ${isErr ? 'err' : ''}" role="${isErr ? 'alert' : 'status'}">${esc(msg)}</div>`)
   document.body.appendChild(t)
+  announce(msg, isErr)
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => t.remove(), 3400)
 }
@@ -234,6 +284,8 @@ export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {
     <button class="toast-undo">${esc(label)}</button>
     <span class="toast-bar"><span class="toast-bar-fill"></span></span></div>`)
   document.body.appendChild(t)
+  // The undo window is six seconds of time-limited choice — the one message that must not be silent.
+  announce(`${msg}. Press ${label} to undo.`)
   requestAnimationFrame(() => { const f = $('.toast-bar-fill', t); if (f) { f.style.transition = `width ${delay}ms linear`; f.style.width = '0%' } })
   const settle = (fn) => { if (done) return; done = true; clearTimeout(timer); t.remove(); if (pendingUndoable === handle) pendingUndoable = null; try { fn?.() } catch (e) { console.error(e) } }
   const timer = setTimeout(() => settle(commit), delay)
@@ -246,8 +298,18 @@ export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {
 
 /* ---------- modal ---------- */
 
+// Where focus goes when the dialog closes. Without it, closeModal() blows the dialog away with
+// innerHTML = '' and focus falls to <body>: a keyboard user is dumped at the top of the document
+// and has to Tab back through the whole sidebar to get where they were, and a screen reader
+// announces nothing at all — the dialog simply stops existing mid-sentence.
+let modalReturnFocus = null
+
 export function modal({ title, body, footer = '', wide = false, onMount }) {
-  closeModal()
+  // Captured BEFORE closeModal(), so a dialog opened FROM a dialog still returns to the control
+  // that started the whole thing rather than to a node that is about to be detached.
+  const opener = document.activeElement
+  const outer = closeModal()
+  modalReturnFocus = (opener && opener !== document.body && document.contains(opener)) ? opener : outer
   const bg = el(`<div class="modal-bg">
     <div class="modal ${wide ? 'wide' : ''}">
       <div class="modal-h"><h3>${esc(title)}</h3><button class="x" data-close>&times;</button></div>
@@ -266,9 +328,19 @@ export function modal({ title, body, footer = '', wide = false, onMount }) {
 
 const escClose = (e) => { if (e.key === 'Escape') closeModal() }
 
+/** Closes the dialog and returns focus to whatever opened it. Returns that element, or null. */
 export function closeModal() {
-  $('#modal-root').innerHTML = ''
+  const root = $('#modal-root')
+  const wasOpen = !!(root && root.firstElementChild)
+  if (root) root.innerHTML = ''
   document.removeEventListener('keydown', escClose)
+  const back = modalReturnFocus
+  modalReturnFocus = null
+  if (wasOpen && back && typeof back.focus === 'function' && document.contains(back)) {
+    try { back.focus() } catch { /* detached mid-teardown — leave focus where it is */ }
+    return back
+  }
+  return null
 }
 
 export function confirmModal(title, msg, onYes, yesLabel = 'Delete') {
@@ -332,4 +404,131 @@ export function setPage(title, actions = '', crumb = '') {
   $('#page-title').textContent = title
   $('#crumb').innerHTML = crumb
   $('#page-actions').innerHTML = actions
+}
+
+/* ---------- keyboard parity for the rows and cards a view makes clickable ----------
+ *
+ * Twenty-four places in public/js/views render a row or a card whose only affordance is a mouse
+ * click — `<tr class="click" data-id>`, `.jcard`, `.convo-item`, `.autorow`, the setup chips.
+ * The handler is delegated through on()/onOnce(), so the markup carries no button, no href, no
+ * tabindex and no role: with a keyboard alone you cannot open an estimate, an invoice, a job, a
+ * customer, a conversation or an automation. That is not a rough edge, it is the product behind
+ * a mouse.
+ *
+ * Fixing twenty-four call sites would leave the twenty-fifth broken, so it is fixed once, here,
+ * as a property of the app. Nothing about the mouse path changes and no view changes.
+ *
+ * Three things this has to get right:
+ *  - A <tr> or <td> keeps its table semantics. role="button" on a row tells a screen reader it is
+ *    no longer a row, which costs more than it buys, so table elements get tabindex only.
+ *  - It must not hijack a control INSIDE the row. automations.js:62 puts a checkbox inside the
+ *    clickable row and followups.js puts a Nudge button in the last cell — Space and Enter there
+ *    belong to the checkbox and the button, not to the row around them.
+ *  - Rows arrive after this file runs; every render is an innerHTML. So it watches for them.
+ *
+ * The `typeof window` guard is load-bearing, not decoration: bin/gate.mjs imports this module
+ * under plain Node, where window and document do not exist, and an unguarded reference here
+ * throws ReferenceError at import time and takes twelve unrelated assertions down with it.
+ */
+/*
+ * .drop and .csv-drop are on the same list for the same reason. Every file the app accepts —
+ * artwork onto a job (board.js:350), the Autopilot logo, both CSV importers, the DTF trimmer,
+ * the gang-sheet builder — arrives through a <div> or a <label> with an onclick and a
+ * `hidden` file input behind it. A hidden input is not focusable and a div is not either, so
+ * attaching art to a job had NO keyboard path at all: not Tab, not Enter, not Space. Enter on
+ * the zone now clicks it, which is exactly what the mouse does, and the native picker opens.
+ */
+export const CLICKABLE_ROWS = '.click,.jcard[data-id],.convo-item[data-c],.autorow[data-edit],.setup-chip[data-setup],.card[data-job],.drop,.csv-drop'
+
+const KB_INNER = 'a[href],button,input,select,textarea,label,summary,[contenteditable="true"]'
+const KB_TABLE = /^(TR|TD|TH|THEAD|TBODY)$/
+const KB_NATIVE = /^(A|BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY)$/
+
+/** Put every clickable row in `root` into the tab order. Idempotent — a second pass adds nothing. */
+export function upgradeClickableRows(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return 0
+  const found = [...root.querySelectorAll(CLICKABLE_ROWS)]
+  if (typeof root.matches === 'function' && root.matches(CLICKABLE_ROWS)) found.unshift(root)
+  let n = 0
+  for (const node of found) {
+    if (KB_NATIVE.test(node.tagName)) continue        // already operable on its own
+    if (node.hasAttribute('tabindex')) continue       // already upgraded, or deliberately placed
+    node.setAttribute('tabindex', '0')
+    if (!KB_TABLE.test(node.tagName) && !node.hasAttribute('role')) node.setAttribute('role', 'button')
+    n++
+  }
+  return n
+}
+
+/* ---------- <label> ↔ control association ----------
+ * 170 of the 177 <label>s under public/ carry no for=, and most are written as the sibling pair
+ * `<label>Email</label><input class="input" name="email">` with nothing joining them. To a screen
+ * reader those inputs are unlabelled — the estimate form, the settings screen and every modal read
+ * out as "edit text, blank" — and clicking the label does not focus the field either.
+ *
+ * Rewriting the templates by hand is that many chances to typo an id, and the next one written
+ * ships unlabelled anyway. So the pairing is done once, at runtime, on the shape the markup
+ * already has. A label that WRAPS its control is left alone: that is already a valid association.
+ * A label with nothing to point at is left alone too, and the gate lists them as hand edits.
+ */
+let labelSeq = 0
+export function wireLabels(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return 0
+  const found = [...root.querySelectorAll('label:not([for])')]
+  if (typeof root.matches === 'function' && root.matches('label:not([for])')) found.unshift(root)
+  let n = 0
+  for (const lab of found) {
+    if (lab.hasAttribute('data-psc-lab')) continue
+    if (lab.querySelector('input,select,textarea')) { lab.setAttribute('data-psc-lab', 'wrap'); continue }
+    let c = lab.nextElementSibling
+    if (c && !/^(INPUT|SELECT|TEXTAREA)$/.test(c.tagName)) {
+      const inner = typeof c.querySelectorAll === 'function' ? [...c.querySelectorAll('input,select,textarea')] : []
+      c = inner.length === 1 ? inner[0] : null
+    }
+    // A hidden control is not in the accessibility tree, so pointing a label at it buys nothing
+    // and hides the fact that the visible trigger (the "Upload logo" button) is the real target.
+    if (!c || c.getAttribute('type') === 'hidden' || c.hasAttribute('hidden')) continue
+    if (!c.getAttribute('id')) c.setAttribute('id', `psc-f${++labelSeq}`)
+    lab.setAttribute('for', c.getAttribute('id'))
+    lab.setAttribute('data-psc-lab', '1')
+    n++
+  }
+  return n
+}
+
+/** One pass over whatever just rendered. Exported so a test can drive it without the observer. */
+export function a11yUpgrade(root) {
+  return { rows: upgradeClickableRows(root), labels: wireLabels(root) }
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.__pscA11y) {
+  window.__pscA11y = true
+
+  // Enter or Space on a clickable row dispatches the click its delegated handler already waits for.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return
+    if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+    const target = e.target
+    if (!target || typeof target.closest !== 'function') return
+    const row = target.closest(CLICKABLE_ROWS)
+    if (!row) return
+    const inner = target.closest(KB_INNER)
+    if (inner && inner !== row && row.contains(inner)) return   // the control owns its own keys
+    e.preventDefault()                                          // Space must not scroll the page
+    row.click()
+  })
+
+  const sweep = (n) => { if (n && n.nodeType === 1) { upgradeClickableRows(n); wireLabels(n) } }
+  const start = () => {
+    // Create the live regions at boot, empty. A region inserted with its message already inside
+    // is not announced — see liveRegion() above.
+    liveRegion(false); liveRegion(true)
+    sweep(document.body)
+    if (typeof MutationObserver === 'function' && document.documentElement) {
+      new MutationObserver((recs) => { for (const r of recs) for (const n of r.addedNodes) sweep(n) })
+        .observe(document.documentElement, { childList: true, subtree: true })
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start)
+  else start()
 }

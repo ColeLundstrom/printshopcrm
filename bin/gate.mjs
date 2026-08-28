@@ -4032,6 +4032,381 @@ await t('the receiving card offers it, and confirms first', async () => {
   assert.match(handler, /purchase-orders\/\$\{b\.dataset\.closepo\}\/close/, 'it must call the close route')
 })
 
+/* ==========================================================================================
+   ROUND 11 — frontend / accessibility.  Paste this block into bin/gate.mjs, at the end,
+   just before the final tally.  It uses only what the harness already uses: node:assert,
+   readFileSync, and small hand-rolled fakes — no packages, no build step.
+   ========================================================================================== */
+
+/* ---------- a row you can click, you can also reach with the keyboard (v11) ----------
+ * Twenty-four places in public/js/views render a row or a card whose only affordance is a mouse
+ * click: `<tr class="click" data-id>`, `.jcard`, `.convo-item`, `.autorow`, the setup chips. The
+ * handler is delegated through on()/onOnce(), so the markup carries no button, no href, no
+ * tabindex and no role. With a keyboard alone you could not open an estimate, an invoice, a job,
+ * a customer, a conversation or an automation — the product was behind a mouse.
+ *
+ * Twenty-four fixes would have left the twenty-fifth broken, so core.js upgrades them all as a
+ * property of the app, and this section holds it there: the real functions, driven against nodes
+ * small enough to hold in your head, plus a drift rule so a new clickable row cannot ship
+ * unreachable. */
+section('a row you can click, you can also reach with the keyboard')
+{
+  const hooks = {}
+  const prevWindow = globalThis.window, prevDocument = globalThis.document
+  // The minimum DOM core.js needs to install its keyboard path and nothing more.
+  globalThis.window = { addEventListener: (ev, fn) => { hooks[ev] = fn } }
+  globalThis.document = { addEventListener: (ev, fn) => { hooks[ev] = fn }, querySelector: () => null, readyState: 'complete', body: null }
+  const kb = await import('../public/js/core.js?kb=1')
+  globalThis.window = prevWindow
+  globalThis.document = prevDocument
+
+  // A row, a control inside it, and just enough shape for closest()/contains()/click().
+  const node = (tag, attrs = {}, parent = null) => {
+    const n = {
+      tagName: tag.toUpperCase(), attrs: { ...attrs }, parent, kids: [], clicks: 0,
+      hasAttribute: (k) => k in n.attrs,
+      getAttribute: (k) => (k in n.attrs ? n.attrs[k] : null),
+      setAttribute: (k, v) => { n.attrs[k] = String(v) },
+      matches: (sel) => sel.split(',').some((s) => {
+        const tg = (s.trim().match(/^[a-z]+/) || [])[0]
+        if (tg && tg.toUpperCase() !== n.tagName) return false
+        const cls = [...s.matchAll(/\.([\w-]+)/g)].map((m) => m[1])
+        const own = String(n.attrs.class || '').split(/\s+/)
+        if (!cls.every((c) => own.includes(c))) return false
+        return [...s.matchAll(/\[([\w-]+)(?:="[^"]*")?\]/g)].every((m) => m[1] in n.attrs)
+      }),
+      closest: (sel) => { let c = n; while (c) { if (c.matches(sel)) return c; c = c.parent } return null },
+      contains: (o) => { let c = o; while (c) { if (c === n) return true; c = c.parent } return false },
+      querySelectorAll: (sel) => { const out = []; const walk = (p) => { for (const k of p.kids) { if (k.matches(sel)) out.push(k); walk(k) } }; walk(n); return out },
+      click: () => { n.clicks++ },
+    }
+    if (parent) parent.kids.push(n)
+    return n
+  }
+
+  const view = node('main', { id: 'view' })
+  const row = node('tr', { class: 'click', 'data-id': '7' }, view)          // estimates/invoices/contacts
+  const nudge = node('button', { class: 'btn', 'data-nudge-est': '7' }, node('td', {}, row))
+  const card = node('div', { class: 'jcard', 'data-id': '11' }, view)       // board/orders/pipeline
+
+  await t('a clickable row starts out unreachable, and the upgrade puts it in the tab order', () => {
+    assert.equal(typeof kb.upgradeClickableRows, 'function', 'core.js must publish the upgrade')
+    assert.equal(row.hasAttribute('tabindex'), false, 'precondition: the row is not focusable')
+    assert.equal(kb.upgradeClickableRows(view), 2, 'both the row and the card should be upgraded')
+    assert.equal(row.getAttribute('tabindex'), '0')
+    assert.equal(card.getAttribute('tabindex'), '0')
+  })
+  await t('…a <tr> keeps its table semantics; a card is announced as a button', () => {
+    assert.equal(row.getAttribute('role'), null, 'role="button" on a row tells a screen reader it is no longer a row')
+    assert.equal(card.getAttribute('role'), 'button')
+  })
+  await t('…and a second pass over the same rows changes nothing', () => {
+    assert.equal(kb.upgradeClickableRows(view), 0, 'the upgrade has to be idempotent — every render re-runs it')
+  })
+  await t('Enter on the row dispatches the click its delegated handler is already waiting for', () => {
+    assert.equal(typeof hooks.keydown, 'function', 'core.js registered no keyboard path at all')
+    hooks.keydown({ key: 'Enter', target: row, preventDefault() {} })
+    assert.equal(row.clicks, 1)
+  })
+  await t('…Space does too, and it does not also scroll the page', () => {
+    let prevented = false
+    hooks.keydown({ key: ' ', target: card, preventDefault() { prevented = true } })
+    assert.equal(card.clicks, 1)
+    assert.ok(prevented, 'Space on a focused row scrolls unless the default is taken')
+  })
+  await t('…but a control INSIDE the row keeps its own keys', () => {
+    // automations.js puts a checkbox inside the clickable row; followups.js puts Nudge in the
+    // last cell. Enter there must nudge, not open the row underneath it.
+    hooks.keydown({ key: 'Enter', target: nudge, preventDefault() {} })
+    assert.equal(row.clicks, 1, 'the row fired again from a press that belonged to the button inside it')
+  })
+
+  await t('and no view renders a clickable row that this does not cover', async () => {
+    const { readFileSync, readdirSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const core = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+    const sel = core.match(/export const CLICKABLE_ROWS = '([^']+)'/)
+    assert.ok(sel, 'core.js must publish the set of rows it makes reachable')
+    const covered = (attrs) => sel[1].split(',').some((part) => {
+      const cls = (part.match(/^\.([\w-]+)/) || [])[1]
+      if (cls && !new RegExp(`class="[^"]*\\b${cls}\\b`).test(attrs)) return false
+      return [...part.matchAll(/\[([\w-]+)\]/g)].every((m) => new RegExp(`\\b${m[1]}=`).test(attrs))
+    })
+    const offenders = []
+    const dir = join(root, 'public/js/views')
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+      readFileSync(join(dir, f), 'utf8').split('\n').forEach((line, i) => {
+        for (const m of line.matchAll(/<(tr|td|div|span|li)\b([^>]*)>/g)) {
+          const attrs = m[2]
+          // "this whole element opens something": it carries a delegated-click marker and says so.
+          if (!/\bdata-(id|job|inv|go|sid|c|edit|setup)=/.test(attrs)) continue
+          if (!/cursor:\s*pointer|class="[^"]*\b(click|jcard|convo-item|autorow|setup-chip)\b/.test(attrs)) continue
+          if (!covered(attrs)) offenders.push(`${f}:${i + 1}`)
+        }
+      })
+    }
+    assert.deepEqual(offenders, [], `clickable with a mouse, unreachable with a keyboard: ${offenders.join(', ')}`)
+  })
+
+  await t('…and the upgrade stays behind the window guard, so this file still imports under Node', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+    assert.match(src, /if \(typeof window !== 'undefined' && typeof document !== 'undefined' && !window\.__pscA11y\)/,
+      'an unguarded window reference here throws at import time and takes a dozen unrelated assertions with it')
+  })
+}
+
+/* ---------- what the app says out loud, it also says to a screen reader (v11) ----------
+ * There was not one aria-live region, role="status" or role="alert" anywhere in public/. Every
+ * answer this app gives — "Matrix saved", "Estimate sent", and the message the unhandledrejection
+ * net puts on screen for all 24 write handlers — was a <div> that appeared silently in a corner
+ * and removed itself 3.4 seconds later. A screen-reader user pressed Email Invoice on a $4,200
+ * invoice and was told nothing in either direction, so the only thing left to do was press again.
+ *
+ * A live region is only announced if it was ALREADY in the document when its text changed, so the
+ * regions must exist, empty, before the first toast — which is what this checks. */
+section('what the app says out loud, it also says to a screen reader')
+{
+  const made = []
+  const mkEl = () => {
+    const n = { attrs: {}, textContent: '', content: null,
+      setAttribute: (k, v) => { n.attrs[k] = String(v) }, getAttribute: (k) => (k in n.attrs ? n.attrs[k] : null),
+      remove() {}, set innerHTML(h) { this.content = { firstElementChild: { html: h, remove() {} } } } }
+    made.push(n); return n
+  }
+  const stubDoc = () => ({ addEventListener: () => {}, querySelector: () => null, readyState: 'complete',
+    createElement: mkEl, body: { appendChild: () => {} } })
+  const prevWindow = globalThis.window, prevDocument = globalThis.document
+  globalThis.window = { addEventListener: () => {} }
+  globalThis.document = stubDoc()
+  const live = await import('../public/js/core.js?live2=1')
+  globalThis.window = prevWindow
+  globalThis.document = prevDocument
+
+  await t('a live region is on the page before there is anything to announce', () => {
+    const regions = made.filter((n) => n.attrs['aria-live'])
+    assert.equal(regions.length, 2, `found ${regions.length} live regions — a region created WITH its message already inside is not announced at all`)
+    assert.deepEqual(regions.map((r) => r.attrs['aria-live']).sort(), ['assertive', 'polite'],
+      'politeness cannot be flipped on a live element, so an error needs its own assertive region')
+    assert.deepEqual(regions.map((r) => r.attrs.role).sort(), ['alert', 'status'])
+    for (const r of regions) assert.equal(r.attrs.class, 'sr-only', 'the region must be off-screen, not display:none — that removes it from the accessibility tree')
+  })
+
+  await t('…and a toast writes its words into it', async () => {
+    globalThis.document = stubDoc()
+    try {
+      live.toast('Matrix saved')
+      await new Promise((r) => setTimeout(r, 120))
+      const polite = made.find((n) => n.attrs['aria-live'] === 'polite')
+      assert.equal(polite.textContent, 'Matrix saved', 'the toast was shown and never announced')
+    } finally { globalThis.document = prevDocument }
+  })
+
+  await t('…and an error interrupts rather than waiting for a pause', async () => {
+    globalThis.document = stubDoc()
+    try {
+      live.toast('The server is restarting — try that again in a moment.', true)
+      await new Promise((r) => setTimeout(r, 120))
+      const loud = made.find((n) => n.attrs['aria-live'] === 'assertive')
+      assert.match(loud.textContent, /server is restarting/)
+    } finally { globalThis.document = prevDocument }
+  })
+
+  await t('…and the stylesheet really has the class that keeps it in the accessibility tree', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const css = readFileSync(join(root, 'public/css/app.css'), 'utf8')
+    const rule = css.slice(css.indexOf('.sr-only'), css.indexOf('.sr-only') + 320)
+    assert.ok(css.includes('.sr-only'), 'the live region is rendered with no rule behind it, so it is visible in the corner of every page')
+    assert.doesNotMatch(rule, /display:\s*none|visibility:\s*hidden/,
+      'display:none and visibility:hidden both remove the node from the accessibility tree — the one thing a live region must never be')
+  })
+}
+
+/* ---------- every field the app asks for has a name a screen reader can read (v11) ----------
+ * 170 of the 177 <label>s under public/ carried no for=, and most are written as the sibling pair
+ * `<label>Email</label><input class="input" name="email">` with nothing joining them. To a screen
+ * reader those inputs are unlabelled — the estimate form, the settings screen and every modal read
+ * out as "edit text, blank" — and clicking the label did not focus the field either. */
+section('every field the app asks for has a name a screen reader can read')
+{
+  const prevWindow = globalThis.window, prevDocument = globalThis.document
+  globalThis.window = { addEventListener: () => {} }
+  globalThis.document = { addEventListener: () => {}, querySelector: () => null, readyState: 'complete', body: null }
+  const lab = await import('../public/js/core.js?lab=1')
+  globalThis.window = prevWindow
+  globalThis.document = prevDocument
+
+  const mk = (tag, attrs = {}) => {
+    const n = { tagName: tag.toUpperCase(), a: { ...attrs },
+      hasAttribute: (k) => k in n.a, getAttribute: (k) => (k in n.a ? n.a[k] : null),
+      setAttribute: (k, v) => { n.a[k] = String(v) },
+      querySelector: () => null, querySelectorAll: () => [] }
+    return n
+  }
+
+  await t('a label written as a sibling pair is joined to the control it names', () => {
+    assert.equal(typeof lab.wireLabels, 'function', 'core.js must publish the label pairing')
+    const input = mk('input', { class: 'input', name: 'email' })
+    const label = mk('label'); label.nextElementSibling = input
+    const root = mk('div')
+    root.matches = () => false
+    root.querySelectorAll = (sel) => (sel === 'label:not([for])' ? [label] : [])
+    assert.equal(lab.wireLabels(root), 1)
+    assert.ok(label.getAttribute('for'), 'the label still points at nothing')
+    assert.equal(label.getAttribute('for'), input.getAttribute('id'), 'the for= and the id have to agree')
+  })
+
+  await t('…a label that WRAPS its control is left alone, and a hidden one is not pointed at', () => {
+    const wrapping = mk('label'); wrapping.querySelector = () => mk('input')
+    const hiddenFile = mk('input', { type: 'file', hidden: '' })          // settings "Your logo"
+    const wrapper = mk('div', { class: 'logo-row' }); wrapper.querySelectorAll = () => [hiddenFile]
+    const orphan = mk('label'); orphan.nextElementSibling = wrapper
+    const root = mk('div')
+    root.matches = () => false
+    root.querySelectorAll = (sel) => (sel === 'label:not([for])' ? [wrapping, orphan] : [])
+    assert.equal(lab.wireLabels(root), 0)
+    assert.equal(wrapping.getAttribute('for'), null, 'wrapping is already a valid association — a second, weaker one is noise')
+    assert.equal(orphan.getAttribute('for'), null, 'a hidden control is not in the accessibility tree; the visible button is the real target')
+  })
+
+  await t('…and the labels that still need a hand edit are a known list that cannot grow', async () => {
+    const { readFileSync, readdirSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const files = readdirSync(join(root, 'public/js/views')).filter((n) => n.endsWith('.js')).map((n) => `public/js/views/${n}`)
+    const orphans = []
+    for (const f of files) {
+      const src = readFileSync(join(root, f), 'utf8')
+      for (const m of src.matchAll(/<label\b([^>]*)>([\s\S]*?)<\/label>/g)) {
+        if (/\bfor=/.test(m[1])) continue
+        if (/<(input|select|textarea)\b/.test(m[2])) continue                 // wraps its control
+        const after = src.slice(m.index + m[0].length, m.index + m[0].length + 260)
+        if (/^\s*(\$\{[\s\S]{0,120}?)?<\s*(input|select|textarea)\b/.test(after)) continue  // sibling pair
+        orphans.push(`${f.split('/').pop()}:${src.slice(0, m.index).split('\n').length}`)
+      }
+    }
+    // Every one of these is a <label> that names something which is not a form control — a button,
+    // a drop zone, a <code> block, a group of toggles. They need markup, not a runtime pairing.
+    assert.ok(orphans.length <= 11, `a new <label> was written with nothing to point at: ${orphans.join(', ')}`)
+  })
+}
+
+/* ---------- a dialog gives focus back, and owns the keyboard while it is open (v11) ----------
+ * closeModal() emptied #modal-root with innerHTML = '' and put focus nowhere, so it fell to
+ * <body>: a keyboard user was dumped at the top of the document after every confirm, every
+ * payment dialog and every import, and had to Tab back through the whole sidebar.
+ *
+ * And keys.js armed single, unmodified keys on window with only an isTyping() guard, which covers
+ * a focused INPUT/TEXTAREA/SELECT and nothing else. With focus on the Delete button of a confirm
+ * dialog, `n` navigated the page out from under the dialog and `t` flipped the theme mid-form. */
+section('a dialog gives focus back, and owns the keyboard while it is open')
+await t('closeModal hands focus back rather than dropping it on <body>', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+  const close = src.slice(src.indexOf('export function closeModal'), src.indexOf('export function confirmModal'))
+  assert.match(close, /\.focus\(\)/, 'closeModal empties #modal-root and never puts focus anywhere')
+  assert.match(close, /document\.contains\(/, '…and it has to check the element is still on the page before focusing it')
+  const open = src.slice(src.indexOf('export function modal({'), src.indexOf('const escClose'))
+  assert.match(open, /document\.activeElement/, 'modal() has to remember what opened it, before it opens')
+})
+await t('a single-key shortcut is disarmed while a dialog is open', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/keys.js'), 'utf8')
+  assert.match(src, /const dialogOpen = \(\) =>/, 'keys.js has no notion of a dialog being on screen')
+  assert.match(src, /modal-root/, '…and it has to look at the modal root, which is where every dialog lives')
+  const body = src.slice(src.indexOf('export function wireKeys'), src.indexOf('export function helpOverlay'))
+  assert.match(body, /if \(dialogOpen\(\)\) return/, 'the shortcut switch still runs with a dialog on screen')
+  assert.ok(body.indexOf('dialogOpen()') < body.indexOf("case 'n'"), 'the guard has to come before the shortcuts, not after')
+  assert.match(body, /kbd-help'\)\?\.remove\(\)/, 'the help overlay had no keyboard close at all — Escape did nothing')
+})
+
+/* ---------- every file this app accepts can be chosen without a mouse (v11) ----------
+ * All eleven file inputs in public/js are `hidden` (or display:none), behind a <div class="drop">
+ * or a <label class="csv-drop"> with an onclick. A hidden input is not focusable and neither is a
+ * div, so attaching artwork to a job — board.js:350, the only art-upload path on the job screen —
+ * had no keyboard route at all: not Tab, not Enter, not Space, and drag-and-drop is a mouse
+ * gesture by definition. Same for the Autopilot logo, both CSV importers, the DTF trimmer and the
+ * gang-sheet builder. */
+section('every file this app accepts can be chosen without a mouse')
+await t('the drop zones are on the list of things the keyboard can operate', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const core = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+  const sel = core.match(/export const CLICKABLE_ROWS = '([^']+)'/)
+  assert.ok(sel, 'core.js must publish the set it makes reachable')
+  for (const cls of ['.drop', '.csv-drop']) {
+    assert.ok(sel[1].split(',').includes(cls),
+      `${cls} is a file picker you can only reach with a mouse — Enter on it has to open the chooser`)
+  }
+})
+await t('…and no file input is left as the only route to itself', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = join(root, 'public/js/views')
+  const offenders = []
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    const src = readFileSync(join(dir, f), 'utf8')
+    src.split('\n').forEach((line, i) => {
+      for (const m of line.matchAll(/<input[^>]*type="file"[^>]*>/g)) {
+        if (!/\bhidden\b|display:\s*none/.test(m[0])) return          // visible and focusable already
+        // A hidden input needs a visible, keyboard-operable trigger: a <button>, or a zone that
+        // core.js upgrades (.drop / .csv-drop), or a <label> the input sits inside.
+        const around = src.slice(Math.max(0, src.indexOf(m[0]) - 400), src.indexOf(m[0]) + 400)
+        if (/class="(btn|drop|csv-drop)|class="[^"]*\b(drop|csv-drop)\b|<button/.test(around)) return
+        offenders.push(`${f}:${i + 1}`)
+      }
+    })
+  }
+  assert.deepEqual(offenders, [], `a hidden file input with no keyboard-operable trigger: ${offenders.join(', ')}`)
+})
+
+/* ---------- the licence offer is legible (v11) ----------
+ * AGPL §13 makes the source offer an obligation, and the gate already checks that it is rendered.
+ * It was rendered at 10px with opacity:.75 over --txt-3, which measures 3.74:1 against the sidebar
+ * in dark and 3.34:1 in light — under the 4.5:1 WCAG AA minimum for text. A link nobody can read
+ * is not an offer. The colour token by itself is 5.6:1; the fade was the whole problem. */
+section('the AGPL source offer is legible')
+await t('the source link is not faded below the readable minimum', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const css = readFileSync(join(root, 'public/css/app.css'), 'utf8')
+  const rule = css.slice(css.indexOf('.source-link {'), css.indexOf('.source-link:hover'))
+  assert.ok(rule, '.source-link has no rule at all')
+  assert.doesNotMatch(rule, /opacity:\s*\.?[0-8]/, 'fading the licence offer puts it under 4.5:1 — the obligation is to offer it, legibly')
+
+  // And measure it, rather than trusting the absence of one property.
+  const tok = (name, from) => (css.slice(css.indexOf(from)).match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, 'i')) || [])[1]
+  const srgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+  const lum = (h) => { const [r, g, b] = srgb(h).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05) }
+  for (const [theme, anchor] of [['dark', '--bg:'], ['light', '--bg: #f5f7fa']]) {
+    const fg = tok('--txt-3', anchor), bg = tok('--panel', anchor)
+    assert.ok(fg && bg, `could not read the ${theme} tokens`)
+    assert.ok(ratio(fg, bg) >= 4.5, `${theme}: the sidebar's small text measures ${ratio(fg, bg).toFixed(2)}:1, under the 4.5:1 minimum`)
+  }
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
