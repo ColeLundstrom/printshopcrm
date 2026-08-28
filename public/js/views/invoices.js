@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, daysOut } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 
 let filter = 'all'
@@ -31,13 +31,16 @@ export async function invoicesView() {
           <td class="num" data-label="Due" style="font-size:12px"><span class="${late ? '' : 'dim'}" style="${late ? 'color:var(--red);font-weight:600' : ''}">${fmtDate(i.due_date)}</span></td>
         </tr>`
       }).join('')}</tbody></table>` : empty('▣', 'No invoices', 'Approve an estimate and convert it to create one.', '<a class="btn" href="#/estimates">Go to estimates</a>')
-    on($('#list'), '[data-id]', (_e, t) => go(`/invoices/${t.dataset.id}`))
   }
 
   $('#view').innerHTML = `<div class="searchbar">
       <div class="tabs" id="tabs">${['all', 'unpaid', 'overdue', 'partial', 'paid', 'void'].map((s) => `<button data-s="${s}" class="${filter === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
       <div class="sp"></div><div id="sum" style="align-self:center"></div>
     </div><div class="card" id="list"></div>`
+  // #list is created ONCE per visit and only its innerHTML is repainted, so this binding used to
+  // sit inside render() and stacked one more listener on every tab switch: by the sixth tab a
+  // single click on a row ran go() six times. onOnce is keyed on (root, event, selector).
+  onOnce($('#list'), '[data-id]', (_e, t) => go(`/invoices/${t.dataset.id}`))
   on($('#tabs'), '[data-s]', (_e, t) => {
     filter = t.dataset.s
     $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.s === filter))

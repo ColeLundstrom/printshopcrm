@@ -4407,6 +4407,40 @@ await t('the source link is not faded below the readable minimum', async () => {
   }
 })
 
+/* ---------- a listener bound during a render, on a root that survives it (v11) ----------
+ * The fourth and fifth instances of the bug 84ee9ad was supposed to have closed. The existing gate
+ * rule looks for a delegated binding on #view; these two slipped past it, one because the root was
+ * #list and one because it used addEventListener directly.
+ *   Invoices — #list is created once per visit and only repainted, so the binding stacked on every
+ *              tab switch: by the sixth tab one click on a row ran go() six times.
+ *   Dashboard— a raw addEventListener on #view, the most-visited screen in the app: the fourth
+ *              visit fired go() four times per click. */
+section('nothing binds a listener during a render onto a root that outlives it')
+await t('Invoices binds its row handler once per visit, not once per tab', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/invoices.js'), 'utf8')
+  const render = src.slice(src.indexOf('const render = async () =>'), src.indexOf("$('#view').innerHTML"))
+  assert.doesNotMatch(render, /\bon\(\s*\$\('#list'\)/, '#list survives the render — every tab switch stacked another listener')
+  assert.match(src, /onOnce\(\$\('#list'\)/, 'the binding has to be made once, outside render()')
+})
+await t('…and no view attaches a raw listener to #view either', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = join(root, 'public/js/views')
+  const offenders = []
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    readFileSync(join(dir, f), 'utf8').split('\n').forEach((line, i) => {
+      if (/\$\('#view'\)\.addEventListener\(/.test(line)) offenders.push(`${f}:${i + 1}`)
+    })
+  }
+  assert.deepEqual(offenders, [], `#view is repainted and never replaced — a raw listener on it stacks per visit: ${offenders.join(', ')}`)
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

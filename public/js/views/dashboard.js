@@ -1,4 +1,4 @@
-import { api, $, el, esc, money0, money, fmtDate, relTime, pill, setPage, empty, dueClass, dueLabel, go, skeleton } from '../core.js'
+import { api, $, el, esc, money0, money, fmtDate, relTime, pill, setPage, empty, dueClass, dueLabel, go, onOnce, skeleton } from '../core.js'
 
 const ICON = { estimate: '▤', invoice: '▣', payment: '⊕', job: '▦', stage: '→', art: '◈', contact: '◉', note: '✎' }
 
@@ -101,7 +101,11 @@ export async function dashboardView() {
       </div>
     </div>`
 
-  $('#view').addEventListener('click', (e) => {
+  // #view is repainted, never replaced. A raw addEventListener on it stacked one more copy on
+  // every visit to the dashboard — the most-visited screen in the app — so the fourth visit ran
+  // go() four times per click. The existing gate rule looks for a delegated binding on #view, so
+  // a raw addEventListener slipped past it. onOnce is keyed on (root, event, selector).
+  onOnce($('#view'), '[data-job],[data-inv],[data-setup],#setup-dismiss', (e) => {
     const j = e.target.closest('[data-job]')
     if (j) return go(`/jobs/${j.dataset.job}`)
     const i = e.target.closest('[data-inv]')
