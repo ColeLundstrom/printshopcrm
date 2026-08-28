@@ -4441,6 +4441,27 @@ await t('…and no view attaches a raw listener to #view either', async () => {
   assert.deepEqual(offenders, [], `#view is repainted and never replaced — a raw listener on it stacks per visit: ${offenders.join(', ')}`)
 })
 
+/* ---------- the price-matrix editor keeps the prices you typed (v11) ----------
+ * The editor tracked `dirty`, printed " · unsaved" from it, and then never acted on it. Back went
+ * straight to the list and every price typed since the last Save was gone — no prompt, no undo, on
+ * the one screen in the app where a shop types for ten minutes before saving once. */
+section('the price-matrix editor keeps the prices you typed')
+await t('Back out of an unsaved grid asks first', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/matrices.js'), 'utf8')
+  assert.match(src, /let dirty = false/, 'precondition: the editor still tracks unsaved state')
+  assert.doesNotMatch(src, /\$\('#mx-back'\)\.onclick = \(\) => go\('\/matrices'\)/,
+    'Back discards every price typed since the last Save, silently')
+  const leave = src.slice(src.indexOf('const leaveEditor'), src.indexOf('const leaveEditor') + 460)
+  assert.match(leave, /if \(!dirty\)/, 'the flag the screen already keeps has to actually be read')
+  assert.match(leave, /confirmModal/, 'and an unsaved grid has to be confirmed, not thrown away')
+  assert.match(src, /beforeunload/, 'a reload or a closed tab must not eat them either')
+  assert.match(src, /getElementById\('mx-table'\)/, "…and that prompt must not follow the user onto screens that aren't the grid")
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

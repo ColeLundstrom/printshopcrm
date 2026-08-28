@@ -287,7 +287,17 @@ function wireEditor() {
   $('#mx-unit').onchange = markDirty
 
   $('#mx-save').onclick = save
-  $('#mx-back').onclick = () => go('/matrices')
+
+  // `dirty` was tracked, displayed (" · unsaved") and then never acted on. Back went straight to
+  // the list and every price typed since the last Save was gone — no prompt, no undo, and this
+  // grid is the one screen where a shop types for ten minutes before saving once.
+  const leaveEditor = (to) => {
+    if (!dirty) return go(to)
+    confirmModal('Leave without saving?',
+      'The prices you typed are only in this browser. Leaving now discards them.',
+      () => { dirty = false; go(to) }, 'Discard changes')
+  }
+  $('#mx-back').onclick = () => leaveEditor('/matrices')
   $('#mx-dup').onclick = async () => {
     const { matrix } = await api.post(`/api/matrices/${m.id}/duplicate`)
     toast(`Copied to “${matrix.name}”`); go(`/matrices/${matrix.id}`)
@@ -308,6 +318,17 @@ function wireEditor() {
 }
 
 function markDirty() { dirty = true; countCells() }
+
+// The same promise for the paths the app does not control: tab close, reload, the browser's own
+// Back button. Bound once, and it only speaks while the grid is actually on screen.
+if (typeof window !== 'undefined' && !window.__pscMxGuard) {
+  window.__pscMxGuard = true
+  window.addEventListener('beforeunload', (e) => {
+    if (!dirty || !document.getElementById('mx-table')) return
+    e.preventDefault()
+    e.returnValue = ''
+  })
+}
 
 async function importSheet(bodyFn) {
   const note = $('#mx-note')
