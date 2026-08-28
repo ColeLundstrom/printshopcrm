@@ -84,7 +84,7 @@ const shopDb = (slug, fn) => {
 const server = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
   cwd: ROOT,
   env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
-  stdio: ['ignore', 'pipe', 'pipe'],
+  stdio: ['ignore', 'pipe', 'pipe'], detached: true,
 })
 let serverLog = ''
 server.stdout.on('data', (d) => { serverLog += d })
@@ -92,6 +92,17 @@ server.stderr.on('data', (d) => { serverLog += d })
 
 /**
  * Every server this run starts, so cleanup can kill all of them.
+ *
+ * Each one is spawned `detached`, in its OWN process group. Without that they inherit the group of
+ * the shell running the suite, and back-to-back `npm test && npm run test:e2e` — the ten-times-in-a-
+ * row protocol this gate exists for — failed about one run in six: the freshly booted server took a
+ * SIGTERM within a second of printing its banner, from the previous run's teardown reaching a group
+ * the next run had already joined. It showed up as "harness error: fetch failed" or a cascade of
+ * connection-refused assertions, which reads exactly like a product regression and is not one. It
+ * did not reproduce with a gap between runs, or when the suite was run directly rather than through
+ * npm. Two servers can never both hold the port (checked), so the port was never the cause.
+ *
+ * The children spawn no children of their own, so killing the leader by pid is still enough.
  *
  * A run that dies without cleaning up leaves a server holding the port, and the NEXT run then
  * fails with "An account with that email already exists" and a cascade of 401s — which reads as a
@@ -1169,7 +1180,7 @@ try {
       cwd: ROOT,
       // Deliberately the port the harness server already holds.
       env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'rogue.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     let rogueLog = ''
     rogue.stdout.on('data', (d) => { rogueLog += d })
@@ -2803,7 +2814,7 @@ try {
     const bound = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
       env: { ...process.env, PORT: String(P4), PSC_HOST: '127.0.0.1', PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P4}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     started.push(bound)
     let boundLog = ''
@@ -2850,7 +2861,7 @@ try {
     const boot = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
       env: { ...process.env, PORT: String(P2), PSC_DB: join(T2, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P2}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     const hit = async (p) => {
       try { const res = await fetch(`http://127.0.0.1:${P2}${p}`); return { status: res.status, text: await res.text() } }
@@ -3032,7 +3043,7 @@ try {
     const s3 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
       env: { ...process.env, PORT: String(P3), PSC_DB: join(T3, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P3}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     started.push(s3)
     try {
