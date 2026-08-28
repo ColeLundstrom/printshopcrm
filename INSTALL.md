@@ -17,7 +17,7 @@ Don't want to run a server at all? See [HOSTING.md](HOSTING.md).
 
 | | |
 |---|---|
-| **Node.js** | **22.0 or newer.** Non-negotiable — the app uses the built-in `node:sqlite` module. |
+| **Node.js** | **22.13.0 or newer.** Non-negotiable — the app uses the built-in `node:sqlite` module, which is flagged off before 22.13. |
 | OS | Linux, macOS, or Windows — all three are covered by CI. Production instructions below assume Ubuntu/Debian. |
 | Database | None to install. SQLite is inside Node. |
 | RAM | 512 MB is plenty. The live reference install idles around 80 MB. |
@@ -29,7 +29,7 @@ Check your version:
 node --version
 ```
 
-If that prints anything below `v22`, install Node 22 first — see
+If that prints anything below `v22.13.0`, install Node 22 first — see
 [Installing Node 22](#installing-node-22) below.
 
 ---
@@ -68,7 +68,7 @@ systemd keeping it alive.
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
-node --version      # expect v22.x or newer
+node --version      # expect v22.13.0 or newer
 ```
 
 ### 2. Get the code
@@ -358,7 +358,8 @@ Not an error. Node says this when there's no `.env` file, which is normal for a 
 app runs on its defaults. It goes away once you create one (`cp .env.example .env`).
 
 **`SyntaxError` or "node:sqlite not found" on start**
-Node is older than 22. Check `node --version`. If you installed 22 but systemd runs an old one,
+Node is older than 22.13.0 — `node:sqlite` is flagged off before that, so 22.4 and 22.12 fail here
+too, not just Node 20. Check `node --version`. If you installed 22.13 but systemd runs an old one,
 put the absolute path in the unit's `ExecStart` (`which node`).
 
 **"SQLite is an experimental feature" warning**

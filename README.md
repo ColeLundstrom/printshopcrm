@@ -11,7 +11,7 @@ file you can copy.
 [![Docker image](https://img.shields.io/badge/ghcr.io-printshopcrm-2496ed?logo=docker&logoColor=white)](https://github.com/ColeLundstrom/printshopcrm/pkgs/container/printshopcrm)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Website](https://img.shields.io/badge/website-printshopcrm.com-0B5FBF.svg)](https://printshopcrm.com/open-source/)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org)
 
 ```bash
 git clone https://github.com/ColeLundstrom/printshopcrm.git
@@ -27,11 +27,11 @@ no build pipeline, nothing to compile.
 Prefer containers?
 
 ```bash
-docker run -p 3333:3333 -e PSC_SECRET=$(openssl rand -hex 32) \
+docker run -p 3333:3333 -e PSC_AUTH=1 -e PSC_SECRET=$(openssl rand -hex 32) \
   -v printshopcrm-data:/data ghcr.io/colelundstrom/printshopcrm:latest
 ```
 
-Runs on **Linux, macOS, and Windows** (Node 22+), and on x86 or ARM in Docker. Deploying to a
+Runs on **Linux, macOS, and Windows** (Node 22.13+), and on x86 or ARM in Docker. Deploying to a
 server? See **[deploy/DEPLOY.md](deploy/DEPLOY.md)** for Docker Compose, Fly.io, Render, or a plain
 VPS.
 
@@ -209,7 +209,7 @@ git clone https://github.com/ColeLundstrom/printshopcrm.git /opt/printshopcrm
 cd /opt/printshopcrm
 npm ci --omit=dev
 cp .env.example .env        # then edit it — PSC_SECRET is required
-node --no-warnings server.mjs
+npm start                   # reads .env; `node server.mjs` does NOT
 ```
 
 Put nginx in front of it, point a domain at the box, run certbot, and install the systemd unit from

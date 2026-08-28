@@ -34,7 +34,7 @@
     "test:all": "npm test && npm run test:e2e"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "express": "^5.2.1",

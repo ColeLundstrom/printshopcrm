@@ -6172,6 +6172,23 @@ server.listen(PORT, () => {
     console.warn(`     Set it to this install's real address:  PSC_PUBLIC_URL=https://shop.example.com\n`)
   }
 
+  // The fatal check above only fires when PSC_AUTH is set — and the commonest way to get here
+  // wrongly is that NOTHING in the environment was read. `node server.mjs` does not load .env
+  // (only the npm scripts pass --env-file-if-exists), so a self-hoster who wrote a .env and
+  // started the app that way got: no login, the database inside the app directory, and this
+  // in-repo secret — which is published on GitHub, so every estimate, pay, proof and work-ticket
+  // link is forgeable by anyone who can count. Say both things out loud, every boot.
+  if (SECRET === 'preview-secret-change-in-prod') {
+    console.warn('  ⚠ PSC_SECRET is the built-in development value, which is public in the source.')
+    console.warn('     Every customer link this install signs can be forged. Set PSC_SECRET before anyone real uses it.')
+    if (!AUTH_ENABLED) console.warn('     (If you meant to load a .env, start with `npm start` — `node server.mjs` does not read it.)')
+    console.warn('')
+  }
+  if (!AUTH_ENABLED) {
+    console.warn('  ⚠ PSC_AUTH is not set, so there is NO LOGIN — anyone who can reach this port has full access,')
+    console.warn('     including the whole API. That is fine on a private machine and nowhere else. Set PSC_AUTH=1.\n')
+  }
+
   // Touch every shop's database once, now. A migration that throws on one shop's real data is
   // discovered HERE — at deploy time, where /health reports it and ship.sh can roll back —
   // instead of on that shop's first request tomorrow morning, invisibly. These are the same

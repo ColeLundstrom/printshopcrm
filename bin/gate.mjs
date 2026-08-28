@@ -1236,6 +1236,87 @@ await t('parse() hands back the fallback for a NULL column', async () => {
  * The recovery tool was the thing that broke.
  *
  * Driven, not read: a second process really holds the write lock while the module writes. */
+/* Docs that describe software which does not exist are the failure this campaign is for. These
+ * three were all reproduced against real builds:
+ *  - README told self-hosters to `node --no-warnings server.mjs` after writing a .env. That does
+ *    not read .env, so PORT, PSC_DB, PSC_AUTH and PSC_SECRET were all ignored: no login, the
+ *    database inside the app directory, and the in-repo secret — which is published, so every
+ *    customer link was forgeable. The fatal guard could not fire because it keys on PSC_AUTH,
+ *    itself unread.
+ *  - The front-page `docker run` was the only deploy artefact in the repo omitting PSC_AUTH=1;
+ *    compose, fly.toml, render.yaml and DEPLOY.md all set it. Anonymous GET
+ *    /api/export/all.json returned the whole shop.
+ *  - Node 22.4 and 22.12 both die with ERR_UNKNOWN_BUILTIN_MODULE on node:sqlite. The floor is
+ *    22.13.0, and the docs said 22.0 — sending a 22.12 user to a troubleshooting entry that told
+ *    them to check they had 22. */
+section('the install instructions produce the install they describe')
+await t('every documented way to start the app reads the .env it tells you to write', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const doc of ['README.md', 'INSTALL.md', 'HOSTING.md']) {
+    const src = readFileSync(join(root, doc), 'utf8')
+    for (const line of src.split('\n')) {
+      if (!/^\s*(sudo -u \S+ )?node .*\bserver\.mjs\b/.test(line)) continue
+      assert.match(line, /--env-file/, `${doc} tells the reader to start the app in a way that ignores .env: ${line.trim()}`)
+    }
+  }
+})
+await t('every documented docker run publishes a port with authentication turned on', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const doc of ['README.md', 'INSTALL.md', 'HOSTING.md', 'deploy/DEPLOY.md']) {
+    const src = readFileSync(join(root, doc), 'utf8')
+    // Fenced blocks, joined across backslash continuations, so a multi-line docker run reads as one.
+    for (const block of src.split('```').filter((_, i) => i % 2 === 1)) {
+      const joined = block.replace(/\\\s*\n\s*/g, ' ')
+      for (const line of joined.split('\n')) {
+        if (!/\bdocker run\b/.test(line) || !/\s-p\s/.test(line)) continue
+        assert.match(line, /PSC_AUTH=1/, `${doc} publishes a port with no login: ${line.trim().slice(0, 120)}`)
+      }
+    }
+  }
+})
+await t('the Node version the docs demand is the one the app actually needs', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // node:sqlite is behind a flag until 22.13.0, and every npm script uses --env-file-if-exists,
+  // which does not exist before 22.9. Both are hard walls, not warnings.
+  const NODE_FLOOR = '22.13.0'
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  assert.equal(pkg.engines?.node, `>=${NODE_FLOOR}`, 'package.json engines must state the real floor')
+  const install = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+  assert.match(install, new RegExp(`\\*\\*${NODE_FLOOR.replace(/\./g, '\\.')} or newer`),
+    'INSTALL.md prerequisites must state the real floor')
+  assert.ok(!/\*\*22\.0 or newer/.test(install), 'INSTALL.md still claims 22.0')
+})
+await t('the documented invoice statuses are the ones the API can return', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // The values EFFECTIVE_STATUS_SQL can produce. An integration polling only the three that used
+  // to be documented sees none of the shop's overdue money.
+  const { EFFECTIVE_STATUS_SQL } = await import('../lib/db.mjs')
+  const produced = [...String(EFFECTIVE_STATUS_SQL).matchAll(/THEN\s+'(\w+)'|ELSE\s+'(\w+)'/g)]
+    .map((m) => m[1] || m[2])
+  assert.ok(produced.includes('overdue') && produced.includes('void'), 'sanity: the SQL still produces these')
+  const api = readFileSync(join(root, 'docs/API.md'), 'utf8')
+  // The ?status= row IS the contract — an integration reads that line and polls those values.
+  // It listed unpaid|partial|paid, so an invoice with money outstanding and a date in the past
+  // appeared under none of them.
+  const row = api.split('\n').find((l) => /GET \/api\/v1\/invoices`\s*\|\s*List/.test(l))
+  assert.ok(row, 'docs/API.md should still document the invoice list endpoint')
+  for (const v of new Set(produced)) {
+    assert.ok(row.includes(v), `docs/API.md's ?status= filter omits "${v}", which the API returns and filters on`)
+  }
+})
+
 section('the control database waits for a lock instead of failing the login')
 await t('a contended write on control.db waits, and then succeeds', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs')

@@ -155,7 +155,7 @@ Stages, in order: `new`, `art_approval`, `prepress`, `production`, `qc`, `shippi
 
 | | |
 |---|---|
-| `GET /api/v1/invoices` | List. `?status=unpaid\|partial\|paid`. |
+| `GET /api/v1/invoices` | List. `?status=unpaid\|partial\|paid\|overdue\|void`. |
 | `GET /api/v1/invoices/:id` | One invoice. |
 | `GET /api/v1/payments` | Payments across invoices. `?invoice_id=` narrows it. |
 
@@ -165,8 +165,21 @@ Stages, in order: `new`, `art_approval`, `prepress`, `production`, `qc`, `shippi
   "due_date": "2026-09-14", "paid_at": null, "created_at": "2026-08-23 16:42:05" }
 ```
 
-Invoice `status` is always derived from recorded payments — you cannot set it directly, and it will
-correct itself if a payment is removed.
+Invoice `status` is derived — you cannot set it directly, and it corrects itself if a payment is
+removed. It is a function of the recorded payments **and the calendar**, and it has five values:
+
+| | |
+|---|---|
+| `unpaid` | Nothing recorded against it yet. |
+| `partial` | Part paid, and not yet past `due_date`. |
+| `overdue` | Unpaid or part paid, and past `due_date`. Outranks `partial`. |
+| `paid` | Settled. Outranks everything. |
+| `void` | Cancelled. Not a demand for money, whatever its dates say. |
+
+**`overdue` is the one that catches integrations out.** An invoice with money outstanding reports
+`overdue` the day after `due_date`, so it appears under *none* of `unpaid`, `partial` or `paid` —
+poll those three and you will not see the shop's late money. To sweep everything owed, ask for
+`unpaid`, `partial` and `overdue`, or list without a `?status=` and filter on `balance > 0`.
 
 ---
 
