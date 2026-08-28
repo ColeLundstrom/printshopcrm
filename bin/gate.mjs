@@ -755,6 +755,34 @@ await t('an invoice that passes its due date reads as overdue with no write in b
   assert.deepEqual(filtered, dashboard, 'the Overdue filter and the dashboard must return the same invoices')
 })
 
+/* The server learned this in d6897b2 — a voided invoice is not money owed, and every balance
+ * query got the filter. The Invoices LIST computes its own header total in the browser, and that
+ * one sum was missed: `rows.filter((r) => r.status !== 'paid')`. Observed live: the list header
+ * read $14,154.10 over a dashboard reading $11,568.10, the difference being exactly one voided
+ * invoice, while the void dialog's own copy promises "it stops counting toward money owed". The
+ * Void tab totalled "$2,586 outstanding" above a list containing nothing but voided invoices.
+ * Executed, not read: the predicate is lifted out of the shipped file and run. */
+section('a voided invoice is not money owed on the screen either')
+await t('the invoice list total excludes void as well as paid', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/invoices.js'), 'utf8')
+  const m = src.match(/const owes = (\(r\) => [^\n]+)/)
+  assert.ok(m, 'the invoice list should name its "still owes money" predicate as `owes`')
+  const owes = eval(m[1]) // eslint-disable-line no-eval -- the shipped expression, run as written
+  assert.equal(owes({ status: 'unpaid' }), true, 'an unpaid invoice is owed')
+  assert.equal(owes({ status: 'partial' }), true, 'a part-paid invoice is owed')
+  assert.equal(owes({ status: 'overdue' }), true, 'an overdue invoice is owed')
+  assert.equal(owes({ status: 'paid' }), false, 'a paid invoice is not owed')
+  assert.equal(owes({ status: 'void' }), false, 'a CANCELLED invoice is not owed')
+  // …and the header total and the per-row balance must use the same rule, or the rows sum to
+  // something other than the total printed above them.
+  assert.match(src, /rows\.filter\(owes\)/, 'the header total must use that predicate')
+  assert.match(src, /const late = owes\(i\)/, 'and so must the per-row "late" flag')
+})
+
 section('webhooks: delivery history has a retention policy')
 await t('old terminal deliveries are pruned, in-flight retries and recent ones survive', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs')

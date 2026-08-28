@@ -7,13 +7,20 @@ export async function invoicesView() {
   setPage('Invoices')
   const render = async () => {
     const rows = await api.get(`/api/invoices?status=${filter}`)
-    const totalOpen = rows.filter((r) => r.status !== 'paid').reduce((s, r) => s + r.amount_due - r.amount_paid, 0)
+    // A voided invoice is a cancelled demand, not money owed — and the void dialog's own copy
+    // promises "it stops counting toward money owed". Every balance query on the server was
+    // taught that; this one client-side sum was missed, so the list header read $14,154.10 over
+    // a dashboard reading $11,568.10 — the difference being exactly one voided invoice — and the
+    // Void tab cheerfully totalled "$2,586 outstanding" above a list of nothing but voids.
+    const owes = (r) => r.status !== 'paid' && r.status !== 'void'
+    const totalOpen = rows.filter(owes).reduce((s, r) => s + r.amount_due - r.amount_paid, 0)
     $('#sum').innerHTML = rows.length ? `<span class="dim">${rows.length} invoice${rows.length > 1 ? 's' : ''} · <strong style="color:var(--amber)">${money0(totalOpen)}</strong> outstanding</span>` : ''
     $('#list').innerHTML = rows.length ? `<table class="tbl stack">
       <thead><tr><th>Invoice</th><th>Customer</th><th>Status</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th class="num">Due</th></tr></thead>
       <tbody>${rows.map((i) => {
-        const bal = i.amount_due - i.amount_paid
-        const late = i.status !== 'paid' && daysOut(i.due_date) < 0
+        // Same rule per row: a cancelled invoice is not owing and cannot be late.
+        const bal = i.status === 'void' ? 0 : i.amount_due - i.amount_paid
+        const late = owes(i) && daysOut(i.due_date) < 0
         return `<tr class="click" data-id="${i.id}">
           <td class="mono" data-label="Invoice" style="color:var(--txt)">${esc(i.invoice_number)}</td>
           <td data-label="Customer"><div style="font-weight:600">${esc(i.contact_name || '—')}</div><div class="dim" style="font-size:12px">${esc(i.company || '')}</div></td>
