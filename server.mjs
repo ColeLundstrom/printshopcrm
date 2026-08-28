@@ -8,7 +8,7 @@ import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, SECRET_KEYS,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, canWrite, SECRET_KEYS,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -712,13 +712,13 @@ app.use(litePlanGate)
  * database: a locked, missing or closed handle is exactly the failure a restart needs to catch.
  */
 app.get('/health', (_req, res) => {
-  try {
-    get('SELECT 1')
-    res.json({ ok: true })
-  } catch (e) {
-    console.error('health:', e && e.message)
-    res.status(503).json({ ok: false, error: 'database unavailable' })
-  }
+  // A WRITE probe, not `SELECT 1`. On a full disk reads keep working while every write fails, so
+  // the old read-only check answered {"ok":true} 200 while the shop could not save anything —
+  // and this is the signal deploy/ship.sh polls to decide whether to roll back a release.
+  const w = canWrite()
+  if (w.ok) return res.json({ ok: true })
+  console.error('health:', w.detail)
+  res.status(503).json({ ok: false, error: w.error })
 })
 
 /**

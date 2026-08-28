@@ -2141,6 +2141,69 @@ section('the daily retention sweep actually runs daily')
   })
 }
 
+section('/health reports a database that cannot be written to')
+// /health answered with `get('SELECT 1')` — a READ. On a full disk reads keep working perfectly
+// while every write fails: measured on a full volume, 25/25 writes returned 500 while /health
+// answered {"ok":true} 200 the whole time. That is the signal deploy/ship.sh polls to decide
+// whether to roll a release back, and the signal any uptime monitor watches, so the one failure
+// that stops a shop saving anything was also the one failure nothing reported.
+//
+// `PRAGMA query_only` makes writes fail the way a full or read-only volume does, without needing
+// one.
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+
+  await t('a healthy database passes the probe', () => {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    assert.equal(dbm.canWrite(db).ok, true)
+  })
+
+  await t('a database that cannot be written to FAILS the probe', () => {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    assert.equal(db.prepare('SELECT 1 AS n').get().n, 1, 'precondition: reads work')
+    db.exec('PRAGMA query_only = 1')
+    assert.equal(db.prepare('SELECT 1 AS n').get().n, 1, 'reads STILL work — this is the trap')
+    const w = dbm.canWrite(db)
+    assert.equal(w.ok, false, 'the probe must notice that writes are refused')
+    assert.match(w.error, /read-only|unavailable|disk full/)
+  })
+
+  await t('…and the probe leaves nothing behind', () => {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const before = db.prepare('SELECT COUNT(*) AS n FROM settings').get().n
+    for (let i = 0; i < 5; i++) assert.equal(dbm.canWrite(db).ok, true)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM settings').get().n, before,
+      'the health probe must not accumulate rows')
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM settings WHERE key='__health'").get().n, 0)
+  })
+
+  await t('a failed probe can be retried — it does not leave a transaction open', () => {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    db.exec('PRAGMA query_only = 1')
+    assert.equal(dbm.canWrite(db).ok, false)
+    db.exec('PRAGMA query_only = 0')
+    assert.equal(dbm.canWrite(db).ok, true, 'health must recover once the disk does')
+  })
+
+  await t('/health no longer settles for a read', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+    const i = src.indexOf("app.get('/health'")
+    assert.ok(i > 0)
+    const route = src.slice(i, src.indexOf('\n})', i))
+    assert.match(route, /canWrite\(\)/, '/health must probe a write')
+    assert.ok(!/get\('SELECT 1'\)/.test(route), 'a read cannot detect a full disk')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
