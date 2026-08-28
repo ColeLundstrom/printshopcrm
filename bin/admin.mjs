@@ -106,7 +106,9 @@ switch (cmd) {
     ok(`    ${password}`)
     ok('')
     ok(args[1] ? 'Sign in with the password you supplied.' : 'Copy it now — it is not stored anywhere in readable form.')
-    ok('Existing sessions are unaffected; sign in and change it from Settings if you like.')
+    // setMemberPassword deletes every session for this member — deliberately, so a compromised
+    // one dies with the password. This line used to claim the opposite.
+    ok('Every existing session for this account has been signed out.')
     console.log()
     break
   }

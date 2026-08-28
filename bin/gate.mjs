@@ -1228,6 +1228,75 @@ await t('parse() hands back the fallback for a NULL column', async () => {
   assert.equal(parse('{"a":1}', []).a, 1)
 })
 
+/* control.db holds every shop, member and session, so EVERY authenticated request reads it — and
+ * it was the one handle in the product with no busy_timeout, while lib/db.mjs gives one to every
+ * tenant handle. Without it SQLite does not wait for a contended write, it fails instantly: a
+ * live login answered 500 while another process held a lock, and bin/admin.mjs — the documented
+ * and only way out of a lockout — died with a raw ERR_SQLITE_ERROR stack trace and no advice.
+ * The recovery tool was the thing that broke.
+ *
+ * Driven, not read: a second process really holds the write lock while the module writes. */
+section('the control database waits for a lock instead of failing the login')
+await t('a contended write on control.db waits, and then succeeds', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { spawn } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-ctl-'))
+  const path = join(dir, 'control.db')
+  const prevCtl = process.env.PSC_CONTROL_DB
+  const prevAuth = process.env.PSC_AUTH
+  process.env.PSC_CONTROL_DB = path
+  process.env.PSC_AUTH = '1'
+  try {
+    const T = await import(`../lib/tenants.mjs?ctl=${Date.now()}`)
+    // A second PROCESS takes the write lock and holds it for 400ms, the way bin/admin.mjs or an
+    // operator's sqlite3 session does.
+    const holder = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite'
+      const d = new DatabaseSync(${JSON.stringify(path)})
+      d.exec('BEGIN IMMEDIATE')
+      console.log('LOCKED')
+      setTimeout(() => { try { d.exec('ROLLBACK') } catch {} d.close(); process.exit(0) }, 400)
+    `], { stdio: ['ignore', 'pipe', 'inherit'] })
+    await new Promise((resolve, reject) => {
+      let seen = ''
+      holder.stdout.on('data', (d) => { seen += d; if (seen.includes('LOCKED')) resolve() })
+      holder.on('exit', () => reject(new Error('the lock holder exited before taking the lock')))
+      setTimeout(() => reject(new Error('the lock holder never reported taking the lock')), 10000)
+    })
+    const started = Date.now()
+    // A plain write through the module. Without busy_timeout this throws "database is locked".
+    T.deleteSession('a-token-that-does-not-exist')
+    const ms = Date.now() - started
+    assert.ok(ms >= 200, `the write returned in ${ms}ms — it did not wait for the lock at all`)
+    await new Promise((r) => holder.on('exit', r))
+  } finally {
+    if (prevCtl === undefined) delete process.env.PSC_CONTROL_DB; else process.env.PSC_CONTROL_DB = prevCtl
+    if (prevAuth === undefined) delete process.env.PSC_AUTH; else process.env.PSC_AUTH = prevAuth
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+})
+
+await t('the recovery tool loads the .env the server uses, and does not lie about sessions', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // Every script that opens the database must load .env, or the documented lockout recovery
+  // reports "No shops yet" on a correctly-installed server — which reads as data loss, not as a
+  // path problem, at exactly the moment the owner cannot get in any other way.
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  for (const [name, cmd] of Object.entries(pkg.scripts || {})) {
+    if (!/\b(server|seed|bin\/admin)\.mjs/.test(cmd)) continue
+    assert.match(cmd, /--env-file-if-exists=\.env/, `npm run ${name} opens the database without loading .env`)
+  }
+  // setMemberPassword deletes every session for the member. The tool used to promise otherwise.
+  const admin = readFileSync(join(root, 'bin/admin.mjs'), 'utf8')
+  assert.ok(!/Existing sessions are unaffected/.test(admin),
+    'admin.mjs claims sessions survive a password reset; setMemberPassword deletes them')
+})
+
 section('contact lookup is indexed, not a full scan')
 // The CSV order import matches every row on lower(email)/lower(name), inside one synchronous
 // transaction. Without an index each match is a full table scan, so a few thousand rows meant
