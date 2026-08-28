@@ -2904,6 +2904,38 @@ app.post('/api/art/:id/send', wrap((req, res) => {
   res.json({ ok: true, share_url: shareUrl('art', a.id), art: get('SELECT * FROM art_versions WHERE id = ?', a.id) })
 }))
 
+/**
+ * Take a proof back off a job — including the link the customer was already emailed.
+ *
+ * DELETE /api/mockups/:id is gated on `a.estimate_id`, and job art is written with job_id set and
+ * estimate_id NULL, so it could never match: the one art-delete route in the product structurally
+ * excluded the majority of art rows. Nothing else deleted an art_version except the cascade inside
+ * DELETE /api/jobs/:id, so the only way to un-send the wrong customer's artwork was to delete the
+ * whole job. Meanwhile /p/art/:id kept rendering it and /uploads/<file> kept serving it.
+ *
+ * Deleting the row is what revokes the link — /p/art/:id 404s once the row is gone — and the local
+ * file goes with it, so neither the proof page nor the raw upload survives. Art already pushed to
+ * the shop's own Google Drive stays in their Drive; that is their storage, and the response says so
+ * rather than pretending we cleaned it up.
+ *
+ * An APPROVED version is the record of what the customer signed off, so it is not something to
+ * click past by accident — but refusing it outright would leave the real emergency (someone else's
+ * artwork, approved, on the wrong job) with no way out at all, which is the failure this route
+ * exists to prevent. So it deletes, and the approval survives where an audit trail belongs: in the
+ * activity log, which names the version, who approved it and when.
+ */
+app.delete('/api/jobs/:jobId/art/:id', requireRole('manager'), wrap((req, res) => {
+  const a = get('SELECT * FROM art_versions WHERE id = ? AND job_id = ?', +req.params.id, +req.params.jobId)
+  if (!a) return res.status(404).json({ error: 'Art version not found', code: 'not_found' })
+  const j = get('SELECT * FROM jobs WHERE id = ?', a.job_id)
+  run('DELETE FROM art_versions WHERE id = ?', a.id)
+  if (a.filename) { try { unlinkSync(join(UPLOADS, a.filename)) } catch { /* Drive-stored, or already gone */ } }
+  logActivity('art', a.status === 'approved'
+    ? `Proof v${a.version} DELETED — it had been approved by ${a.decided_by || 'the customer'}${a.decided_at ? ` on ${String(a.decided_at).slice(0, 10)}` : ''}`
+    : `Proof v${a.version} deleted (${a.status})`, { contact_id: j?.contact_id, job_id: a.job_id })
+  res.json({ ok: true, deleted: a.id, link_revoked: true, drive_copy_left: !!a.drive_file_id })
+}))
+
 /** Internal decision endpoint; the customer-facing one is POST /p/art/:id/decide. */
 app.post('/api/art/:id/decide', wrap((req, res) => {
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)

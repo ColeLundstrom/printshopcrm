@@ -357,6 +357,7 @@ export async function jobDetailView(id) {
                   ${a.status === 'draft' ? `<button class="btn sm" data-send="${a.id}">Send for approval</button>` : ''}
                   ${a.status === 'sent' ? `<a class="btn ghost sm" href="${esc(a.share_url)}" target="_blank">Proof link</a>` : ''}
                   <a class="btn ghost sm" href="/uploads/${esc(a.filename)}" target="_blank">Open</a>
+                  <button class="btn ghost sm" data-delart="${a.id}" data-v="${a.version}" data-st="${a.status}">Delete</button>
                 </div>
               </div></div>`).join('')}</div>` : ''}
         </div>
@@ -478,6 +479,22 @@ export async function jobDetailView(id) {
       toast('Proof emailed to customer')
       jobDetailView(id)
     } catch (e) { toast(e.message, true); t.disabled = false }
+  })
+  // Taking a proof back off the job. Until this existed there was no way to remove artwork
+  // uploaded to the wrong job — the proof page and the raw file both kept serving it to anyone
+  // holding the emailed link, and the only route that deleted art refused job art by construction.
+  on($('#art-list'), '[data-delart]', (_e, t) => {
+    const approved = t.dataset.st === 'approved'
+    confirmModal(`Delete proof v${t.dataset.v}?`, approved
+      ? 'This version was APPROVED by the customer. Deleting it revokes the link they were sent and removes the file; the approval stays in the job\'s activity log.'
+      : 'The link the customer was sent stops working and the file is removed. This cannot be undone.',
+      async () => {
+        try {
+          await api.del(`/api/jobs/${id}/art/${t.dataset.delart}`)
+          toast('Proof deleted — the customer\'s link no longer works')
+          jobDetailView(id)
+        } catch (e) { toast(e.message, true) }
+      })
   })
   $('#del').onclick = () => confirmModal('Delete job?', `${j.job_number} and its art versions will be removed.`, async () => {
     await api.del(`/api/jobs/${id}`)

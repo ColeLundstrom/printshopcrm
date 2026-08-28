@@ -1812,6 +1812,58 @@ try {
     chk('…and it still carries the approved art it is talking about', String(pkg.approved_art?.version ?? ''), '^1$')
   }
 
+  /* ---------- the wrong customer's artwork can be taken back off a job ----------
+   * DELETE /api/mockups/:id is gated on `a.estimate_id`, and job art is written with job_id set
+   * and estimate_id NULL — so the one art-delete route in the product could never match job art,
+   * which is most art rows. Nothing else deleted an art_version except the cascade inside DELETE
+   * /api/jobs/:id. A shop that uploaded customer A's proof onto customer B's job and emailed the
+   * link had exactly two options: delete the whole job, or leave it. Verified before the fix that
+   * /p/art/:id kept rendering it and /uploads/<file> kept serving it after every delete attempt
+   * a shop or an integrator could reach for. */
+  {
+    const ac = (await req('POST', '/api/contacts', { body: { name: 'Proof Recall Co', email: 'recall@e2e.test' } })).json
+    const aj = (await req('POST', '/api/jobs', { body: { contact_id: ac.id, title: 'Recall Job', decoration: 'Screen Print' } })).json
+
+    const af = new FormData()
+    af.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'wrong-customer.svg')
+    const aup = await fetch(`${BASE}/api/jobs/${aj.id}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: af })
+    const art = await aup.json().catch(() => ({}))
+    chk('art uploads onto a job', String(aup.status), '^200$')
+    chk('…with no estimate_id, which is what the old delete route required', String(art.estimate_id ?? 'null'), '^null$')
+
+    const sent = await req('POST', `/api/art/${art.id}/send`)
+    const link = String(sent.json?.share_url || '')
+    chk('…and the proof link goes to the customer', String(link.startsWith('/p/art/')), '^true$')
+    chk('…which serves the artwork', String((await fetch(`${BASE}${link}`)).status), '^200$')
+
+    // The route that could never see it. Still 404s, deliberately: it is an edition-gated mockup
+    // route and job art must not start sitting behind that gate.
+    chk('the mockup delete route still does not claim job art', String((await req('DELETE', `/api/mockups/${art.id}`)).status), '^404$')
+
+    const del = await req('DELETE', `/api/jobs/${aj.id}/art/${art.id}`)
+    chk('a proof on a job can be deleted', String(del.status), '^200$')
+    chk('…and the app says the customer\'s link is dead', String(del.json?.link_revoked), '^true$')
+    // 403 "Link expired" — checkToken can no longer match a row that is gone. That is the same
+    // door the customer hits on any revoked link, which is the right thing for them to see.
+    chk('…and it really is', String((await fetch(`${BASE}${link}`)).status), '^40[34]$')
+    // The raw upload path falls through to the SPA shell, so a missing file answers 200 with HTML.
+    // Assert on what came back, not on the status: the artwork itself must not be servable.
+    const rawAfter = await fetch(`${BASE}/uploads/${art.filename}`)
+    chk('…and the raw file is gone too, not just unlinked from the page',
+      String(!/svg/i.test(rawAfter.headers.get('content-type') || '')), '^true$')
+    chk('…and the job no longer lists it', String(((await req('GET', `/api/jobs/${aj.id}`)).json?.art || []).length), '^0$')
+
+    // Art belonging to a DIFFERENT job is not deletable through this job's URL.
+    const oj = (await req('POST', '/api/jobs', { body: { contact_id: ac.id, title: 'Other Job' } })).json
+    const of2 = new FormData()
+    of2.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'other.svg')
+    const oup = await fetch(`${BASE}/api/jobs/${oj.id}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: of2 })
+    const oart = await oup.json().catch(() => ({}))
+    chk('…and one job cannot delete another job\'s art',
+      String((await req('DELETE', `/api/jobs/${aj.id}/art/${oart.id}`)).status), '^404$')
+    chk('…leaving that one where it was', String(((await req('GET', `/api/jobs/${oj.id}`)).json?.art || []).length), '^1$')
+  }
+
   /* ---------- an ordinary quantity bump does not collapse a two-garment job ----------
    * The 409 that refuses a flat grid over two garments read jobs.line_sizes RAW. That column
    * arrived by migration, so it is '[]' on every job written before it, and on those the
