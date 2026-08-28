@@ -731,6 +731,9 @@ try {
    * memory and pretty-print it into a second copy — ~34 MB of heap for one export on a box with a
    * 40 MB budget for all 14 shops, i.e. an OOM exactly when a shop needed to leave. It now streams
    * row by row; here we just prove the streamed bytes are still valid, complete JSON. */
+  // A live webhook has to exist before the export runs, or the redaction assertions below pass
+  // vacuously on an empty table.
+  await req('POST', '/api/developers/webhooks', { body: { url: 'https://example.com/hook-export-redaction', events: ['invoice.paid'] } })
   r = await req('GET', '/api/export/all.json')
   chk('the full export returns 200', String(r.status), '^200$')
   {
@@ -753,6 +756,22 @@ try {
       chk(`…and never exports ${secret}`, String(got.includes(secret)), '^false$')
     }
     chk('…and says which tables it left out, and why', String(!!parsed?.excluded?.sessions), '^true$')
+    /* A credential COLUMN inside a table that is otherwise the shop's own data. EXPORT_SKIP is a
+     * whole-table deny-list and could not express this: the shop wants its webhook endpoints and
+     * event selections back, but `secret` is the live HMAC signing key. listWebhooks() has always
+     * omitted it; the export shipped it in plaintext, in the same file whose own code comment says
+     * it gets emailed around and dropped in Drive — and the settings table two branches away was
+     * already redacted for exactly that reason. Holding one export let anyone forge a signed
+     * invoice.paid into whatever the shop had wired up. */
+    {
+      const hooks = parsed?.tables?.webhook_subscriptions || []
+      chk('…the export still returns the shop\'s webhooks', String(hooks.length > 0), '^true$')
+      chk('…with the endpoint they need to rebuild', String(hooks.every((h) => 'url' in h)), '^true$')
+      chk('…and no live signing secret in any of them', String(hooks.some((h) => h.secret)), '^false$')
+      chk('…flagged, so a re-import knows to re-issue rather than trust it', String(hooks.every((h) => h.redacted === true)), '^true$')
+      chk('…and named in the header beside the excluded tables', String(!!parsed?.redacted?.webhook_subscriptions), '^true$')
+      chk('…and the whole file carries no whsec_ anywhere', String(/whsec_/.test(r.text)), '^false$')
+    }
     // A truncated export must never look like a finished one.
     chk('…and marks itself complete', String(parsed?.complete), '^true$')
     // The settings table carries the shop's price book AND every integration credential.

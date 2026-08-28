@@ -5258,6 +5258,19 @@ const EXPORT_SKIP = new Map([
   ['garments', 'cached supplier catalogue — refetched from the supplier, not yours'],
 ])
 
+/**
+ * Credential COLUMNS inside tables that are otherwise the shop's own data.
+ *
+ * EXPORT_SKIP is a whole-TABLE deny-list and had no way to say this. webhook_subscriptions is
+ * shop data — the shop wants its endpoints and event selections back — but `secret` is the live
+ * HMAC signing key, and listWebhooks() is careful never to return it. The export was not: an
+ * export file gets emailed around and dropped in Drive, which is the reason the settings branch
+ * below redacts, and holding one let anyone forge a signed invoice.paid into whatever the shop
+ * had wired up. The row still exports, with the secret blanked and flagged, so re-importing tells
+ * the shop what it has to re-issue rather than silently handing back a key that will not verify.
+ */
+const EXPORT_REDACT = new Map([['webhook_subscriptions', ['secret']]])
+
 /** Every table this shop's database actually has, minus credentials and refetchable cache. */
 const exportTableNames = () => all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
   .map((r) => r.name).filter((n) => !EXPORT_SKIP.has(n))
@@ -5267,7 +5280,10 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
   const write = async (chunk) => { if (!res.write(chunk)) await drainOnce(res) }
 
   const skipped = Object.fromEntries([...EXPORT_SKIP].map(([k, why]) => [k, why]))
-  await write(`{\n  "exported_at": ${JSON.stringify(now())},\n  "shop": ${JSON.stringify(getSettings().shop_name)},\n  "excluded": ${JSON.stringify(skipped)},\n  "tables": {\n`)
+  // Named, not silent: a shop reading this file must be able to see that a column was held back,
+  // the same way it can see which tables were.
+  const redacted = Object.fromEntries([...EXPORT_REDACT].map(([t, cols]) => [t, `${cols.join(', ')} — live credential, re-issue rather than restore`]))
+  await write(`{\n  "exported_at": ${JSON.stringify(now())},\n  "shop": ${JSON.stringify(getSettings().shop_name)},\n  "excluded": ${JSON.stringify(skipped)},\n  "redacted": ${JSON.stringify(redacted)},\n  "tables": {\n`)
 
   // The export used to name seven tables from a hand-kept list while README, docs/API.md and the
   // Settings card all promised "every table" / "the whole database" / "Everything is yours,
@@ -5307,7 +5323,11 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
           await emit(SECRET_KEYS.includes(row.key) ? { key: row.key, value: '', redacted: true } : row)
         }
       } else {
-        for (const row of iterate(STREAM_TABLES[name] || `SELECT * FROM "${name}"`)) await emit(row)
+        const redact = EXPORT_REDACT.get(name)
+        for (const row of iterate(STREAM_TABLES[name] || `SELECT * FROM "${name}"`)) {
+          if (redact) { for (const col of redact) if (col in row) row[col] = ''; row.redacted = true }
+          await emit(row)
+        }
       }
       await write(`${first ? '' : '\n    '}]`)
       openArray = false
