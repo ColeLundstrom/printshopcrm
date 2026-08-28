@@ -1269,6 +1269,58 @@ try {
     chk('deleting a service removes its price matrix too', String(!!book.matrices?.['Screen Print']), '^false$')
   }
 
+  /* ---------- /health answers for the databases that actually hold shops ----------
+   * canWrite() with no tenant context probes the DEFAULT database — which in multi-tenant mode
+   * holds no shop at all, and is perfectly writable. So a release whose migration threw on ONE
+   * shop's real data left that shop 100% down (login succeeded, then every screen answered
+   * "Something went wrong on our end." forever) while /health answered {"ok":true} throughout.
+   * deploy/ship.sh polls exactly this endpoint as its only automatic rollback gate: the deploy
+   * was declared successful with the shops dark, and every uptime monitor stayed green too.
+   *
+   * The brick below is the ordinary upgrade case, not a contrivance: a shop that imported order
+   * history before applyMigrations grew its partial UNIQUE index on estimates.source_ref.
+   * Its own server, so the main run is untouched. */
+  {
+    const T2 = mkdtempSync(join(tmpdir(), 'psc-e2e-health-'))
+    const P2 = PORT + 7
+    const boot = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P2), PSC_DB: join(T2, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P2}` },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    const hit = async (p) => {
+      try { const res = await fetch(`http://127.0.0.1:${P2}${p}`); return { status: res.status, text: await res.text() } }
+      catch { return { status: 0, text: '' } }
+    }
+    const up = async (want) => { for (let i = 0; i < 120; i++) { const h = await hit('/health'); if (h.status === want) return h; await sleep(500) } return await hit('/health') }
+    let s2p = boot()
+    try {
+      await up(200)
+      let res = await fetch(`http://127.0.0.1:${P2}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Alpha Ink', owner_name: 'A', owner_email: 'a@health.test', password: 'GatePass-123456' }),
+      })
+      chk('a second shop signs up on its own instance', String(res.status), '^200$')
+
+      s2p.kill(); await sleep(700)
+      // Brick it exactly as a real data-dependent migration does.
+      const d = new DatabaseSync(join(T2, 'tenants', 'alpha-ink', 'printshop.db'))
+      d.exec('PRAGMA busy_timeout = 5000')
+      d.exec('DROP INDEX IF EXISTS idx_est_source_ref')
+      d.prepare("INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, source_ref) VALUES (NULL,'EST-9001','draft','[]',0,0,0,'LEGACY-77')").run()
+      d.prepare("INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, source_ref) VALUES (NULL,'EST-9002','draft','[]',0,0,0,'LEGACY-77')").run()
+      d.close()
+
+      s2p = boot()
+      const h = await up(503)
+      chk('a shop whose database will not open makes /health fail', String(h.status), '^503$')
+      chk('…and /health names the shop, so a human knows which one', h.text, 'alpha-ink')
+    } finally {
+      try { s2p.kill() } catch { /* already gone */ }
+      try { rmSync(T2, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

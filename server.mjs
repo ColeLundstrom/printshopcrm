@@ -22,7 +22,7 @@ import {
   listTenantsAdmin, setTenantStatus, deleteTenantFully,
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
-  getTenantByApiKey, rotateApiKey, revokeApiKey,
+  getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants,
 } from './lib/tenants.mjs'
 import {
   PLANS, createSubscriptionCheckout, createBillingPortal, verifyWebhook, webhookSecret,
@@ -716,9 +716,21 @@ app.get('/health', (_req, res) => {
   // the old read-only check answered {"ok":true} 200 while the shop could not save anything —
   // and this is the signal deploy/ship.sh polls to decide whether to roll back a release.
   const w = canWrite()
-  if (w.ok) return res.json({ ok: true })
-  console.error('health:', w.detail)
-  res.status(503).json({ ok: false, error: w.error })
+  if (!w.ok) {
+    console.error('health:', w.detail)
+    return res.status(503).json({ ok: false, error: w.error })
+  }
+  // ...and canWrite() with no tenant context probes the DEFAULT database, which in multi-tenant
+  // mode holds no shop at all. A release whose migration threw on one shop's real data left that
+  // shop 100% down — login succeeded, then every screen answered "Something went wrong on our
+  // end." forever — while this endpoint answered {"ok":true} throughout, and ship.sh polls
+  // exactly this to decide whether to roll back. The deploy was declared successful with the
+  // shops dark. Answer for the databases that actually hold shops.
+  const broken = AUTH_ENABLED ? [...brokenTenants.keys()] : []
+  if (broken.length) {
+    return res.status(503).json({ ok: false, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20) })
+  }
+  res.json({ ok: true })
 })
 
 /**
@@ -6120,6 +6132,22 @@ server.listen(PORT, () => {
   if (AUTH_ENABLED && !String(process.env.PSC_PUBLIC_URL || '').trim()) {
     console.warn('  ⚠ PSC_PUBLIC_URL is not set, so emailed links are built from the request Host header.')
     console.warn(`     Set it to this install's real address:  PSC_PUBLIC_URL=https://shop.example.com\n`)
+  }
+
+  // Touch every shop's database once, now. A migration that throws on one shop's real data is
+  // discovered HERE — at deploy time, where /health reports it and ship.sh can roll back —
+  // instead of on that shop's first request tomorrow morning, invisibly. These are the same
+  // handles the automation tick opens moments later, so it costs nothing extra. It must never be
+  // fatal: one bad shop cannot be allowed to stop the process serving all the others.
+  if (AUTH_ENABLED) {
+    for (const slug of activeTenantSlugs()) {
+      try { openTenantDb(slug) } catch (e) {
+        console.error(`  ⚠ shop database unavailable: ${slug} — ${(e && e.message) || e}`)
+      }
+    }
+    if (brokenTenants.size) {
+      console.error(`  ⚠ ${brokenTenants.size} shop(s) cannot open their database. /health is reporting 503 until they can.\n`)
+    }
   }
 
   // Time-based automations. Printavo sells these as a top-tier feature; here it's a loop.
