@@ -4897,6 +4897,17 @@ section('a backup can actually be put back')
     assert.match(cmd, /tenants\/\*\/printshop\.db-wal/, 'and every tenant database too')
   })
 
+  await t('every OS the docs say CI covers has a CI job', async () => {
+    const { readFileSync } = await import('node:fs')
+    const ci = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
+    const runners = ci.match(/runs-on:\s*(\S+)/g).join(' ')
+    // README.md:319 and INSTALL.md:21 both claim all three are exercised by CI on every push.
+    // macOS was not, and README.md:274 said so itself two paragraphs earlier.
+    for (const [os, runner] of [['Linux', /ubuntu/], ['macOS', /macos/], ['Windows', /windows/]]) {
+      assert.match(runners, runner, `the docs claim CI covers ${os} — so there has to be a job for it`)
+    }
+  })
+
   await t('the documented size list is the size list the API enforces', async () => {
     const { readFileSync } = await import('node:fs')
     const { SIZES } = await import('../public/js/shared/pricing.js')

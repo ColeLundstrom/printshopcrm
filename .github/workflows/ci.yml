@@ -40,6 +40,26 @@ jobs:
           curl -sf -o /dev/null -w 'GET / → %{http_code}\n' http://localhost:3999/
           curl -sf -o /dev/null -w 'GET /api/dashboard → %{http_code}\n' http://localhost:3999/api/dashboard
 
+  # macOS is the platform most shop owners evaluate the app on before they put it on a server, and
+  # README.md and INSTALL.md both said all three OSes were "covered by CI" while this job did not
+  # exist. Same suites as Linux and Windows — they are pure Node, so there is nothing to install.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: node bin/gate.mjs
+
+      - name: End-to-end tests
+        run: node bin/gate-e2e.mjs
+
   # Windows is a supported platform for running the app, so it gets tested like one. The e2e suite
   # is pure Node specifically so it can run here — it used to be bash + curl + python3.
   windows:
