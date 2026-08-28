@@ -51,7 +51,7 @@ import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId
 import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
-import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor } from './lib/pricebook.mjs'
+import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor, bandFor } from './lib/pricebook.mjs'
 import * as matrices from './lib/matrices.mjs'
 import { runNurtureDrip } from './lib/nurture.mjs'
 import { initRealtime, closeRealtime, broadcast, roomSize } from './lib/realtime.mjs'
@@ -3682,20 +3682,37 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
   if (cellsIn.length < 2) return res.status(400).json({ error: 'Need a header row of colours/units and at least one quantity row.' })
   const header = cellsIn[0].slice(1).map((h) => Math.round(Number(String(h).replace(/[^0-9.]/g, '')) || 0)).filter((n) => n > 0)
   if (!header.length) return res.status(400).json({ error: 'The first row should list the colours / stitch counts / sizes.' })
+  // A row label is a quantity BAND, and every real price card writes them as ranges. Stripping the
+  // non-digits read "288-499" as the number 288,499 and "500-999" as 500,999, so bandMinFor put
+  // eight ordinary rows onto the single 500+ band where each overwrote the last and the 1000+ row
+  // won: "Imported 24 prices", THREE stored, and every break from 12 to 499 silently back on the
+  // built-in calculator and its $3.00 floor. A 300-piece 2-colour order then quoted $900.00
+  // against the shop's own sheet's $1,320.00. parseQtyRange is the reader lib/matrices.mjs
+  // already uses for exactly this label.
+  const bandMinOf = (label) => {
+    const r = matrices.parseQtyRange(label)
+    return r && Number.isFinite(r.min) && r.min > 0 ? Math.round(r.min) : 0
+  }
+  // The sheet's rows ARE the shop's price breaks, so any the stock list lacks is added — at the
+  // factor that quantity already resolves to, which leaves every computed price exactly as it is
+  // today and only stops two different rows sharing one cell key.
+  const bands = [...book.bands]
   const cells = {}
-  let filled = 0
   for (const row of cellsIn.slice(1)) {
-    const qty = Math.round(Number(String(row[0]).replace(/[^0-9]/g, '')) || 0)
+    const qty = bandMinOf(row[0])
     if (!(qty > 0)) continue
-    const bandMin = bandMinFor(qty, book.bands)
+    if (!bands.some((b) => Number(b.min) === qty)) bands.push({ min: qty, factor: bandFor(qty, book.bands) })
     row.slice(1).forEach((raw, i) => {
       const units = header[i]
       const price = money(raw)
-      if (units && price != null) { cells[`${bandMin}|${units}`] = price; filled++ }
+      if (units && price != null) cells[`${qty}|${units}`] = price
     })
   }
+  // Report what was STORED, never what was read. That count is the shop's only evidence that its
+  // own price sheet is the one the app will quote from.
+  const filled = Object.keys(cells).length
   if (!filled) return res.status(400).json({ error: 'No prices found. Use plain numbers like 4.25.' })
-  res.json({ ok: true, service, cells, filled, cols: header })
+  res.json({ ok: true, service, cells, filled, cols: header, bands: bands.sort((a, b) => a.min - b.min) })
 }))
 
 /** A plain JSON object — not an array, not a string, not null. */

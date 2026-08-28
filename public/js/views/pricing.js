@@ -168,7 +168,9 @@ function wireBook(b) {
     try {
       const fd = new FormData(); fd.append('file', file); fd.append('service', mxState.service)
       const r = await api.req('POST', '/api/pricebook/import', fd)
-      await api.put('/api/pricebook', { matrices: { [mxState.service]: r.cells } })
+      // The sheet's own price breaks travel with its prices. Without them the cells are keyed to
+      // rows the book does not have, and every break the stock list lacks reads as the calculator.
+      await api.put('/api/pricebook', { matrices: { [mxState.service]: r.cells }, ...(r.bands ? { bands: r.bands } : {}) })
       note.innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price(s) from your sheet.</span>`
       setTimeout(() => loadMatrix(), 600)
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }

@@ -1950,6 +1950,44 @@ try {
     chk('deleting a service removes its price matrix too', String(!!book.matrices?.['Screen Print']), '^false$')
   }
 
+  /* ---------- a shop's own price sheet is the sheet the app quotes from ----------
+   * A row label is a quantity BAND, and every real price card writes them as ranges. The import
+   * stripped the non-digits, so "288-499" was read as the number 288,499 and "500-999" as 500,999
+   * — bandMinFor then put eight ordinary rows on the single 500+ band, where each overwrote the
+   * last and the 1000+ row won. "Imported 24 prices", three stored, every band from 12 to 499
+   * silently back on the built-in calculator and its $3.00 floor. A 300-piece 2-colour order then
+   * quotes $900.00 against the shop's own sheet's $1,320.00. */
+  {
+    const sheet = [
+      'Quantity,1,2,3',
+      '12-23,9.50,10.75,12.00',
+      '24-47,6.50,7.25,8.00',
+      '48-71,5.40,6.10,6.85',
+      '72-143,4.80,5.45,6.10',
+      '144-287,4.20,4.80,5.35',
+      '288-499,3.90,4.40,4.90',
+      '500-999,3.60,4.10,4.60',
+      '1000+,3.10,3.50,3.90',
+    ].join('\n')
+    const fd = new FormData()
+    fd.append('service', 'Screen Print')
+    fd.append('file', new Blob([sheet], { type: 'text/csv' }), 'prices.csv')
+    const up = await fetch(`${BASE}/api/pricebook/import`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: fd })
+    const imp = await up.json().catch(() => ({}))
+    chk('a price sheet written in ranges imports', String(up.status), '^200$')
+    chk('…and stores every price it says it read', String(Object.keys(imp.cells || {}).length), `^${imp.filled}$`)
+    chk('…all 24 of them', String(Object.keys(imp.cells || {}).length), '^24$')
+    chk('…with the 288-499 row on its own break, not merged into 500+', String(imp.cells?.['288|2']), '^4.4$')
+    chk('…and the 500-999 row not overwritten by the 1000+ row', String(imp.cells?.['500|2']), '^4.1$')
+
+    r = await req('PUT', '/api/pricebook', { body: { matrices: { 'Screen Print': imp.cells }, ...(imp.bands ? { bands: imp.bands } : {}) } })
+    chk('…and the sheet saves', String(r.status), '^200$')
+    r = await req('GET', '/api/pricebook/matrix?service=Screen%20Print&colors=3')
+    const rows = r.json?.matrix?.rows || []
+    const row288 = rows.find((x) => Number(x.qty ?? x.min ?? x.band) === 288)
+    chk('…so a 300-piece order quotes the shop\'s own 288 price, not the calculator', JSON.stringify(row288 || {}), '4\\.4')
+  }
+
   /* ---------- the customer's decision is theirs, and it is made once ----------
    * Two halves of the same story, both on the estimate a customer actually looks at.
    *
