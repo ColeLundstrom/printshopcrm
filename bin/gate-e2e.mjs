@@ -27,6 +27,8 @@ const TMP = mkdtempSync(join(tmpdir(), 'psc-e2e-'))
 let fails = 0
 const say = (mark, msg) => console.log(`  ${mark} ${msg}`)
 
+const sizeSum = (g) => Object.values(g || {}).reduce((a, n) => a + (Number(n) || 0), 0)
+
 /** chk(label, got, wantRegex) — `got` is stringified so a status number and a body both work. */
 const chk = (label, got, want) => {
   const s = String(got ?? '')
@@ -638,18 +640,35 @@ try {
         }],
       },
     })
-    chk('an estimate with a hostile size key is accepted but scrubbed', String(r.status), '^200$')
-    chk('…the size key is dropped, not stored', String(Object.keys(r.json?.items?.[0]?.sizes || {}).join(',')), '^M$')
+    // INVERTED DELIBERATELY. This used to assert 200-and-scrubbed, which was the right assertion
+    // while the rule was `SIZES.includes(k)` + `continue`: the key was hostile, so dropping it was
+    // safe. But that same silent drop was deleting REAL sizes — 6XL and the tall run were not in
+    // SIZES either, so a 45-piece order was billed as 35 pieces. The rule is now a character class
+    // and the response is a 400, so both cases are covered by one behaviour: a key that is not a
+    // size is refused and named, never quietly removed from what the customer is billed for. The
+    // XSS property this block exists for is stronger under a refusal than under a scrub.
+    chk('an estimate with a hostile size key is refused, not silently scrubbed', String(r.status), '^400$')
+    chk('…and told which key, with a machine-readable code', String(r.json?.code), '^unknown_size$')
+    chk('…and nothing was written', String((await req('GET', '/api/estimates')).json?.estimates?.some?.((e) => e.contact_id === xid) ?? false), '^false$')
+
+    // The same line WITHOUT the hostile key still stores, so the matrix half of this block is
+    // still exercised. A matrix NAME is the shop's own free text and cannot have '<' banned from
+    // it — its fix is escaping at every render site, asserted in bin/gate.mjs. What must hold here
+    // is that it is stored as a bounded string in a known shape, never an arbitrary nested object.
+    r = await req('POST', '/api/estimates', {
+      body: {
+        contact_id: xid,
+        items: [{ description: 'tees', sizes: { M: 10 }, unit_price: 10, matrix: { id: 1, name: payload, row: payload, col: payload } }],
+      },
+    })
+    chk('…while the same line without it is accepted', String(r.status), '^200$')
     chk('…and the real size survives', String(r.json?.items?.[0]?.sizes?.M ?? 'missing'), '^10$')
-    // A matrix NAME is the shop's own free text and cannot have '<' banned from it — its fix is
-    // escaping at every render site, asserted in bin/gate.mjs. What must hold here is that it is
-    // stored as a bounded string in a known shape, never as an arbitrary nested object.
     const mx = r.json?.items?.[0]?.matrix
     chk('…the matrix provenance keeps only its four known fields', Object.keys(mx || {}).sort().join(','), '^col,id,name,row$')
-    // Read it back the way the editor does, to be sure the size key does not revive on the trip.
+    // Read it back the way the editor does, to be sure nothing revives on the trip.
     const eid = r.json?.id
     r = await req('GET', `/api/estimates/${eid}`)
-    chk('…and the size key is still gone when the editor loads it', String(Object.keys(r.json?.items?.[0]?.sizes || {}).join(',')), '^M$')
+    chk('…and no hostile size key exists when the editor loads it', String(Object.keys(r.json?.items?.[0]?.sizes || {}).join(',')), '^M$')
     // A non-array items body reached computeTotals and threw a 500 on the main create path.
     for (const [label, bad] of [['an object', { a: 1 }], ['a string', 'tees'], ['a number', 7]]) {
       r = await req('POST', '/api/estimates', { body: { contact_id: xid, items: bad } })
@@ -1862,6 +1881,53 @@ try {
     chk('…and one job cannot delete another job\'s art',
       String((await req('DELETE', `/api/jobs/${aj.id}/art/${oart.id}`)).status), '^404$')
     chk('…leaving that one where it was', String(((await req('GET', `/api/jobs/${oj.id}`)).json?.art || []).length), '^1$')
+  }
+
+  /* ---------- a 6XL is quoted, printed and picked, not deleted on the way through ----------
+   * sanitizeEstimateItems did `if (!SIZES.includes(k)) continue`, and its comment said the editor
+   * only ever writes keys from SIZES — true of the editor, false of every other door into it: the
+   * v1 API, the CSV import, the AI intake path and any integration all land here. A 45-piece
+   * workwear order with 4 6XL and 6 LT came back a 35-piece $640 quote where $820 was ordered,
+   * with a 200 and no warning field. Meanwhile PUT /api/jobs/:id had no such filter, so the JOB
+   * carried sizes its own estimate had thrown away. The v1 twin had always REFUSED an unknown size
+   * rather than deleting it; this is the internal routes catching up, with the vocabulary widened
+   * so that the sizes being refused are only the ones that are genuinely not sizes. */
+  {
+    const wc = (await req('POST', '/api/contacts', { body: { name: 'Workwear Co', email: 'workwear@e2e.test' } })).json
+    const grid = { M: 10, L: 10, XL: 10, '2XL': 5, '6XL': 4, LT: 6 }   // 45 pieces
+    const est = await req('POST', '/api/estimates', {
+      body: { contact_id: wc.id, items: [{ description: 'Carhartt K87 Pocket Tee', sizes: grid, unit_price: 18 }] },
+    })
+    chk('a 45-piece order with 6XL and tall sizes is accepted', String(est.status), '^200$')
+    // 45 x $18 = $810, plus the shop's 2XL upcharge of $2 on 5 pieces = $820. Was $640: the 4 6XL
+    // and 6 LT were deleted, so 35 pieces were billed for an order of 45.
+    chk('…and quoted for every piece that was ordered (was $640 of a $820 order)', String(est.json?.subtotal), '^820$')
+    const stored = (est.json?.items && typeof est.json.items === 'string' ? JSON.parse(est.json.items) : est.json?.items) || []
+    chk('…with the sizes still on the line', String(sizeSum(stored[0]?.sizes)), '^45$')
+
+    // The job half. It always accepted these keys — with NO character rule at all, just
+    // String(size).slice(0, 12) — so the two halves of the app disagreed in both directions: the
+    // estimate deleted real sizes, the job accepted anything. One rule now, on both.
+    const wj = (await req('POST', '/api/jobs', { body: { contact_id: wc.id, title: 'Workwear run' } })).json
+    const wput = await req('PUT', `/api/jobs/${wj.id}`, { body: { line_sizes: [{ garment: 'Carhartt K87', sizes: grid }] } })
+    chk('the job carries the same 45 pieces its estimate does', String(sizeSum(JSON.parse(wput.json?.sizes || '{}'))), '^45$')
+    chk('…and refuses a key that is not a size, rather than storing 12 characters of it',
+      String((await req('PUT', `/api/jobs/${wj.id}`, { body: { line_sizes: [{ garment: 'X', sizes: { '<script>ale': 5 } }] } })).json?.code), '^unknown_size$')
+
+    // The pick ticket used to print rows for known sizes only, under a TOTAL that counted them all:
+    // rows summing to 70 under its own "SUBTOTAL 80", on a job of 105.
+    const pick = await fetch(`${BASE}/api/jobs/${wj.id}/pick-ticket.pdf`, { headers: { Cookie: cookieHeader() } })
+    const pickText = Buffer.from(await pick.arrayBuffer()).toString('latin1')
+    chk('the pick ticket prints a row for the 6XL it counts', String(/6XL/.test(pickText)), '^true$')
+    chk('…and for the tall run', String(/\bLT\b/.test(pickText)), '^true$')
+
+    // Junk is still refused, loudly, instead of being deleted quietly — and the key echoed back is
+    // constrained by the same rule, so widening the vocabulary did not open an injection door.
+    const junk = await req('POST', '/api/estimates', {
+      body: { contact_id: wc.id, items: [{ description: 'T', sizes: { M: 10, 'a"onerror=alert(1)': 5 }, unit_price: 10 }] },
+    })
+    chk('a size that is not a size is refused, not silently dropped', String(junk.status), '^400$')
+    chk('…naming it, and what is allowed', String(junk.json?.code), '^unknown_size$')
   }
 
   /* ---------- an ordinary quantity bump does not collapse a two-garment job ----------

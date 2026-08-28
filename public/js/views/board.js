@@ -1,5 +1,5 @@
 import { api, $, $$, el, esc, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials } from '../core.js'
-import { SIZES, sizeSummary } from '../shared/pricing.js'
+import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
 
 const STAGE_COLOR = { new: '#5f6b7d', art_approval: '#f7b955', prepress: '#7c6cff', production: '#4aa8ff', qc: '#10d39a', shipping: '#10d39a', complete: '#333b49' }
@@ -244,7 +244,11 @@ export async function jobForm(job, after) {
 function splitForm(job, lines, rest, after) {
   // Every size any garment on the job uses, so a shop can move pieces BETWEEN sizes, plus the
   // standard run of sizes so it can add one that was not quoted.
-  const cols = SIZES.filter((s) => lines.some((l) => Number(l.sizes?.[s]) > 0) || ['S', 'M', 'L', 'XL', '2XL'].includes(s))
+  // Union of every size actually on a line (sizeKeys keeps ones SIZES has never heard of) plus
+  // the everyday columns, so a 6XL or a tall never vanishes from the grid it is counted in.
+  const onLines = [...new Set(lines.flatMap((l) => sizeKeys(l.sizes)))]
+  const cols = [...SIZES.filter((s) => onLines.includes(s) || ['S', 'M', 'L', 'XL', '2XL'].includes(s)),
+    ...onLines.filter((s) => !SIZES.includes(s))]
   // The garment is an INPUT, not a caption. This is the only screen that can post a corrected
   // line, and on a two-garment job it is the only place the exact style can be named — which is
   // what the purchase order spends money on. A quote line says "Tee" because it was written for a
@@ -303,7 +307,7 @@ export async function jobDetailView(id) {
   const [j, roi] = await Promise.all([api.get(`/api/jobs/${id}`), api.get(`/api/roi/${id}`).catch(() => null)])
   const STAGES = [['new', 'New'], ['art_approval', 'Art Approval'], ['prepress', 'Prepress'], ['production', 'Production'], ['qc', 'QC'], ['shipping', 'Shipping'], ['complete', 'Complete']]
   const grid = (() => { try { return JSON.parse(j.sizes || '{}') } catch { return {} } })()
-  const sizes = SIZES.filter((s) => Number(grid[s]) > 0).map((s) => [s, grid[s]])
+  const sizes = sizeKeys(grid).map((s) => [s, grid[s]])
   const total = sizes.reduce((s, [, n]) => s + n, 0)
   // Screens/inks recorded on jobs that were separated before that tool was removed. Read-only:
   // the data still feeds capacity and costing, so it stays visible rather than silently vanishing.

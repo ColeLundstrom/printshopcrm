@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
-  lineAmount, lineUpcharge, SIZES,
+  lineAmount, lineUpcharge, SIZES, SIZE_KEY,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, canWrite, SECRET_KEYS,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
@@ -1900,7 +1900,16 @@ app.get('/api/estimates/:id', wrap((req, res) => {
  * app's own screens post. Escaping in the editor as well is defence in depth, not the fix — the
  * PDF, the public estimate page and the pay page all render these too.
  */
-function sanitizeEstimateItems(items) {
+/**
+ * The 400 an estimate gets instead of quietly losing pieces. Same wording as the v1 twin, which has
+ * always refused an unknown size rather than deleting it — this is the internal routes catching up.
+ */
+const unknownSizes = (keys) => ({
+  error: `Unknown size${keys.length > 1 ? 's' : ''} ${[...new Set(keys)].map((k) => `"${k}"`).join(', ')} — allowed: ${SIZES.join(', ')}`,
+  code: 'unknown_size',
+})
+
+function sanitizeEstimateItems(items, rejected = []) {
   return items.map((it) => {
     if (!it || typeof it !== 'object' || Array.isArray(it)) return {}
     const out = { ...it }
@@ -1908,14 +1917,23 @@ function sanitizeEstimateItems(items) {
       const sizes = {}
       if (typeof out.sizes === 'object' && !Array.isArray(out.sizes)) {
         for (const [k, v] of Object.entries(out.sizes)) {
-          if (!SIZES.includes(k)) continue // the editor only ever writes keys from SIZES
+          const key = String(k).trim().toUpperCase()
+          // `SIZES.includes(k)` plus `continue` DELETED the pieces instead of refusing them. The
+          // comment said the editor only writes keys from SIZES, which was true of the editor and
+          // false of every other door into this function — the v1 API, the CSV import, the AI
+          // intake path and any integration all land here. A 45-piece order with 4 6XL and 6 LT
+          // came back a 35-piece $640 quote with no error, no warning field and a 200, while the
+          // JOB it converted to happily carried the sizes its own estimate had thrown away.
+          // Collected and refused by the caller now: never bill a count the customer did not order.
+          if (!SIZE_KEY.test(key)) { if (Number(v) > 0) rejected.push(String(k).slice(0, 24)); continue }
           const n = Math.trunc(Number(v))
           // Clamped, not just finite. A finite-but-absurd count produced a perfectly storable
           // estimate (the money stayed representable), and the JOB it converted to then made the
           // Capacity page walk business days one at a time forever — 100% CPU on the shared
           // process, every tenant on the box down, on every visit to that page. MAX_PIECES is
           // three orders of magnitude past any real screen-print run.
-          if (Number.isFinite(n) && n >= 0) sizes[k] = Math.min(n, MAX_PIECES)
+          if (Number.isFinite(n) && n >= 0) sizes[key] = Math.min(n, MAX_PIECES)
+          else if (Number(v) > 0 || (v != null && v !== '' && !Number.isFinite(n))) rejected.push(String(k).slice(0, 24))
         }
       }
       out.sizes = sizes
@@ -1970,7 +1988,9 @@ app.post('/api/estimates', wrap((req, res) => {
   // A non-array here (a bare object, a string, or a duplicated JSON key collapsing to one value)
   // reached computeTotals and threw a 500 on the app's main create path.
   if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
-  const items = sanitizeEstimateItems(b.items || [])
+  const badSizes = []
+  const items = sanitizeEstimateItems(b.items || [], badSizes)
+  if (badSizes.length) return res.status(400).json(unknownSizes(badSizes))
   // A wholesale/resale account is tax exempt, so every quote for it is untaxed unless the caller
   // says, in as many words, that this particular order really is taxable. Merely carrying a
   // `tax_rate` is not saying so — the editor's field always carries the shop's default, which is
@@ -2001,7 +2021,9 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const b = req.body || {}
   const s = getSettings()
   if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
-  const items = sanitizeEstimateItems(b.items ?? parse(e.items, []))
+  const badSizes = []
+  const items = sanitizeEstimateItems(b.items ?? parse(e.items, []), badSizes)
+  if (badSizes.length) return res.status(400).json(unknownSizes(badSizes))
   // Fall back to the estimate's OWN stored rate before the shop's current setting — otherwise
   // editing a note on last quarter's resale-exempt quote silently re-taxes it at today's rate.
   // clampRate, or the edit path is a hole straight through the 0-100 guard every other write has:
@@ -2609,7 +2631,14 @@ app.put('/api/jobs/:id', wrap((req, res) => {
       for (const [size, n] of Object.entries(l.sizes)) {
         // Not Number(n): '' and null coerce to 0 and would quietly drop a size the shop typed.
         if (!Number.isInteger(n) || n < 0 || n > 1000000) return refuse(`Garment ${i + 1}: ${JSON.stringify(String(size)).slice(0, 40)} is ${JSON.stringify(n)}, which is not a piece count.`)
-        if (n > 0) sizes[String(size).slice(0, 12)] = n
+        // The same rule the estimate uses. These two halves disagreed: the estimate DELETED any
+        // key outside SIZES, while this accepted any string at all truncated to 12 characters — so
+        // a job could carry a size its own quote had thrown away, and the only thing standing
+        // between a stored `<script>alert` key and the screens that render it was every render
+        // site remembering to escape. One definition, and it refuses rather than dropping.
+        const key = String(size).trim().toUpperCase()
+        if (!SIZE_KEY.test(key)) return res.status(400).json(unknownSizes([String(size).slice(0, 24)]))
+        if (n > 0) sizes[key] = n
       }
       if (!sizeTotal(sizes)) continue
       const description = str(l.description ?? l.garment ?? '').trim().slice(0, 300)

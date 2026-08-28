@@ -4,7 +4,32 @@
  * editor is computed by the same code that writes the invoice.
  */
 
-export const SIZES = ['YXS', 'YS', 'YM', 'YL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', 'OSFA']
+// 6XL and the tall run are not exotic — workwear and corporate accounts order them every day, and
+// until they were listed here the app had no way to hold them: the estimate deleted them, the v1
+// API refused them, and the pick ticket printed a total that counted sizes it had not printed a row
+// for. COMMON_SIZES still decides what the editor shows by default, so the long tail stays out of
+// the way; these only become reachable through "Add size", an import, or the API.
+export const SIZES = ['YXS', 'YS', 'YM', 'YL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', 'LT', 'XLT', '2XLT', '3XLT', '4XLT', 'OSFA']
+
+/**
+ * What a size grid key may look like. Digits then letters, nothing else — '6XL', 'LT', '2XLT',
+ * 'OSFA' pass; anything carrying a quote, a bracket or an event handler does not.
+ *
+ * The rule this replaces was `SIZES.includes(k)`, and it was load-bearing for more than tidiness:
+ * these keys are rendered through innerHTML on the estimate editor, the PDF, the public estimate
+ * page and the pay page, so an unconstrained key is staff -> owner stored XSS. Widening the
+ * vocabulary must not widen the character set, and this does not.
+ */
+export const SIZE_KEY = /^[0-9]{0,2}[A-Z]{1,4}$/
+
+/**
+ * Every size present on a grid: the ones we know, in canonical order, then anything else the shop
+ * has legitimately stored.
+ *
+ * Callers used to write `SIZES.filter((s) => sizes[s] > 0)`, which ORDERS by SIZES and SILENTLY
+ * DROPS anything outside it — while the totals printed beside those rows kept counting the dropped
+ * pieces. One pick ticket listed rows summing to 70 under its own "SUBTOTAL 80", against a job of
+ * 105. Order by SIZES; never filter by it.
 
 /** Sizes a shop shows by default — the long tail stays available but out of the way. */
 export const COMMON_SIZES = ['S', 'M', 'L', 'XL', '2XL', '3XL']
@@ -33,10 +58,15 @@ export function sizeTotal(sizes) {
   return Object.values(sizes).reduce((s, n) => s + (Number(n) || 0), 0)
 }
 
-/** "40 S / 90 M / 110 L / 60 XL" — in size order, skipping zeros. */
+export const sizeKeys = (sizes) => [
+  ...SIZES.filter((s) => Number(sizes?.[s]) > 0),
+  ...Object.keys(sizes || {}).filter((s) => !SIZES.includes(s) && Number(sizes[s]) > 0),
+]
+
+/** "40 S / 90 M / 110 L / 60 XL" — in size order, skipping zeros, dropping nothing. */
 export function sizeSummary(sizes) {
   if (!sizes) return ''
-  return SIZES.filter((s) => Number(sizes[s]) > 0).map((s) => `${sizes[s]} ${s}`).join(' / ')
+  return sizeKeys(sizes).map((s) => `${sizes[s]} ${s}`).join(' / ')
 }
 
 /** Pieces per size, merged across every line of an order — what the press/packing table needs. */

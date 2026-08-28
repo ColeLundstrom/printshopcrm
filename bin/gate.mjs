@@ -221,6 +221,55 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
   assert.equal(out.find((l) => String(l.size).toUpperCase() === 'M').qty, 24)
 })
 
+/* ---------- a size the app has not heard of is never silently dropped ----------
+ * Two halves of one defect. Every display site wrote `SIZES.filter((s) => sizes[s] > 0)`, which
+ * ORDERS by SIZES and SILENTLY DROPS anything outside it — while the SUBTOTAL printed beside those
+ * rows summed every key on the grid. One real workwear job printed a pick ticket whose rows summed
+ * to 70 under its own "SUBTOTAL 80", against a job of 105 and a PO that ordered all 105: four
+ * different piece counts for one job, the same minute. And 6XL and the tall run were not in SIZES
+ * at all, so the estimate deleted them outright — a 45-piece order came back a 35-piece $640 quote
+ * where $820 was ordered, with a 200 and no warning, while the JOB it converted to carried the
+ * sizes its own estimate had thrown away. */
+{
+  const { SIZES, SIZE_KEY, sizeKeys, sizeSummary, sizeTotal } = await import('../public/js/shared/pricing.js')
+
+  section('sizes: the trade sizes shops actually sell exist')
+  for (const s of ['6XL', 'LT', 'XLT', '2XLT', '3XLT', '4XLT']) {
+    await t(`${s} is a size the app can hold`, () => assert.ok(SIZES.includes(s), `${s} missing from SIZES`))
+  }
+
+  section('sizes: order by SIZES, never filter by it')
+  const GRID = { S: 12, M: 24, L: 24, XL: 6, '2XL': 4, '6XL': 4, LT: 6 }
+  await t('every size on the grid gets a row', () => {
+    assert.deepEqual(sizeKeys(GRID), ['S', 'M', 'L', 'XL', '2XL', '6XL', 'LT'])
+  })
+  await t('…so the rows sum to the total printed beside them', () => {
+    const rowSum = sizeKeys(GRID).reduce((a, s) => a + GRID[s], 0)
+    assert.equal(rowSum, sizeTotal(GRID), 'rows must sum to sizeTotal')
+    assert.equal(rowSum, 80)
+  })
+  await t('…and the summary string on the board counts them too', () => {
+    const sum = sizeSummary(GRID)
+    assert.match(sum, /4 6XL/)
+    assert.match(sum, /6 LT/)
+    assert.equal(sum.split(' / ').reduce((a, p) => a + Number(p.split(' ')[0]), 0), 80)
+  })
+  await t('a size we still do not know is listed rather than vanishing', () => {
+    // Canonical ones keep their order; the stranger goes last instead of being deleted.
+    assert.deepEqual(sizeKeys({ M: 2, ZZZ: 3, S: 1 }), ['S', 'M', 'ZZZ'])
+  })
+
+  section('sizes: widening the vocabulary did not widen the character set')
+  // These keys are rendered through innerHTML on the editor, the PDF, the public estimate page and
+  // the pay page. The rule that replaced `SIZES.includes(k)` has to keep that door shut.
+  for (const ok of ['S', '2XL', '6XL', 'LT', '2XLT', 'OSFA', 'YXS']) {
+    await t(`${JSON.stringify(ok)} is accepted`, () => assert.ok(SIZE_KEY.test(ok)))
+  }
+  for (const bad of ['a"onerror=alert(1)', '<script>', 'One Size', 'M;', '"', 'S/M', '', 'TOOMANYLETTERS']) {
+    await t(`${JSON.stringify(bad)} is refused`, () => assert.ok(!SIZE_KEY.test(bad), `${bad} slipped through`))
+  }
+}
+
 /* ---------- pricing money-bugs (v44 audit fixes) ---------- */
 const { priceIntake } = await import('../lib/quickquote.mjs')
 const SET = { tax_rate: '7.75', default_markup: '2', screen_fee: '25', price_book: '{}' }

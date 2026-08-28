@@ -1,5 +1,5 @@
 import { api, $, esc, money, modal, closeModal, toast, on } from '../core.js'
-import { SIZES, sizeSummary, sizeTotal, quoteScreenPrint, round2 } from '../shared/pricing.js'
+import { SIZES, sizeSummary, sizeTotal, quoteScreenPrint, round2, sizeKeys } from '../shared/pricing.js'
 import { servicePerPiece, SERVICE_METHODS } from '../shared/servicecost.js'
 
 /** Price a parsed intake by its actual decoration — screen print uses the screen engine, everything
@@ -89,7 +89,7 @@ Alexis`
       const render = (p) => {
         const pieces = sizeTotal(p.sizes) || p.total_pieces || 0
         const q = intakeQuote(p, pieces, settings)
-        const grid = SIZES.filter((s) => Number(p.sizes?.[s]) > 0)
+        const grid = sizeKeys(p.sizes)
 
         $('#in-out', bg).innerHTML = `
           <div class="row" style="justify-content:space-between;margin-bottom:10px">
