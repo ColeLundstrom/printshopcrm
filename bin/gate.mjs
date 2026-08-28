@@ -3434,6 +3434,48 @@ section('two production runs on one order do not sell it twice')
   })
 }
 
+/* ---------- a shareable row carries its own key (v10) ----------
+ * The migration behind the /p/ link fix. Every INSERT must get a key without every INSERT site
+ * having to remember to write one — there are a dozen across four files, and missing one leaves
+ * the hole open — so it is an AFTER INSERT trigger. Rows that pre-date it keep NULL, which is
+ * what reproduces the legacy token for links already in customers' inboxes. */
+section('every shareable row is stamped with its own share key')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  dbmod.run(`INSERT INTO contacts (id, name) VALUES (1, 'Jamie')`)
+  for (let i = 1; i <= 3; i++) {
+    dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, total) VALUES (?,?,1,'sent',100)`, i, `EST-100${i}`)
+  }
+  const first = dbmod.get('SELECT share_key FROM estimates WHERE id = 3')?.share_key
+  await t('an insert is stamped without the insert site knowing about it', () => {
+    assert.match(String(first || ''), /^[0-9a-f]{16}$/)
+  })
+  dbmod.run('DELETE FROM estimates WHERE id = 3')
+  dbmod.run(`INSERT INTO estimates (estimate_number, contact_id, status, total) VALUES ('EST-2001',1,'sent',8400)`)
+  const reused = dbmod.get('SELECT id, share_key FROM estimates ORDER BY id DESC LIMIT 1')
+  await t('the row that inherits a freed rowid gets a DIFFERENT key', () => {
+    assert.equal(reused.id, 3, 'SQLite should have reissued the rowid')
+    assert.notEqual(reused.share_key, first)
+  })
+  await t('every table a /p/ link points at is covered', () => {
+    for (const table of ['estimates', 'invoices', 'jobs', 'art_versions']) {
+      const has = mem.prepare(`SELECT 1 AS x FROM pragma_table_info('${table}') WHERE name = 'share_key'`).get()
+      assert.ok(has, `${table} has no share_key`)
+      const trg = mem.prepare(`SELECT 1 AS x FROM sqlite_master WHERE type = 'trigger' AND name = ?`).get(`trg_${table}_share_key`)
+      assert.ok(trg, `${table} has no share_key trigger`)
+    }
+  })
+  await t('a row that pre-dates the migration keeps NULL, so its old link still verifies', () => {
+    // Exactly what an existing shop's rows look like: added by ALTER TABLE, never stamped.
+    dbmod.run('UPDATE estimates SET share_key = NULL WHERE id = 1')
+    assert.equal(dbmod.get('SELECT share_key FROM estimates WHERE id = 1')?.share_key, null)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

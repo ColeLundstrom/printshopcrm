@@ -1570,6 +1570,41 @@ try {
     chk('…and the print package no longer contradicts itself', String(pkgLines), '^150$')
   }
 
+  /* ---------- a share link dies with the record it was minted for ----------
+   * token() is HMAC(kind:id:slug) — a pure function of a ROWID, and SQLite hands a freed rowid to
+   * the next INSERT. So the estimate link already sitting in one customer's inbox opens the NEXT
+   * record that lands on that id: a different customer's quote, priced, with a working Approve
+   * button. Unauthenticated, from a link the shop itself emailed, and invisible to the shop —
+   * the timeline names the wrong-but-plausible customer. Deleting a cancelled quote is routine.
+   * All four kinds share the one cause: 'estimate', 'pay', 'ticket' and 'art'. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Jamie Rivera', email: 'jamie@e2e.test' } })
+    const shareA = r.json?.id
+    r = await req('POST', '/api/contacts', { body: { name: 'Morgan Diaz', email: 'morgan@e2e.test' } })
+    const shareB = r.json?.id
+
+    r = await req('POST', '/api/estimates', { body: { contact_id: shareA, items: [{ description: '24 tees', sizes: { M: 24 }, unit_price: 12 }] } })
+    const estA = r.json?.id
+    const linkA = String((await req('POST', `/api/estimates/${estA}/send`, { body: {} })).json?.share_url || '').replace(/^https?:\/\/[^/]+/, '')
+    await req('DELETE', `/api/estimates/${estA}`)
+    r = await req('POST', '/api/estimates', { body: { contact_id: shareB, items: [{ description: '300 hoodies', sizes: { L: 300 }, unit_price: 28 }] } })
+    const estB = r.json?.id
+    chk('SQLite really does hand the deleted quote\'s rowid to the next one', String(estB), `^${estA}$`)
+    const linkB = String((await req('POST', `/api/estimates/${estB}/send`, { body: {} })).json?.share_url || '').replace(/^https?:\/\/[^/]+/, '')
+    chk('two customers do not get byte-identical share links', String(linkA !== linkB && !!linkA && !!linkB), '^true$')
+
+    r = await req('GET', linkA, { cookies: false })
+    chk('the deleted quote\'s link opens nothing', String(r.status), '^(403|404)$')
+    chk('…and cannot show the next customer their neighbour\'s order', r.text, '^(?![\\s\\S]*Morgan Diaz)')
+    const stolen = await fetch(`${BASE}${linkA.replace('?', '/approve?')}`, {
+      method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: '',
+    })
+    chk('…and cannot approve it either', String(stolen.status), '^403$')
+    r = await req('GET', `/api/estimates/${estB}`)
+    chk('…so the $8,400 quote is still waiting on the customer who was actually sent it', String(r.json?.status), '^sent$')
+    chk('the live link still works', String((await req('GET', linkB, { cookies: false })).status), '^200$')
+  }
+
   /* ---------- a two-garment job that took a deposit can still have its sizes corrected ----------
    * A closed ring, and the purest "a human cannot fix it" in the product. The customer adds four
    * hoodies to an order that is already invoiced and part-paid. Every exit was shut:

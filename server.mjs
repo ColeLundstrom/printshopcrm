@@ -432,7 +432,20 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 // The current tenant's slug (empty in single-tenant dev). Customer-facing links carry it so a
 // proof/estimate link resolves to the right shop's isolated database.
 const curSlug = () => tenantStore.getStore()?.slug || ''
-const token = (kind, id, slug = curSlug()) => crypto.createHmac('sha256', SECRET).update(`${kind}:${id}:${slug}`).digest('hex').slice(0, 16)
+// Which table each /p/ link kind lives in — see the share_key migration in lib/db.mjs.
+const SHARE_TABLES = { estimate: 'estimates', pay: 'invoices', ticket: 'jobs', art: 'art_versions' }
+// A row's own random key, or '' for a row created before that migration — '' reproduces the legacy
+// token, so links already in customers' inboxes keep verifying. Without this the token was a pure
+// function of a REUSABLE rowid, and a deleted quote's link opened the next customer's order.
+const shareKey = (kind, id) => {
+  const t = SHARE_TABLES[kind]
+  if (!t) return ''
+  try { return String(get(`SELECT share_key FROM ${t} WHERE id = ?`, Number(id))?.share_key || '') } catch { return '' }
+}
+const token = (kind, id, slug = curSlug()) => {
+  const k = shareKey(kind, id)
+  return crypto.createHmac('sha256', SECRET).update(`${kind}:${id}:${slug}${k ? `:${k}` : ''}`).digest('hex').slice(0, 16)
+}
 const checkToken = (kind, id, k, slug = curSlug()) => {
   const want = Buffer.from(token(kind, id, slug))
   const got = Buffer.from(String(k || ''))
