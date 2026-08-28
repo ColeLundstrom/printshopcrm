@@ -942,6 +942,32 @@ try {
     chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
   }
 
+  /* ---------- money never leaves the books without a trace ----------
+   * Recording a payment writes an activity row; removing one wrote nothing at all. So a payment
+   * could be deleted and Revenue MTD would drop, the invoice would go back to unpaid, and the
+   * lines would disappear from the QuickBooks export — while the customer's timeline still read
+   * "Payment $3,600.00 on INV-1001 (check)", describing a payment that no longer exists. Every
+   * other money event in the product logs. In a shop with staff this was the one movement of cash
+   * that could not be traced to anybody. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Audit Trail Andy', email: 'audit-trail@e2e.test' } })
+    const atId = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: atId, items: [{ description: '30 tees', sizes: { M: 30 }, unit_price: 10, taxable: false }] } })
+    const atEst = r.json?.id
+    await req('POST', `/api/estimates/${atEst}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${atEst}/convert`, { body: { due_date: '2026-12-09' } })
+    const atInv = r.json?.invoice_id
+    await req('POST', `/api/invoices/${atInv}/payments`, { body: { amount: 300, method: 'check', note: 'cheque 4471' } })
+    const payId = ((await req('GET', `/api/invoices/${atInv}`)).json?.payments || []).slice(-1)[0]?.id
+    const before = ((await req('GET', `/api/contacts/${atId}`)).json?.activities || []).length
+
+    r = await req('DELETE', `/api/payments/${payId}`)
+    chk('a recorded payment can be removed', String(r.status), '^200$')
+    const acts = (await req('GET', `/api/contacts/${atId}`)).json?.activities || []
+    chk('…and the ledger says the money left', String(acts.length > before), '^true$')
+    chk('…naming the amount and the invoice it came off', acts.map((a) => a.description || '').join(' | '), 'REMOVED.*\\$300\\.00|\\$300\\.00 REMOVED')
+  }
+
   /* ---------- the API answers in JSON however you knock ----------
    * The API 404 lived inside the GET-only SPA catch-all, so a PUT/POST/PATCH/DELETE to a path that
    * does not exist fell through to Express's finalhandler and came back as an HTML error page —

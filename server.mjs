@@ -2382,11 +2382,26 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
   res.json(updated)
 }))
 
+/**
+ * Remove a recorded payment.
+ *
+ * Recording one writes an activity row; removing one wrote nothing. So money left the books
+ * silently: Revenue MTD dropped, the invoice went back to unpaid, four lines disappeared from the
+ * QuickBooks export — and the customer's timeline still read "Payment $3,600.00 on INV-1001
+ * (check)", because that entry describes a payment that no longer exists. Every other money event
+ * in the product logs. In a shop with staff this was the one that could not be traced to anyone.
+ *
+ * The row is written against the contact rather than deleted-along-with anything, so it survives.
+ */
 app.delete('/api/payments/:id', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM payments WHERE id = ?', +req.params.id)
-  if (!p) return res.status(404).json({ error: 'Payment not found' })
+  if (!p) return res.status(404).json({ error: 'Payment not found', code: 'not_found' })
+  const inv = get('SELECT invoice_number, contact_id FROM invoices WHERE id = ?', p.invoice_id)
   run('DELETE FROM payments WHERE id = ?', p.id)
-  res.json(syncInvoiceStatus(p.invoice_id))
+  const out = syncInvoiceStatus(p.invoice_id)
+  logActivity('payment', `Payment ${money(p.amount)} REMOVED from ${inv?.invoice_number || `invoice #${p.invoice_id}`} (${p.method || 'other'})${p.note ? ` — ${String(p.note).slice(0, 100)}` : ''}`,
+    { contact_id: inv?.contact_id ?? null })
+  res.json(out)
 }))
 
 app.post('/api/invoices/:id/send', wrap((req, res) => {
