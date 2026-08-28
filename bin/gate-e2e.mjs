@@ -1909,6 +1909,30 @@ try {
     chk('a hostile customer name does not break the row shape', String(/ENDTRNS\tPrintShopCRM/.test(iif.text)), '^false$')
   }
 
+  /* ---------- a webhook signs with the secret the integrator configured ----------
+   * docs/API.md tells integrators to POST {"url":…,"events":[…],"secret":"whsec_…"}. The handler
+   * generated its own and overwrote it, unconditionally and silently — 201, a green delivery log,
+   * and every signature check on the receiving end failing against the secret they configured.
+   * The one thing it must never do is quietly accept a weak one instead. */
+  {
+    const mine = 'whsec_gate_integrator_secret_0123456789'
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-mysecret', events: ['invoice.paid'], secret: mine } })
+    chk('a webhook is created', String(r.status), '^201$')
+    chk('…signing with the secret the integrator configured', String(r.json?.secret), `^${mine}$`)
+    const madeId = r.json?.id
+    r = await req('GET', '/api/v1/webhooks', asKey())
+    chk('…and it is listed', String((r.json?.data || []).some((w) => w.id === madeId)), '^true$')
+
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-weak', events: ['invoice.paid'], secret: 'hunter2' } })
+    chk('a secret too weak to sign with is refused, not quietly replaced', String(r.status), '^400$')
+    chk('…and says what is wrong with it', String(r.json?.error || ''), 'secret')
+
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-gen', events: ['invoice.paid'] } })
+    chk('omitting it still generates one', String(r.json?.secret || ''), '^whsec_')
+    await req('DELETE', `/api/v1/webhooks/${madeId}`, asKey())
+    await req('DELETE', `/api/v1/webhooks/${r.json?.id}`, asKey())
+  }
+
   /* ---------- the public gang-sheet builder cannot write on a real customer ----------
    * lib/agent.mjs:593 states the rule for the public chat widget — "a visitor on the public widget
    * may be LINKED to an existing customer, and may not WRITE on one" — and enforces it. Its twin,

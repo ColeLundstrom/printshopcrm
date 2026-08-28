@@ -190,7 +190,7 @@ Register endpoints under **Developers → Webhooks**, or through the API:
 | | |
 |---|---|
 | `GET /api/v1/webhooks` | List your subscriptions. |
-| `POST /api/v1/webhooks` | Create: `{"url":"https://…","events":["invoice.paid"],"secret":"whsec_…"}` |
+| `POST /api/v1/webhooks` | Create: `{"url":"https://…","events":["invoice.paid"],"secret":"whsec_…"}`. `secret` is what deliveries are signed with — send your own (24 characters or more) or omit it and one is generated. Either way it is returned **once**, in this response. |
 | `DELETE /api/v1/webhooks/:id` | Remove one. |
 
 Webhook management requires a key belonging to an **owner or manager**.
@@ -340,6 +340,8 @@ change what a customer is charged.
 
 ## Exports
 
-Not part of `/api/v1`, but worth knowing: every table exports to CSV — including line items with
-size breakdowns — and the whole database exports as one JSON file, from Settings. There is no
-export fee and no support ticket. The database itself is a single SQLite file you can copy.
+Not part of `/api/v1`, but worth knowing: `GET /api/export/<table>.csv` covers `contacts`,
+`estimates`, `invoices`, `payments`, `jobs`, `activities`, `art_versions` and `line_items` — the
+last being every line of every document flattened, with size breakdowns, which nobody else gives
+you. The whole database, every table, exports as one JSON file from Settings. There is no export
+fee and no support ticket. The database itself is a single SQLite file you can copy.

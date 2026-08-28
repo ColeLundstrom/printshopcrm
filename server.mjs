@@ -4667,8 +4667,17 @@ async function createWebhook(b) {
   if (get('SELECT COUNT(*) AS n FROM webhook_subscriptions').n >= MAX_WEBHOOKS) {
     throw bad(`A shop can have at most ${MAX_WEBHOOKS} webhook endpoints — delete one first.`)
   }
-  const secret = `whsec_${crypto.randomBytes(24).toString('base64url')}`
-  const id = Number(run('INSERT INTO webhook_subscriptions (url, events, secret, active) VALUES (?,?,?,1)', url.slice(0, 500), events.slice(0, 500), secret).lastInsertRowid)
+  // docs/API.md has told integrators to send their own `secret` since this endpoint shipped, and
+  // it was overwritten here, unconditionally and silently: 201, a green delivery log, and every
+  // signature check on the receiving end failing against the secret they had configured. Honour
+  // it — but never quietly accept one too weak to sign with, because the whole point of the
+  // header is that a forged delivery cannot be produced without it.
+  const given = b?.secret === undefined || b?.secret === null ? '' : String(b.secret).trim()
+  if (given && given.length < 24) {
+    throw bad('A webhook secret needs at least 24 characters — it is what proves a delivery came from us. Omit it and one will be generated for you.')
+  }
+  const secret = given || `whsec_${crypto.randomBytes(24).toString('base64url')}`
+  const id = Number(run('INSERT INTO webhook_subscriptions (url, events, secret, active) VALUES (?,?,?,1)', url.slice(0, 500), events.slice(0, 500), secret.slice(0, 200)).lastInsertRowid)
   // The secret is returned ONCE, at creation — store it then; we only keep it server-side for signing.
   return { id, url, events, active: 1, secret }
 }

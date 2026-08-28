@@ -58,8 +58,9 @@ it for your own shop needs no license from anyone.
 
 The reason this project exists is that shops get trapped by their tools. So, in writing:
 
-- **Your data is yours and it leaves easily.** Every table exports to CSV, including line items with
-  size breakdowns, plus the whole database as one JSON file. No export fee, no support ticket. On a
+- **Your data is yours and it leaves easily.** Customers, quotes, invoices, payments, jobs, artwork
+  history and the timeline each export to CSV, including line items with size breakdowns, and the
+  whole database — every table — exports as one JSON file. No export fee, no support ticket. On a
   managed plan you can ask for a copy of your raw SQLite database at any time and get it.
 - **No feature gating.** Hosted and self-hosted run identical code. Paying us buys operations, not
   capabilities.

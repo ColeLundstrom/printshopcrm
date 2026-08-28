@@ -3716,6 +3716,63 @@ await t('…and the refusal names it, so the message is actionable', async () =>
   assert.match(src.slice(i - 900, i), /create-shop/, 'the guard should point at the command that replaces it')
 })
 
+/* ---------- the data-freedom promise is the one the app keeps (v10) ----------
+ * Four documents say "every table exports to CSV". Seven tables and one derived view do, out of
+ * two dozen in a live shop database. The whole-shop JSON export really is complete — only the CSV
+ * sentence is false, and it is the sentence in the pitch. Rather than forbid a phrase, tie it to
+ * the code: a doc may claim "every table" only if the export map actually covers every table. */
+section('the data-freedom claim is one the app keeps')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { DatabaseSync } = await import('node:sqlite')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  const tables = mem.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).all().map((r) => r.name)
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const map = src.slice(src.indexOf('const EXPORTS = {'), src.indexOf('app.get(\'/api/export/:table.csv\''))
+  const exported = [...map.matchAll(/^\s{2}([a-z_]+):/gm)].map((m) => m[1])
+
+  await t('the CSV export map really is a subset of the schema', () => {
+    assert.ok(exported.length >= 5 && tables.length > exported.length,
+      `${exported.length} CSV exports against ${tables.length} tables — recheck this assertion`)
+  })
+  for (const doc of ['README.md', 'HOSTING.md', 'GOVERNANCE.md', 'docs/API.md']) {
+    await t(`${doc} does not promise more CSV than the app exports`, () => {
+      const text = readFileSync(join(root, doc), 'utf8')
+      const claim = /[Ee]very table exports to CSV/.test(text)
+      assert.ok(!claim || exported.length >= tables.length,
+        `${doc} says "every table exports to CSV"; ${exported.length} of ${tables.length} tables do`)
+    })
+  }
+  await t('…and each of them still points at the export that IS complete', () => {
+    for (const doc of ['README.md', 'HOSTING.md', 'GOVERNANCE.md']) {
+      const text = readFileSync(join(root, doc), 'utf8')
+      assert.match(text, /all\.json|one JSON file|whole-shop JSON/i, `${doc} no longer mentions the complete export`)
+    }
+  })
+}
+
+/* ---------- the webhook secret the docs promise is the one that signs (v10) ---------- */
+section('the API documents the webhook secret it actually uses')
+await t('a secret sent at creation is the secret deliveries are signed with', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const fn = src.slice(src.indexOf('async function createWebhook'), src.indexOf('async function createWebhook') + 3000)
+  assert.match(fn, /b\?\.secret/, 'createWebhook still ignores the secret docs/API.md tells integrators to send')
+  const doc = readFileSync(join(root, 'docs/API.md'), 'utf8')
+  const row = doc.split('\n').find((l) => l.includes('POST /api/v1/webhooks'))
+  assert.ok(row, 'the webhooks row is gone from docs/API.md')
+  assert.match(row, /24 characters|generated/, 'the docs must say what happens to a secret the caller sends')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

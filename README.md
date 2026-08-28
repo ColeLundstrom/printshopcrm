@@ -74,8 +74,10 @@ Four more things it does that are unusual:
 - **Per-size pricing is a first-class object.** The size grid carries real per-size upcharges and
   flows estimate → job → work ticket → PDF → export. Quantity is *derived* from the grid, so the two
   can never disagree.
-- **Your data is not the moat.** Every table exports to CSV — including line items with size
-  breakdowns — plus everything as one JSON file. No ticket, no fee. The database is a single file.
+- **Your data is not the moat.** Customers, quotes, invoices, payments, jobs, artwork history and
+  the timeline each export to CSV — including line items with size breakdowns, which nobody else
+  gives you — and **everything**, every table, exports as one JSON file. No ticket, no fee. The
+  database is a single file.
 
 ---
 

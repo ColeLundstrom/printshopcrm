@@ -127,5 +127,7 @@ It could. One maintainer, a real shop to run. What protects you:
 
 - **AGPL grants are irrevocable.** Every version ever published stays free, forever, whatever
   happens to the company or the maintainer.
-- **Your data is a single SQLite file**, and every table exports to CSV.
+- **Your data is a single SQLite file**, every table exports as one JSON file, and the records a
+  shop reconciles against — customers, quotes, invoices, payments, jobs, artwork, the timeline and
+  every line item — each export to CSV.
 - **Fork it.** That's not a threat to us, it's the point of the licence.
