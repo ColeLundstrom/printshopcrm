@@ -1462,8 +1462,9 @@ app.get('/api/dashboard', wrap((_req, res) => {
     `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void')`).v)
   const overdue = round2(get(
     `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today).v)
+  // SUM(total) counted sales tax as quoted revenue. What the shop is chasing is what it keeps.
   const open_estimates = round2(get(
-    `SELECT COALESCE(SUM(total), 0) AS v FROM estimates WHERE status IN ('draft','sent')`).v)
+    `SELECT COALESCE(SUM(COALESCE(subtotal, total)), 0) AS v FROM estimates WHERE status IN ('draft','sent')`).v)
 
   const jobsByStage = {}
   for (const r of all(`SELECT stage, COUNT(*) AS c FROM jobs WHERE status = 'active' GROUP BY stage`)) jobsByStage[r.stage] = r.c

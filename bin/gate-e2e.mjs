@@ -899,6 +899,35 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- the forecast counts what the shop keeps, not what it collects for the state ----------
+   * syncFromEstimate stored `estimate.total` as the deal value — subtotal PLUS sales tax. So every
+   * forecast number in the product carried tax as revenue: the board columns, open/weighted/won
+   * value, and the dashboard's "open estimates" KPI. On the seeded shop that is $666.35 of open
+   * value and $1,098.92 on the KPI, and it scales with the rate — a 9.5% shop reads its whole
+   * forecast a tenth high. lib/roi.mjs was fixed for exactly this and the forecast was not, so the
+   * two screens quoted different numbers for the same order. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Forecast Fran', email: 'forecast@e2e.test' } })
+    const fcC = r.json?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: fcC, tax_rate: 10, items: [{ description: '100 tees', qty: 100, unit_price: 10 }] },
+    })
+    const fcSub = Number(r.json?.subtotal), fcTot = Number(r.json?.total)
+    chk('a quote worth 1000 plus 100 of tax exists', `${fcSub}|${round2e(fcTot)}`, '^1000\\|1100$')
+
+    await sleep(200)
+    const board = (await req('GET', '/api/pipeline')).json || {}
+    const opp = (board.columns || []).flatMap((c) => c.opps || []).find((o) => o.contact_id === fcC)
+    chk('the quote reaches the pipeline', String(!!opp), '^true$')
+    chk('…valued at what the shop keeps, not what it collects for the state', String(round2e(opp?.value)), '^1000$')
+
+    // And the two screens that report the same money must agree with each other.
+    const kpiBefore = Number(((await req('GET', '/api/dashboard')).json?.kpis || {}).open_estimates)
+    const openQuotes = ((await req('GET', '/api/estimates')).json || []).filter((e) => e.status === 'draft' || e.status === 'sent')
+    const subSum = round2e(openQuotes.reduce((t, e) => t + (Number(e.subtotal) || Number(e.total) || 0), 0))
+    chk('the open-estimates KPI is the sum of the quotes\' subtotals', String(round2e(kpiBefore)), `^${subSum}$`)
+  }
+
   /* ---------- deleting a customer cannot delete work the job route refuses to delete ----------
    * jobs.contact_id cascades. DELETE /api/jobs/:id has always refused while blanks are still out
    * against the job — "receive it, or short-close it if the rest is not coming" — and DELETE
