@@ -4574,6 +4574,34 @@ app.delete('/api/developers/webhooks/:id', requireRole('manager'), wrap((req, re
   res.json({ ok: true })
 }))
 
+/**
+ * Re-drive one webhook delivery.
+ *
+ * Three attempts inside about ten minutes is the entire retry budget, so an endpoint that was down
+ * over a lunch hour lost every event in that window permanently: the row goes to 'failed' with
+ * next_attempt_at NULL and retryDueWebhooks() only ever looks at 'retrying'/'pending' rows under
+ * the attempt cap. The Developers log showed those events red, with the HTTP code, and there was
+ * nothing on the screen to press — while the QuickBooks queue and the automation sequence queue
+ * each already ship exactly this button.
+ *
+ * Replaying costs almost nothing, because the evidence is still on the row:
+ * webhook_deliveries.payload holds the exact JSON body for PSC_WEBHOOK_RETENTION_DAYS. Resetting
+ * the counter hands the delivery back to the durable pipeline, which owns it from there —
+ * including across a restart, since it reads next_attempt_at off the row.
+ */
+app.post('/api/developers/deliveries/:id/redeliver', requireRole('manager'), wrap((req, res) => {
+  const d = get('SELECT * FROM webhook_deliveries WHERE id = ?', Number(req.params.id))
+  if (!d) return res.status(404).json({ error: 'Delivery not found', code: 'not_found' })
+  const sub = get('SELECT * FROM webhook_subscriptions WHERE id = ?', d.subscription_id)
+  if (!sub) return res.status(404).json({ error: 'That subscription no longer exists.', code: 'not_found' })
+  if (!sub.active) return res.status(409).json({ error: 'That webhook is paused — switch it back on first.', code: 'webhook_paused' })
+  run("UPDATE webhook_deliveries SET status = 'pending', attempts = 0, last_error = NULL, next_attempt_at = ? WHERE id = ?", now(), d.id)
+  let payload
+  try { payload = JSON.parse(d.payload) } catch { payload = { event: d.event } }
+  attemptWebhookDelivery(curSlug(), { id: d.id, url: sub.url, secret: sub.secret, event: d.event, payload, attempts: 0 })
+  res.json({ ok: true })
+}))
+
 /* ================= QUICKBOOKS ONLINE ================= */
 
 const QBO_REDIRECT = (req) => `${req.protocol}://${req.get('host')}/api/qbo/callback`

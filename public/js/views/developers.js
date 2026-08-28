@@ -61,6 +61,17 @@ export async function developersView() {
     try { await api.del(`/api/developers/webhooks/${b.dataset.whDel}`); refresh() }
     catch (err) { toast(err.message, true) }
   })
+  // Three attempts over about ten minutes is the whole retry budget, so an endpoint that was down
+  // over lunch drops every event in that window and the row goes to 'failed', which the retry loop
+  // never looks at again. The payload is still on it — this hands the delivery back to the durable
+  // pipeline with a fresh budget. Without the button the log was red and there was nothing to press.
+  onOnce($('#view'), '[data-wh-redeliver]', async (e) => {
+    const b = e.target.closest('[data-wh-redeliver]')
+    b.disabled = true
+    try { await api.post(`/api/developers/deliveries/${b.dataset.whRedeliver}/redeliver`, {}); toast('Sending again…') }
+    catch (err) { toast(err.message, true) }
+    refresh()
+  })
 }
 
 function paint(d) {
@@ -95,13 +106,14 @@ function paint(d) {
     ${d.deliveries.length ? `<div class="card">
       <h2>Recent deliveries</h2>
       <table class="tbl">
-        <tr><th>Event</th><th>URL</th><th>Status</th><th>Detail</th><th>When</th></tr>
+        <tr><th>Event</th><th>URL</th><th>Status</th><th>Detail</th><th>When</th><th></th></tr>
         ${d.deliveries.map((r) => `<tr>
           <td><code style="font-size:11px">${esc(r.event)}</code></td>
           <td class="dim" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;font-size:11.5px">${esc(r.url)}</td>
           <td><span class="pill ${r.status === 'delivered' ? 'green' : r.status === 'failed' ? 'red' : 'amber'}">${esc(r.status)}</span></td>
           <td class="dim" style="font-size:11px">${esc(r.last_error || '')}</td>
           <td class="dim" style="font-size:11px">${fmtDate(r.created_at)}</td>
+          <td class="r">${r.status === 'failed' ? `<button class="btn ghost sm" data-wh-redeliver="${r.id}">Send again</button>` : ''}</td>
         </tr>`).join('')}
       </table>
     </div>` : ''}`

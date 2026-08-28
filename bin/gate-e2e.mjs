@@ -942,6 +942,51 @@ try {
     chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
   }
 
+  /* ---------- a webhook that used up its retries is not lost forever ----------
+   * MAX_WEBHOOK_ATTEMPTS is 3 and the backoff spends them inside about ten minutes, after which
+   * the row is 'failed' with next_attempt_at NULL — and retryDueWebhooks() only ever looks at
+   * 'retrying'/'pending' rows under the attempt cap. So an endpoint that was down over a lunch
+   * hour lost every event in that window permanently. The Developers screen showed them red, with
+   * the HTTP code, and had no action column at all, while the QuickBooks queue and the automation
+   * sequence queue each already ship exactly this button.
+   *
+   * The delivery is aged into the exhausted state directly rather than sitting through three real
+   * backoffs — the same reason this harness winds an automation's clock forward. Everything the
+   * test then CHECKS comes back through the API. */
+  {
+    // A public URL: assertPublicUrl() refuses loopback, and rightly so. Whether the POST actually
+    // reaches anything is irrelevant here — the exhausted state is written directly below.
+    r = await req('POST', '/api/developers/webhooks', { body: { url: 'https://example.com/hook-redeliver', events: ['contact.created'] } })
+    chk('a shop can subscribe a webhook', String(r.status), '^201$')
+    const subId = r.json?.id
+    await req('POST', '/api/contacts', { body: { name: 'Webhook Redeliver Wanda', email: 'wh-redeliver@e2e.test' } })
+    await sleep(400)
+
+    // Spend the whole budget on THIS subscription's delivery, exactly as ten minutes against a dead
+    // endpoint would — the same reason this harness winds an automation's clock forward. Everything
+    // the test then CHECKS comes back through the API.
+    shopDb('gate-shop', (db) => db.prepare(
+      "UPDATE webhook_deliveries SET status='failed', attempts=3, last_error='HTTP 405', next_attempt_at=NULL WHERE subscription_id = ?").run(subId))
+    let dev = await req('GET', '/api/developers')
+    const dead = (dev.json?.deliveries || []).find((x) => x.status === 'failed' && x.last_error === 'HTTP 405')
+    chk('a dead endpoint really does exhaust its retries', String(!!dead), '^true$')
+
+    r = await req('POST', `/api/developers/deliveries/${dead?.id}/redeliver`, { body: {} })
+    chk('a failed delivery can be sent again from the screen that shows it', String(r.status), '^200$')
+    dev = await req('GET', '/api/developers')
+    const again = (dev.json?.deliveries || []).find((x) => x.id === dead?.id)
+    chk('…and it is back in the retry pipeline with a fresh budget', String(Number(again?.attempts ?? 9) <= 1), '^true$')
+
+    r = await req('POST', '/api/developers/deliveries/999999/redeliver', { body: {} })
+    chk('re-driving a delivery that is not there says so', String(r.status), '^404$')
+
+    await req('PATCH', `/api/developers/webhooks/${subId}`, { body: { active: false } })
+    r = await req('POST', `/api/developers/deliveries/${dead?.id}/redeliver`, { body: {} })
+    chk('a paused webhook is not quietly re-driven behind the owner\'s back', String(r.status), '^409$')
+    chk('…and says what to do about it first', r.text, 'paused')
+    await req('DELETE', `/api/developers/webhooks/${subId}`)
+  }
+
   /* ---------- one invoice, one status, whichever endpoint you ask ----------
    * The stored `status` column does not know what day it is. The LIST endpoint computes the
    * effective status — EFFECTIVE_STATUS_SQL turns an unpaid invoice past its due date into
