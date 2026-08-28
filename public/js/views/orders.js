@@ -75,6 +75,12 @@ function wireDnd(rerender, byId) {
   $('#board').addEventListener('pointerdown', (e) => {
     const c = e.target.closest('.jcard')
     if (!c || e.button !== 0) return
+    // A finger scrolls the board; it does not drag a card. columnAt() picks the target column
+    // purely from clientX, so a sideways swipe to reach the Shipped column committed a stage
+    // change — and PUT /api/orders/:id/stage moves an order BACKWARDS as happily as forwards, with
+    // no confirm and no undo. This is the one screen written for a phone, and it was the one
+    // missing the guard that board.js and pipeline.js both carry. Tapping still opens the order.
+    if (e.pointerType === 'touch') return
     const r = c.getBoundingClientRect()
     st = { card: c, id: c.dataset.id, from: c.closest('.col'), x0: e.clientX, y0: e.clientY,
       ox: e.clientX - r.left, oy: e.clientY - r.top, w: r.width, moved: false, ghost: null, col: null }

@@ -639,7 +639,14 @@ export async function settingsView() {
 
   const saveBtn = $('#save')
   if (saveBtn) saveBtn.onclick = async () => {
-    const payload = { ...formData($('#shop')), ...formData($('#costing')), ...formData($('#ai')), ...formData($('#slack')), ...formData($('#online')), ...formData($('#suppliers')), ...formData($('#modes')), ...formData($('#delivery')), ...formData($('#terms')), ...formData($('#tpl')) }
+    // Every settings card that holds a [name] field. #gdrive was missing from this list, and the
+    // only other writer of its two keys is the Connect Drive button — which is rendered disabled
+    // until they are already saved. A shop pasted its Google Client ID and secret, was told
+    // "Settings saved", and came back to two blank fields and a greyed-out button, with no error
+    // anywhere and no second path in the product. Some cards only exist in one edition, so a
+    // missing container is skipped rather than throwing.
+    const CARDS = ['#shop', '#costing', '#ai', '#slack', '#online', '#suppliers', '#gdrive', '#modes', '#delivery', '#terms', '#tpl']
+    const payload = Object.assign({}, ...CARDS.map((sel) => ($(sel) ? formData($(sel)) : {})))
     const err = $('#stripe-err')
     if (err) err.textContent = ''
     const bad = stripeKeyProblem(payload)

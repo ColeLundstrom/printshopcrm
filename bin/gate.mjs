@@ -2948,6 +2948,17 @@ section('the board and the pipeline are usable without a mouse')
     assert.match(pipe.slice(i, i + 700), /pointerType === 'touch'/)
   })
 
+  // The orders board was NAMED in the comment above and left out of the test — and it is the one
+  // screen written for a phone. Its PUT is not forward-only either, so a sideways swipe moved an
+  // order BACKWARDS, with no confirm, no undo and an activity row saying staff did it.
+  await t('…and the same on the orders board, which is the one built for a phone', () => {
+    const orders = readFileSync(join(root, 'public/js/views/orders.js'), 'utf8')
+    const i = orders.indexOf("addEventListener('pointerdown'")
+    assert.ok(i > 0, 'the orders board should still wire pointerdown')
+    assert.match(orders.slice(i, i + 700), /pointerType === 'touch'/,
+      'a touch pointer must not start a drag — a sideways swipe moves an order, and PUT /api/orders/:id/stage goes backwards as happily as forwards')
+  })
+
   await t('a deal can be marked Won or Lost without dragging it', () => {
     assert.match(pipe, /id="opp-stage"/, 'the deal form needs a real stage control')
     // The control must actually reach the stage route, not just render.
@@ -3579,6 +3590,39 @@ await t('…and the install creates that symlink before the service is enabled',
   assert.ok(link > -1, 'INSTALL.md never creates /opt/printshopcrm/current, so the unit has nothing to run')
   assert.ok(link < enable, 'INSTALL.md enables the service before the current symlink exists')
 })
+
+/* ---------- Save Settings saves every field Settings renders (v10) ----------
+ * The save handler spreads formData() over a hand-written list of card ids, and #gdrive was not on
+ * it — the ONE settings container with [name] fields that Save never read. The only other writer
+ * of those two keys is the Connect Drive button, which is rendered disabled until they are already
+ * saved. So a shop pastes its Google Client ID and secret, is told "Settings saved", and comes
+ * back to two blank fields and a greyed-out button: a closed ring, with no shell to escape it.
+ * A list maintained by hand will drift again, so the gate derives it from what the page renders. */
+section('Settings saves every field Settings renders')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/misc.js'), 'utf8')
+  const save = src.slice(src.indexOf('const saveBtn'), src.indexOf('const saveBtn') + 1200)
+  // Every card body that renders a named control, taken from the markup rather than a list.
+  const holders = []
+  for (const m of src.matchAll(/<div class="card-b" id="([a-z0-9-]+)"([\s\S]*?)(?=<div class="card-b" id=|$)/g)) {
+    if (/\b(?:f|sf|ta)\(\s*'/.test(m[2]) || /\bname="/.test(m[2])) holders.push(m[1])
+  }
+  await t('the settings page really does render named fields in several cards', () => {
+    assert.ok(holders.length >= 5, `only found ${holders.length} settings cards with fields — this assertion needs rewriting`)
+  })
+  await t('…and Save Settings reads every one of them', () => {
+    const missing = [...new Set(holders)].filter((id) => !save.includes(`'#${id}'`))
+    assert.deepEqual(missing, [], `Settings renders [name] fields in ${missing.join(', ')} that Save Settings never reads`)
+  })
+  await t('…so the Drive keys are not written only by a button that needs them written first', () => {
+    assert.ok(/gdrive-connect[\s\S]{0,400}?disabled/.test(src), 'Connect Drive is no longer conditionally disabled — recheck this')
+    assert.ok(save.includes("'#gdrive'"), 'the only writer of the Drive keys is a button disabled until they are written')
+  })
+}
 
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
