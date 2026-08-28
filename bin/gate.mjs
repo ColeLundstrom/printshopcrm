@@ -2054,12 +2054,63 @@ await t('…and the ordinary styles still match exactly as before', async () => 
     ['Comfort Colors 1717 in Blue', 'CC1717'],
     ['Port & Company PC61 navy', 'PC61'],
     ['Gildan 18500 hoodies', 'G185'],
-    ['24 black tees', 'G500'],                   // no style at all — falls through to type
   ]) {
     assert.equal(sup.costFor(text)?.sku, sku, `${text} must still order ${sku}`)
   }
 })
 
+/* The style match names THIS garment. The brand+type and bare-type fallbacks underneath it do not
+ * — they find something vaguely like it — and they were returning a real SKU with matched:true.
+ * So every brand outside the shipped 43-row catalogue was quietly ordered as a Gildan or Bella
+ * basic at that basic's price. Observed: "Nike DV7299 Dri-FIT Tee" produced a PO of 300 × G500 at
+ * $3.20 with warnings:[], the submit went through to the distributor as four lines of "G500", and
+ * ROI reported an 84.9% margin on it. Round 5 fixed the same shape one layer up (a job TITLE being
+ * read as a garment) and wrote that trading a visible dead end for an invisible wrong order is
+ * strictly worse. This is the other half of that: the fallbacks keep the cost as a planning
+ * ballpark and lose the SKU, so the PO warns and the submit refuses.
+ *
+ * Shipped in the same release as the Garment field on the job form — the honest refusal is only
+ * an improvement if there is somewhere to answer it. */
+await t('a brand outside the catalogue is not ordered as a Gildan', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  for (const text of [
+    'Nike DV7299 Dri-FIT Tee — Black',
+    'Carhartt K87 Pocket Tee — Heather Grey',
+    'Adidas A430 Hoodie — Black',
+    'Under Armour 1376843 Performance Polo — Navy',
+    'American Apparel 2001 Fine Jersey Tee',
+    'Custom cut-and-sew heavyweight hoodie',
+    '24 black tees', // names no garment at all
+  ]) {
+    const m = sup.costFor(text)
+    assert.equal(m?.sku ?? null, null, `${text} must not hand back a SKU to order`)
+    assert.equal(m?.matched, false, `${text} must not report itself as matched`)
+  }
+})
+await t('…but it is still costed, so the quote is not blank', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  const m = sup.costFor('Nike DV7299 Dri-FIT Tee — Black')
+  assert.ok(Number(m?.cost) > 0, 'an off-catalogue blank still gets a planning cost')
+  assert.equal(m?.approximate, true, 'and says that cost is approximate')
+})
+await t('…and the purchase order says so instead of ordering it anyway', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  const po = sup.buildPurchaseOrder({ job_number: 'JOB-1' }, { S: 50, M: 100 }, 'Nike DV7299 Dri-FIT Tee — Black', {})
+  assert.equal(po.lines[0].sku, null, 'no SKU reaches the distributor')
+  assert.match(po.warnings.join(' '), /No catalog SKU matched/, 'the shop is warned before it orders')
+})
 await t('a style has to sit on its own, not inside a longer run', async () => {
   const { styleMatches } = await import('../lib/suppliers.mjs')
   assert.equal(styleMatches('gildan 5000 tee', '5000'), true)
