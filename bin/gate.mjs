@@ -4707,6 +4707,32 @@ section('a backup can actually be put back')
   })
 }
 
+/* ---------- the boot warning describes the app that is actually running ----------
+ * The PSC_PUBLIC_URL warning said every emailed link is built from the request Host header. That
+ * stopped being true when reset and welcome moved to trustedOrigin(), which prefers the origin the
+ * owner actually signed in on — so the account-takeover the warning was written for is closed
+ * whether or not the variable is set. A warning that overstates its case is a warning an operator
+ * learns to scroll past, and the links it is still RIGHT about are the ones going to customers. */
+await t('the PSC_PUBLIC_URL warning names the links that really are Host-derived', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("PSC_PUBLIC_URL is not set")
+  assert.ok(i > 0, 'the boot warning should still exist — it is still worth setting')
+  const warning = src.slice(i, i + 700)
+  // The three that still call publicOrigin(req) directly.
+  for (const kind of [/[Pp]roof/, /pay/, /invite/]) {
+    assert.match(warning, kind, `the warning has to name the links it is still true of: ${kind}`)
+  }
+  // And it must not keep claiming the two that no longer are.
+  assert.doesNotMatch(warning, /^\s*console\.warn\([^\n]*emailed links are built from the request Host/m,
+    'reset and welcome use the learned per-shop origin — the blanket claim is no longer true')
+  // The code has to still back that up: if reset stops using trustedOrigin, this test is a lie too.
+  assert.match(src, /const origin = trustedOrigin\(req, r\.tenant\)/, 'the reset route must still use the learned origin')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

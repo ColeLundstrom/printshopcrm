@@ -6853,13 +6853,18 @@ server.listen(PORT, () => {
   console.log(`\n  ${s.brand_name} — ${s.brand_tagline}`)
   console.log(`  → http://localhost:${PORT}   (ws /ws live)\n`)
 
-  // Every link this server emails — password reset, staff invite, proof approval, pay page —
-  // has to name a host. Without PSC_PUBLIC_URL the only source is the request's own Host header,
-  // which is chosen by whoever sent the request. Say so once, plainly, with the fix: an install
-  // that is reachable from the internet and has not set this is one crafted request away from
-  // mailing its owner a password-reset link that points at somebody else.
+  // Every link this server emails has to name a host, and without PSC_PUBLIC_URL that host comes
+  // from somewhere less trustworthy.
+  //
+  // This warning used to say all of them come from the request's Host header. That stopped being
+  // true when reset and welcome moved to trustedOrigin(), which prefers the origin an owner has
+  // actually signed in on — so the account-takeover this warning was written for is closed either
+  // way. Saying it anyway trains an operator to discount the warning, and the links it is STILL
+  // right about are the ones going to customers. Name those.
   if (AUTH_ENABLED && !String(process.env.PSC_PUBLIC_URL || '').trim()) {
-    console.warn('  ⚠ PSC_PUBLIC_URL is not set, so emailed links are built from the request Host header.')
+    console.warn('  ⚠ PSC_PUBLIC_URL is not set. Proof-approval, pay and staff-invite links are built')
+    console.warn('     from the request Host header, which is chosen by whoever sent the request.')
+    console.warn('     (Password-reset and welcome links use the origin your owner signed in on.)')
     console.warn(`     Set it to this install's real address:  PSC_PUBLIC_URL=https://shop.example.com\n`)
   }
 
