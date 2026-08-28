@@ -5449,7 +5449,13 @@ app.get('/api/embed/agent/config', (req, res) => embedRun(req, res, () => {
 app.post('/api/embed/chat/start', embedLimit(12, 'Too many chats from this connection. Try again shortly.'), (req, res) => embedRun(req, res, () => {
   const c = getBotConfig()
   if (!c.enabled) return res.json({ enabled: false })
-  const s = startSession({ channel: req.body?.channel || 'web', page_url: req.body?.page_url || '' })
+  // 'web' is not a hint from the caller — it IS what this route is. captureLead() decides from
+  // this value whether a visitor may WRITE on a customer it matched them to, so taking it from
+  // the request body handed that decision to the visitor: {"channel":"sms"} on this very call
+  // turned the guard off, and a stranger with only the shop's published embed key overwrote a
+  // real customer's blank phone with their own number and drafted a numbered estimate on that
+  // customer's account. The widget has never sent this field — it posts {page_url} and nothing else.
+  const s = startSession({ channel: 'web', page_url: req.body?.page_url || '' })
   res.json({ enabled: true, session: s.public_id, greeting: c.greeting, name: c.name, accent: c.accent })
 }))
 

@@ -1041,6 +1041,42 @@ try {
       String(posted.headers.get('access-control-allow-credentials') ?? 'none'), '^none$')
   }
 
+  /* ---------- a stranger on the widget may be LINKED to a customer, never WRITE on one ----------
+   * captureLead() decides that from chat_sessions.channel, and this public, unauthenticated route
+   * took that value straight out of the request body while lib/agent.mjs treated anything that
+   * was not the literal 'web' as verified. So {"channel":"sms"} — one extra JSON field, sent by
+   * anyone who reads the shop's page source for its published embed key — turned the guard off:
+   * a real customer's blank phone filled with the stranger's number, and a real numbered estimate
+   * drafted on that customer's account. The widget itself has never sent this field. */
+  {
+    await req('PUT', '/api/agent/config', {
+      body: { enabled: true, mode: 'ai', name: 'Ari', greeting: 'Hi', capabilities: { faq: true, quote: true, qualify: true, handoff: true, book: true }, faqs: [] },
+    })
+    const meC = await req('GET', '/api/auth/me')
+    const embedKey = meC.json?.embed_key
+    chk('the shop has a published embed key, as the paste-in snippet needs', String(!!embedKey), '^true$')
+    r = await req('POST', '/api/contacts', { body: { name: 'Harbor City Brewfest', email: 'hijack@e2e.test', phone: '' } })
+    const victimId = r.json?.id ?? r.json?.contact?.id
+
+    // No cookie at all: exactly what a stranger on the shop's public website can send.
+    const anon = (path, body) => fetch(`${BASE}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then((x) => x.json()).catch(() => ({}))
+    const start = await anon(`/api/embed/chat/start?shop=${embedKey}`, { channel: 'sms', page_url: 'https://shop.test/' })
+    chk('the public widget still opens a chat session', String(!!start.session), '^true$')
+    for (const m of [
+      'I need a price on 600 gildan 18500 hoodies, screen print, 2 color front',
+      'I am Victor Kroll, email hijack@e2e.test and my cell is 555-000-9999',
+    ]) await anon(`/api/embed/chat/message?shop=${embedKey}`, { session: start.session, text: m })
+
+    r = await req('GET', `/api/contacts/${victimId}`)
+    const victim = r.json?.contact ?? r.json
+    chk('a stranger claiming a customer\'s email cannot write their phone number', String(victim?.phone ?? 'MISSING'), '^$')
+    const estList2 = (await req('GET', '/api/estimates')).json
+    const forged = (Array.isArray(estList2) ? estList2 : estList2?.data || []).filter((e) => e.contact_id === victimId)
+    chk('…nor burn an estimate number on that customer\'s account', String(forged.length), '^0$')
+  }
+
   /* ---------- switching a rule off pauses its queue, it does not delete it ----------
    * The drip resume loop DELETEd the automation_pending row before checking whether the rule was
    * still enabled, and committed that delete in autocommit. So an owner who paused a rule for an
