@@ -1937,6 +1937,53 @@ section('the money helper can only ever return a finite number')
   })
 }
 
+section('a password reset leaves the owner signed in, with the new password written')
+// consumePasswordReset was not async, and setMemberPassword/setPassword both await the hash before
+// they write — so it returned BEFORE the password had been written. The route then minted a session
+// and answered 200, and the detached write landed ~36ms later carrying
+// `DELETE FROM sessions WHERE member_id = ?`, which destroyed the session just issued. Every reset
+// bounced the owner straight back to the login form — on the one screen a locked-out owner reaches
+// for. The ordering was the other half: used_at and the session purge committed first and the
+// password write last and detached, so a failure while hashing spent the single-use token and
+// changed nothing, leaving the recovery path gone with nothing to say so.
+//
+// Driven in a CHILD PROCESS: tenants.mjs resolves control.db from DB_PATH at import time, and this
+// file has already imported db.mjs by here, so a fresh env only takes effect in a fresh process.
+await t('the session minted after a reset is still alive a tick later', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const box = mkdtempSync(join(tmpdir(), 'psc-reset-'))
+  try {
+    const script = `
+      const tn = await import(${JSON.stringify(join(root, 'lib/tenants.mjs'))})
+      await tn.createTenant({ shop_name: 'Reset Co', owner_email: 'reset@gate.test', password: 'originalpass123' })
+      const link = tn.createPasswordReset('reset@gate.test')
+      const out = await tn.consumePasswordReset(link.token, 'brandnewpass456')
+      const sid = tn.createSession(out.member.tenant_id, out.member.id)
+      const atMint = !!tn.getSession(sid)
+      await new Promise((r) => setTimeout(r, 250))   // the detached write used to land here
+      const later = !!tn.getSession(sid)
+      const newOk = !!(await tn.authMember('reset@gate.test', 'brandnewpass456'))
+      const oldGone = !(await tn.authMember('reset@gate.test', 'originalpass123'))
+      console.log(JSON.stringify({ atMint, later, newOk, oldGone }))
+      process.exit(0)
+    `
+    const out = execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', script], {
+      env: { ...process.env, PSC_DB: join(box, 'psc.db'), PSC_CONTROL_DB: join(box, 'control.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+      encoding: 'utf8',
+    })
+    const r = JSON.parse(out.trim().split('\n').pop())
+    assert.equal(r.atMint, true, 'precondition: the new session exists')
+    assert.equal(r.later, true, 'the reset signed the owner straight back out')
+    assert.equal(r.newOk, true, 'the new password must work')
+    assert.equal(r.oldGone, true, 'the old password must stop working')
+  } finally { rmSync(box, { recursive: true, force: true }) }
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

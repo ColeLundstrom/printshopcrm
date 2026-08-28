@@ -921,10 +921,12 @@ app.get('/api/auth/reset', wrap((req, res) => {
 }))
 
 /** Spend the token and set the new password. */
-app.post('/api/auth/reset', ipLimit(10), wrap((req, res) => {
+app.post('/api/auth/reset', ipLimit(10), wrap(async (req, res) => {
   if (!AUTH_ENABLED) return res.status(400).json({ error: 'Password reset is unavailable in single-tenant mode' })
   try {
-    const { member } = consumePasswordReset(String(req.body?.token || ''), String(req.body?.password || ''))
+    // Awaited: unawaited, this returned before the password was written and the detached write then
+    // deleted the session minted two lines below, bouncing every reset back to the login form.
+    const { member } = await consumePasswordReset(String(req.body?.token || ''), String(req.body?.password || ''))
     // Every old session for this member was just dropped, so sign them straight into a new one
     // rather than bouncing them to a login form with a password they only typed a second ago.
     setSessionCookie(res, createSession(member.tenant_id, member.id), req)
