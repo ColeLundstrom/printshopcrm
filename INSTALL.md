@@ -79,6 +79,13 @@ sudo chown "$USER" /opt/printshopcrm
 git clone https://github.com/ColeLundstrom/printshopcrm.git /opt/printshopcrm
 cd /opt/printshopcrm
 npm ci --omit=dev
+# The service runs `current`, never the checkout directly. Point it at the checkout now and a
+# hand-managed install behaves exactly as it always has; deploy/release.sh then re-points it at
+# releases/<tag>/ on every deploy, and rolling back is repointing it at the previous one. Without
+# this symlink the unit has nothing to run — and if you point the unit at the checkout instead,
+# release.sh will flip `current` on every deploy while the service keeps serving the original
+# clone, forever, with /health and verify-sync.sh both reporting success.
+ln -sfn /opt/printshopcrm /opt/printshopcrm/current
 ```
 
 ### 3. Put your data outside the app directory

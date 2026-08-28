@@ -3545,6 +3545,41 @@ await t('a message queued before the shop wired SMTP can still be sent', async (
   assert.equal(sendable({ via: 'logged', delivered: 1 }), false)
 })
 
+/* ---------- the unit runs the release the deploy actually flips (v10) ----------
+ * deploy/release.sh keeps releases in $APP_ROOT/releases/<tag> and flips $APP_ROOT/current, and
+ * INSTALL.md tells self-hosters to verify against $APP_ROOT/current. The shipped unit ran
+ * $APP_ROOT itself — the git clone from step 2 — so the flip changed nothing the service could
+ * see. Every deploy shipped NOTHING, with three green signals: /health passes (the old code is
+ * answering), verify-sync passes (it checks `current`, which really was updated), and the
+ * automatic rollback never fires because nothing ever fails. */
+section('the deploy and the service agree on which directory is live')
+await t('the shipped unit runs the path release.sh flips', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const unit = readFileSync(join(root, 'deploy/printshopcrm.service'), 'utf8')
+  const rel = readFileSync(join(root, 'deploy/release.sh'), 'utf8')
+  const wd = /^\s*WorkingDirectory=(.+)$/m.exec(unit)?.[1]?.trim()
+  assert.ok(wd, 'the unit has no WorkingDirectory')
+  const appRoot = /^APP_ROOT="\$\{APP_ROOT:-(.+?)\}"/m.exec(rel)?.[1]
+  assert.ok(appRoot, 'release.sh no longer declares APP_ROOT — this assertion needs rewriting')
+  assert.ok(/ln -sfn "\$RELEASE" "\$APP_ROOT\/current"/.test(rel), 'release.sh no longer flips $APP_ROOT/current')
+  assert.equal(wd, `${appRoot}/current`,
+    `the service runs ${wd} but the deploy flips ${appRoot}/current — every deploy would ship nothing`)
+})
+await t('…and the install creates that symlink before the service is enabled', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const install = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+  const link = install.indexOf('/opt/printshopcrm/current')
+  const enable = install.indexOf('systemctl enable --now printshopcrm')
+  assert.ok(link > -1, 'INSTALL.md never creates /opt/printshopcrm/current, so the unit has nothing to run')
+  assert.ok(link < enable, 'INSTALL.md enables the service before the current symlink exists')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

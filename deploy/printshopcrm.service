@@ -21,7 +21,11 @@ Type=simple
 User=printshopcrm
 Group=printshopcrm
 
-WorkingDirectory=/opt/printshopcrm
+# `current`, not the app root. deploy/release.sh keeps each release in releases/<tag>/ and flips
+# this symlink; a unit pointed at the app root itself keeps running the original checkout, so every
+# deploy ships NOTHING while /health, verify-sync.sh and the rollback all report success. INSTALL.md
+# step 2 creates it pointing at the checkout, so a hand-managed install works exactly as before.
+WorkingDirectory=/opt/printshopcrm/current
 EnvironmentFile=/opt/printshopcrm/.env
 ExecStart=/usr/bin/node --no-warnings server.mjs
 
