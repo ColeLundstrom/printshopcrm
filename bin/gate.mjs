@@ -3691,6 +3691,31 @@ await t('the job stage select and the automation toggle re-read the server eithe
   assert.match(toggle, /automationsView\(\)/, 'it must re-read the server so the checkbox goes back')
 })
 
+/* ---------- the operator still has a way to make their own shop (v10) ----------
+ * The signup form now refuses PSC_ADMIN_EMAIL, so there has to be another door — refusing an
+ * address with no alternative would just move the dead end. */
+section('reserving the admin address leaves the operator a way in')
+await t('the admin CLI can create a shop, and says so in its own help', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'bin/admin.mjs'), 'utf8')
+  assert.match(src, /case 'create-shop'/, 'no create-shop command')
+  assert.match(src.slice(src.indexOf('function usage'), src.indexOf('function usage') + 1400), /create-shop/,
+    'create-shop exists but the help does not mention it, so nobody locked out will find it')
+})
+await t('…and the refusal names it, so the message is actionable', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf('reserved_email')
+  assert.ok(i > 0, 'signup no longer reserves the admin address')
+  assert.match(src.slice(i - 900, i), /create-shop/, 'the guard should point at the command that replaces it')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

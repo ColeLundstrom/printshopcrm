@@ -44,6 +44,12 @@ function usage() {
     node bin/admin.mjs promote <email>
         Make an existing member an owner. For when the only owner has left.
 
+    node bin/admin.mjs create-shop <shop-name> <email> [password]
+        Make a shop from the shell. The public signup form REFUSES the address in
+        PSC_ADMIN_EMAIL — otherwise whoever registers it first owns the whole install —
+        so this is how the operator creates their own shop. Generates a password if you
+        omit it. Works for any address, not just the admin one.
+
   Database: ${process.env.PSC_DB || '(default: ./data/printshop.db)'}
   Set PSC_DB to the path your server uses, or run with the service's .env.
 `)
@@ -109,6 +115,20 @@ switch (cmd) {
     // setMemberPassword deletes every session for this member — deliberately, so a compromised
     // one dies with the password. This line used to claim the opposite.
     ok('Every existing session for this account has been signed out.')
+    console.log()
+    break
+  }
+
+  case 'create-shop': {
+    const name = (args[0] || '').trim() || die('What is the shop called?  create-shop "Ace Prints" ops@example.com')
+    const email = (args[1] || '').trim().toLowerCase() || die('Which email owns it?')
+    const pw = args[2] || strongPassword()
+    if (T.getMemberByEmail(email)) die(`"${email}" already has an account. Use reset-password to get back into it.`)
+    const t = await T.createTenant({ shop_name: name, owner_name: name, owner_email: email, password: pw })
+    console.log()
+    ok(`Created ${t.shop_name}  (slug: ${t.slug})`)
+    ok(`Owner:    ${email}`)
+    ok(`Password: ${pw}`)
     console.log()
     break
   }

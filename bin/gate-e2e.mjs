@@ -1909,6 +1909,45 @@ try {
     chk('a hostile customer name does not break the row shape', String(/ENDTRNS\tPrintShopCRM/.test(iif.text)), '^false$')
   }
 
+  /* ---------- the platform admin address cannot be claimed from the signup form ----------
+   * requireAdmin() grants the Control Room on one test: isAdminEmail(req.tenant.owner_email).
+   * tenants.owner_email is written in exactly one place — createTenant(), reached from the
+   * UNAUTHENTICATED signup form — and nothing reserved the address. An operator sets
+   * PSC_ADMIN_EMAIL and restarts; the app is live from that second, and their own account does not
+   * exist until they get round to registering. Whoever signs up with it first (it is usually the
+   * support address printed on the operator's own website) gets the shop list, delete, suspend,
+   * and one-click sign-in as any shop on the install. */
+  {
+    const T6 = mkdtempSync(join(tmpdir(), 'psc-e2e-adminsquat-'))
+    const P6 = PORT + 12
+    const env6 = { ...process.env, PORT: String(P6), PSC_DB: join(T6, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P6}`, PSC_ADMIN_EMAIL: 'operator@example.com' }
+    const s6 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env6, stdio: ['ignore', 'pipe', 'pipe'] })
+    started.push(s6)
+    const hit6 = async (path, body) => {
+      try {
+        const res = await fetch(`http://127.0.0.1:${P6}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        return { status: res.status, text: await res.text() }
+      } catch { return { status: 0, text: '' } }
+    }
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P6}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      let out = await hit6('/api/auth/signup', { shop_name: 'Real Shop', owner_name: 'Rita', owner_email: 'real@shop.test', password: 'GatePass-123456' })
+      chk('an ordinary shop still signs up on an install with an admin address set', String(out.status), '^200$')
+      out = await hit6('/api/auth/signup', { shop_name: 'Squat', owner_name: 'Mal', owner_email: 'operator@example.com', password: 'GatePass-123456' })
+      chk('…but the platform admin address is refused', String(out.status), '^40[03]$')
+      chk('…and says so rather than failing mysteriously', out.text, 'reserved')
+      // Case and surrounding whitespace must not walk around it — isAdminEmail lower-cases both.
+      out = await hit6('/api/auth/signup', { shop_name: 'Squat2', owner_name: 'Mal', owner_email: '  OPERATOR@Example.COM ', password: 'GatePass-123456' })
+      chk('…in any casing', String(out.status), '^40[03]$')
+    } finally {
+      try { s6.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T6, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /* ---------- the price book cannot be filled with matrix junk ----------
    * `services` got a 100-entry cap and a DELETE route after it was used to mint 20,000 junk
    * services in one request. Its sibling `matrices` got neither, and the same trick worked better:

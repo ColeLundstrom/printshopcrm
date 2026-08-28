@@ -945,6 +945,16 @@ app.post('/api/auth/signup', ipLimit(6), wrap(async (req, res) => {
     console.log('signup honeypot tripped from', clientIp(req))
     return res.json({ ok: true, slug: 'pending', shop_name: b.shop_name || '', onboarding: true })
   }
+  // requireAdmin() grants the Control Room — the shop list, delete, suspend and one-click sign-in
+  // as any shop — on one test: isAdminEmail(tenant.owner_email). tenants.owner_email is written in
+  // exactly one place, createTenant(), reached from THIS unauthenticated form, and nothing
+  // reserved the address. An operator sets PSC_ADMIN_EMAIL and restarts; the app is live from that
+  // second and their own account does not exist until they register. Whoever signs up with it
+  // first owns the platform. It is normally the support address printed on the operator's own
+  // site, so it is not a guess. The operator makes their shop with `npm run admin -- create-shop`.
+  if (isAdminEmail(b.owner_email || b.email)) {
+    return res.status(403).json({ error: 'That address is reserved for this install\u2019s operator. Use another one.', code: 'reserved_email' })
+  }
   try {
     const t = await createTenant({ shop_name: b.shop_name, owner_name: b.owner_name, owner_email: b.owner_email || b.email, password: b.password })
     // Bind the session to the owner's own member row. Left null it falls back to "first owner by
