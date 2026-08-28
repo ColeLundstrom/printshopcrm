@@ -942,6 +942,25 @@ try {
     chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
   }
 
+  /* ---------- the API answers in JSON however you knock ----------
+   * The API 404 lived inside the GET-only SPA catch-all, so a PUT/POST/PATCH/DELETE to a path that
+   * does not exist fell through to Express's finalhandler and came back as an HTML error page —
+   * `Cannot PUT /api/v1/customers/1`, Content-Type text/html — while docs/API.md promises that all
+   * responses are JSON. The integrator's JSON.parse throws on the one shape they were never told
+   * about, which reads as a network fault rather than a wrong URL. */
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    const res404 = await fetch(`${BASE}/api/v1/definitely-not-a-route`, {
+      method, headers: { 'Content-Type': 'application/json', Cookie: cookieHeader() }, body: method === 'DELETE' ? undefined : '{}',
+    })
+    const body404 = await res404.text()
+    chk(`an unknown ${method} on /api is a 404`, String(res404.status), '^404$')
+    chk(`…answered in JSON, not an HTML error page`, String(res404.headers.get('content-type')), 'application/json')
+    let parsed = null
+    try { parsed = JSON.parse(body404) } catch { /* that is the defect */ }
+    chk(`…that an integrator can actually parse`, String(!!parsed?.error), '^true$')
+    chk(`…and that carries a machine-readable code, as the docs say`, String(parsed?.code ?? ''), '^unknown_endpoint$')
+  }
+
   /* ---------- a drafted follow-up can actually be sent, and a failed one retried ----------
    * Settings → Automation Modes says "Manual mode drafts and waits for a person", and queueEmail's
    * own comment says those messages "land in the outbox as drafts for a person to send". GET

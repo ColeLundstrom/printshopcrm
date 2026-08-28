@@ -6351,8 +6351,24 @@ const landingHtml = () => {
 }
 const hasLanding = () => EDITION === 'lite' && existsSync(LANDING_FILE)
 
+/**
+ * An unknown /api path answers in JSON, whatever the method.
+ *
+ * The API 404 lived inside the GET-only SPA catch-all, so a PUT, POST, PATCH or DELETE to a path
+ * that does not exist fell through to Express's finalhandler and came back as an HTML error page —
+ * `Cannot PUT /api/v1/customers/1`, Content-Type text/html — while docs/API.md promises "all
+ * responses are JSON". An integrator's JSON.parse throws on the one response shape it was never
+ * told about, which reads as a network fault rather than a wrong URL. Seen for real in this repo's
+ * own e2e output before the fix.
+ */
+app.use('/api', (req, res) => res.status(404).json({
+  error: `No such endpoint: ${req.method} /api${req.path === '/' ? '' : req.path}`,
+  code: 'unknown_endpoint',
+  docs: '/docs-api.html',
+}))
+
 app.get('/{*any}', (req, res) => {
-  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Unknown endpoint' })
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Unknown endpoint', code: 'unknown_endpoint' })
   // Anonymous visitor to the lite root → the sales page. req.tenant is set by the auth gate above.
   if (req.path === '/' && !req.tenant && hasLanding()) {
     return res.set('Cache-Control', 'no-cache').type('html').send(landingHtml())
