@@ -1596,6 +1596,39 @@ try {
     chk('…and the print package no longer contradicts itself', String(pkgLines), '^150$')
   }
 
+  /* ---------- a print package with approved art says so ----------
+   * ready/note gated on jobs.separation — a column NOTHING in the running product writes (only
+   * seed.mjs does, so the demo shop is the one install where this looks fine). Every real job
+   * therefore downloaded a "print-ready package" reading "Not print-ready: needs approved art"
+   * with the approved art's filename one key above the sentence. Prepress goes back to chase an
+   * approval that already happened, on DTF and embroidery jobs that cannot have a separation by
+   * definition, and no screen anywhere can record one — a permanent false negative. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'RIP Ready Rita', email: 'rip@e2e.test' } })
+    const ripC = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: ripC, items: [{ description: '48 DTF tanks', sizes: { M: 48 }, unit_price: 16 }] } })
+    const ripE = r.json?.id
+    await req('POST', `/api/estimates/${ripE}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${ripE}/convert`, { body: { due_date: '2026-11-30' } })
+    const ripJ = r.json?.job_id
+
+    let pkg = (await req('GET', `/api/jobs/${ripJ}/print-package`)).json || {}
+    chk('a job with no approved art is not print-ready', String(pkg.ready), '^false$')
+    chk('…and is told exactly what it is waiting for', String(pkg.note || ''), 'no approved art')
+
+    const form = new FormData()
+    form.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'proof.svg')
+    const up = await fetch(`${BASE}/api/jobs/${ripJ}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form })
+    const art = await up.json().catch(() => ({}))
+    chk('a proof uploads onto the job', String(up.status), '^200$')
+    await req('POST', `/api/art/${art?.art?.id ?? art?.id}/decide`, { body: { decision: 'approved', by: 'Rita' } })
+
+    pkg = (await req('GET', `/api/jobs/${ripJ}/print-package`)).json || {}
+    chk('a DTF job whose art IS approved is print-ready', String(pkg.ready), '^true$')
+    chk('…and its package does not claim the art is missing', String(pkg.note || ''), '^Ready for the RIP')
+    chk('…and it still carries the approved art it is talking about', String(pkg.approved_art?.version ?? ''), '^1$')
+  }
+
   /* ---------- an ordinary quantity bump does not collapse a two-garment job ----------
    * The 409 that refuses a flat grid over two garments read jobs.line_sizes RAW. That column
    * arrived by migration, so it is '[]' on every job written before it, and on those the

@@ -4070,9 +4070,15 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
     sizes: parse(j.sizes, {}), lines: jobLines(j), quantities: j.quantities,
     approved_art: approved ? { file: `/uploads/${approved.filename}`, version: approved.version } : null,
     separation: sep ? { mode: sep.mode, screens: sep.screens, inks: sep.inks, dark: sep.dark } : null,
-    ready: !!(approved && sep),
-    note: approved && sep ? 'Ready for the RIP — approved art, ink list and the full size grid.'
-      : 'Not print-ready: needs approved art.',
+    // Print-readiness is APPROVED ART. A screen separation is a screen-print-only extra that
+    // nothing in the running product records any more — jobs.separation is read everywhere and
+    // written only by seed.mjs, so the demo shop was the one install where this looked right.
+    // Gating on it told every DTF, embroidery and vinyl job, and every job on a real install,
+    // "needs approved art" with the approved art's filename one key above the sentence.
+    ready: !!approved,
+    note: !approved ? 'Not print-ready: no approved art on this job yet — send a proof and get it signed off.'
+      : sep ? 'Ready for the RIP — approved art, ink list and the full size grid.'
+        : 'Ready for the RIP — approved art and the full size grid. No screen separation is recorded (DTF, embroidery and vinyl do not use one).',
   })
 }))
 
