@@ -485,6 +485,71 @@ await t('quote → email → "no" advances to a closed reply, never re-quotes', 
   assert.ok(!isQuote(r5), 'final turn must not re-quote')
 })
 
+/* ---------- a website visitor cannot write on a customer who already exists ----------
+ * captureLead matches a typed email to an existing contact — useful, it keeps the thread on the
+ * right file — and then ran its enrichment UPDATEs, its opportunity INSERT and its estimate
+ * INSERT against that customer's real row. Nothing verified that the person typing the address
+ * had any connection to the mailbox. Observed end to end from the unauthenticated widget: a real
+ * customer's blank phone filled with the stranger's number (so every later SMS, and any staffer
+ * who dials it, reaches the stranger), a 'qualified' $20,648 opportunity on the account the
+ * shop's forecast is built from, and EST-1011 for $22,248.22 burned off nextEstimateNumber()
+ * against that customer's history. All of it looks legitimate on screen. */
+section('receptionist: a website visitor cannot write on an existing customer')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); ag.initAgent(db)
+  ag.saveBotConfig({ shop_name: 'Test Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+
+  // An ordinary email-only wholesale account, created the normal way.
+  const victimId = Number(dbm.run('INSERT INTO contacts (name, email, phone, created_at, updated_at) VALUES (?,?,?,?,?)',
+    'Northgate Booster Club', 'ap@northgate-boosters.org', '', dbm.now(), dbm.now()).lastInsertRowid)
+
+  const chat = async (lines) => {
+    const s = ag.startSession({ channel: 'web' })
+    const cur = () => ag.sessionByPublicId(s.public_id)
+    for (const l of lines) await ag.respond(cur(), l, ag.getBotConfig())
+  }
+  await chat([
+    'I need a price on 600 gildan 18500 hoodies, screen print, 2 color front',
+    'I am Victor Kroll, email ap@northgate-boosters.org and my cell is 213-555-9090',
+  ])
+
+  const victim = dbm.get('SELECT * FROM contacts WHERE id = ?', victimId)
+  await t('a stranger cannot fill in a real customer\'s blank phone number', () => {
+    assert.equal(victim.phone, '', `a website visitor wrote ${victim.phone} onto an existing customer`)
+  })
+  await t('…nor rename them', () => {
+    assert.equal(victim.name, 'Northgate Booster Club')
+  })
+  await t('…nor burn an estimate number against their account', () => {
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates WHERE contact_id = ?', victimId).c, 0)
+  })
+  await t('…and the deal they opened is a claim, not a qualified pipeline number', () => {
+    const o = dbm.get('SELECT * FROM opportunities WHERE contact_id = ? ORDER BY id DESC', victimId)
+    assert.ok(o, 'the thread should still be filed against the right customer')
+    assert.equal(o.stage, 'lead')
+    assert.match(String(o.notes || ''), /UNVERIFIED/)
+  })
+
+  // The other way round: a genuinely NEW lead is their own record, and nothing about that path
+  // may change — it is how the receptionist earns its keep.
+  await chat([
+    'quote 200 gildan 5000 tees, screen print, 1 color front',
+    'I am Dana Ruiz, dana@brand-new-lead.test, 619-555-0134',
+  ])
+  await t('a brand-new lead still gets a contact, a qualified deal and a drafted estimate', () => {
+    const c = dbm.get("SELECT * FROM contacts WHERE email = 'dana@brand-new-lead.test'")
+    assert.ok(c, 'a new visitor still becomes a customer')
+    assert.equal(c.phone, '619-555-0134', 'their own details are still captured')
+    const o = dbm.get('SELECT * FROM opportunities WHERE contact_id = ? ORDER BY id DESC', c.id)
+    assert.equal(o?.stage, 'qualified')
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates WHERE contact_id = ?', c.id).c, 1)
+  })
+}
+
 section('receptionist: one long message cannot become an unbounded prompt, forever')
 // Every DIRECT interpolation of the visitor's current message was bounded — 500 chars for intent,
 // 800 for a grounded answer, 1200 for extraction. The REPLAY of the conversation so far was not,
