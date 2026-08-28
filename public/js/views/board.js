@@ -567,11 +567,29 @@ function renderReceiving(jobId, pos) {
         <div class="dim" style="font-size:12px">${po.received}/${po.ordered} received${po.short > 0 ? ` · <span style="color:var(--amber)">${po.short} short</span>` : ''}</div>
       </div>
       ${shortLines.length ? `<div class="dim" style="font-size:11.5px;margin-top:5px">Short: ${shortLines.map((l) => `${l.short} ${esc(l.size)}`).join(', ')}</div>` : ''}
-      ${!po.fully_received ? `<button class="btn ghost sm" data-recv="${po.id}" style="margin-top:9px">Receive blanks</button>` : '<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Fully received</div>'}
+      ${po.status === 'closed'
+        ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Short-closed — ${po.short} never arrived</div>`
+        : po.fully_received
+          ? '<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Fully received</div>'
+          // Short-close is the way out when the distributor cancels the balance. Without it the
+          // only way to clear the job was to record blanks as received that never arrived.
+          : `<button class="btn ghost sm" data-recv="${po.id}" style="margin-top:9px">Receive blanks</button>
+             <button class="btn ghost sm" data-closepo="${po.id}" style="margin-top:9px">Short-close</button>`}
     </div>`
   }).join('')
   body.querySelectorAll('[data-recv]').forEach((b) => {
     b.addEventListener('click', () => { const po = pos.find((x) => String(x.id) === b.dataset.recv); if (po) openReceive(jobId, po) })
+  })
+  body.querySelectorAll('[data-closepo]').forEach((b) => {
+    b.addEventListener('click', () => confirmModal('Short-close this order?',
+      'The outstanding pieces are recorded as never arriving. The order stays on the job so the shortage is still visible, and the job can then be closed or deleted.',
+      async () => {
+        try {
+          await api.post(`/api/purchase-orders/${b.dataset.closepo}/close`, {})
+          toast('Order short-closed')
+          jobDetailView(jobId)
+        } catch (e) { toast(e.message, true) }
+      }))
   })
 }
 

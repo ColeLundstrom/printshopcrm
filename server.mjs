@@ -4092,6 +4092,34 @@ app.post('/api/purchase-orders/:id/receive', requireRole('manager'), wrap((req, 
   res.json(updated)
 }))
 
+/**
+ * Short-close a purchase order: the rest is not coming.
+ *
+ * DELETE /api/jobs/:id has told shops to do exactly this since it was written, and nothing
+ * anywhere could. 'closed' is READ by poAlreadySent() and written by nobody, and
+ * receivePurchaseOrder() can only reach 'received' on a FULL receipt — so a PO the distributor
+ * part-filled (a discontinued colour, the routine case) sat at 'partial', which is in
+ * PO_STILL_OUT, and the job could never leave the board. It kept counting toward the board's
+ * piece totals and Capacity's committed pieces, and the one escape the product offered was to
+ * record blanks as received that never arrived: a number that then feeds the shortage report, the
+ * pick ticket, the packing list and the job's blank cost in ROI. A permanently wedged board or a
+ * corrupted inventory record, under a refusal naming an action that did not exist.
+ *
+ * Deliberately not a delete. The money was spent and the shortage is a fact the shop may still
+ * need to chase with the distributor, so the order stays, says what happened, and stops being an
+ * open commitment.
+ */
+app.post('/api/purchase-orders/:id/close', requireRole('manager'), wrap((req, res) => {
+  const po = getPurchaseOrder(+req.params.id)
+  if (!po) return res.status(404).json({ error: 'Purchase order not found', code: 'not_found' })
+  if (po.status === 'closed') return res.json({ ok: true, already: true, purchase_order: po })
+  if (po.fully_received) return res.status(409).json({ error: `${po.po_number || `PO #${po.id}`} arrived in full — there is nothing outstanding to close.`, code: 'po_fully_received' })
+  const reason = String(req.body?.reason || '').slice(0, 200)
+  run("UPDATE purchase_orders SET status = 'closed' WHERE id = ?", po.id)
+  logActivity('note', `${po.po_number || `PO #${po.id}`} short-closed — ${po.received}/${po.ordered} received, ${po.short} never arrived${reason ? ` — ${reason}` : ''}`, { job_id: po.job_id })
+  res.json({ ok: true, purchase_order: getPurchaseOrder(po.id) })
+}))
+
 /* ================= RIP / PRINT PACKAGE ================= */
 
 /**

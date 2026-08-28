@@ -3872,6 +3872,22 @@ section('a backup taken while the shop is working still restores')
   })
 }
 
+/* ---------- the short-close the delete refusal names is on a screen (v10) ---------- */
+section('short-closing a part-filled order is reachable without a shell')
+await t('the receiving card offers it, and confirms first', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  assert.match(src, /data-closepo=/, 'the receiving card has no short-close control')
+  const i = src.indexOf("querySelectorAll('[data-closepo]')")
+  assert.ok(i > 0, 'the short-close button is rendered but nothing is bound to it')
+  const handler = src.slice(i, i + 700)
+  assert.match(handler, /confirmModal/, 'short-close is irreversible — it must ask first')
+  assert.match(handler, /purchase-orders\/\$\{b\.dataset\.closepo\}\/close/, 'it must call the close route')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

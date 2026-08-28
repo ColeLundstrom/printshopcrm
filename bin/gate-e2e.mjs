@@ -802,6 +802,46 @@ try {
       String((list.json?.purchase_orders || []).length), '^1$')
   }
 
+  /* ---------- a backorder the distributor cancelled does not wedge the job forever ----------
+   * DELETE /api/jobs/:id has told shops to "short-close it if the rest is not coming" since it was
+   * written, and nothing anywhere could: 'closed' is READ by poAlreadySent and written by nobody,
+   * and receivePurchaseOrder can only reach 'received' on a FULL receipt. So a PO the distributor
+   * part-filled — the routine case, a discontinued colour — sat at 'partial', which is in
+   * PO_STILL_OUT, and the job could never leave the board. The one escape the product offered was
+   * to sign for blanks that never arrived, which then feeds the shortage report, the pick ticket,
+   * the packing list and the job's blank cost in ROI. A wedged board or a corrupted inventory
+   * record, and the refusal naming an action that does not exist. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Short PO Sherry', email: 'shortpo@e2e.test' } })
+    const shortC = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: shortC, title: 'Short PO job', garment: 'Gildan 5000 Heavy Cotton Tee — Black', quantities: '24 S / 60 M' } })
+    const shortJ = r.json?.id
+    await req('PUT', '/api/settings', { body: { sanmar_user: 'gate', sanmar_pass: 'gate', sanmar_cust: '1' } })
+    await req('POST', `/api/jobs/${shortJ}/po/submit`, { body: {} })
+    r = await req('GET', `/api/jobs/${shortJ}/purchase-orders`)
+    const shortPo = (r.json?.purchase_orders || [])[0]
+    chk('the job has a purchase order out at the distributor', String(!!shortPo), '^true$')
+    // 60 of the 84 arrive; the distributor cancels the rest.
+    const arrived = (shortPo?.lines || [])[1]
+    await req('POST', `/api/purchase-orders/${shortPo?.id}/receive`, { body: { receipts: [{ line_id: arrived?.id, qty: arrived?.qty_ordered }] } })
+    r = await req('GET', `/api/purchase-orders/${shortPo?.id}`)
+    chk('…and it is short after a partial delivery', String(r.json?.short > 0), '^true$')
+
+    r = await req('DELETE', `/api/jobs/${shortJ}`)
+    chk('the job cannot be deleted while blanks are still out', String(r.status), '^409$')
+    chk('…and the refusal tells the shop to short-close it', r.text, 'short-close')
+
+    r = await req('POST', `/api/purchase-orders/${shortPo?.id}/close`, { body: { reason: 'distributor cancelled the balance' } })
+    chk('…and short-closing is something that exists', String(r.status), '^200$')
+    chk('…without pretending the missing blanks turned up', String(r.json?.purchase_order?.received), `^${arrived?.qty_ordered}$`)
+    chk('…and the shortage is still on the record', String(r.json?.purchase_order?.short > 0), '^true$')
+    const acts = ((await req('GET', '/api/activities')).json || []).filter((a) => /short-closed/.test(String(a.description || '')))
+    chk('…and the timeline says it happened', String(acts.length >= 1), '^true$')
+
+    r = await req('DELETE', `/api/jobs/${shortJ}`)
+    chk('…so the job can finally leave the board', String(r.status), '^200$')
+  }
+
   /* ---------- a documented filter must actually filter ----------
    * docs/API.md has documented `?invoice_id=` on GET /api/v1/payments since the endpoint shipped.
    * The handler ignored it, so an integration reconciling ONE invoice was handed every payment in
