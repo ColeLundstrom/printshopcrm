@@ -289,7 +289,7 @@ try {
 
   /* ---- public REST API (/api/v1) ---- */
   r = await req('POST', '/api/developers/key/rotate')
-  const key = r.json?.api_key || ''
+  let key = r.json?.api_key || ''
   chk('API key issues', key, '^psc_live_')
   const asKey = (k = key) => ({ cookies: false, headers: { Authorization: `Bearer ${k}` } })
 
@@ -299,6 +299,32 @@ try {
   chk('v1 rejects a bogus API key', r.status, '^401$')
   r = await req('GET', '/api/v1/customers', asKey())
   chk('v1 accepts the issued key', r.status, '^200$')
+
+  /* An Authorization header is an explicit statement about WHICH shop the request is for, and the
+   * session branch above answered before the Bearer branch was ever reached — so a browser cookie
+   * riding the same connection silently overrode the key. This suite could not see it because
+   * asKey() hard-codes cookies:false and nothing ever sent both. It matters because revoking a key
+   * is the shop's ONLY response to a leak: with a cookie present a revoked key kept returning 200,
+   * as did an invalid one, and the published 120/min limiter never ran. */
+  const asKeyAndCookie = (k = key) => ({ cookies: true, headers: { Authorization: `Bearer ${k}` } })
+  r = await req('GET', '/api/v1/customers', asKeyAndCookie('psc_live_not_a_real_key'))
+  chk('a bogus API key is still refused when a browser cookie rides along', String(r.status), '^401$')
+  r = await req('GET', '/api/v1/customers', asKeyAndCookie())
+  chk('…and a good key still works with one', String(r.status), '^200$')
+  const deadKey = key
+  r = await req('POST', '/api/developers/key/rotate')
+  key = r.json?.api_key || ''   // every later case uses the live key, as a real integrator would
+  chk('rotating issues a new key', String(key !== deadKey && key.startsWith('psc_live_')), '^true$')
+  r = await req('GET', '/api/v1/customers', asKeyAndCookie(deadKey))
+  chk('a key the shop has revoked is dead even with a cookie', String(r.status), '^401$')
+  r = await req('GET', '/api/v1/customers', asKey(deadKey))
+  chk('…as it already was without one', String(r.status), '^401$')
+  r = await req('GET', '/api/v1/customers', asKeyAndCookie())
+  chk('…and the replacement key is the one that works', String(r.status), '^200$')
+  // A plain cookie request to /api/v1 must still authenticate as the session — requireRole() on
+  // those routes depends on the member's real role, not on the API key's blanket 'manager'.
+  r = await req('GET', '/api/v1/customers', { cookies: true })
+  chk('a cookie-only request to v1 is unaffected', String(r.status), '^200$')
 
   // Number('1e400') is Infinity, and binding that as a SQLite OFFSET threw a 500 — from a public,
   // documented query parameter. A garbage paging value must degrade to the default, not crash.

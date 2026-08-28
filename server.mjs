@@ -714,7 +714,17 @@ const requireRole = (min) => (req, res, next) => hasRole(req, min) ? next() : re
 // with the signed-in member and their role attached for permission checks.
 app.use((req, res, next) => {
   if (!AUTH_ENABLED) return next()
-  const session = getSession(parseCookies(req).psc_session)
+  const lp = gatePath(req)
+  // A caller that sent an API key has told us which shop this request is for. A browser cookie
+  // that happens to ride the same connection must never answer for it. The session branch below
+  // ran first and returned, so a cookie silently overrode the key: an INVALID key returned 200, a
+  // REVOKED key returned 200 — and revoking is a shop's only response to a leak — a key belonging
+  // to a DIFFERENT shop was served (and written into) the cookie's shop, and the published 120/min
+  // limiter never ran. Every integration built or debugged in a browser holds both.
+  // Only a Bearer psc_… on /api/v1 suppresses the cookie; a plain cookie request to /api/v1 still
+  // authenticates as the session with its real role, which is what requireRole() there depends on.
+  const bearer = lp.startsWith('/api/v1/') ? /^Bearer\s+(psc_\S+)$/i.exec(req.headers.authorization || '') : null
+  const session = bearer ? null : getSession(parseCookies(req).psc_session)
   if (session) {
     const { tenant, member } = session
     req.tenant = tenant
@@ -723,7 +733,6 @@ app.use((req, res, next) => {
     // A host an OWNER really signed in on is the only host we have any evidence for. Remember it,
     // so an emailed reset link never has to trust a Host header a stranger chose — trustedOrigin().
     if (req.role === 'owner' && req.method === 'GET') rememberPublicOrigin(req)
-    const lp = gatePath(req)
     // Soft paywall: once the trial lapses with no plan, block new work (writes) but keep read + billing open.
     const isWrite = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
     const exempt = lp.startsWith('/api/auth/') || lp.startsWith('/api/billing') || lp.startsWith('/api/admin/') || lp.startsWith('/api/onboarding') || lp.startsWith('/api/stripe/')
@@ -732,13 +741,11 @@ app.use((req, res, next) => {
     }
     return tenantStore.run({ db: openTenantDb(tenant.slug), slug: tenant.slug, tenant }, () => next())
   }
-  const lp = gatePath(req)
   // Public REST API: Authorization: Bearer psc_live_… resolves the shop the same way a session
   // does — same store shape, same billing paywall — so every /api/v1 handler runs in the right
   // tenant database. Available on EVERY plan; the incumbents gate this behind their top tier.
   if (lp.startsWith('/api/v1/')) {
-    const m = /^Bearer\s+(psc_\S+)$/i.exec(req.headers.authorization || '')
-    const tenant = m ? getTenantByApiKey(m[1]) : null
+    const tenant = bearer ? getTenantByApiKey(bearer[1]) : null
     if (!tenant) return res.status(401).json({ error: 'Provide your API key: Authorization: Bearer psc_live_…  (Settings → Developers)', code: 'invalid_api_key' })
     // Mirror the session rule: a lapsed shop can still READ (so an integration can export its own
     // data — the Data Freedom promise is worth nothing if a lapsed shop is locked out of it) but
