@@ -5339,7 +5339,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
       <div class="to">Prepared for <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
       <table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="totals"><div><span>Subtotal</span><span>${money(e.subtotal)}</span></div>
-        ${Number(e.tax) > 0
+        ${Math.abs(Number(e.tax) || 0) > 0.005
           ? `<div><span>Tax (${esc(e.tax_rate ?? s.tax_rate)}%)</span><span>${money(e.tax)}</span></div>`
           : `<div><span>Tax</span><span>${c?.tax_exempt ? 'Exempt (resale)' : money(0)}</span></div>`}
         <div class="grand"><span>Total</span><span>${money(e.total)}</span></div></div>

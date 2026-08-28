@@ -2266,6 +2266,56 @@ section('untrusted text cannot become structure in a document we generate')
   })
 }
 
+section('a document never hides money between its subtotal and its total')
+// The tax row was rendered `if (Number(doc.tax) > 0)`. A NEGATIVE tax is reachable in ordinary use —
+// a non-taxable setup fee plus a taxable discount line drives the tax base below zero — and `> 0`
+// dropped the row entirely. The estimate PDF then printed Subtotal $400.00 directly above Total
+// $391.75 with the $8.25 appearing nowhere on it, on the document the customer signs. The public
+// approval page was worse: it printed "Tax $0.00", which is not merely incomplete but untrue.
+{
+  const { computeTotals } = await import('../lib/db.mjs')
+  const { renderDocument } = await import('../lib/pdf.mjs')
+  const ITEMS = [
+    { description: 'Screen setup', qty: 1, unit_price: 500, taxable: false },
+    { description: 'Loyalty discount', qty: 1, unit_price: -100, taxable: true },
+  ]
+
+  await t('the case really does produce a negative tax', () => {
+    const t2 = computeTotals(ITEMS, 8.25, {})
+    assert.equal(t2.subtotal, 400)
+    assert.equal(t2.tax, -8.25)
+    assert.equal(t2.total, 391.75)
+    // …and the three numbers must be self-consistent, or the document cannot be made honest.
+    assert.equal(Math.round((t2.subtotal + t2.tax) * 100) / 100, t2.total)
+  })
+
+  await t('the estimate PDF shows the negative tax line', () => {
+    const t2 = computeTotals(ITEMS, 8.25, {})
+    const pdf = renderDocument('ESTIMATE', {
+      doc: { estimate_number: 'EST-1001', created_at: '2026-08-27', ...t2, tax_rate: 8.25 },
+      contact: { name: 'Ace Corp' },
+      settings: { shop_name: 'Test Shop', shop_tagline: '', estimate_terms: '' },
+      items: ITEMS, upcharges: {},
+    }).toString('latin1')
+    assert.match(pdf, /Tax/, 'the tax row must be on the document')
+    assert.match(pdf, /-\$8\.25/, 'and it must state the actual figure, signed')
+  })
+
+  await t('the public estimate page does not claim the tax is zero', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+    const i = src.indexOf('Tax (${esc(e.tax_rate')
+    assert.ok(i > 0, 'the public page should still render a tax row')
+    const branch = src.slice(i - 220, i)
+    assert.ok(!/Number\(e\.tax\) > 0/.test(branch),
+      'a `> 0` test renders "Tax $0.00" over a total that is lower than the subtotal')
+    assert.match(branch, /Math\.abs/, 'the row must appear whenever the tax is non-zero either way')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
