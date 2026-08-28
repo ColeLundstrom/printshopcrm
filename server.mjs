@@ -1696,10 +1696,43 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
 
-// Deleting a customer cascades through their estimates, invoices and payments, so it is a
-// manager-level call — the same bar as changing the shop's settings.
+/**
+ * Deleting a customer cascades — estimates, invoices, PAYMENTS, jobs, proofs, scans and the whole
+ * activity trail go with the row, and manager-role was the only thing standing in the way.
+ *
+ * A customer who has been invoiced is a bookkeeping record, not a contact card. Reproduced on a
+ * live instance: one DELETE took revenue MTD from $3,600 to $0, took INV-1001 and the cheque
+ * recorded against it with it, and answered {"ok":true}. DELETE /api/estimates/:id already refuses
+ * to destroy an estimate that has been invoiced, and says so in words — without the same rule
+ * here, deleting the customer was simply the way around it.
+ *
+ * So refuse, and say what is in the way, rather than archive: a shop does not want its paid
+ * invoices moved somewhere it has to go and find them, and archiving would want a new column and
+ * a new filter on every list query for a case a shop meets once a year. A customer with no live
+ * invoice and no recorded payment still deletes, which is what this route is actually for — a
+ * typo, a duplicate, a spam lead. A VOIDED invoice does not block, because voiding is how a shop
+ * retracts one raised in error. A recorded payment always blocks, void or not: that is money that
+ * really arrived, and no screen in the product would ever mention it again.
+ */
 app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
-  run('DELETE FROM contacts WHERE id = ?', +req.params.id)
+  const id = +req.params.id
+  const c = get('SELECT id, name FROM contacts WHERE id = ?', id)
+  if (!c) return res.status(404).json({ error: 'Customer not found', code: 'not_found' })
+  const live = get("SELECT COUNT(*) AS n FROM invoices WHERE contact_id = ? AND status != 'void'", id).n
+  const paid = round2(get('SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.contact_id = ?', id).v)
+  if (live > 0 || paid > 0) {
+    const bits = []
+    if (live > 0) bits.push(`${live} invoice${live === 1 ? '' : 's'}`)
+    if (paid > 0) bits.push(`${money(paid)} in recorded payments`)
+    return res.status(409).json({
+      error: `${c.name} has ${bits.join(' and ')} — deleting the customer would delete ${bits.length > 1 ? 'them' : 'that'} too. Void an invoice raised in error and try again; a customer who has actually paid you stays on the books.`,
+      code: 'has_financials',
+      invoices: live,
+      amount_paid: paid,
+    })
+  }
+  run('DELETE FROM contacts WHERE id = ?', id)
+  logActivity('contact', `Customer deleted — ${c.name}`, {})
   res.json({ ok: true })
 }))
 
@@ -2600,8 +2633,46 @@ app.post('/api/scan', wrap((req, res) => {
   res.json(scanJobPayload(get('SELECT * FROM jobs WHERE id = ?', j.id)))
 }))
 
+/**
+ * Deleting a job with a purchase order still out at the distributor.
+ *
+ * A submitted PO is a real, chargeable order: blanks are on a truck. purchase_orders.job_id is
+ * ON DELETE SET NULL and purchaseOrdersForJob() is keyed on exactly that column, so deleting the
+ * job never lost the order — it lost every way of ever seeing it again. There is no purchase-order
+ * list screen anywhere in the product; all three references in public/js are keyed on a job id.
+ * The activity row went too (activities.job_id CASCADEs), so the customer's timeline did not
+ * mention it either. Reproduced: PSC-JOB-1002, 180 pieces, $1,080, S&S order SS-88213 — after the
+ * delete, purchasing could see nothing at all, and 180 shirts arrived against an order no screen
+ * in the shop knew about. The confirm dialog said only "and its art versions will be removed".
+ *
+ * So: refuse while the order is still open, and name it, and say what to do. Once it has been
+ * received or closed — which the receiving card on the job page can already do — the delete goes
+ * through, so this is a step to take rather than a wall to hit. A draft or failed PO never went
+ * anywhere and never blocks: that is the case deleting is the right answer to.
+ */
+const PO_STILL_OUT = ['submitting', 'submitted', 'placed_manually', 'partial']
 app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
-  run('DELETE FROM jobs WHERE id = ?', +req.params.id)
+  const id = +req.params.id
+  const j = get('SELECT * FROM jobs WHERE id = ?', id)
+  if (!j) return res.status(404).json({ error: 'Job not found', code: 'not_found' })
+  const pos = purchaseOrdersForJob(id)
+  const out = pos.filter((p) => PO_STILL_OUT.includes(String(p.status)) && poAlreadySent(p))
+  if (out.length) {
+    return res.status(409).json({
+      code: 'job_has_purchase_order',
+      error: `${j.job_number} has ${out.length === 1 ? 'a purchase order that is still out' : `${out.length} purchase orders still out`} — `
+        + `${out.map((p) => `${p.po_number || 'PO'} (${p.ordered} pcs${p.order_id ? `, ${p.supplier || 'supplier'} order ${p.order_id}` : ''}, ${String(p.status).replace('_', ' ')})`).join(', ')}. `
+        + `Receive it on this job, or short-close it if the rest is not coming, and then delete. Deleting now would leave the blanks with nothing to receive them against, and no screen that could find the order again.`,
+      purchase_orders: out.map((p) => ({ id: p.id, po_number: p.po_number, supplier: p.supplier, status: p.status, order_id: p.order_id, ordered: p.ordered, received: p.received, est_cost: p.est_cost })),
+    })
+  }
+  // Written against the CONTACT, not the job: activities.job_id cascades, so a row carrying one
+  // would be deleted by the very statement it exists to record.
+  const settled = pos.filter((p) => poAlreadySent(p))
+  logActivity('job', `Job ${j.job_number} deleted — ${j.title || 'Untitled'}`
+    + (settled.length ? ` (purchase order${settled.length === 1 ? '' : 's'} ${settled.map((p) => p.po_number || `#${p.id}`).join(', ')} had already been received)` : ''),
+    { contact_id: j.contact_id })
+  run('DELETE FROM jobs WHERE id = ?', id)
   res.json({ ok: true })
 }))
 

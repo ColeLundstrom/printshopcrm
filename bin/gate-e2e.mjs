@@ -1041,6 +1041,68 @@ try {
       String(posted.headers.get('access-control-allow-credentials') ?? 'none'), '^none$')
   }
 
+  /* ---------- a delete never takes money or a placed order with it ----------
+   * Two routes, one class of defect: a DELETE that cascades further than the confirm dialog says,
+   * onto records nothing in the product can ever show again.
+   *
+   * DELETE /api/contacts/:id cascades through estimates, invoices, PAYMENTS, jobs, proofs and the
+   * whole activity trail. Reproduced on a live instance: one call took revenue MTD from $3,600 to
+   * $0, took INV-1001 and the cheque recorded against it with it, and answered {"ok":true} — while
+   * DELETE /api/estimates/:id one level down already refuses to destroy an invoiced estimate and
+   * says why. Deleting the customer was simply the way around that rule.
+   *
+   * DELETE /api/jobs/:id sets purchase_orders.job_id to NULL, and purchaseOrdersForJob() is keyed
+   * on that column — so a submitted, chargeable order at the distributor survived the delete with
+   * no screen anywhere able to find it, and the activity row that mentioned it cascaded away too. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Ledger Ladder Co', email: 'ledger@e2e.test' } })
+    const payerId = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: payerId, items: [{ description: 'Gildan 5000 Heavy Cotton Tee — Black — 1/0 Front', sizes: { M: 80 }, unit_price: 12, taxable: true }] } })
+    const payerEst = r.json?.id
+    await req('POST', `/api/estimates/${payerEst}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${payerEst}/convert`, { body: { due_date: '2026-12-04' } })
+    const payerInv = r.json?.invoice_id
+    const payerJob = r.json?.job_id
+    r = await req('POST', `/api/invoices/${payerInv}/payments`, { body: { amount: 480, method: 'check' } })
+    chk('a customer pays part of an invoice', String(r.status), '^200$')
+
+    r = await req('DELETE', `/api/contacts/${payerId}`)
+    chk('deleting a customer who has paid you is refused', String(r.status), '^409$')
+    chk('…and the refusal names the money that is in the way', r.text, '480|recorded payments')
+    r = await req('GET', `/api/invoices/${payerInv}`)
+    chk('…and their invoice is still there', String(r.status), '^200$')
+
+    // The way out the refusal describes has to actually work.
+    await req('POST', `/api/invoices/${payerInv}/void`, { body: { reason: 'raised in error' } })
+    r = await req('DELETE', `/api/contacts/${payerId}`)
+    chk('a voided invoice does not block, but the payment on it still does', String(r.status), '^409$')
+
+    // A customer with nothing attached is exactly what this route is for.
+    r = await req('POST', '/api/contacts', { body: { name: 'Typo Duplicate', email: 'typo@e2e.test' } })
+    r = await req('DELETE', `/api/contacts/${r.json?.id}`)
+    chk('a customer with no money attached still deletes', String(r.status), '^200$')
+
+    // --- and the same rule for a job with an order already at the distributor ---
+    // A SanMar account, which is the ordinary shape: PromoStandards submit is provisioned per
+    // account, so the PO lands as 'placed_manually' — a human typed it into the portal and the
+    // blanks are just as much on their way. No network call is made on that path.
+    await req('PUT', '/api/settings', { body: { sanmar_user: 'gate-user', sanmar_pass: 'gate-pass', sanmar_cust: '12345' } })
+    r = await req('POST', `/api/jobs/${payerJob}/po/submit`, { body: {} })
+    const placed = r.json?.purchase_order
+    chk('a purchase order is placed against the job', `${placed?.status ?? '?'} ${r.text.slice(0, 200)}`, 'submitted|placed_manually|partial')
+    r = await req('DELETE', `/api/jobs/${payerJob}`)
+    chk('deleting a job whose blanks are already ordered is refused', String(r.status), '^409$')
+    chk('…and the refusal names the purchase order, so purchasing knows what to chase', r.text, String(placed?.po_number || 'PSC-'))
+    chk('…and the order is still findable afterwards', String((await req('GET', `/api/purchase-orders/${placed?.id}`)).status), '^200$')
+
+    // Receiving it is the way out the refusal describes, and it has to actually work.
+    const recv = (placed?.lines || []).map((l) => ({ line_id: l.id, qty: l.qty_ordered }))
+    r = await req('POST', `/api/purchase-orders/${placed?.id}/receive`, { body: { receipts: recv } })
+    chk('the blanks can be received against it', String(r.status), '^200$')
+    r = await req('DELETE', `/api/jobs/${payerJob}`)
+    chk('…and then the job deletes', String(r.status), '^200$')
+  }
+
   /* ---------- a stranger on the widget may be LINKED to a customer, never WRITE on one ----------
    * captureLead() decides that from chat_sessions.channel, and this public, unauthenticated route
    * took that value straight out of the request body while lib/agent.mjs treated anything that
