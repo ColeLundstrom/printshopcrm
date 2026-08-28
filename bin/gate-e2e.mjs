@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { WebSocket } from 'ws'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
@@ -1529,6 +1530,62 @@ try {
     } finally {
       try { s2p.kill() } catch { /* already gone */ }
       try { rmSync(T2, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+  /* ---------- a deploy drains instead of being killed, even with a tab open ----------
+   *
+   * server.close() waits for every open connection to finish, and an upgraded WebSocket never
+   * finishes on its own. So one browser left open on the shop's board carried EVERY deploy past
+   * the graceful path and into the 8s hard-exit timer — `process.exit(0)`, which severs whatever
+   * request was mid-flight. Measured before the fix: 8016 ms with a single socket, 14 ms with
+   * none. The graceful drain the deploy depends on had therefore never actually run in production.
+   *
+   * The assertion is TIMED, and the margin is deliberate: broken is 8s, fixed is tens of ms, and
+   * 3s sits far from both so a loaded machine cannot flip it. Its own server, own database, own
+   * port, so the main run is untouched. */
+  {
+    const T3 = mkdtempSync(join(tmpdir(), 'psc-e2e-drain-'))
+    const P3 = PORT + 8
+    const s3 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P3), PSC_DB: join(T3, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P3}` },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    started.push(s3)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P3}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P3}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Drain Ink', owner_name: 'D', owner_email: 'd@drain.test', password: 'GatePass-123456' }),
+      })
+      const raw = su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)
+      const cookie = raw.map((c) => String(c).split(';')[0]).join('; ')
+      chk('the drain instance has a signed-in shop', String(su.status), '^200$')
+
+      const sock = new WebSocket(`ws://127.0.0.1:${P3}/ws`, { headers: { Cookie: cookie } })
+      const opened = await new Promise((r) => {
+        sock.on('open', () => r(true)); sock.on('close', () => r(false)); sock.on('error', () => r(false))
+      })
+      chk('…and a browser tab holds a live socket to it', String(opened), '^true$')
+
+      const closeCode = new Promise((r) => { sock.on('close', (c) => r(c)); setTimeout(() => r(0), 6000).unref?.() })
+      const t0 = Date.now()
+      s3.kill('SIGTERM')
+      const exited = await Promise.race([
+        new Promise((r) => s3.on('exit', () => r(true))),
+        sleep(12000).then(() => false),
+      ])
+      const ms = Date.now() - t0
+      chk('SIGTERM exits the server', String(exited), '^true$')
+      chk(`an open tab does not hold a deploy open (${ms}ms, was 8016ms)`, String(ms < 3000), '^true$')
+      chk('…and the tab is told to go away, so it reconnects itself', String(await closeCode), '^1001$')
+    } finally {
+      try { s3.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T3, { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
 

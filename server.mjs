@@ -54,7 +54,7 @@ import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
 import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor } from './lib/pricebook.mjs'
 import * as matrices from './lib/matrices.mjs'
 import { runNurtureDrip } from './lib/nurture.mjs'
-import { initRealtime, broadcast, roomSize } from './lib/realtime.mjs'
+import { initRealtime, closeRealtime, broadcast, roomSize } from './lib/realtime.mjs'
 import { createServer } from 'node:http'
 
 initAutomations(db)
@@ -6183,7 +6183,13 @@ const shutdown = (sig) => {
   if (shuttingDown) return
   shuttingDown = true
   console.log(`\n  ${sig} — draining…`)
+  // Stop accepting, then hang up the live sockets. server.close() waits for EVERY connection to
+  // end and an upgraded WebSocket never ends on its own, so a single open browser tab used to
+  // carry every deploy all the way to the hard exit below — 8016ms measured, versus 14ms with no
+  // tab open — and that hard exit is what severs an in-flight request. The graceful path only
+  // existed on paper until the live layer was taught to let go.
   server.close(() => process.exit(0))
+  closeRealtime()
   setTimeout(() => process.exit(0), 8000).unref() // never hang a deploy
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'))
