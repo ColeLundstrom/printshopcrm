@@ -105,7 +105,14 @@ else
     exit 1
   }
   echo "→ $BAK_N database(s) backed up to $BAK_DIR"
-  echo "  restore one with:  sudo systemctl stop $SERVICE && cp '$BAK_DIR/<path>.db' '$DATA_ROOT/<path>.db' && sudo systemctl start $SERVICE"
+  # NOT `cp`. Every database here runs in WAL mode, so a crash — the thing you are recovering from
+  # — leaves a -wal on disk holding committed frames. SQLite validates a WAL by its own checksums,
+  # not against the file it sits beside, so `cp` puts the backup down and the next start replays
+  # the crash-time log straight over it. Measured: restore a 500-customer backup, get the 1000 rows
+  # you were trying to undo, quick_check "ok", exit 0. Which is 28 lines below this script's own
+  # warning that a stale -wal is worse than none.
+  echo "  put one back with:  sudo systemctl stop $SERVICE && node $APP_ROOT/current/bin/restore.mjs '$BAK_DIR' --data-root '$DATA_ROOT' && sudo systemctl start $SERVICE"
+  echo "  (it prints the plan and changes nothing until you add --yes)"
   # Keep the five most recent snapshots; the rest are just disk, and backup.sh re-archives them.
   ls -1dt "$DATA_ROOT/backups/pre-"* 2>/dev/null | tail -n +6 | while IFS= read -r OLD; do rm -rf "$OLD"; done
 fi

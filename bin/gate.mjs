@@ -4551,6 +4551,162 @@ await t('Back out of an unsaved grid asks first', async () => {
   assert.match(src, /getElementById\('mx-table'\)/, "…and that prompt must not follow the user onto screens that aren't the grid")
 })
 
+/* ---------- a backup can actually be put back ----------
+ * The product's only in-place restore instruction was one line printed by deploy/release.sh:
+ * `systemctl stop && cp <backup>.db <live>.db && systemctl start` — contradicted twenty-eight
+ * lines above it in the same script, which says in as many words that a stale -wal beside a
+ * restored database is worse than none.
+ *
+ * Every PrintShopCRM database runs in WAL mode, so a crash — the thing you are recovering FROM —
+ * leaves a -wal on disk holding committed frames. SQLite validates a WAL by its own internal
+ * checksums, not against the database it sits beside, so the next start replays the crash-time
+ * log straight over the file that was just restored. Measured below, end to end: restore a
+ * 500-customer backup with cp and read back the 1000 rows you were trying to undo, quick_check
+ * "ok", exit 0. Green, silent, and the shop still has the data it asked to be rid of — or, with
+ * the timings the other way round, none at all. */
+section('a backup can actually be put back')
+{
+  const { mkdtempSync, rmSync, mkdirSync, copyFileSync, existsSync, readdirSync, writeFileSync, statSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const { DatabaseSync } = await import('node:sqlite')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  /** A data root with one WAL-mode database, a backup of it at 500 rows, and a crash-time -wal. */
+  const fixture = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psc-restore-'))
+    const data = join(dir, 'data'), backup = join(dir, 'backup')
+    mkdirSync(data, { recursive: true }); mkdirSync(backup, { recursive: true })
+    const live = join(data, 'printshop.db')
+    let d = new DatabaseSync(live)
+    d.exec('PRAGMA journal_mode = WAL')
+    d.exec('CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)')
+    for (let i = 0; i < 500; i++) d.exec(`INSERT INTO customers (name) VALUES ('C${i}')`)
+    d.close()
+    copyFileSync(live, join(backup, 'printshop.db'))          // the backup: 500 customers
+    // 500 more rows in a CHILD that is then SIGKILLed. A clean close checkpoints and removes the
+    // -wal, which is the opposite of the situation being reproduced: the orphaned log only exists
+    // because the process died holding it, and that is the whole defect.
+    const crash = `
+      import { DatabaseSync } from 'node:sqlite'
+      const d = new DatabaseSync(${JSON.stringify(live)})
+      d.exec('PRAGMA journal_mode = WAL')
+      for (let i = 0; i < 500; i++) d.exec("INSERT INTO customers (name) VALUES ('L" + i + "')")
+      process.kill(process.pid, 'SIGKILL')`
+    try { execFileSync(process.execPath, ['--input-type=module', '-e', crash], { stdio: 'ignore' }) }
+    catch { /* SIGKILL is the point */ }
+    return { dir, data, backup, live }
+  }
+  const count = (p) => { const d = new DatabaseSync(p, { readOnly: true }); try { return d.prepare('SELECT COUNT(*) AS n FROM customers').get().n } finally { d.close() } }
+  const run = (args, ok = true) => {
+    try { return execFileSync(process.execPath, [join(ROOT, 'bin', 'restore.mjs'), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
+    catch (e) { if (ok) throw new Error(`restore.mjs failed: ${e.stdout || ''}${e.stderr || ''}`); return `${e.stdout || ''}${e.stderr || ''}` }
+  }
+
+  await t('cp really does leave the shop with the data it asked to be rid of', () => {
+    const f = fixture()
+    try {
+      assert.ok(existsSync(`${f.live}-wal`), 'precondition: a crash leaves a -wal on disk')
+      copyFileSync(join(f.backup, 'printshop.db'), f.live)     // the instruction we used to print
+      const d = new DatabaseSync(f.live, { readOnly: true })
+      const check = d.prepare('PRAGMA quick_check').get().quick_check
+      const n = d.prepare('SELECT COUNT(*) AS n FROM customers').get().n
+      d.close()
+      assert.equal(check, 'ok', 'and it reports itself perfectly healthy, which is the trap')
+      assert.equal(n, 1000, `the stale -wal replayed over the restore — 500 was asked for, ${n} came back`)
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('bin/restore.mjs puts back what the backup actually holds', () => {
+    const f = fixture()
+    try {
+      const staleBytes = statSync(`${f.live}-wal`).size
+      run([f.backup, '--data-root', f.data, '--yes'])
+      // Not "no -wal exists": restore.mjs verifies the file it just wrote, and opening a WAL-mode
+      // database legitimately creates a fresh, empty log of its own. What must be gone is the
+      // CRASH-TIME log — so assert on the thing that actually matters (the data), and that
+      // whatever log is there now is not the 2MB one carrying the 500 rows we are undoing.
+      assert.ok(staleBytes > 100_000, `precondition: the crash left a real log (${staleBytes} bytes)`)
+      const after = existsSync(`${f.live}-wal`) ? statSync(`${f.live}-wal`).size : 0
+      assert.ok(after < staleBytes / 10, `the crash-time log is still beside the restore (${after} bytes)`)
+      assert.equal(count(f.live), 500, 'the restored database must hold the backup, not the crash')
+      // And it must STAY 500 — a stale log replays on the next open, not on the one that wrote it.
+      assert.equal(count(f.live), 500, 'and still hold it the next time the app opens it')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…and changes nothing at all until it is told to', () => {
+    const f = fixture()
+    try {
+      const out = run([f.backup, '--data-root', f.data])
+      assert.equal(count(f.live), 1000, 'a plain run is a plan, not an action')
+      assert.match(out, /Nothing has been changed/)
+      assert.match(out, /500 customers/, 'it has to show what is in the backup')
+      assert.match(out, /replacing: 1000 customers/, 'and what it would replace, so the shop can tell them apart')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…keeping what it replaced, -wal and all, so the restore is undoable', () => {
+    const f = fixture()
+    try {
+      run([f.backup, '--data-root', f.data, '--yes'])
+      const safety = join(f.data, 'backups')
+      const kept = readdirSync(safety).filter((n) => n.startsWith('pre-restore-'))
+      assert.equal(kept.length, 1, 'the replaced database has to be kept somewhere')
+      const files = readdirSync(join(safety, kept[0]))
+      assert.ok(files.includes('printshop.db'), 'the file that was replaced')
+      assert.ok(files.includes('printshop.db-wal'), 'and the -wal, which may be the only copy of the last few minutes of work')
+      // Undo it, exactly as the tool prints: the crash-time state comes back.
+      copyFileSync(join(safety, kept[0], 'printshop.db'), f.live)
+      copyFileSync(join(safety, kept[0], 'printshop.db-wal'), `${f.live}-wal`)
+      assert.equal(count(f.live), 1000, 'putting the safety copy back has to restore what was there')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('a corrupt backup never overwrites a live database', () => {
+    const f = fixture()
+    try {
+      writeFileSync(join(f.backup, 'printshop.db'), Buffer.alloc(16384, 7))
+      const out = run([f.backup, '--data-root', f.data, '--yes'], false)
+      assert.match(out, /did not pass PRAGMA quick_check/, 'it has to say why it stopped')
+      assert.equal(count(f.live), 1000, 'and the live database must be exactly as it was')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('a database something still has open is not restored over', () => {
+    const f = fixture()
+    // A handle that HOLDS the database, which is what a running service looks like from outside.
+    const service = new DatabaseSync(f.live)
+    try {
+      service.exec('PRAGMA journal_mode = WAL')
+      service.exec('BEGIN EXCLUSIVE')
+      const out = run([f.backup, '--data-root', f.data, '--yes'], false)
+      assert.match(out, /still open/, 'restoring under a running service corrupts the file')
+      assert.match(out, /systemctl stop/, 'and it has to say what to do about it')
+    } finally { try { service.close() } catch { /* already gone */ } rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('nothing still tells an operator to restore with cp', async () => {
+    const { readFileSync } = await import('node:fs')
+    for (const file of ['deploy/release.sh', 'INSTALL.md', 'deploy/DEPLOY.md']) {
+      const text = readFileSync(join(ROOT, file), 'utf8')
+      for (const line of text.split('\n')) {
+        if (/^\s*[#>]/.test(line)) continue                       // prose and comments may discuss it
+        // The paths are quoted in shell and in the docs, so allow a closing quote before the gap.
+        if (!/cp\s+\S*\.db['"]?\s+\S*\.db/.test(line)) continue
+        // A cp is only safe where the stale log is cleared first — DEPLOY.md's Docker block does
+        // exactly that, on the line above, and is correct. Judge the block, not the line.
+        const i = text.indexOf(line)
+        const block = text.slice(Math.max(0, i - 700), i)
+        assert.ok(/restore\.mjs/.test(line) || /rm -f[^\n]*-wal/.test(block),
+          `${file}: copying a .db without clearing the -wal beside it replays the crash over the restore — ${line.trim().slice(0, 100)}`)
+      }
+    }
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

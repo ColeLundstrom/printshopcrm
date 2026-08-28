@@ -303,6 +303,34 @@ PSC_DB=$PWD/20260823-030000/printshop.db npm start
 If that starts and your customers are in it, you have backups. If you have never done it, you
 don't.
 
+### Putting a backup back
+
+```bash
+tar xzf 20260823-030000.tar.gz          # if you are restoring from a nightly archive
+sudo systemctl stop printshopcrm
+npm run restore -- 20260823-030000 --data-root /var/lib/printshopcrm          # shows the plan
+npm run restore -- 20260823-030000 --data-root /var/lib/printshopcrm --yes    # does it
+sudo systemctl start printshopcrm
+```
+
+The first run changes nothing. It prints what it would replace and what with — "500 customers"
+over "1000 customers" — so you can see you have the right archive before anything is overwritten.
+
+**Do not use `cp`.** Every PrintShopCRM database runs in WAL mode, so a crash — the thing you are
+usually recovering from — leaves a `printshop.db-wal` on disk holding committed pages. SQLite
+validates that log by its own internal checksums, not against the database it sits beside, so
+copying a backup over the `.db` and leaving the log there means the next start replays the
+crash-time log straight over what you just restored. It exits 0, `PRAGMA quick_check` says `ok`,
+and you are back to the state you were trying to undo. `bin/restore.mjs` moves the `-wal` and
+`-shm` aside instead of leaving or deleting them, so the last few minutes of work are still
+recoverable if you need them.
+
+It also verifies the backup *before* touching the live database, refuses to run while anything
+still has a database open, keeps a copy of everything it replaced in
+`/var/lib/printshopcrm/backups/pre-restore-<timestamp>/` so the restore is itself undoable, and
+puts the original owner and permissions back — otherwise a `sudo` restore leaves root-owned files
+and the service comes up with "attempt to write a readonly database".
+
 ---
 
 ## Upgrading
