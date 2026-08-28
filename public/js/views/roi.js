@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, setPage, empty, on, go } from '../core.js'
+import { api, $, $$, esc, money, money0, setPage, empty, on, go , onOnce} from '../core.js'
 
 /**
  * Job Profitability: real revenue vs. real cost on every
@@ -62,7 +62,7 @@ export async function roiView() {
     <p class="dim" style="font-size:11.5px;margin-top:14px;text-align:center">Blank costs come from your garment catalog. Connect an <strong>S&amp;S Activewear</strong> or <strong>SanMar</strong> account in Settings for live wholesale pricing on every job.</p>`
 
   on($('#roi-sort'), '[data-s]', (_e, el) => { sortBy = el.dataset.s; roiView() })
-  on($('#view'), '[data-job]', (_e, el) => go(`/jobs/${el.dataset.job}`))
+  onOnce($('#view'), '[data-job]', (_e, el) => go(`/jobs/${el.dataset.job}`))
 }
 
 const roiList = (rows) => rows.length ? `<table class="tbl"><tbody>${rows.map((r) => `

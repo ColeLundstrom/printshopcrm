@@ -1,4 +1,4 @@
-import { api, $, esc, money, setPage, on, toast, empty } from '../core.js'
+import { api, $, esc, money, setPage, on, toast, empty , onOnce} from '../core.js'
 
 /**
  * Books — the bookkeeper page: A/R aging (the report InkSoft users say they can't get) and the
@@ -65,13 +65,13 @@ function render(aging, qbo) {
            </table>` : '<p class="dim">No sync activity yet — record a payment and it will queue itself.</p>'}`}
     </div>`
 
-  on($('#view'), '[data-qbo-retry]', async (e) => {
+  onOnce($('#view'), '[data-qbo-retry]', async (e) => {
     const btn = e.target.closest('[data-qbo-retry]')
     btn.disabled = true; btn.textContent = 'Retrying…'
     try { await api.post(`/api/qbo/queue/${btn.dataset.qboRetry}/retry`); toast('Synced to QuickBooks'); booksView() }
     catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Retry' }
   })
-  on($('#view'), '[data-qbo-dismiss]', async (e) => {
+  onOnce($('#view'), '[data-qbo-dismiss]', async (e) => {
     const btn = e.target.closest('[data-qbo-dismiss]')
     try { await api.post(`/api/qbo/queue/${btn.dataset.qboDismiss}/dismiss`); booksView() }
     catch (err) { toast(err.message, true) }

@@ -1,4 +1,4 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData } from '../core.js'
+import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData , onOnce} from '../core.js'
 
 /* ---------- art queue ---------- */
 
@@ -29,7 +29,7 @@ export async function artView() {
     </div>`).join('')
     : empty('◈', 'No art yet', 'Upload art from a job to start the proof workflow.', '<a class="btn" href="#/board">Go to the job board</a>')
 
-  on($('#view'), '[data-job]', (_e, t) => go(`/jobs/${t.dataset.job}`))
+  onOnce($('#view'), '[data-job]', (_e, t) => go(`/jobs/${t.dataset.job}`))
 }
 
 /* ---------- activity ---------- */
@@ -761,12 +761,12 @@ export async function settingsView() {
   })
 
   // Inline role change.
-  on($('#view'), '.role-sel', async (_e, t) => {
+  onOnce($('#view'), '.role-sel', async (_e, t) => {
     try { await api.patch(`/api/members/${t.dataset.mid}`, { role: t.value }); toast('Role updated'); window.dispatchEvent(new Event('psc:settings')) }
     catch (e) { toast(e.message, true); settingsView() }
   }, 'change')
 
-  on($('#view'), '[data-du]', (_e, t) => confirmModal('Remove this login?', 'They lose access immediately and are signed out everywhere.', async () => {
+  onOnce($('#view'), '[data-du]', (_e, t) => confirmModal('Remove this login?', 'They lose access immediately and are signed out everywhere.', async () => {
     try { await api.del(`/api/members/${t.dataset.du}`); toast('Removed'); settingsView() }
     catch (e) { toast(e.message, true) }
   }, 'Remove'))

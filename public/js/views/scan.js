@@ -1,4 +1,4 @@
-import { api, $, esc, setPage, on, toast } from '../core.js'
+import { api, $, esc, setPage, on, toast , onOnce} from '../core.js'
 
 /**
  * Floor Mode — scan a work ticket's barcode with the phone camera, see the job, tap once to
@@ -53,7 +53,7 @@ export async function scanView() {
       <div id="scan-job"></div>
     </div>`
 
-  on($('#view'), '#scan-start', async () => {
+  onOnce($('#view'), '#scan-start', async () => {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       const v = $('#scan-video')
@@ -84,7 +84,7 @@ export async function scanView() {
   })
 
   // Without this the only way to switch the camera off while still on the page was to reload it.
-  on($('#view'), '#scan-stop', () => {
+  onOnce($('#view'), '#scan-stop', () => {
     stopCamera()
     const hint = $('#scan-cam-hint')
     if (hint) hint.textContent = '📷 Point the camera at a work-ticket barcode.'
@@ -97,7 +97,7 @@ export async function scanView() {
     if (code) lookup(code)
   })
 
-  on($('#view'), '[data-advance]', async (e) => {
+  onOnce($('#view'), '[data-advance]', async (e) => {
     const btn = e.target.closest('[data-advance]')
     const jobId = Number(btn.dataset.job)
     const stage = btn.dataset.advance

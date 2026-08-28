@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast } from '../core.js'
+import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast , onOnce} from '../core.js'
 
 /**
  * Capacity & Promise Dates — the question no MIS answers: can the shop physically hit this date
@@ -139,7 +139,7 @@ function jobRow(j) {
 }
 
 function wire(d) {
-  on($('#view'), '[data-job]', (_e, el) => go(`/jobs/${el.dataset.job}`))
+  onOnce($('#view'), '[data-job]', (_e, el) => go(`/jobs/${el.dataset.job}`))
 
   const runPromise = () => {
     const pieces = Number($('#pq')?.value) || 0

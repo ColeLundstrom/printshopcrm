@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal } from '../core.js'
+import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal , onOnce } from '../core.js'
 
 /* Custom price matrices — the shop's own price sheets, in any shape.
  *
@@ -68,27 +68,27 @@ const tplHtml = (t) => `<button class="mx-tpl-card" data-tpl="${esc(t.key)}" typ
 </button>`
 
 function wireList() {
-  const root = $('#view')
-  on(root, '[data-edit]', (_e, el) => go(`/matrices/${el.dataset.edit}`))
-  on(root, '[data-tpl]', async (_e, el) => {
+  const root = $('#view') // persistent: bind with onOnce, never on()
+  onOnce(root, '[data-edit]', (_e, el) => go(`/matrices/${el.dataset.edit}`))
+  onOnce(root, '[data-tpl]', async (_e, el) => {
     try {
       const { matrix } = await api.post('/api/matrices', { template: el.dataset.tpl })
       toast(`${matrix.name} added — it's yours now, change anything`)
       go(`/matrices/${matrix.id}`)
     } catch (e) { toast(e.message, true) }
   })
-  on(root, '[data-dup]', async (_e, el) => {
+  onOnce(root, '[data-dup]', async (_e, el) => {
     try {
       const { matrix } = await api.post(`/api/matrices/${el.dataset.dup}/duplicate`)
       toast(`Copied to “${matrix.name}”`)
       go(`/matrices/${matrix.id}`)
     } catch (e) { toast(e.message, true) }
   })
-  on(root, '[data-def]', async (_e, el) => {
+  onOnce(root, '[data-def]', async (_e, el) => {
     try { await api.post(`/api/matrices/${el.dataset.def}/default`); toast('New quotes start on this matrix'); drawList() }
     catch (e) { toast(e.message, true) }
   })
-  on(root, '[data-del]', (_e, el) => {
+  onOnce(root, '[data-del]', (_e, el) => {
     const m = cache.matrices.find((x) => String(x.id) === el.dataset.del)
     confirmModal('Delete this matrix?',
       `“${m.name}” and its ${m.filled} price${m.filled === 1 ? '' : 's'} are removed. Estimates already priced from it keep their prices — nothing on a saved quote changes.`,
@@ -237,24 +237,24 @@ function countCells() {
 }
 
 function wireEditor() {
-  const root = $('#view')
+  const root = $('#view') // persistent: bind with onOnce, never on()
 
   // Header + cell edits patch the working copy in place — redrawing would blur the field mid-type.
-  on(root, '.mx-in', (_e, el) => {
+  onOnce(root, '.mx-in', (_e, el) => {
     const v = el.value.trim()
     m.cells[+el.dataset.r][+el.dataset.c] = v === '' ? null : Math.max(0, Math.round(Number(v) * 100) / 100)
     markDirty()
   }, 'input')
-  on(root, '.mx-h[data-col]', (_e, el) => { m.cols[+el.dataset.col] = el.value; markDirty() }, 'input')
-  on(root, '.mx-h[data-row]', (_e, el) => { m.rows[+el.dataset.row] = el.value; markDirty() }, 'input')
+  onOnce(root, '.mx-h[data-col]', (_e, el) => { m.cols[+el.dataset.col] = el.value; markDirty() }, 'input')
+  onOnce(root, '.mx-h[data-row]', (_e, el) => { m.rows[+el.dataset.row] = el.value; markDirty() }, 'input')
 
-  on(root, '[data-delrow]', (_e, el) => {
+  onOnce(root, '[data-delrow]', (_e, el) => {
     if (m.rows.length <= 1) return toast('A matrix needs at least one row')
     const i = +el.dataset.delrow
     m.rows.splice(i, 1); m.cells.splice(i, 1)
     markDirty(); drawGrid()
   })
-  on(root, '[data-delcol]', (_e, el) => {
+  onOnce(root, '[data-delcol]', (_e, el) => {
     if (m.cols.length <= 1) return toast('A matrix needs at least one column')
     const i = +el.dataset.delcol
     m.cols.splice(i, 1); m.cells.forEach((row) => row.splice(i, 1))

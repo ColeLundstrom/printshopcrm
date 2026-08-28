@@ -1,4 +1,4 @@
-import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate } from '../core.js'
+import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate , onOnce} from '../core.js'
 
 /**
  * Developers — API key, webhook subscriptions, delivery log, docs. On every plan: the
@@ -16,7 +16,7 @@ export async function developersView() {
   // A re-fetch after an action now just repaints; the listeners stay put.
   const refresh = async () => { try { paint(await api.get('/api/developers')) } catch (e) { toast(e.message, true) } }
 
-  on($('#view'), '#dev-rotate', async () => {
+  onOnce($('#view'), '#dev-rotate', async () => {
     try {
       const r = await api.post('/api/developers/key/rotate')
       $('#dev-key-full').innerHTML = `<div class="dev-secret">Your new key — copy it now, it won't be shown again:<br><code>${esc(r.api_key)}</code></div>`
@@ -24,11 +24,11 @@ export async function developersView() {
       toast('New API key created')
     } catch (e) { toast(e.message, true) }
   })
-  on($('#view'), '#dev-revoke', async () => {
+  onOnce($('#view'), '#dev-revoke', async () => {
     try { await api.post('/api/developers/key/revoke'); toast('API key revoked'); refresh() }
     catch (e) { toast(e.message, true) }
   })
-  on($('#view'), '#dev-add-wh', () => {
+  onOnce($('#view'), '#dev-add-wh', () => {
     modal({
       title: 'Add webhook',
       body: `<label>URL<input name="url" placeholder="https://hooks.zapier.com/…" required /></label>
@@ -51,12 +51,12 @@ export async function developersView() {
       },
     })
   })
-  on($('#view'), '[data-wh-toggle]', async (e) => {
+  onOnce($('#view'), '[data-wh-toggle]', async (e) => {
     const b = e.target.closest('[data-wh-toggle]')
     try { await api.patch(`/api/developers/webhooks/${b.dataset.whToggle}`, { active: b.dataset.active !== '1' }); refresh() }
     catch (err) { toast(err.message, true) }
   })
-  on($('#view'), '[data-wh-del]', async (e) => {
+  onOnce($('#view'), '[data-wh-del]', async (e) => {
     const b = e.target.closest('[data-wh-del]')
     try { await api.del(`/api/developers/webhooks/${b.dataset.whDel}`); refresh() }
     catch (err) { toast(err.message, true) }

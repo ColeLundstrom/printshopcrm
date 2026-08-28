@@ -123,6 +123,30 @@ export function on(root, sel, fn, evt = 'click') {
   })
 }
 
+/**
+ * on(), for a root that OUTLIVES the render — #view above all, which is repainted and never
+ * replaced. on() attaches; it does not replace. So every re-render added another listener and
+ * the same click ran the handler once more each time.
+ *
+ * This has now been fixed three times in three different screens (84ee9ad was the last), because
+ * the shape is invisible at the call site: the code looks correct, and it only misbehaves the
+ * second time you visit the page. The damage is real — Books fired 1, then 2, then 4, then 8,
+ * then 16 QuickBooks retries per click; one click of a price-matrix row's × deleted two rows of
+ * prices; one click of Duplicate made 32 copies of a matrix with no cap and no bulk delete.
+ *
+ * Keyed on (root, event, selector), so binding twice is a no-op and re-entering a view is free.
+ */
+const boundOnce = new WeakMap()
+export function onOnce(root, sel, fn, evt = 'click') {
+  if (!root) return
+  let seen = boundOnce.get(root)
+  if (!seen) boundOnce.set(root, seen = new Set())
+  const key = `${evt}|${sel}`
+  if (seen.has(key)) return
+  seen.add(key)
+  on(root, sel, fn, evt)
+}
+
 /* ---------- toast ---------- */
 
 let toastTimer

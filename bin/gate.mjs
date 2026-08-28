@@ -1249,6 +1249,60 @@ await t('parse() hands back the fallback for a NULL column', async () => {
  *  - Node 22.4 and 22.12 both die with ERR_UNKNOWN_BUILTIN_MODULE on node:sqlite. The floor is
  *    22.13.0, and the docs said 22.0 — sending a 22.12 user to a troubleshooting entry that told
  *    them to check they had 22. */
+/* on() attaches a listener; it does not replace one. #view is repainted and never replaced, so
+ * every binding made during a render stacked, and the same click ran the handler once more each
+ * time. This has been fixed three times in three different screens now (84ee9ad was the last)
+ * because it is invisible at the call site — the code reads correctly and only misbehaves the
+ * second time you open the page. Measured at HEAD with the real core.js:
+ *   Books   — retry click 1 fired 1 QuickBooks retry, click 2 fired 2, click 3 fired 4, then 8, 16
+ *   Matrices— one click of Duplicate made 2 copies, then 4, then 32, with no cap and no bulk delete
+ *   Matrix editor — ONE click of a row's × deleted TWO rows of prices, with no confirm and no undo
+ *   Developers — three visits, then one click rotated the API key 3 times, so the owner copies a
+ *                key that is already dead
+ * onOnce() is keyed on (root, event, selector), so the fourth instance of this cannot ship. */
+section('a delegated handler on a persistent root is bound once, not once per render')
+await t('no view binds on() to the shared #view', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = join(root, 'public/js/views')
+  const offenders = []
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    const src = readFileSync(join(dir, f), 'utf8')
+    src.split('\n').forEach((line, i) => {
+      // The persistent roots: #view itself, and the `root` const the matrices screens take from it.
+      if (/\bon\(\s*\$\('#view'\)/.test(line) || /^\s*on\(root,/.test(line)) offenders.push(`${f}:${i + 1}`)
+    })
+  }
+  assert.deepEqual(offenders, [], `these bind on() to a root that outlives the render — use onOnce(): ${offenders.join(', ')}`)
+})
+await t('onOnce really binds once, however many times the view is re-entered', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+  assert.match(src, /export function onOnce/, 'core.js must provide the bind-once helper')
+  // Drive the real helper against a minimal root that behaves like #view: listeners accumulate,
+  // the element itself is never replaced.
+  const listeners = []
+  const fakeRoot = {
+    addEventListener: (evt, fn) => listeners.push({ evt, fn }),
+    contains: () => true,
+  }
+  const mod = await import(`../public/js/core.js?once=${Date.now()}`)
+  let fired = 0
+  for (let i = 0; i < 5; i++) mod.onOnce(fakeRoot, '[data-x]', () => { fired++ })
+  assert.equal(listeners.length, 1, 'five renders must leave one listener, not five')
+  const target = { closest: () => target }
+  for (const l of listeners) l.fn({ target })
+  assert.equal(fired, 1, 'one click must run the handler once')
+  // A different selector on the same root is a different binding and must still attach.
+  mod.onOnce(fakeRoot, '[data-y]', () => {})
+  assert.equal(listeners.length, 2)
+})
+
 section('the install instructions produce the install they describe')
 await t('every documented way to start the app reads the .env it tells you to write', async () => {
   const { readFileSync } = await import('node:fs')

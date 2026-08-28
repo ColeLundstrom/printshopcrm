@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce} from '../core.js'
 
 let filterTag = ''
 
@@ -257,7 +257,7 @@ export async function contactDetailView(id) {
     </div>
   </div>`
 
-  on($('#view'), '[data-go]', (_e, t) => go(t.dataset.go))
+  onOnce($('#view'), '[data-go]', (_e, t) => go(t.dataset.go))
   $('#edit').onclick = () => contactForm(c, () => contactDetailView(id))
   $('#new-est').onclick = () => go(`/estimates/new?contact=${id}`)
   const again = $('#same-again')

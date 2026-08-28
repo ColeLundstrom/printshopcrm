@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal } from '../core.js'
+import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal , onOnce} from '../core.js'
 
 /* Pricing Matrix + margin-floor guard — the shop's whole price grid, generated from its own
    costing inputs, with the real margin of every cell and a hard flag on anything that loses money. */
@@ -127,7 +127,7 @@ function wireBook(b) {
   bookData = b
   if (bookBound) return
   bookBound = true
-  on($('#view'), '#pm-tabs button', (e, el) => loadChart(el.dataset.c))
+  onOnce($('#view'), '#pm-tabs button', (e, el) => loadChart(el.dataset.c))
 
   const readCard = (card) => {
     const g = (f) => card.querySelector(`[data-f="${f}"]`)?.value
@@ -138,7 +138,7 @@ function wireBook(b) {
       setup: { label: label || null, fee: g('setupFee'), per: g('setupPer') },
     }
   }
-  on($('#view'), '.pb-save', async (e, el) => {
+  onOnce($('#view'), '.pb-save', async (e, el) => {
     const card = el.closest('.pb-svc'), name = card.dataset.svc, note = card.querySelector('.pb-note')
     note.textContent = 'Saving…'
     try {
@@ -147,14 +147,14 @@ function wireBook(b) {
       setTimeout(() => loadBook(), 700)
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
   })
-  on($('#view'), '.pb-reset', async (e, el) => {
+  onOnce($('#view'), '.pb-reset', async (e, el) => {
     const name = el.closest('.pb-svc').dataset.svc
     await api.del(`/api/pricebook/${encodeURIComponent(name)}`)
     toast(`${name} reset`); loadBook()
   })
-  on($('#view'), '#mx-svc', (_e, el) => loadMatrix(el.value), 'change')
-  on($('#view'), '#mx-colors', (_e, el) => loadMatrix(null, Number(el.value) || 8), 'change')
-  on($('#view'), '#mx-save', async () => {
+  onOnce($('#view'), '#mx-svc', (_e, el) => loadMatrix(el.value), 'change')
+  onOnce($('#view'), '#mx-colors', (_e, el) => loadMatrix(null, Number(el.value) || 8), 'change')
+  onOnce($('#view'), '#mx-save', async () => {
     const note = $('#mx-note'); note.textContent = 'Saving…'
     try {
       const r = await api.put('/api/pricebook', { matrices: { [mxState.service]: collectMatrixCells() } })
@@ -162,7 +162,7 @@ function wireBook(b) {
       setTimeout(() => loadMatrix(), 600)
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
   })
-  on($('#view'), '#mx-file', async (_e, el) => {
+  onOnce($('#view'), '#mx-file', async (_e, el) => {
     const file = el.files && el.files[0]; if (!file) return
     const note = $('#mx-note'); note.textContent = 'Reading your sheet…'
     try {
@@ -174,7 +174,7 @@ function wireBook(b) {
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
     el.value = ''
   })
-  on($('#view'), '#pb-add', async () => {
+  onOnce($('#view'), '#pb-add', async () => {
     const name = $('#pb-new-name').value.trim()
     if (!name) return toast('Give the service a name')
     const existing = {}
