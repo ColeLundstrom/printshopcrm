@@ -1570,6 +1570,73 @@ try {
     chk('…and the print package no longer contradicts itself', String(pkgLines), '^150$')
   }
 
+  /* ---------- a two-garment job that took a deposit can still have its sizes corrected ----------
+   * A closed ring, and the purest "a human cannot fix it" in the product. The customer adds four
+   * hoodies to an order that is already invoiced and part-paid. Every exit was shut:
+   *   PUT /api/jobs/:id     → 409 multi_garment_quantities, "edit the split on the estimate"
+   *   PUT /api/estimates/:id→ 409 "Already invoiced — edit the invoice, not the estimate"
+   *   PUT /api/invoices/:id → 200, and touches nothing but due_date and po_number
+   *   POST .../void         → 409 "Remove those payments first" (deleting real cash to fix a size)
+   * The 409 already hands the caller the exact per-garment structure it wants back, so PUT now
+   * accepts it. Nothing else in the ring changes: the refusals are all correct, there just has to
+   * be one door. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Two Garment Tina', email: 'tina@e2e.test' } })
+    const tgC = r.json?.id
+    r = await req('POST', '/api/estimates', {
+      body: {
+        contact_id: tgC,
+        items: [
+          { description: 'Gildan 5000 Tee — Black — 2/0 Front', sizes: { S: 20, M: 40 }, unit_price: 11 },
+          { description: 'Gildan 18500 Hoodie — Black — 2/0 Front', sizes: { M: 10, L: 10 }, unit_price: 28 },
+        ],
+      },
+    })
+    const tgE = r.json?.id
+    await req('POST', `/api/estimates/${tgE}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${tgE}/convert`, { body: { due_date: '2026-12-15' } })
+    const tgJ = r.json?.job_id, tgI = r.json?.invoice_id ?? r.json?.id
+    await req('POST', `/api/invoices/${tgI}/payments`, { body: { amount: 200, method: 'check' } })
+
+    // The ring, asserted so it cannot quietly re-close somewhere else.
+    r = await req('PUT', `/api/jobs/${tgJ}`, { body: { quantities: '20 S / 40 M / 14 L' } })
+    chk('a flat grid over two garments is still refused, with the split in hand',
+      `${r.status}|${r.json?.code}|${(r.json?.lines || []).length}`, '^409\\|multi_garment_quantities\\|2$')
+    r = await req('PUT', `/api/estimates/${tgE}`, { body: { items: [] } })
+    chk('…and the estimate still sends you to the invoice', String(r.status), '^409$')
+    r = await req('POST', `/api/invoices/${tgI}/void`, { body: { reason: 'sizes changed' } })
+    chk('…and voiding still refuses to walk over recorded cash', `${r.status}|${r.json?.code}`, '^409\\|invoice_has_payments$')
+
+    // The door: hand back the structure the 409 gave you, with the hoodie count corrected.
+    r = await req('PUT', `/api/jobs/${tgJ}`, {
+      body: {
+        line_sizes: [
+          { description: 'Gildan 5000 Tee — Black — 2/0 Front', garment: 'Gildan 5000', sizes: { S: 20, M: 40 } },
+          { description: 'Gildan 18500 Hoodie — Black — 2/0 Front', garment: 'Gildan 18500', sizes: { M: 10, L: 14 } },
+        ],
+      },
+    })
+    chk('the shop can correct the split per garment on the job', String(r.status), '^200$')
+    const tgPo = (await req('GET', `/api/jobs/${tgJ}/po`)).json || {}
+    chk('…and the purchase order buys 84, not 80', String(tgPo.total_units), '^84$')
+    const tgPkg = (await req('GET', `/api/jobs/${tgJ}/print-package`)).json || {}
+    chk('…and the print package still shows two garments', String((tgPkg.lines || []).length), '^2$')
+    const tgPkgUnits = (tgPkg.lines || []).reduce((t, l) => t + Object.values(l.sizes || {}).reduce((a, n) => a + Number(n || 0), 0), 0)
+    chk('…adding up to the corrected count', String(tgPkgUnits), '^84$')
+    const tgJob = (await req('GET', `/api/jobs/${tgJ}`)).json || {}
+    const tgGrid = typeof tgJob.sizes === 'string' ? JSON.parse(tgJob.sizes || '{}') : (tgJob.sizes || {})
+    chk('…and the board\'s combined grid agrees with the per-garment split',
+      String(Object.values(tgGrid).reduce((a, n) => a + Number(n || 0), 0)), '^84$')
+
+    // Garbage must not reach the PO. A size count that is not a number would order blanks by it.
+    r = await req('PUT', `/api/jobs/${tgJ}`, { body: { line_sizes: [{ garment: 'X', sizes: { M: 'lots' } }] } })
+    chk('a size count that is not a number is refused', String(r.status), '^400$')
+    r = await req('PUT', `/api/jobs/${tgJ}`, { body: { line_sizes: [] } })
+    chk('…as is emptying the split entirely', String(r.status), '^400$')
+    const tgPo2 = (await req('GET', `/api/jobs/${tgJ}/po`)).json || {}
+    chk('…and neither refusal moved the order', String(tgPo2.total_units), '^84$')
+  }
+
   /* ---------- one bad opportunity value must not blank the whole pipeline ----------
    * round2's non-finite fallback returned Infinity, so `value: "1e400"` stored Inf in the money
    * column. SUM() over that column then made the shop's Open Pipeline and Weighted Pipeline KPIs

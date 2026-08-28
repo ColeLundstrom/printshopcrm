@@ -3337,6 +3337,45 @@ section('a paused drip does not wake up about a deleted record')
   })
 }
 
+/* ---------- a refusal the UI can act on, not just print (v10) ----------
+ * The API answers a two-garment size edit with 409 {code:'multi_garment_quantities', lines:[…]} —
+ * the exact structure the caller needs to send back. api.req threw away everything but `error`,
+ * so every screen could do was toast the sentence, and that sentence's advice ("edit the split on
+ * the estimate") is refused one route away on an invoiced job. A dead end made of four correct
+ * refusals. The body now rides on the Error so a screen can open the right editor. */
+section('a failed request carries the server\'s answer, not just its sentence')
+{
+  const core = await import('../public/js/core.js')
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({ error: 'JOB-1027 covers 2 garments.', code: 'multi_garment_quantities', lines: [{ garment: 'Gildan 5000', sizes: { M: 40 } }, { garment: 'Gildan 18500', sizes: { L: 10 } }] }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } })
+  let err = null
+  try { await core.api.put('/api/jobs/1', {}) } catch (e) { err = e }
+  globalThis.fetch = realFetch
+  await t('the message is still the human sentence', () => {
+    assert.match(String(err?.message || ''), /covers 2 garments/)
+  })
+  await t('…and the code the screen has to branch on survives', () => {
+    assert.equal(err?.data?.code, 'multi_garment_quantities')
+    assert.equal(err?.status, 409)
+  })
+  await t('…along with the structure the screen has to hand back', () => {
+    assert.equal(err?.data?.lines?.length, 2)
+  })
+}
+
+section('the one refusal whose own advice does not work has a screen behind it')
+await t('the job form opens the per-garment editor instead of toasting a dead end', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  assert.match(src, /multi_garment_quantities/, 'board.js never handles the 409 it provokes')
+  assert.match(src, /line_sizes/, 'board.js never sends the structure that 409 hands it')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

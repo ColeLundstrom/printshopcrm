@@ -34,8 +34,17 @@ export const api = {
     let data = null
     let parsed = false
     if (text) { try { data = JSON.parse(text); parsed = true } catch { /* not JSON — say something useful */ } }
-    if (!r.ok) throw new Error((parsed && data?.error) || httpMessage(r.status, text))
-    if (!parsed && text) throw new Error(httpMessage(r.status, text))
+    // The whole answer rides on the Error, not just its sentence. A refusal like 409
+    // {code:'multi_garment_quantities', lines:[…]} hands the caller exactly what it needs to send
+    // back — and while all a screen could reach was `error`, the only thing it could do was print
+    // a sentence whose advice was itself refused one route away. Additive: `.message` is unchanged.
+    if (!r.ok) {
+      const err = new Error((parsed && data?.error) || httpMessage(r.status, text))
+      err.status = r.status
+      if (parsed && data) err.data = data
+      throw err
+    }
+    if (!parsed && text) { const err = new Error(httpMessage(r.status, text)); err.status = r.status; throw err }
     return data
   },
   get: (u) => api.req('GET', u),

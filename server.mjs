@@ -2524,18 +2524,52 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const b = req.body || {}
+  // The one door out of a closed ring. A two-garment job that has been invoiced and part-paid had
+  // NO way to have its sizes corrected — the customer adds four hoodies and the shop is stuck:
+  //   PUT /api/jobs/:id      → 409 below, "edit the split per garment on the estimate"
+  //   PUT /api/estimates/:id → 409 "Already invoiced — edit the invoice, not the estimate"
+  //   PUT /api/invoices/:id  → 200, and touches nothing but the due date and the PO number
+  //   POST .../void          → 409 "Remove those payments first" — i.e. delete a record of real
+  //                            cash that is in the bank, to fix a size.
+  // Every one of those refusals is correct on its own; together they are a dead end with no shell
+  // to escape from. The 409 below already hands the caller the exact per-garment structure it
+  // wants; this accepts it back. Validated hard, because these numbers are what the purchase
+  // order spends the shop's money on.
+  let explicitLines = null
+  if (b.line_sizes !== undefined) {
+    const refuse = (error) => res.status(400).json({ error, code: 'bad_line_sizes' })
+    if (!Array.isArray(b.line_sizes) || !b.line_sizes.length) return refuse('Send line_sizes as a list of garments, each with its own size grid.')
+    if (b.line_sizes.length > 50) return refuse('A job cannot carry more than 50 garment lines.')
+    const out = []
+    for (const [i, l] of b.line_sizes.entries()) {
+      if (!l || typeof l !== 'object' || Array.isArray(l) || !l.sizes || typeof l.sizes !== 'object' || Array.isArray(l.sizes)) {
+        return refuse(`Garment ${i + 1} has no size grid.`)
+      }
+      const sizes = {}
+      for (const [size, n] of Object.entries(l.sizes)) {
+        // Not Number(n): '' and null coerce to 0 and would quietly drop a size the shop typed.
+        if (!Number.isInteger(n) || n < 0 || n > 1000000) return refuse(`Garment ${i + 1}: ${JSON.stringify(String(size)).slice(0, 40)} is ${JSON.stringify(n)}, which is not a piece count.`)
+        if (n > 0) sizes[String(size).slice(0, 12)] = n
+      }
+      if (!sizeTotal(sizes)) continue
+      const description = str(l.description ?? l.garment ?? '').trim().slice(0, 300)
+      out.push({ description, garment: (str(l.garment ?? '').trim() || description.split('—')[0].trim()).slice(0, 200), sizes })
+    }
+    if (!out.length) return refuse('Every garment came to zero pieces — a job has to make something.')
+    explicitLines = out
+  }
   // Re-derive the size grid when the quantities text changes — but never clobber a grid that came
   // from a converted estimate (which is already structured) with an empty parse of an untouched
   // free-text field. Only overwrite when the parse actually yields sizes.
-  const nextQuantities = b.quantities ?? j.quantities
-  const reparsed = b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
-  const nextSizes = reparsed || j.sizes || '{}'
+  const nextQuantities = explicitLines ? sizeSummary(rollupSizes(explicitLines)) : (b.quantities ?? j.quantities)
+  const reparsed = !explicitLines && b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
+  const nextSizes = explicitLines ? JSON.stringify(rollupSizes(explicitLines)) : (reparsed || j.sizes || '{}')
   // jobs.line_sizes is the per-garment grid the PO, the pick ticket, the work ticket and the print
   // package all read. It is written once at conversion, and PUT never touched it — so a shop that
   // bumped a job from 100 pieces to 150 (the ordinary case: the customer added shirts) got a board,
   // a job card and a capacity plan saying 150, while everything that BUYS or PICKS blanks still
   // said 100. The print package contradicted itself on one screen.
-  let nextLines = j.line_sizes
+  let nextLines = explicitLines ? JSON.stringify(explicitLines) : j.line_sizes
   if (reparsed) {
     const stored = parse(j.line_sizes, [])
     const lines = Array.isArray(stored) ? stored.filter((l) => l && sizeTotal(l.sizes || {}) > 0) : []
@@ -2557,6 +2591,11 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
     b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, nextLines, b.due_date ?? j.due_date,
     b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush ? 1 : 0, now(), id)
+  // A split change moves what the shop BUYS, on a job that may already have blanks on order, so
+  // it goes on the timeline rather than happening silently between two screens.
+  if (explicitLines && nextLines !== j.line_sizes) {
+    logActivity('job', `${j.job_number} size split changed — ${nextQuantities || 'no sizes'}`, { contact_id: j.contact_id, job_id: id })
+  }
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
 

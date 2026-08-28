@@ -220,6 +220,68 @@ export async function jobForm(job, after) {
           closeModal()
           toast(job ? 'Job saved' : `Job ${saved.job_number} created`)
           after?.(saved)
+        } catch (e) {
+          // "24 S / 60 M" cannot be re-split across two styles, and guessing would put the wrong
+          // count against the wrong garment on a real purchase order — so the server refuses, and
+          // hands back the per-garment split instead. Its advice ("edit it on the estimate") does
+          // not work once the estimate is invoiced, which is the ordinary case, so this is the
+          // screen that actually does it rather than a sentence that sends the shop nowhere.
+          if (e.data?.code === 'multi_garment_quantities') return splitForm(job, e.data.lines || [], d, after)
+          toast(e.message, true)
+        }
+      }
+    },
+  })
+}
+
+/**
+ * Correct the size split per garment, on the job.
+ *
+ * The only route into an order that is already invoiced and part-paid: the estimate refuses
+ * (invoiced), the invoice edits nothing but a due date, and voiding refuses to walk over recorded
+ * cash. This edits what actually gets printed and bought.
+ */
+function splitForm(job, lines, rest, after) {
+  // Every size any garment on the job uses, so a shop can move pieces BETWEEN sizes, plus the
+  // standard run of sizes so it can add one that was not quoted.
+  const cols = SIZES.filter((s) => lines.some((l) => Number(l.sizes?.[s]) > 0) || ['S', 'M', 'L', 'XL', '2XL'].includes(s))
+  const rowOf = (l, i) => `<tr><td style="padding:6px 8px;font-size:12.5px">${esc(l.garment || l.description || `Garment ${i + 1}`)}</td>
+      ${cols.map((sz) => `<td style="padding:4px"><input class="input" data-line="${i}" data-size="${esc(sz)}" type="number" min="0" step="1"
+        style="width:64px;padding:5px;text-align:center" value="${Number(l.sizes?.[sz]) > 0 ? Number(l.sizes[sz]) : ''}"></td>`).join('')}</tr>`
+  modal({
+    title: `Size split — ${job?.job_number || 'job'}`,
+    body: `<div class="dim" style="font-size:12.5px;margin-bottom:9px">
+        This order covers ${lines.length} garments, so one combined grid cannot say which pieces belong to which style.
+        Set each garment's own counts — this is what the purchase order buys and what the work ticket prints.</div>
+      <div style="overflow:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr><th style="text-align:left;padding:6px 8px;font-size:11.5px" class="dim">Garment</th>
+          ${cols.map((sz) => `<th class="dim" style="padding:6px 4px;font-size:11.5px">${esc(sz)}</th>`).join('')}</tr></thead>
+        <tbody>${lines.map(rowOf).join('')}</tbody></table></div>
+      <div class="dim" style="font-size:12px;margin-top:9px" id="split-total"></div>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="split-save">Save split</button>`,
+    onMount: (bg) => {
+      const read = () => lines.map((l, i) => ({
+        description: l.description || l.garment || '',
+        garment: l.garment || '',
+        sizes: Object.fromEntries($$(`[data-line="${i}"]`, bg)
+          .map((inp) => [inp.dataset.size, Math.trunc(Number(inp.value) || 0)])
+          .filter(([, n]) => n > 0)),
+      }))
+      const total = () => read().reduce((t, l) => t + Object.values(l.sizes).reduce((a, n) => a + n, 0), 0)
+      const paint = () => { $('#split-total', bg).textContent = `${total()} pieces across ${lines.length} garments` }
+      $$('input[data-line]', bg).forEach((inp) => inp.addEventListener('input', paint))
+      paint()
+      $('#split-save', bg).onclick = async () => {
+        const line_sizes = read()
+        if (!total()) return toast('Every garment came to zero pieces — a job has to make something', true)
+        try {
+          // `rest` carries the rest of the job form (title, due date, notes) so the edit that
+          // provoked this is not lost; `quantities` is dropped because the split replaces it.
+          const { quantities, ...keep } = rest || {}
+          const saved = await api.put(`/api/jobs/${job.id}`, { ...keep, line_sizes })
+          closeModal()
+          toast('Size split saved')
+          after?.(saved)
         } catch (e) { toast(e.message, true) }
       }
     },
