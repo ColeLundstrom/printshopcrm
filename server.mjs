@@ -2385,9 +2385,13 @@ app.post('/api/jobs', wrap((req, res) => {
   if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer first' })
   const num = nextJobNumber()
   const grid = gridFromQuantities(b.quantities)
-  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  // `garment` is what costFor() reads to pick the SKU the purchase order spends money on. A job
+  // typed onto the board never had a way to carry one — the column existed and no route bound it —
+  // so its PO came back sku:null, est_cost 0, and submitting it said "set the exact style first"
+  // with no field anywhere in the product to do that in. 17 columns, 17 placeholders, 17 values.
+  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     +b.contact_id, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
-    STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', b.quantities || '',
+    STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', str(b.garment).trim() || null, b.quantities || '',
     grid || '{}', b.due_date || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
   logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: +b.contact_id, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
@@ -2404,8 +2408,9 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const nextQuantities = b.quantities ?? j.quantities
   const reparsed = b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
   const nextSizes = reparsed || j.sizes || '{}'
-  run('UPDATE jobs SET title=?, decoration=?, quantities=?, sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
-    b.title ?? j.title, b.decoration ?? j.decoration, nextQuantities, nextSizes, b.due_date ?? j.due_date,
+  const nextGarment = b.garment !== undefined ? (str(b.garment).trim() || null) : j.garment
+  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
+    b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, b.due_date ?? j.due_date,
     b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush ? 1 : 0, now(), id)
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))

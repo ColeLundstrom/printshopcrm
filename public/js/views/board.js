@@ -175,6 +175,11 @@ const recount = () => $$('.col').forEach((c) => c.querySelector('.ct').textConte
 
 export async function jobForm(job, after) {
   const { contacts } = await api.get('/api/contacts')
+  // The garment is what the purchase order buys. A job typed onto the board had no field for it
+  // anywhere in the product, so its PO came back with no SKU and no cost and could never be
+  // submitted. The datalist is the shop's own catalogue, and the style number has to stay ahead
+  // of the first em-dash because that is what costFor() reads.
+  const { garments = [] } = await api.get('/api/products').catch(() => ({ garments: [] }))
   modal({
     title: job ? `Edit ${job.job_number}` : 'New Job',
     body: `<div class="field"><label>Customer *</label>${job || contacts.length
@@ -189,6 +194,11 @@ export async function jobForm(job, after) {
           ${DECORATIONS.map((d) => `<option ${d === job?.decoration ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
         <div class="field"><label>Quantities</label><input class="input" name="quantities" value="${esc(job?.quantities || '')}" placeholder="24 S / 60 M / 80 L / 36 XL"></div>
       </div>
+      <div class="field"><label>Garment</label>
+        <input class="input" name="garment" list="garment-styles" value="${esc(job?.garment || '')}"
+               placeholder="Gildan 5000 Heavy Cotton Tee — Black">
+        <datalist id="garment-styles">${garments.map((g) => `<option value="${esc([g.brand, g.style, g.name].filter(Boolean).join(' '))}">`).join('')}</datalist>
+        <div class="dim" style="font-size:11.5px;margin-top:4px">What the purchase order buys. Keep the style number first.</div></div>
       <div class="grid2">
         <div class="field"><label>Due date</label><input class="input" name="due_date" type="date" value="${esc(job?.due_date || '')}"></div>
         <div class="field"><label>Assigned to</label><input class="input" name="assigned_to" value="${esc(job?.assigned_to || '')}" placeholder="Press 1 / Marco"></div>

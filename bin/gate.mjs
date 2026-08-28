@@ -2059,6 +2059,7 @@ await t('…and the ordinary styles still match exactly as before', async () => 
     assert.equal(sup.costFor(text)?.sku, sku, `${text} must still order ${sku}`)
   }
 })
+
 await t('a style has to sit on its own, not inside a longer run', async () => {
   const { styleMatches } = await import('../lib/suppliers.mjs')
   assert.equal(styleMatches('gildan 5000 tee', '5000'), true)
