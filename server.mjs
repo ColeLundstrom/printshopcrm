@@ -14,7 +14,7 @@ import { renderDocument, packingSlip, pickTicket, customerStatement } from './li
 import { db, tenantStore } from './lib/db.mjs'
 import {
   createTenant, authMember, createSession, getSession, getSessionTenant, deleteSession,
-  openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, saveOnboarding,
+  openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, saveOnboarding, tenantPublic,
   billingState, setSubscription, getTenantById, getTenantByStripeCustomer,
   getPlatformConfig, setPlatformConfig, isAdminEmail,
   listMembers, addMember, updateMember, deleteMember, getMemberById, ROLES, ROLE_RANK,
@@ -1393,7 +1393,7 @@ app.post('/api/admin/shops', wrap(async (req, res) => {
 app.post('/api/admin/shops/:id/status', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
   if (+req.params.id === req.tenant?.id) return res.status(400).json({ error: "You can't suspend your own admin account." })
-  res.json({ ok: true, tenant: setTenantStatus(+req.params.id, req.body?.status) })
+  res.json({ ok: true, tenant: tenantPublic(setTenantStatus(+req.params.id, req.body?.status)) })
 }))
 
 app.delete('/api/admin/shops/:id', wrap((req, res) => {

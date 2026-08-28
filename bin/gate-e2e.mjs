@@ -2287,6 +2287,64 @@ try {
       // Case and surrounding whitespace must not walk around it — isAdminEmail lower-cases both.
       out = await hit6('/api/auth/signup', { shop_name: 'Squat2', owner_name: 'Mal', owner_email: '  OPERATOR@Example.COM ', password: 'GatePass-123456' })
       chk('…in any casing', String(out.status), '^40[03]$')
+
+      /* ---------- pressing Suspend does not hand the operator the shop's credentials ----------
+       * setTenantStatus returns SELECT * on `tenants`, and that row carries the owner's scrypt
+       * password_hash and the shop's LIVE psc_live_ API key — a manager-equivalent credential the
+       * shop itself is shown exactly once and can never read back. So one press of Suspend or
+       * Reactivate in the Control Room put both in the operator's browser. GET /api/admin/shops
+       * next door was deliberately written as an explicit column list; this route was the one
+       * place a raw tenant row crossed the wire. */
+      const jar6 = new Map()
+      const ch6 = () => [...jar6].map(([k, v]) => `${k}=${v}`).join('; ')
+      const as6 = async (method, path, body) => {
+        const h = { }
+        if (body !== undefined) h['Content-Type'] = 'application/json'
+        if (jar6.size) h.Cookie = ch6()
+        const res = await fetch(`http://127.0.0.1:${P6}${path}`, { method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) })
+        for (const c of (res.headers.getSetCookie?.() ?? [])) {
+          const [pair] = String(c).split(';'); const i = pair.indexOf('=')
+          if (i > 0) jar6.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim())
+        }
+        const text = await res.text()
+        let json = null; try { json = JSON.parse(text) } catch { /* html is fine */ }
+        return { status: res.status, text, json }
+      }
+
+      // The shop mints an API key it will never be shown again.
+      await as6('POST', '/api/auth/login', { email: 'real@shop.test', password: 'GatePass-123456' })
+      const rotated = await as6('POST', '/api/developers/key/rotate', {})
+      const liveKey = String(rotated.json?.api_key || '')
+      chk('a shop mints a live API key', String(liveKey.startsWith('psc_live_')), '^true$')
+      chk('…which its own UI will only ever show a preview of again',
+        String((await as6('GET', '/api/developers')).json?.api_key ?? 'absent'), '^absent$')
+
+      // The operator gets their own shop the way the product tells them to — the signup form
+      // refuses this address, which is what the three assertions above are about.
+      const mk = spawn(process.execPath, ['--no-warnings', 'bin/admin.mjs', 'create-shop', 'Ops', 'operator@example.com', 'GatePass-123456'],
+        { cwd: ROOT, env: env6, stdio: ['ignore', 'pipe', 'pipe'] })
+      await new Promise((r) => { mk.on('exit', r); mk.stdout.on('data', () => {}); mk.stderr.on('data', () => {}) })
+
+      jar6.clear()
+      const opLogin = await as6('POST', '/api/auth/login', { email: 'operator@example.com', password: 'GatePass-123456' })
+      chk('the operator signs in to the Control Room', String(opLogin.status), '^200$')
+      const shops = (await as6('GET', '/api/admin/shops')).json?.shops || []
+      const target = shops.find((x) => x.slug === 'real-shop') || shops.find((x) => x.owner_email === 'real@shop.test')
+      chk('…and can see the shop it is about to suspend', String(!!target), '^true$')
+
+      const susp = await as6('POST', `/api/admin/shops/${target?.id}/status`, { status: 'suspended' })
+      chk('Suspend works', String(susp.status), '^200$')
+      const blob = JSON.stringify(susp.json || {})
+      chk('…without handing over the shop\'s live API key', String(blob.includes(liveKey)), '^false$')
+      chk('…or any psc_live_ credential at all', String(/psc_live_/.test(blob)), '^false$')
+      chk('…or the owner\'s password hash', String('password_hash' in (susp.json?.tenant || {})), '^false$')
+      // It must still say what the operator needs: the shop, and what happened to it.
+      chk('…while still reporting the status it set', String(susp.json?.tenant?.status), '^suspended$')
+      chk('…on the shop it set it on', String(susp.json?.tenant?.slug), '^real-shop$')
+      // Reactivate is the same route and was the same leak.
+      const react = await as6('POST', `/api/admin/shops/${target?.id}/status`, { status: 'active' })
+      chk('Reactivate leaks nothing either', String(/psc_live_|password_hash/.test(JSON.stringify(react.json || {}))), '^false$')
+      chk('…and the shop is active again', String(react.json?.tenant?.status), '^active$')
     } finally {
       try { s6.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T6, { recursive: true, force: true }) } catch { /* best effort */ }
