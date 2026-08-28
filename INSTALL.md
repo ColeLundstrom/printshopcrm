@@ -127,6 +127,7 @@ Edit `.env`. The minimum for a production install:
 ```ini
 PORT=3870
 PSC_HOST=127.0.0.1
+PSC_TRUST_PROXY=1
 PSC_SECRET=<the value you just generated>
 PSC_DB=/var/lib/printshopcrm/printshop.db
 PSC_PUBLIC_URL=https://shop.example.com

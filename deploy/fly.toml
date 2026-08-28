@@ -22,6 +22,10 @@ primary_region = "sjc"          # put this near your shop, not near us
   PORT = "3333"
   PSC_DB = "/data/printshop.db"
   PSC_AUTH = "1"
+  # Fly's proxy terminates TLS and sets X-Forwarded-For, so exactly one hop is trustworthy here.
+  # Set explicitly rather than relying on the default, so the boot warning about an unset value
+  # stays meaningful for the deployments that really are exposed directly.
+  PSC_TRUST_PROXY = "1"
   # Set this to your real URL once you know it, or customer links are built from the Host header:
   #   fly secrets set PSC_PUBLIC_URL=https://printshopcrm.fly.dev
   # PSC_PUBLIC_URL = ""

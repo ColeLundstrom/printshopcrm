@@ -6960,6 +6960,25 @@ server.listen(...(HOST ? [PORT, HOST] : [PORT]), () => {
   // actually signed in on — so the account-takeover this warning was written for is closed either
   // way. Saying it anyway trains an operator to discount the warning, and the links it is STILL
   // right about are the ones going to customers. Name those.
+  // Rate limiting only works if the client IP is real, and with trust-proxy on it comes from an
+  // X-Forwarded-For header the CLIENT can set. That is correct behind nginx, Caddy, Fly or Render,
+  // which overwrite it — and it is a hole with nothing in front, because a rotating forged header
+  // gives an attacker one fresh bucket per fake IP on signup, password reset, lead capture and the
+  // embed chat that spends the shop's own model credit.
+  //
+  // The default stays 1: flipping it would break https link-building on every existing proxied
+  // install that has not set PSC_PUBLIC_URL. So say it instead, and only to the operator who never
+  // chose — the documented proxied deployments (fly.toml, render.yaml, the INSTALL .env) all set
+  // it explicitly now, so this stays quiet for them and means something when it does appear.
+  if (AUTH_ENABLED && app.get('trust proxy') && !String(process.env.PSC_TRUST_PROXY || '').trim()) {
+    console.warn('  ⚠ PSC_TRUST_PROXY is on by default, so the client IP is read from the')
+    console.warn('     X-Forwarded-For header. If this port is published straight to the internet')
+    console.warn('     with nothing in front of it, a caller sets that header themselves and walks')
+    console.warn('     past every signup, password-reset, lead-capture and embed-chat rate limit.')
+    console.warn('     Behind nginx/Caddy/Fly/Render: set PSC_TRUST_PROXY=1 to silence this.')
+    console.warn('     Exposed directly:              set PSC_TRUST_PROXY=0.\n')
+  }
+
   if (AUTH_ENABLED && !String(process.env.PSC_PUBLIC_URL || '').trim()) {
     console.warn('  ⚠ PSC_PUBLIC_URL is not set. Proof-approval, pay and staff-invite links are built')
     console.warn('     from the request Host header, which is chosen by whoever sent the request.')

@@ -29,6 +29,10 @@ services:
         value: "1"
       - key: PORT
         value: "3333"
+      # Render's router terminates TLS and sets X-Forwarded-For — one trustworthy hop. Explicit,
+      # so the boot warning about an unset value means something on installs that lack a proxy.
+      - key: PSC_TRUST_PROXY
+        value: "1"
       # Generated once by Render and then held constant. Do not rotate it casually: customer share
       # links are HMACs of this value, so changing it invalidates every link already emailed.
       - key: PSC_SECRET

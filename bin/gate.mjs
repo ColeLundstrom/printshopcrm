@@ -4985,6 +4985,37 @@ section('a backup can actually be put back')
  * owner actually signed in on — so the account-takeover the warning was written for is closed
  * whether or not the variable is set. A warning that overstates its case is a warning an operator
  * learns to scroll past, and the links it is still RIGHT about are the ones going to customers. */
+await t('an install that never chose a trust-proxy setting is told what it got', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  // Rate limiting only works if the client IP is real, and with trust-proxy on it comes from a
+  // header the CLIENT sets. Correct behind nginx/Caddy/Fly/Render, which overwrite it; a hole with
+  // nothing in front, where a rotating forged X-Forwarded-For buys one fresh bucket per fake IP on
+  // signup, password reset, lead capture and the embed chat that spends the shop's model credit.
+  // The default stays 1 — flipping it would break https link-building on every proxied install
+  // that has not set PSC_PUBLIC_URL — so the operator has to be told instead.
+  const i = src.indexOf("PSC_TRUST_PROXY is on by default")
+  assert.ok(i > 0, 'a default nobody chose, that decides whether rate limiting works, has to be said out loud')
+  const warn = src.slice(Math.max(0, i - 400), i + 800)
+  assert.match(warn, /!String\(process\.env\.PSC_TRUST_PROXY \|\| ''\)\.trim\(\)/,
+    'and only when it was never set — a warning everyone sees is a warning nobody reads')
+  assert.match(warn, /PSC_TRUST_PROXY=0/, 'it has to name the fix for the exposed case')
+  assert.match(warn, /PSC_TRUST_PROXY=1/, 'and how a proxied install silences it')
+
+  // …which only stays quiet for the proxied installs if the shipped manifests set it themselves.
+  for (const [file, want] of [
+    ['deploy/fly.toml', /PSC_TRUST_PROXY\s*=\s*"1"/],
+    ['deploy/render.yaml', /key:\s*PSC_TRUST_PROXY/],
+    ['INSTALL.md', /PSC_TRUST_PROXY=1/],
+  ]) {
+    assert.match(readFileSync(join(root, file), 'utf8'), want,
+      `${file} puts a proxy in front, so it has to say so or its operators get a warning aimed at someone else`)
+  }
+})
+
 await t('the PSC_PUBLIC_URL warning names the links that really are Host-derived', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')
