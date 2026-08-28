@@ -1800,7 +1800,13 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
       amount_paid: paid,
     })
   }
-  run('DELETE FROM contacts WHERE id = ?', id)
+  tx(() => {
+    // email_log.contact_id has no foreign key, so the row survives the customer pointing at an id
+    // that is gone — and every later "Send it" on that message dies in logActivity's INSERT, which
+    // does have one. Null it here, in the same transaction, so the Outbox stays usable.
+    run('UPDATE email_log SET contact_id = NULL WHERE contact_id = ?', id)
+    run('DELETE FROM contacts WHERE id = ?', id)
+  })
   logActivity('contact', `Customer deleted — ${c.name}`, {})
   res.json({ ok: true })
 }))
@@ -5537,7 +5543,13 @@ app.post('/api/outbox/:id/send', wrap(async (req, res) => {
     : await sendEmail({ to, subject: row.subject, body: row.body, settings: s })
   run('UPDATE email_log SET to_email = ?, delivered = ?, via = ?, delivery_error = ? WHERE id = ?',
     to, r.delivered ? 1 : 0, r.via || 'logged', r.error || null, row.id)
-  logActivity('note', `Outbox: "${row.subject}" ${r.delivered ? 'sent to' : 'could NOT be sent to'} ${to}${r.error ? ` — ${String(r.error).slice(0, 140)}` : ''}`, { contact_id: row.contact_id })
+  // The mail has already gone out by this point, and email_log already says so. A throw here — a
+  // dangling contact_id, a disk hiccup — used to become a 500 on a send that actually succeeded,
+  // which reads to the shop as "it failed", and the retry then answers "already gone out". Record
+  // the timeline line if we can, and never let the bookkeeping contradict the delivery.
+  try {
+    logActivity('note', `Outbox: "${row.subject}" ${r.delivered ? 'sent to' : 'could NOT be sent to'} ${to}${r.error ? ` — ${String(r.error).slice(0, 140)}` : ''}`, { contact_id: row.contact_id })
+  } catch (e) { console.error('outbox log:', e?.message || e) }
   if (!r.delivered) {
     return res.status(502).json({
       ok: false,

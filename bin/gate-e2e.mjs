@@ -1182,6 +1182,29 @@ try {
 
     r = await req('POST', '/api/outbox/999999/send', { body: {} })
     chk('sending a message that is not there says so', String(r.status), '^404$')
+
+    /* A message whose customer has since been deleted must still be sendable.
+     *
+     * email_log.contact_id has no foreign key; activities.contact_id has one, ON DELETE CASCADE,
+     * and foreign keys are on. So once the customer was deleted, "Send it" reached the mail layer,
+     * updated email_log, and then died in logActivity's INSERT — FOREIGN KEY constraint failed →
+     * HTTP 500, forever, with no route anywhere that could delete the row. On a shop with SMTP
+     * configured the mail really went out first and the shop was told the send had failed; the
+     * next click then answered "That message has already gone out." */
+    r = await req('POST', '/api/contacts', { body: { name: 'Doomed Dora', email: 'doomed-dora@e2e.test' } })
+    const doomedId = r.json?.id
+    await req('POST', `/api/reorders/${doomedId}/nudge`, { body: {} })
+    await sleep(300)
+    const doomedMsg = ((await req('GET', '/api/outbox')).json || []).find((m) => m.contact_id === doomedId && !m.delivered)
+    chk('a customer about to be deleted has a message waiting in the outbox', String(!!doomedMsg), '^true$')
+    chk('…and the customer deletes cleanly', String((await req('DELETE', `/api/contacts/${doomedId}`)).status), '^200$')
+
+    r = await req('POST', `/api/outbox/${doomedMsg?.id}/send`, { body: {} })
+    chk('…and their orphaned message can still be sent, not 500 forever', String(r.status), '^200$|^502$')
+    chk('…with an answer that matches what actually happened', r.text, 'ok|not.*connect|Message Delivery|smtp')
+    const doomedAfter = ((await req('GET', '/api/outbox')).json || []).find((m) => m.id === doomedMsg?.id)
+    chk('…and the row records the attempt rather than staying a draft', String(doomedAfter?.via ?? ''), '^(?!draft$).+')
+
     await req('PUT', '/api/settings', { body: { mode_followups: 'ai' } })
   }
 
