@@ -270,6 +270,57 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
   }
 }
 
+/* ---------- "Off — no AI model" really is off ----------
+ * aiConfig() read `(provider === 'cli' || !provider) && !MULTI_TENANT`, so a BLANK provider — which
+ * is exactly what the Settings dropdown's "Off — no AI model" option writes — fell through to the
+ * locally installed claude CLI. MULTI_TENANT is PSC_AUTH === '1', and PSC_AUTH is unset on the
+ * default install (the server prints a boot warning about that very thing), so on the ordinary
+ * self-hosted install with the binary present the off switch did nothing: every AI feature kept
+ * calling a model, on the platform's OAuth login rather than the key the shop is supposed to bring,
+ * while the card beside the switch read "Off — deterministic parser only". */
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const prevBin = process.env.CLAUDE_BIN
+  const prevAuth = process.env.PSC_AUTH
+  // Point CLAUDE_BIN at a file that certainly exists, so existsSync() is true — that is the
+  // condition the fallback turned on. process.execPath is never executed by these cases.
+  process.env.CLAUDE_BIN = process.execPath
+  delete process.env.PSC_AUTH
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  dbm.setDefaultDb(db)
+  dbm.seedSettings()
+  const ai = await import('../lib/ai.mjs?offswitch')  // fresh module: CLAUDE_BIN is read at import
+
+  section('ai: the off switch turns AI off')
+  await t('a blank provider — the dropdown\'s "Off" — connects no model', () => {
+    dbm.setSetting('ai_provider', '')
+    assert.equal(ai.aiConfig(), null, 'Off must mean off, even where a claude CLI is installed')
+  })
+  await t('…and the shop is told so, not told a model is available', async () => {
+    dbm.setSetting('ai_provider', '')
+    const st = await ai.aiStatus(true)
+    assert.equal(st.available, false)
+  })
+  await t('the CLI still works when it is actually CHOSEN', () => {
+    dbm.setSetting('ai_provider', 'cli')
+    assert.equal(ai.aiConfig()?.provider, 'cli')
+  })
+  await t('…and choosing it is possible, because it is offered', () => {
+    // Before, the CLI was reachable only by NOT choosing anything — which is how the off switch
+    // came to turn it on. It has to be in the list for "explicit choice" to mean anything.
+    assert.ok(ai.AI_PROVIDERS.some((p) => p.id === 'cli'), 'single-tenant installs must be able to pick the CLI')
+  })
+  await t('a real key still connects', () => {
+    dbm.setSetting('ai_provider', 'anthropic')
+    dbm.setSetting('ai_api_key', 'sk-ant-test')
+    assert.equal(ai.aiConfig()?.provider, 'anthropic')
+  })
+  if (prevBin === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = prevBin
+  if (prevAuth !== undefined) process.env.PSC_AUTH = prevAuth
+}
+
 /* ---------- an issued document keeps adding up after the shop changes its rates ----------
  * Line amounts are never stored — every renderer recomputes them — while subtotal/tax/total ARE
  * stored, frozen at write time. So one PUT /api/settings raising the extended-size upcharges, an
