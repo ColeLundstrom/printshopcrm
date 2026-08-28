@@ -67,14 +67,47 @@ fi
 echo "→ running tests against the new release"
 ( cd "$RELEASE" && node bin/gate.mjs )
 
-# --- back up the database before any migration runs ---------------------------------------------
-if command -v sqlite3 >/dev/null 2>&1 && [ -f "$DATA_ROOT/printshop.db" ]; then
-  BAK="$DATA_ROOT/backups/pre-$TAG-$(date +%Y%m%d%H%M%S).db"
-  mkdir -p "$(dirname "$BAK")"
-  sqlite3 "$DATA_ROOT/printshop.db" ".backup '$BAK'"
-  echo "→ database backed up to $BAK"
+# --- back up EVERY database before any migration runs --------------------------------------------
+#
+# This backed up "$DATA_ROOT/printshop.db" and nothing else. In multi-tenant mode — which is what
+# every real install runs — that file is the DEFAULT handle, and lib/db.mjs says in as many words
+# that it is never touched for a shop's data. The shops live in $DATA_ROOT/control.db (the registry
+# and every login) and $DATA_ROOT/tenants/<slug>/printshop.db. So the snapshot taken at the single
+# riskiest moment in the whole deploy — immediately before migrations run against real customer
+# data — contained no invoices, no customers, and no way to sign in. 16 KB of nothing.
+#
+# Take a proper .backup of each one. `cp` is not a backup of a live SQLite database: the -wal may
+# hold committed pages the file does not, and a stale -wal beside a restored db is worse than none.
+if [ "${PSC_SKIP_BACKUP:-}" = '1' ]; then
+  echo "!  PSC_SKIP_BACKUP=1 — deploying with NO pre-migration backup, at your own risk" >&2
 else
-  echo "!  sqlite3 not installed — skipping the pre-deploy backup. Install it: apt-get install sqlite3" >&2
+  command -v sqlite3 >/dev/null 2>&1 || {
+    echo "✗ sqlite3 is not installed, so no pre-migration backup can be taken." >&2
+    echo "  A migration that fails on real data is unrecoverable without one. Install it:" >&2
+    echo "    sudo apt-get install -y sqlite3" >&2
+    echo "  Or, if you have your own backup and accept the risk:  PSC_SKIP_BACKUP=1 $0 $TAG" >&2
+    exit 1
+  }
+  BAK_DIR="$DATA_ROOT/backups/pre-$TAG-$(date +%Y%m%d%H%M%S)"
+  mkdir -p "$BAK_DIR"
+  BAK_N=0
+  while IFS= read -r DBF; do
+    REL="${DBF#"$DATA_ROOT"/}"
+    mkdir -p "$BAK_DIR/$(dirname "$REL")"
+    sqlite3 "$DBF" ".backup '$BAK_DIR/$REL'" || { echo "✗ could not back up $DBF" >&2; exit 1; }
+    BAK_N=$((BAK_N + 1))
+  done < <(find "$DATA_ROOT" -path "$DATA_ROOT/backups" -prune -o -name '*.db' -type f -print | sort)
+  # Zero databases means this found nothing to protect. That is not a clean run, it is a wrong
+  # DATA_ROOT — and shipping past it is how the last backup turned out to be empty.
+  [ "$BAK_N" -gt 0 ] || {
+    echo "✗ no databases found under $DATA_ROOT — refusing to migrate with nothing backed up." >&2
+    echo "  Set DATA_ROOT to the directory holding control.db and tenants/, or PSC_SKIP_BACKUP=1 to override." >&2
+    exit 1
+  }
+  echo "→ $BAK_N database(s) backed up to $BAK_DIR"
+  echo "  restore one with:  sudo systemctl stop $SERVICE && cp '$BAK_DIR/<path>.db' '$DATA_ROOT/<path>.db' && sudo systemctl start $SERVICE"
+  # Keep the five most recent snapshots; the rest are just disk, and backup.sh re-archives them.
+  ls -1dt "$DATA_ROOT/backups/pre-"* 2>/dev/null | tail -n +6 | while IFS= read -r OLD; do rm -rf "$OLD"; done
 fi
 
 # --- flip ---------------------------------------------------------------------------------------
@@ -87,14 +120,47 @@ sudo ln -sfn "$RELEASE" "$APP_ROOT/current" || { echo "✗ could not flip $APP_R
 echo "$PREVIOUS" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
 
 sudo systemctl restart "$SERVICE"
-sleep 2
 
-if systemctl is-active --quiet "$SERVICE"; then
-  echo "✓ $TAG is live"
+# --- is it actually serving? ---------------------------------------------------------------------
+#
+# This decided on `systemctl is-active`, which on a Type=simple unit goes true the moment the
+# process FORKS — before the port is bound and before a single shop's database has been opened. So
+# a release that started and then failed every request printed "✓ <tag> is live" and stayed flipped
+# in. ship.sh was given a real /health probe in v1.14.0; this script — the one INSTALL.md tells
+# self-hosters to run — was not. Ask the app the way a customer would.
+#
+# /health 503s when any shop's database will not open, which is exactly the failure a migration
+# causes, so this is the check that catches the thing the backup above exists for.
+PORT="$(systemctl show -p Environment --value "$SERVICE" 2>/dev/null | tr ' ' '\n' | sed -n 's/^PORT=//p' | tail -1)"
+[ -n "$PORT" ] || PORT="$(sed -n 's/^[[:space:]]*PORT=//p' "$APP_ROOT/.env" 2>/dev/null | tr -d '"'"'"'[:space:]' | tail -1)"
+# server.mjs: `const PORT = process.env.PORT || 3333`. An unset PORT is 3333, not unknown — and
+# there is deliberately NO is-active fallback here, because falling back to it is what turned a
+# broken release into a green one. If the app will not answer, the release does not stay.
+[ -n "$PORT" ] || PORT=3333
+
+# /health opens every tenant database, so a shop with a lot of shops legitimately takes longer than
+# 20s to answer the first time. Raise this rather than letting a slow boot look like a bad release.
+TRIES="${PSC_HEALTH_TRIES:-10}"
+HEALTHY=0
+for _ in $(seq 1 "$TRIES"); do
+  sleep 2
+  if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HEALTHY=1; break; fi
+done
+
+if [ "$HEALTHY" = '1' ]; then
+  echo "✓ $TAG is live and answering /health"
   [ -n "$PREVIOUS" ] && echo "  roll back with: sudo ln -sfn $PREVIOUS $APP_ROOT/current && sudo systemctl restart $SERVICE"
 else
-  echo "✗ service failed to start — rolling back" >&2
-  [ -n "$PREVIOUS" ] && sudo ln -sfn "$PREVIOUS" "$APP_ROOT/current" && sudo systemctl restart "$SERVICE"
+  echo "✗ $TAG is not answering /health on port $PORT — rolling back" >&2
+  curl -sS --max-time 5 "http://127.0.0.1:$PORT/health" >&2 || true   # names the shops that are dark
+  echo >&2
+  if [ -n "$PREVIOUS" ]; then
+    sudo ln -sfn "$PREVIOUS" "$APP_ROOT/current"
+    sudo systemctl restart "$SERVICE"
+    echo "  rolled back to $PREVIOUS" >&2
+  else
+    echo "  NO PREVIOUS RELEASE RECORDED — the service is left on this one; fix it by hand" >&2
+  fi
   journalctl -u "$SERVICE" -n 30 --no-pager >&2
   exit 1
 fi

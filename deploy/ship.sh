@@ -22,6 +22,7 @@ APP_HOST="${APP_HOST:-}"
 SSH_KEY="${SSH_KEY:-}"
 APP_ROOT="${APP_ROOT:-/opt/printshopcrm-pro}"
 SERVICE="${SERVICE:-printshopcrm-pro}"
+HEALTH_TRIES="${PSC_HEALTH_TRIES:-10}"
 DATA_UPLOADS="${DATA_UPLOADS:-$APP_ROOT/data/uploads}"
 
 die() { printf '\n  ✗ %s\n\n' "$1" >&2; exit 1; }
@@ -91,22 +92,30 @@ rsync -a -e "$RSYNC_E" \
   # bound and before a single database is opened. It was the whole liveness gate, so a release that
   # booted and then failed every request still counted as a successful deploy, and the automatic
   # rollback never fired. Ask the app itself, over HTTP, the way a customer would.
-  PORT=\$(sed -n 's/^Environment=PORT=//p' /etc/systemd/system/'$SERVICE'.service | tail -1)
-  [ -n \"\$PORT\" ] || PORT=\$(sed -n 's/^PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tail -1)
+  #
+  # systemctl show, not a grep of the unit file: it resolves drop-in overrides too, and the SHIPPED
+  # deploy/printshopcrm.service carries no Environment=PORT at all — it uses an EnvironmentFile. So
+  # the old grep found nothing, the old code then fell back to is-active, and the gate quietly
+  # became the exact check it was written to replace. Both seds are pipelines, so `set -e` never
+  # caught the failure to read either file.
+  PORT=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PORT=//p' | tail -1)
+  [ -n \"\$PORT\" ] || PORT=\$(sed -n 's/^[[:space:]]*PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
+  # server.mjs: \`const PORT = process.env.PORT || 3333\`. An unset PORT is 3333, not unknown. There
+  # is deliberately no is-active fallback: if the app will not answer, the release does not ship.
+  [ -n \"\$PORT\" ] || PORT=3333
+  # /health opens every tenant database, so an install with a lot of shops legitimately takes longer
+  # than 20s to answer the first time. PSC_HEALTH_TRIES raises it rather than letting a slow boot
+  # look like a bad release.
   HEALTHY=0
-  if [ -n \"\$PORT\" ]; then
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      sleep 2
-      if curl -fsS --max-time 5 \"http://127.0.0.1:\$PORT/health\" >/dev/null 2>&1; then HEALTHY=1; break; fi
-    done
-  else
-    echo 'WARNING: could not determine the service port — falling back to is-active only'
-    sleep 4
-    systemctl is-active --quiet '$SERVICE' && HEALTHY=1
-  fi
+  for _ in \$(seq 1 $HEALTH_TRIES); do
+    sleep 2
+    if curl -fsS --max-time 5 \"http://127.0.0.1:\$PORT/health\" >/dev/null 2>&1; then HEALTHY=1; break; fi
+  done
 
   if [ \"\$HEALTHY\" != '1' ]; then
-    echo 'RELEASE IS NOT ANSWERING /health — rolling back'
+    echo \"RELEASE IS NOT ANSWERING /health ON PORT \$PORT — rolling back\"
+    curl -sS --max-time 5 \"http://127.0.0.1:\$PORT/health\" || true   # names the shops that are dark
+    echo
     if [ -n \"\$PREV\" ]; then
       sudo ln -sfn \"\$PREV\" '$APP_ROOT/current'
       sudo systemctl restart '$SERVICE'

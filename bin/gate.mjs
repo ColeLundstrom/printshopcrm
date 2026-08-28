@@ -1798,6 +1798,118 @@ await t('INSTALL.md clears public/uploads before symlinking it', async () => {
   assert.match(before, /rm -rf \S*public\/uploads/, 'the existing directory must be removed first, or the link nests inside it')
 })
 
+// The pre-migration backup, and the check that decides whether a release stays.
+//
+// release.sh is what INSTALL.md tells self-hosters to run. It backed up "$DATA_ROOT/printshop.db"
+// and nothing else — the DEFAULT handle, which lib/db.mjs says in as many words is never touched
+// for a shop's data. Every real install is multi-tenant: the shops are in control.db and
+// tenants/<slug>/printshop.db. So the snapshot taken immediately before migrations run against
+// real customer data held no invoices, no customers and no way to sign in.
+//
+// And it then decided the release was good on `systemctl is-active`, which on a Type=simple unit
+// goes true the moment the process forks — before the port is bound and before one database is
+// opened. ship.sh got a real /health probe in v1.14.0; this script did not.
+//
+// This runs the actual script against a fake install with every external command stubbed, because
+// asserting on the text of a deploy script is not the same as watching it deploy.
+const rehearseRelease = async ({ healthy }) => {
+  const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, chmodSync, existsSync, readlinkSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const { DatabaseSync } = await import('node:sqlite')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-release-'))
+  const APP_ROOT = join(dir, 'app'), DATA_ROOT = join(dir, 'data'), BIN = join(dir, 'bin'), SRC = join(dir, 'src')
+  const stub = (name, body) => { writeFileSync(join(BIN, name), `#!/bin/sh\n${body}\n`); chmodSync(join(BIN, name), 0o755) }
+  try {
+    for (const d of [APP_ROOT, DATA_ROOT, BIN, SRC, join(SRC, 'bin'), join(SRC, 'deploy'), join(APP_ROOT, 'releases', 'v0.0.1')]) mkdirSync(d, { recursive: true })
+    // The install as it really is: an empty default handle, the registry, and two shops.
+    for (const rel of ['printshop.db', 'control.db', 'tenants/acme/printshop.db', 'tenants/bobs/printshop.db']) {
+      mkdirSync(dirname(join(DATA_ROOT, rel)), { recursive: true })
+      const d = new DatabaseSync(join(DATA_ROOT, rel))
+      d.exec('CREATE TABLE invoices (id INTEGER PRIMARY KEY, total REAL)')
+      if (rel !== 'printshop.db') d.exec("INSERT INTO invoices (total) VALUES (4200.00)")
+      d.close()
+    }
+    writeFileSync(join(APP_ROOT, '.env'), 'PSC_SECRET=x\nPORT=39777\n')
+    // A release is already live, so the rollback below has somewhere to go back to.
+    execFileSync('ln', ['-sfn', join(APP_ROOT, 'releases', 'v0.0.1'), join(APP_ROOT, 'current')])
+    writeFileSync(join(SRC, 'bin', 'gate.mjs'), '')
+    execFileSync('cp', [join(root, 'deploy', 'release.sh'), join(SRC, 'deploy', 'release.sh')])
+    // Every external the script shells out to. `node` too: release.sh runs the gate against the
+    // new release, and this IS the gate.
+    stub('sudo', 'exec "$@"')
+    stub('systemctl', 'exit 0')
+    stub('rsync', 'for a in "$@"; do last="$a"; done; mkdir -p "$last/public" "$last/bin"; exit 0')
+    stub('npm', 'exit 0')
+    stub('node', 'exit 0')
+    stub('journalctl', 'exit 0')
+    stub('curl', healthy ? 'exit 0' : 'exit 7')
+    let out = '', code = 0
+    try {
+      out = execFileSync('bash', [join(SRC, 'deploy', 'release.sh'), 'v9.9.9'], {
+        cwd: SRC, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PATH: `${BIN}:${process.env.PATH}`, APP_ROOT, DATA_ROOT, SRC, SERVICE: 'psc-test', PSC_HEALTH_TRIES: '1' },
+      })
+    } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}`; code = e.status }
+    const backups = join(DATA_ROOT, 'backups')
+    const snap = existsSync(backups) ? readdirSync(backups).map((n) => join(backups, n)) : []
+    const { statSync } = await import('node:fs')
+    // Read the sizes here: the sandbox is deleted in the finally below, so the caller only ever
+    // sees what this function captured while it still existed.
+    const captured = []
+    const walk = (d) => { for (const n of readdirSync(d, { withFileTypes: true })) { const f = join(d, n.name); n.isDirectory() ? walk(f) : captured.push({ name: f.slice(f.indexOf('/backups/')), size: statSync(f).size }) } }
+    // A snapshot may be a directory of databases or — as it was before this was fixed — one lone
+    // file. Handle both, so a regression fails on the assertion rather than on a scandir error.
+    for (const sdir of snap) { if (statSync(sdir).isDirectory()) walk(sdir); else captured.push({ name: sdir.slice(sdir.indexOf('/backups/')), size: statSync(sdir).size }) }
+    const current = existsSync(join(APP_ROOT, 'current')) ? readlinkSync(join(APP_ROOT, 'current')) : ''
+    return { out, code, captured, current, DATA_ROOT }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
+await t('the pre-migration backup contains the shops, not an empty default handle', async () => {
+  const r = await rehearseRelease({ healthy: true })
+  assert.equal(r.code, 0, `a healthy release should succeed:\n${r.out}`)
+  const names = r.captured.map((f) => f.name)
+  assert.ok(names.some((n) => n.endsWith('/control.db')), `control.db holds the registry and every login — it must be in the backup. Got: ${names.join(', ')}`)
+  assert.ok(names.some((n) => /tenants\/acme\/printshop\.db$/.test(n)), `a shop's own database must be in the backup. Got: ${names.join(', ')}`)
+  assert.ok(names.some((n) => /tenants\/bobs\/printshop\.db$/.test(n)), 'every shop, not just the first')
+  // And it has to be a real snapshot, not a zero-byte file.
+  for (const f of r.captured) assert.ok(f.size > 0, `${f.name} is empty — that is not a backup`)
+  assert.match(r.out, /database\(s\) backed up/, 'and it must say what it captured')
+})
+
+await t('a release that will not answer /health is rolled back, not announced as live', async () => {
+  const r = await rehearseRelease({ healthy: false })
+  assert.notEqual(r.code, 0, `a release nobody can reach must exit non-zero:\n${r.out}`)
+  assert.doesNotMatch(r.out, /✓ v9\.9\.9 is live/, 'is-active is not proof that anything is being served')
+  assert.match(r.out, /not answering \/health/, 'it has to say what actually failed')
+  assert.match(r.out, /rolled back/, 'and it has to put the previous release back')
+  assert.match(r.current, /releases\/v0\.0\.1$/, `current must point back at the previous release, got ${r.current}`)
+})
+
+// ship.sh had the /health probe but fell back to `systemctl is-active` whenever it could not work
+// out the port — and the SHIPPED unit file carries no Environment=PORT at all, it uses an
+// EnvironmentFile. So on a stock install the gate silently degraded into the exact check it was
+// written to replace, and printed "Shipped" over a release where every shop was dark.
+await t('neither deploy script can fall back to the check it was written to replace', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const file of ['deploy/ship.sh', 'deploy/release.sh']) {
+    const text = readFileSync(join(root, file), 'utf8')
+    assert.match(text, /curl [^\n]*\/health/, `${file}: the release gate has to ask the app, not the supervisor`)
+    for (const line of text.split('\n')) {
+      if (/^\s*#/.test(line)) continue // the comment explaining why is welcome
+      assert.doesNotMatch(line, /is-active[^\n]*HEALTHY=1/, `${file}: is-active must never be able to set the release healthy — ${line.trim().slice(0, 100)}`)
+    }
+    assert.match(text, /PORT=3333/, `${file}: an unset PORT is 3333 (server.mjs), not "unknown" — do not degrade the check`)
+  }
+})
+
 section('purchasing: submitting twice must not order the blanks twice')
 // Submitting places a REAL, chargeable order. The guard tested for the single string 'submitted',
 // and status is not written until AFTER the awaited submit — so two clicks a second apart both
