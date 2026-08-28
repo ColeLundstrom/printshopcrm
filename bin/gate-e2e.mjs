@@ -1570,6 +1570,64 @@ try {
     chk('a different export still imports', String(Number(r.json?.imported) > 0), '^true$')
   }
 
+  /* ---------- a shop importing its history does not freeze every other shop ----------
+   * node:sqlite is synchronous, and the commit path wrapped the WHOLE file in one tx(). Measured
+   * on a 4.79MB export — well inside the app's own 8MB upload cap — that is 18.2 SECONDS in which
+   * the process answers nothing: /health returned TWICE in the entire window, where ~700 probes
+   * should have got through, and the worst single wait was 18,184ms. After the fix the same file
+   * serves 300 probes with a worst wait of 381ms, and imports the same 60,000 orders. On pro.printshopcrm.com that is every OTHER shop's app hung solid
+   * while one shop uploads a Printavo export, plus a health check a proxy or a deploy is entitled
+   * to read as "this box is dead". A tx() callback has to stay synchronous, so the yield goes
+   * BETWEEN transactions: batches of 200 orders, never splitting the estimate→invoice→payment→job
+   * graph that actually needs to be atomic. Whole-file atomicity is what we traded away, and the
+   * next block proves the trade is safe — a re-upload of the same file resumes exactly. */
+  {
+    const rows = ['Order Number,Customer,Email,Date,Product,Qty,Unit Price,Total,Status']
+    for (let i = 1; i <= 9000; i++) rows.push(`LOAD-${i},Load Test Co,load@e2e.test,2026-04-0${(i % 9) + 1},Gildan 5000 Tee,24,9.5,228,paid`)
+    const big = rows.join('\n')
+
+    // Poll /health as fast as it will answer for as long as the import runs. This counts what a
+    // second shop — or a load balancer — actually gets served while the first one imports.
+    const lat = []
+    let polling = true
+    const probe = (async () => {
+      while (polling) {
+        const t = Date.now()
+        try { await fetch(`${BASE}/health`) } catch { /* a refused connect is still a data point */ }
+        lat.push(Date.now() - t)
+      }
+    })()
+
+    const form = new FormData()
+    form.append('file', new Blob([big], { type: 'text/csv' }), 'history.csv')
+    const t0 = Date.now()
+    const up = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form })
+    const wall = Date.now() - t0
+    polling = false
+    await probe
+    const body = await up.json().catch(() => ({}))
+    const worst = Math.max(...lat)
+
+    chk('a 9,000-order export imports', String(body.imported), '^9000$')
+    // Measured on this very file: 3 probes before the fix, 47 after. Ten sits between them with
+    // room on both sides, and neither number is close to it.
+    chk(`…while the app keeps answering other requests (${lat.length} health probes served in ${wall}ms, was 3)`,
+      String(lat.length >= 10), '^true$')
+    // Before the fix the worst wait WAS the whole import: 2601ms measured here, 112ms after.
+    chk(`…and nobody waits the length of the import for a page (worst ${worst}ms, was ${wall}ms)`,
+      String(worst < 1500), '^true$')
+
+    // The half we traded whole-file atomicity for: batches that landed stay landed, and the same
+    // file re-uploaded finishes the job instead of duplicating it. Every row's identity is the
+    // file's content hash plus its position, so this holds across every batch boundary.
+    const form2 = new FormData()
+    form2.append('file', new Blob([big], { type: 'text/csv' }), 'history.csv')
+    const up2 = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form2 })
+    const body2 = await up2.json().catch(() => ({}))
+    chk('…and re-uploading it after an interrupted run writes nothing new', String(body2.imported), '^0$')
+    chk('…recognising every batch that had already landed', String(body2.skipped_duplicates), '^9000$')
+  }
+
   /* ---------- an imported order is worth what the file says it was worth ----------
    * Two defects, one arithmetic. A `Total` column is either the ORDER total repeated on every
    * line, or THAT LINE's extended total, and the fold took the largest value it saw — so a real

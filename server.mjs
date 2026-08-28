@@ -4284,7 +4284,7 @@ function groupImportedOrders(orders) {
   return grouped
 }
 
-app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap((req, res) => {
+app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
   const rows = parseCsv(text)
@@ -4293,10 +4293,14 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // Preview what the import will WRITE, not what the file contains. Folded per line-item rows are
   // one order, not four, and the value shown has to be the value that lands: a three-line $1,900
   // order previewed as "3 orders — $1,900 of history" and then wrote one $1,000 invoice.
-  const previewOrders = groupImportedOrders(mapped.orders)
-  const summary = summarizeImport({ orders: previewOrders, warnings: mapped.warnings })
+  // Fold ONCE. The commit path used to group the file a second time further down and throw this
+  // copy away, which on a 60,000-row export is a second full pass for nothing.
+  const grouped = groupImportedOrders(mapped.orders)
   const preview = req.body?.preview === 'true' || req.body?.preview === true
-  if (preview) return res.json({ preview: true, ...summary, sample: previewOrders.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+  if (preview) {
+    const summary = summarizeImport({ orders: grouped, warnings: mapped.warnings })
+    return res.json({ preview: true, ...summary, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+  }
 
   let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0
   const findContact = (name, email) => {
@@ -4309,10 +4313,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     return get('SELECT * FROM contacts WHERE id = ?', id)
   }
 
-  // Many exports are one row PER LINE ITEM, with the order number repeated. Fold those into a
-  // single order before writing, or a 4-line order becomes 4 separate one-line orders (or, with
-  // idempotency on, 1 order and 3 silently dropped lines).
-  const grouped = groupImportedOrders(mapped.orders)
+  // (`grouped` is folded once, above the preview branch: many exports are one row PER LINE ITEM
+  // with the order number repeated, and a 4-line order must not become 4 one-line orders.)
   // The export's own status decides how much of the graph gets written.
   const classify = (status) => {
     const s = String(status || '').toLowerCase()
@@ -4335,74 +4337,96 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // deliberately per-FILE: two different exports that happen to contain the same order both
   // import, exactly as today, because refusing data the shop meant to add is the worse error.
   const fileTag = crypto.createHash('sha1').update(text).digest('hex').slice(0, 12)
-  let rowIndex = -1
-  tx(() => {
-    for (const o of grouped) {
-      rowIndex++
-      // Idempotent on the source system's order number, matched EXACTLY against its own column.
-      // (This was a substring LIKE over the notes text, so importing INV-9 after INV-90 silently
-      // discarded the whole order as a "duplicate".)
-      const ref = o.order_number ? String(o.order_number).slice(0, 120) : `csv:${fileTag}:${rowIndex}`
-      if (get('SELECT id FROM estimates WHERE source_ref = ?', ref)) { skippedDupes++; continue }
+  /**
+   * Write the import in batches, handing the event loop back between them.
+   *
+   * node:sqlite is synchronous, so one tx() around 60,000 orders is 18 SECONDS of unbroken
+   * blocking — measured, with /health answering twice in that window and every other shop on the
+   * box frozen behind it, on a 4.79MB file that is well inside the app's own 8MB upload cap. A
+   * `tx()` callback must stay synchronous (an await inside would let another request interleave
+   * mid-transaction), so the yield goes BETWEEN transactions, not inside one.
+   *
+   * The unit of atomicity that matters is the ORDER — estimate → invoice → payment → job is what
+   * must never be half-written — and a batch never splits one. Whole-file atomicity is what we
+   * give up, and it was worth less than it looks: a throw on the last row used to roll back all
+   * 18 seconds of work, whereas now the batches that landed stay landed and re-uploading the same
+   * file finishes the job. That resumption is not a hope — every row's identity is derived from
+   * the file's content hash and its position (`csv:<fileTag>:<index>`), or from the export's own
+   * order number, so a re-import skips exactly what already arrived. The gate asserts both halves:
+   * that the loop keeps breathing, and that a re-import writes nothing new.
+   */
+  const BATCH = 200
+  const writeOne = (o, rowIndex) => {
+    // Idempotent on the source system's order number, matched EXACTLY against its own column.
+    // (This was a substring LIKE over the notes text, so importing INV-9 after INV-90 silently
+    // discarded the whole order as a "duplicate".)
+    const ref = o.order_number ? String(o.order_number).slice(0, 120) : `csv:${fileTag}:${rowIndex}`
+    if (get('SELECT id FROM estimates WHERE source_ref = ?', ref)) { skippedDupes++; return }
 
-      const c = findContact(o.customer_name, o.customer_email)
-      const when = o.date ? `${o.date} 12:00:00` : now()
-      const items = o._lines.map((ln) => {
-        const sizes = ln.sizes && Object.keys(ln.sizes).length ? ln.sizes : { M: ln.quantity || 0 }
-        const qty = sizeTotal(sizes)
-        return {
-          description: ln.garment || ln.order_number || 'Imported order',
-          sizes,
-          unit_price: Number(ln.unit_price) || (ln.total && qty ? Number(ln.total) / qty : 0),
-          decoration: ln.decoration || 'Screen Print',
-          taxable: true,
-        }
-      })
-      const allSizes = rollupSizes(items)
-      const t = computeTotals(items, 0, getUpcharges())
-      // A document must never hide money between its subtotal and its total — 8e9239e. The file's
-      // total is authoritative, because it is what the shop actually billed; the reconstructed
-      // lines are what the document PRINTS, and an export's total routinely carries setup, rush,
-      // shipping or tax that no line accounts for. Storing one over the other reproduced that exact
-      // defect one layer down: Subtotal $1,000.00 / Tax $0.00 / TOTAL $1,180.00, with $180 arriving
-      // from nowhere, stored, carried into the invoice's frozen amount_due and posted to the books.
-      // Give the difference a line of its own instead, so the money is named rather than missing.
-      const filed = Number(o.total) > 0 ? round2(Number(o.total)) : null
-      const gap = filed == null ? 0 : round2(filed - t.total)
-      if (Math.abs(gap) >= 0.01) {
-        items.push({ description: gap > 0 ? 'Other charges' : 'Discount', qty: 1, unit_price: gap, taxable: false })
-        reconciled++
+    const c = findContact(o.customer_name, o.customer_email)
+    const when = o.date ? `${o.date} 12:00:00` : now()
+    const items = o._lines.map((ln) => {
+      const sizes = ln.sizes && Object.keys(ln.sizes).length ? ln.sizes : { M: ln.quantity || 0 }
+      const qty = sizeTotal(sizes)
+      return {
+        description: ln.garment || ln.order_number || 'Imported order',
+        sizes,
+        unit_price: Number(ln.unit_price) || (ln.total && qty ? Number(ln.total) / qty : 0),
+        decoration: ln.decoration || 'Screen Print',
+        taxable: true,
       }
-      const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
-      const total = filed != null ? doc.total : t.total
-      const kind = classify(o.status)
-      // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
-      const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
-
-      const estStatus = kind === 'quote' ? 'sent' : 'approved'
-      const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, source_ref, imported_at, sent_at, approved_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), doc.subtotal, doc.tax, total, 0,
-        notes, ref, stamp, when, kind === 'quote' ? null : when, when).lastInsertRowid)
-      created++
-      if (kind === 'quote') { openQuotes++; continue }
-
-      const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, paid_at, imported_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        estId, c.id, nextInvoiceNumber(), kind === 'paid' ? 'paid' : 'unpaid', total,
-        kind === 'paid' ? total : 0, o.due_date || o.date || null, kind === 'paid' ? when : null, stamp, when).lastInsertRowid)
-      if (kind === 'paid') {
-        run('INSERT INTO payments (invoice_id, amount, method, note, created_at) VALUES (?,?,?,?,?)',
-          invId, total, 'imported', notes, when)
-      } else unpaidInvoices++
-
-      // The job row is what Reorder Radar reads cadence from — created_at MUST be the
-      // historical order date, or every imported customer looks like they ordered today.
-      run(`INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, sizes, line_sizes, due_date, notes, imported_at, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        c.id, estId, invId, nextJobNumber(), o.garment || o.order_number || 'Imported order',
-        'complete', 'complete', o.decoration || 'Screen Print', JSON.stringify(allSizes), JSON.stringify(garmentLines(items)),
-        o.due_date || null, notes, stamp, when, when)
+    })
+    const allSizes = rollupSizes(items)
+    const t = computeTotals(items, 0, getUpcharges())
+    // A document must never hide money between its subtotal and its total — 8e9239e. The file's
+    // total is authoritative, because it is what the shop actually billed; the reconstructed
+    // lines are what the document PRINTS, and an export's total routinely carries setup, rush,
+    // shipping or tax that no line accounts for. Storing one over the other reproduced that exact
+    // defect one layer down: Subtotal $1,000.00 / Tax $0.00 / TOTAL $1,180.00, with $180 arriving
+    // from nowhere, stored, carried into the invoice's frozen amount_due and posted to the books.
+    // Give the difference a line of its own instead, so the money is named rather than missing.
+    const filed = Number(o.total) > 0 ? round2(Number(o.total)) : null
+    const gap = filed == null ? 0 : round2(filed - t.total)
+    if (Math.abs(gap) >= 0.01) {
+      items.push({ description: gap > 0 ? 'Other charges' : 'Discount', qty: 1, unit_price: gap, taxable: false })
+      reconciled++
     }
-  })
+    const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
+    const total = filed != null ? doc.total : t.total
+    const kind = classify(o.status)
+    // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
+    const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
+
+    const estStatus = kind === 'quote' ? 'sent' : 'approved'
+    const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, source_ref, imported_at, sent_at, approved_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), doc.subtotal, doc.tax, total, 0,
+      notes, ref, stamp, when, kind === 'quote' ? null : when, when).lastInsertRowid)
+    created++
+    if (kind === 'quote') { openQuotes++; return }
+
+    const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, paid_at, imported_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      estId, c.id, nextInvoiceNumber(), kind === 'paid' ? 'paid' : 'unpaid', total,
+      kind === 'paid' ? total : 0, o.due_date || o.date || null, kind === 'paid' ? when : null, stamp, when).lastInsertRowid)
+    if (kind === 'paid') {
+      run('INSERT INTO payments (invoice_id, amount, method, note, created_at) VALUES (?,?,?,?,?)',
+        invId, total, 'imported', notes, when)
+    } else unpaidInvoices++
+
+    // The job row is what Reorder Radar reads cadence from — created_at MUST be the
+    // historical order date, or every imported customer looks like they ordered today.
+    run(`INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, sizes, line_sizes, due_date, notes, imported_at, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      c.id, estId, invId, nextJobNumber(), o.garment || o.order_number || 'Imported order',
+      'complete', 'complete', o.decoration || 'Screen Print', JSON.stringify(allSizes), JSON.stringify(garmentLines(items)),
+      o.due_date || null, notes, stamp, when, when)
+  }
+  for (let i = 0; i < grouped.length; i += BATCH) {
+    const batch = grouped.slice(i, i + BATCH)
+    tx(() => { batch.forEach((o, n) => writeOne(o, i + n)) })
+    // Between transactions, never inside one: this is what lets /health answer, another shop
+    // load a page, and a websocket stay alive while a big export is landing.
+    if (i + BATCH < grouped.length) await new Promise((r) => setImmediate(r))
+  }
   logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {})
   res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
 }))
