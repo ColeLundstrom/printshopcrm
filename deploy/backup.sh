@@ -117,7 +117,24 @@ SIZE="$(du -h "$DEST.tar.gz" 2>/dev/null | cut -f1)"
 # configured it — your install, your Google account. See `node bin/backup-drive.mjs connect`.
 # A failed upload is reported but does NOT fail the local backup, which already succeeded.
 # ---------------------------------------------------------------------------
+# Where the app itself lives, so we can find the uploader.
+#
+# This used to be only `dirname $0/..` — and the header of this very file tells you to install it
+# as /usr/local/bin/printshopcrm-backup, which makes that /usr/local. bin/backup-drive.mjs is not
+# there, the `-f` test below failed, and the script printed "backup ok" having sent NOTHING
+# off-site. An operator who had connected Google Drive believed their backups were leaving the box
+# for as long as it took the box to die. Look in the documented install locations too, and if the
+# uploader still cannot be found while off-site backup is CONFIGURED, say so loudly.
 APP_DIR="${APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+if [ ! -f "$APP_DIR/bin/backup-drive.mjs" ]; then
+  for candidate in /opt/printshopcrm-pro/current /opt/printshopcrm/current /opt/printshopcrm; do
+    if [ -f "$candidate/bin/backup-drive.mjs" ]; then APP_DIR="$candidate"; break; fi
+  done
+fi
+if [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ ! -f "$APP_DIR/bin/backup-drive.mjs" ]; then
+  echo "WARNING: off-site backup is configured, but bin/backup-drive.mjs was not found under $APP_DIR." >&2
+  echo "         THIS BACKUP EXISTS ONLY ON THIS MACHINE. Re-run with APP_DIR=/path/to/printshopcrm." >&2
+fi
 if [ -f "$DEST.tar.gz" ] && [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ -f "$APP_DIR/bin/backup-drive.mjs" ]; then
   if node --no-warnings "$APP_DIR/bin/backup-drive.mjs" upload "$DEST.tar.gz"; then
     offsite=" · copied off-site"

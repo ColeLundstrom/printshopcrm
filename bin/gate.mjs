@@ -4848,6 +4848,36 @@ section('a backup can actually be put back')
     } finally { try { service.close() } catch { /* already gone */ } rmSync(f.dir, { recursive: true, force: true }) }
   })
 
+  await t('a backup that could not go off-site says so instead of reporting success', async () => {
+    const { readFileSync, mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { execFileSync } = await import('node:child_process')
+
+    // The script's own header tells you to install it as /usr/local/bin/printshopcrm-backup.
+    // APP_DIR was `dirname $0/..`, which from there is /usr/local — where bin/backup-drive.mjs is
+    // not. The `-f` guard failed, the upload was skipped, and the script printed "backup ok" with
+    // NOTHING off-site. An operator who had connected Google Drive believed their backups were
+    // leaving the box for as long as it took the box to die.
+    const dir = mkdtempSync(join(tmpdir(), 'psc-bk-'))
+    try {
+      mkdirSync(join(dir, 'bin'), { recursive: true })
+      // Copy the script somewhere its ../bin does NOT hold the uploader, exactly like /usr/local/bin.
+      const script = join(dir, 'bin', 'printshopcrm-backup')
+      writeFileSync(script, readFileSync(join(ROOT, 'deploy/backup.sh'), 'utf8'), { mode: 0o755 })
+      const data = join(dir, 'data'); mkdirSync(data, { recursive: true })
+      let out = ''
+      try {
+        out = execFileSync('bash', [script], {
+          encoding: 'utf8',
+          env: { ...process.env, DATA_ROOT: data, BACKUP_ROOT: join(dir, 'backups'), APP_DIR: join(dir, 'nowhere'), PSC_BACKUP_GDRIVE_REFRESH_TOKEN: 'pretend-token' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+      } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}` }
+      assert.match(out, /ONLY on this machine|off-site/i,
+        'off-site backup configured but unreachable must be reported, not skipped in silence')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   await t('nothing still tells an operator to restore with cp', async () => {
     const { readFileSync } = await import('node:fs')
     for (const file of ['deploy/release.sh', 'INSTALL.md', 'deploy/DEPLOY.md']) {
