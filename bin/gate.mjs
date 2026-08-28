@@ -3376,6 +3376,64 @@ await t('the job form opens the per-garment editor instead of toasting a dead en
   assert.match(src, /line_sizes/, 'board.js never sends the structure that 409 hands it')
 })
 
+/* ---------- an order is worth what it is worth, once (v10) ----------
+ * jobRoi() reads the ESTIMATE for revenue and cost, and shopRoi() sums per JOB. Two jobs on one
+ * estimate is ordinary — an order split into two production runs, and the documented
+ * void → re-issue recovery makes one too — and every one of them counted the whole order twice.
+ * The SHIPPED SEED does it: JOB-1001 (300 spirit tees) and JOB-1008 (the coach polos add-on) both
+ * claim EST-1001's $2,726, so a brand-new shop's Profitability page opens on $17,823.50 of
+ * revenue against $15,097.50 of real work. */
+section('two production runs on one order do not sell it twice')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  sup.initSuppliers(mem)
+  const roi = await import('../lib/roi.mjs')
+  const items = JSON.stringify([
+    { description: 'Gildan 5000 Tee — Wildcats spirit shirt', sizes: { S: 40, M: 90, L: 110, XL: 48, '2XL': 10, '3XL': 2 }, unit_price: 8.75, taxable: true },
+    { description: 'Screen setup — 3 screens', qty: 3, unit_price: 25 },
+  ])
+  dbmod.run(`INSERT INTO contacts (id, name, email) VALUES (1, 'Wildcats', 'ad@wildcats.test')`)
+  dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, items, subtotal, total)
+             VALUES (1, 'EST-1001', 1, 'approved', ?, 2726, 2931.45)`, items)
+  dbmod.run(`INSERT INTO jobs (id, job_number, contact_id, estimate_id, title, stage, status, sizes)
+             VALUES (1, 'JOB-1001', 1, 1, '300 tees', 'production', 'active', ?)`,
+    JSON.stringify({ S: 40, M: 90, L: 110, XL: 48, '2XL': 10, '3XL': 2 }))
+  dbmod.run(`INSERT INTO jobs (id, job_number, contact_id, estimate_id, title, stage, status, sizes)
+             VALUES (8, 'JOB-1008', 1, 1, 'coach polos add-on', 'shipping', 'active', ?)`,
+    JSON.stringify({ M: 2, L: 3, XL: 2, '2XL': 1 }))
+
+  const r = roi.shopRoi()
+  await t('the shop\'s revenue is the order\'s value, not twice it', () => {
+    assert.equal(r.totals.revenue, 2726, `two runs on one $2,726 order reported ${r.totals.revenue}`)
+  })
+  await t('…and the split is by the pieces each run actually makes', () => {
+    const big = r.jobs.find((j) => j.job_number === 'JOB-1001')
+    const small = r.jobs.find((j) => j.job_number === 'JOB-1008')
+    assert.ok(big.revenue > small.revenue * 10, `300 pieces got ${big.revenue}, 8 pieces got ${small.revenue}`)
+    assert.equal(Math.round((big.revenue + small.revenue) * 100) / 100, 2726, 'the split must sum to the order to the cent')
+  })
+  await t('…and the cost is not double-counted either', () => {
+    const big = r.jobs.find((j) => j.job_number === 'JOB-1001')
+    const small = r.jobs.find((j) => j.job_number === 'JOB-1008')
+    assert.equal(Math.round((big.cost + small.cost) * 100) / 100, r.totals.cost)
+    assert.ok(small.cost < big.cost, 'the 8-piece run cannot cost what the 300-piece run costs')
+  })
+  await t('a single-job order is completely unaffected', () => {
+    dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, items, subtotal, total)
+               VALUES (2, 'EST-1002', 1, 'approved', ?, 1000, 1000)`, JSON.stringify([{ description: 'Gildan 5000 Tee — Navy', sizes: { M: 100 }, unit_price: 10 }]))
+    dbmod.run(`INSERT INTO jobs (id, job_number, contact_id, estimate_id, title, stage, status, sizes)
+               VALUES (9, 'JOB-1009', 1, 2, 'solo', 'production', 'active', ?)`, JSON.stringify({ M: 100 }))
+    const solo = roi.shopRoi().jobs.find((j) => j.job_number === 'JOB-1009')
+    assert.equal(solo.revenue, 1000)
+    assert.equal(solo.pieces, 100)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
