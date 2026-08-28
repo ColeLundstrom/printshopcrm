@@ -4878,6 +4878,40 @@ section('a backup can actually be put back')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
+  await t('the documented Docker restore clears every stale write-ahead log, not most of them', async () => {
+    const { readFileSync } = await import('node:fs')
+    const text = readFileSync(join(ROOT, 'deploy/DEPLOY.md'), 'utf8')
+    // The restore block states the rule itself three lines above the command: delete any -wal/-shm
+    // left beside the database you are replacing, or the crash's log replays over the restore. It
+    // swept printshop.db and every tenant, and missed control.db — which holds the shop directory,
+    // the members and the sessions on every multi-tenant install.
+    const i = text.indexOf('rm -f /data/printshop.db-wal')
+    assert.ok(i > 0, 'the documented restore should still clear stale logs')
+    const cmd = text.slice(i, text.indexOf('\n', i))
+    for (const db of ['printshop.db', 'control.db']) {
+      for (const ext of ['-wal', '-shm']) {
+        assert.match(cmd, new RegExp(`/data/${db.replace('.', '\\.')}${ext}\\b`),
+          `the restore copies ${db} back, so it has to clear its ${ext} first`)
+      }
+    }
+    assert.match(cmd, /tenants\/\*\/printshop\.db-wal/, 'and every tenant database too')
+  })
+
+  await t('the documented size list is the size list the API enforces', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { SIZES } = await import('../public/js/shared/pricing.js')
+    const text = readFileSync(join(ROOT, 'docs/API.md'), 'utf8')
+    const row = text.split('\n').find((l) => /^\|\s*`sizes`\s*\|/.test(l))
+    assert.ok(row, "docs/API.md should still document the `sizes` field")
+    const listed = (row.match(/allowed: `([^`]+)`/) || [])[1]
+    assert.ok(listed, 'and should still print the allowlist')
+    // 6XL and the tall run were added to the code specifically so the API would stop refusing
+    // them, and the doc went on saying it refused them. Compare against the constant, so the next
+    // widening cannot drift either.
+    assert.deepEqual(listed.trim().split(/\s+/), [...SIZES],
+      'docs/API.md and public/js/shared/pricing.js must list the same sizes')
+  })
+
   await t('nothing still tells an operator to restore with cp', async () => {
     const { readFileSync } = await import('node:fs')
     for (const file of ['deploy/release.sh', 'INSTALL.md', 'deploy/DEPLOY.md']) {

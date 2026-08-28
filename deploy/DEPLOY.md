@@ -79,6 +79,14 @@ docker compose down -v                    # stop AND DELETE THE DATA — that's 
 **Backups.** Everything — the databases and the customer artwork — is on the `printshopcrm-data`
 volume. Take a **consistent snapshot first**, then archive the snapshot:
 
+> **If you started the app with `docker compose`, the volume is not called `printshopcrm-data`.**
+> Compose namespaces volume names with the project, so it is `<project>_printshopcrm-data` —
+> usually `printshopcrm_printshopcrm-data`. Run `docker volume ls` and use the name you see in the
+> two `docker run` commands below. The bare name does not fail: Docker creates a NEW, EMPTY volume,
+> `tar` exits 0, and you get a backup archive containing nothing. The `docker run` quickstart at
+> the top of this file does create a volume called exactly `printshopcrm-data`, which is why both
+> names are in circulation.
+
 ```bash
 # Snapshots every database on the volume with SQLite's own VACUUM INTO and verifies each one.
 # Safe while the shop is working; the container has node, which is all this needs.
@@ -102,7 +110,7 @@ straight over the file you just restored:
 tar xzf printshopcrm-2026-08-28.tar.gz -C /tmp
 docker compose stop app
 docker run --rm -v printshopcrm-data:/data -v /tmp:/restore alpine sh -c '
-  rm -f /data/printshop.db-wal /data/printshop.db-shm /data/tenants/*/printshop.db-wal /data/tenants/*/printshop.db-shm
+  rm -f /data/printshop.db-wal /data/printshop.db-shm /data/control.db-wal /data/control.db-shm /data/tenants/*/printshop.db-wal /data/tenants/*/printshop.db-shm
   cp /restore/_snapshot/printshop.db          /data/printshop.db
   cp /restore/_snapshot/control.db            /data/control.db 2>/dev/null || true
   for f in /restore/_snapshot/tenants__*; do
