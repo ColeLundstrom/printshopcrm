@@ -1457,7 +1457,11 @@ app.get('/api/dashboard', wrap((_req, res) => {
   const monthStart = today.slice(0, 8) + '01'
 
   const revenue_mtd = round2(get(
-    `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE date(p.created_at) >= ?`, monthStart).v)
+    // date(p.created_at) wrapped the column in a function, which makes any index on it unusable —
+    // so Revenue MTD, on the first screen after login, scanned every payment the shop had ever
+    // taken. created_at is stored as 'YYYY-MM-DD HH:MM:SS', which orders identically to the date
+    // alone, so comparing the text directly gives the same answer and seeks.
+    `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE p.created_at >= ?`, monthStart).v)
   const outstanding = round2(get(
     `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void')`).v)
   const overdue = round2(get(

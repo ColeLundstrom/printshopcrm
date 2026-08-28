@@ -639,6 +639,58 @@ await t('serviceMatrix supports up to 14 colour columns', () => {
   assert.deepEqual(m.cols.slice(-2), [13, 14])
 })
 
+section('the queries on the first screen after login seek, they do not scan')
+/* node:sqlite is SYNCHRONOUS: a slow query blocks the event loop for EVERY shop on the box, not
+ * just the one that asked. So a full table scan on a hot path is a fleet-wide outage in slow
+ * motion, and the tables these run over are all append-only — they only get worse.
+ *
+ * EXPLAIN QUERY PLAN is the assertion because it is the thing that actually regresses: a later
+ * edit that wraps a column in a function (date(), upper(), lower()) silently makes the index
+ * unusable again while the query still returns the right answer. Revenue MTD was exactly that —
+ * `WHERE date(p.created_at) >= ?` scanned every payment the shop had ever taken. */
+await t('no hot dashboard query falls back to a table scan', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  auto.initAutomations(db) // automation_runs and its indexes live in the automations module
+  const plan = (sql, ...p) => db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...p).map((r) => r.detail).join(' | ')
+  const seeks = (label, sql, ...p) => {
+    const d = plan(sql, ...p)
+    assert.doesNotMatch(d, /SCAN (?!.*USING (COVERING )?INDEX)/, `${label} — ${d}`)
+  }
+  // Revenue MTD, /api/dashboard. The `date()` wrapper is the regression this guards.
+  seeks('revenue MTD', `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE p.created_at >= ?`, '2026-08-01')
+  // Floor Mode barcode scan, GET /api/scan/:code. upper() defeats the UNIQUE index on job_number,
+  // so this only seeks if an index on the same EXPRESSION exists.
+  seeks('barcode scan', `SELECT * FROM jobs WHERE upper(job_number) = ?`, 'JOB-1001')
+  // Stripe webhook idempotency — "have I already recorded this session?"
+  seeks('stripe session lookup', `SELECT 1 FROM payments WHERE stripe_session = ?`, 'cs_test_x')
+  // The unread badge, on /api/dashboard AND /api/today.
+  seeks('unread messages', `SELECT COUNT(*) AS n FROM messages WHERE direction = 'in' AND read = 0`)
+  // Automations fired this week, on /api/dashboard AND /api/automations.
+  seeks('automation runs this week', `SELECT COUNT(*) AS n FROM automation_runs WHERE status = 'ran' AND created_at >= ?`, '2026-08-21')
+})
+
+await t('…and Revenue MTD still answers the same number without date()', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db)
+  dbm.run("INSERT INTO contacts (name, email) VALUES ('C', 'c@x.test')")
+  dbm.run("INSERT INTO invoices (contact_id, invoice_number, status, amount_due, amount_paid) VALUES (1, 'INV-1', 'unpaid', 100, 0)")
+  // One payment on the last second of last month, one on the first, one mid-month.
+  for (const [amt, at] of [[10, '2026-07-31 23:59:59'], [20, '2026-08-01 00:00:00'], [30, '2026-08-15 12:00:00']]) {
+    dbm.run('INSERT INTO payments (invoice_id, amount, method, note, created_at) VALUES (?,?,?,?,?)', 1, amt, 'check', '', at)
+  }
+  const sum = (sql) => Number(db.prepare(sql).get('2026-08-01').v)
+  const oldWay = sum(`SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE date(p.created_at) >= ?`)
+  const newWay = sum(`SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE p.created_at >= ?`)
+  assert.equal(newWay, 50, 'August only — the boundary payment counts, the July one does not')
+  assert.equal(newWay, oldWay, 'the faster form must not change the number the shop reads')
+})
+
 section('receptionist: does not loop the quote after contact is given')
 await t('quote → email → "no" advances to a closed reply, never re-quotes', async () => {
   const { DatabaseSync } = await import('node:sqlite')
