@@ -1333,6 +1333,43 @@ await t('sanitize refuses an unusable matrix and never leaves ambiguous headers'
   assert.equal(sanitize({ name: 'X', rows: ['r'], cols: ['a'], cells: [[-3]] }).cells[0][0], null, 'a negative price is not a price')
 })
 
+await t('a wrong-typed field is refused, not silently applied to the shop\'s prices', async () => {
+  const { sanitize, TEMPLATES } = await import('../lib/matrices.mjs')
+  const tpl = TEMPLATES.find((x) => x.key !== 'blank')
+  const base = sanitize(tpl)
+  const priced = base.cells[0][0]
+  assert.ok(priced > 0, 'precondition: the template starts with real prices')
+
+  // `cells` used to be taken as `input.cells ?? base.cells` and handed to resizeGrid(), which
+  // answers a grid of NULLS for anything that is not an array of arrays. So a client that
+  // stringified the grid — a CSV paste, a spreadsheet cell, a Zapier field mapping — sent
+  // {"cells":"18,20,26"} and got a 200 with every price in the sheet erased. Nothing in the
+  // response said so; the shop found out when a quote came back blank.
+  for (const bad of ['18,20,26', 5, {}, '', true]) {
+    assert.throws(() => sanitize({ ...tpl, cells: bad }, base), /cells must be an array/i,
+      `cells: ${JSON.stringify(bad)} must be refused`)
+  }
+  // null and omitted still mean "leave the prices alone" — the documented behaviour.
+  assert.equal(sanitize({ ...tpl, cells: null }, base).cells[0][0], priced)
+  const { cells: _drop, ...noCells } = tpl
+  assert.equal(sanitize(noCells, base).cells[0][0], priced)
+
+  // rows/cols were the quieter half: silently ignored, so a rename that never happened said "saved".
+  assert.throws(() => sanitize({ ...tpl, rows: 'a,b' }, base), /rows must be an array/i)
+  assert.throws(() => sanitize({ ...tpl, cols: {} }, base), /cols must be an array/i)
+
+  // `unit` decides whether a cell is multiplied by the order quantity or charged once. Any value
+  // that was not exactly lowercase 'flat' became 'piece' with a 200, so a setup-fee sheet saved
+  // from a select whose option label reads "Flat" started multiplying a one-off charge by the run.
+  const flat = sanitize({ ...tpl, unit: 'flat' }, base)
+  assert.equal(flat.unit, 'flat')
+  assert.equal(sanitize({ ...tpl, unit: 'Flat' }, flat).unit, 'flat', 'a select label is still the same unit')
+  assert.equal(sanitize({ ...tpl, unit: 'FLAT ' }, flat).unit, 'flat')
+  assert.throws(() => sanitize({ ...tpl, unit: 'bananas' }, flat), /unit must be/i)
+  assert.throws(() => sanitize({ ...tpl, unit: 'per-piece' }, flat), /unit must be/i)
+  assert.equal(sanitize({ ...tpl, unit: undefined }, flat).unit, 'flat', 'omitting unit keeps it')
+})
+
 await t('every starter template is a valid, complete grid', async () => {
   const { TEMPLATES, sanitize, rowIndexForQty } = await import('../lib/matrices.mjs')
   assert.ok(TEMPLATES.length >= 6, 'the shipped set covers the trades the README names')
