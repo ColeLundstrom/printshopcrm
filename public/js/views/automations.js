@@ -43,7 +43,7 @@ export async function automationsView() {
             <div class="au-main">
               <div class="au-name">${esc(a.name)}</div>
               <div class="au-flow">
-                <span class="au-when">${esc(trigLabel(a.trigger))}${a.params?.days ? ` · ${a.params.days}d` : ''}${a.params?.stage ? ` · ${esc(String(a.params.stage).replace('_', ' '))}` : ''}</span>
+                <span class="au-when">${esc(trigLabel(a.trigger))}${a.params?.days ? ` · ${esc(String(a.params.days))}d` : ''}${a.params?.stage ? ` · ${esc(String(a.params.stage).replace('_', ' '))}` : ''}</span>
                 ${(a.conditions || []).length ? `<span class="au-if">if ${a.conditions.map((c) => `${esc(String(c.key).replace('_', ' '))} ${esc(String(c.value))}`).join(' & ')}</span>` : ''}
                 <span class="au-arrow">→</span>
                 ${(a.actions || []).map((x) => x.key === 'wait'
