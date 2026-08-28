@@ -83,8 +83,17 @@ rsync -a -e "$RSYNC_E" \
   ln -sfn '$DATA_UPLOADS' '$REL/public/uploads'
   cd '$REL' && npm ci --omit=dev >/dev/null 2>&1
   node bin/gate.mjs >/dev/null || { echo 'GATE FAILED ON THE SERVER'; exit 1; }
-  PREV=\$(readlink -f '$APP_ROOT/current' 2>/dev/null || true)
-  [ -n \"\$PREV\" ] && echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
+  # GNU readlink -f prints a path whose LAST component is missing and exits 0, so on a first
+  # deploy PREV came back as the link about to be replaced and the rollback below pointed current
+  # at itself: ELOOP, and Restart=always looping on it forever. A way home has to be a link that
+  # resolves to a directory that is really there. (See deploy/release.sh for the full account.)
+  PREV=''
+  if [ -L '$APP_ROOT/current' ]; then
+    PREV=\$(readlink -f '$APP_ROOT/current' 2>/dev/null || true)
+    [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ] || PREV=''
+  fi
+  if [ -n \"\$PREV\" ]; then echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
+  else sudo rm -f '$APP_ROOT/.previous-release'; fi
   sudo ln -sfn '$REL' '$APP_ROOT/current'
   sudo systemctl restart '$SERVICE'
 
@@ -116,7 +125,7 @@ rsync -a -e "$RSYNC_E" \
     echo \"RELEASE IS NOT ANSWERING /health ON PORT \$PORT — rolling back\"
     curl -sS --max-time 5 \"http://127.0.0.1:\$PORT/health\" || true   # names the shops that are dark
     echo
-    if [ -n \"\$PREV\" ]; then
+    if [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ]; then
       sudo ln -sfn \"\$PREV\" '$APP_ROOT/current'
       sudo systemctl restart '$SERVICE'
       echo 'rolled back to the previous release'

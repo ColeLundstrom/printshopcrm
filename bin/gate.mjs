@@ -2176,8 +2176,8 @@ await t('INSTALL.md clears public/uploads before symlinking it', async () => {
 //
 // This runs the actual script against a fake install with every external command stubbed, because
 // asserting on the text of a deploy script is not the same as watching it deploy.
-const rehearseRelease = async ({ healthy, first = false }) => {
-  const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, chmodSync, existsSync, readlinkSync } = await import('node:fs')
+const rehearseRelease = async ({ healthy, first = false, gnu = false }) => {
+  const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, chmodSync, existsSync, readlinkSync, readFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
@@ -2212,6 +2212,21 @@ const rehearseRelease = async ({ healthy, first = false }) => {
     stub('node', 'exit 0')
     stub('journalctl', 'exit 0')
     stub('curl', healthy ? 'exit 0' : 'exit 7')
+    // GNU coreutils `readlink -f` requires all but the LAST component of a path to exist: it prints
+    // the canonical path and exits 0 when the final component is missing. BSD readlink (macOS,
+    // which is where this gate is usually run) exits 1 on the same input — which is exactly why no
+    // local run and no CI run ever saw what this does on the Ubuntu box INSTALL.md targets.
+    if (gnu) {
+      stub('readlink', `
+if [ "$1" = "-f" ]; then
+  p="$2"; d=$(dirname "$p"); b=$(basename "$p")
+  [ -d "$d" ] || exit 1
+  if [ -L "$d/$b" ]; then t=$(/usr/bin/readlink "$d/$b"); case "$t" in /*) echo "$t";; *) echo "$(cd "$d" && pwd -P)/$t";; esac
+  else echo "$(cd "$d" && pwd -P)/$b"; fi
+  exit 0
+fi
+exec /usr/bin/readlink "$@"`)
+    }
     let out = '', code = 0
     try {
       out = execFileSync('bash', [join(SRC, 'deploy', 'release.sh'), 'v9.9.9'], {
@@ -2229,8 +2244,17 @@ const rehearseRelease = async ({ healthy, first = false }) => {
     // A snapshot may be a directory of databases or — as it was before this was fixed — one lone
     // file. Handle both, so a regression fails on the assertion rather than on a scandir error.
     for (const sdir of snap) { if (statSync(sdir).isDirectory()) walk(sdir); else captured.push({ name: sdir.slice(sdir.indexOf('/backups/')), size: statSync(sdir).size }) }
-    const current = existsSync(join(APP_ROOT, 'current')) ? readlinkSync(join(APP_ROOT, 'current')) : ''
-    return { out, code, captured, current, DATA_ROOT }
+    // readlinkSync, not existsSync-then-readlink: existsSync FOLLOWS the link, so a link to itself
+    // answers false and the interesting case reads back as "there is no link" instead of naming it.
+    const current = (() => { try { return readlinkSync(join(APP_ROOT, 'current')) } catch { return '' } })()
+    // Is `current` actually usable, or is it a link to itself? existsSync() follows the link and
+    // answers false on an ELOOP, so ask lstat separately from "can anything be read through it".
+    const { lstatSync } = await import('node:fs')
+    const linkExists = (() => { try { return lstatSync(join(APP_ROOT, 'current')).isSymbolicLink() } catch { return false } })()
+    const readable = (() => { try { readdirSync(join(APP_ROOT, 'current')); return true } catch { return false } })()
+    const prevFile = existsSync(join(APP_ROOT, '.previous-release'))
+      ? readFileSync(join(APP_ROOT, '.previous-release'), 'utf8').trim() : null
+    return { out, code, captured, current, DATA_ROOT, linkExists, readable, prevFile }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -2259,6 +2283,71 @@ await t('a release that will not answer /health is rolled back, not announced as
 // out the port — and the SHIPPED unit file carries no Environment=PORT at all, it uses an
 // EnvironmentFile. So on a stock install the gate silently degraded into the exact check it was
 // written to replace, and printed "Shipped" over a release where every shop was dark.
+/* An install's very FIRST deploy, on the platform INSTALL.md actually targets.
+ *
+ * GNU `readlink -f` only requires all but the last component of a path to exist — it prints the
+ * canonical path and exits 0 when the final component is missing. So on a first deploy, where
+ * $APP_ROOT/current does not exist yet, PREVIOUS came back as the very link the script was about
+ * to replace. The healthy path then printed "roll back with: ln -sfn <current> <current>", and the
+ * FAILING path ran it: `current` became a symlink to itself, ELOOP, WorkingDirectory unresolvable,
+ * Restart=always looping forever — printed under the word "rolled back", with .previous-release
+ * recording the self-link as the way home.
+ *
+ * BSD readlink exits 1 on the same input, which is why every local run and every gate run to date
+ * was green. The `else` branch below it — "first release on this install" — was unreachable on
+ * Linux for the same reason: PREVIOUS was never empty. */
+await t('a failed FIRST deploy does not leave `current` pointing at itself', async () => {
+  const r = await rehearseRelease({ healthy: false, first: true, gnu: true })
+  assert.notEqual(r.code, 0, `a release nobody can reach must exit non-zero:\n${r.out}`)
+  assert.ok(r.linkExists, 'current should still be a symlink')
+  assert.ok(r.readable, `current must be readable, not a link to itself — points at ${r.current}\n${r.out}`)
+  assert.doesNotMatch(r.current, /\/current$/, `current must never point at current, got ${r.current}`)
+  assert.match(r.current, /releases\/v9\.9\.9$/, `nothing to go back to, so the new release stays where an operator can see it — got ${r.current}`)
+  assert.doesNotMatch(r.out, /rolled back to \S*\/current\b/, 'it must not claim it rolled back to the link it just wrote')
+  assert.ok(!r.prevFile || !/\/current$/.test(r.prevFile), `.previous-release must not record a self-link, got ${r.prevFile}`)
+})
+
+await t('…and a healthy FIRST deploy does not hand out a self-referential rollback command', async () => {
+  const r = await rehearseRelease({ healthy: true, first: true, gnu: true })
+  assert.equal(r.code, 0, `a healthy first deploy must succeed:\n${r.out}`)
+  assert.match(r.out, /nothing to roll back to yet/, `the first release has no way back, and must say so:\n${r.out}`)
+  for (const line of r.out.split('\n')) {
+    if (!/ln -sfn/.test(line)) continue
+    const m = line.match(/ln -sfn\s+(\S+)\s+(\S+)/)
+    if (m) assert.notEqual(m[1], m[2], `an instruction that links current to itself: ${line.trim()}`)
+  }
+})
+
+await t('…while a deploy that DOES have a previous release still rolls back to it', async () => {
+  // The guard must not cost the case it exists to protect.
+  const r = await rehearseRelease({ healthy: false, gnu: true })
+  assert.match(r.current, /releases\/v0\.0\.1$/, `current must go back to the previous release, got ${r.current}`)
+  assert.match(r.out, /rolled back/, 'and say that it did')
+})
+
+// ship.sh runs its half over ssh, so it cannot be rehearsed here the way release.sh can. What can
+// be held is the shape: a bare `readlink -f` on `current` is the defect, and both scripts have to
+// prove the link resolves to a real directory before treating it as the way home.
+await t('neither deploy script trusts a bare readlink for the way back', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const file of ['deploy/ship.sh', 'deploy/release.sh']) {
+    const text = readFileSync(join(root, file), 'utf8')
+    for (const line of text.split('\n')) {
+      if (/^\s*#/.test(line)) continue
+      if (!/readlink -f/.test(line) || !/current/.test(line)) continue
+      const i = text.indexOf(line)
+      const around = text.slice(Math.max(0, i - 400), i + 400)
+      assert.match(around, /\[ -L /, `${file}: guard the readlink with a -L test — GNU readlink -f exits 0 on a 'current' that does not exist yet: ${line.trim().slice(0, 90)}`)
+      // ship.sh's half is a heredoc-ish remote script, so its quoting is escaped — match the test
+      // itself rather than trying to spell every layer of backslashes.
+      assert.match(around, /-d [^\n]*\bPREV/, `${file}: a previous release has to be a directory that is really there`)
+    }
+  }
+})
+
 await t('neither deploy script can fall back to the check it was written to replace', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')

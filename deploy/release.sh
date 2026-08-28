@@ -111,13 +111,32 @@ else
 fi
 
 # --- flip ---------------------------------------------------------------------------------------
-PREVIOUS="$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)"
+# GNU `readlink -f` only requires all but the LAST component of a path to exist: given a `current`
+# that does not exist yet, it prints that very path and exits 0. So on an install's FIRST deploy
+# PREVIOUS came back as the link this script is about to replace — the healthy path then handed the
+# operator a rollback command pointing current at current, and the failing path RAN it, leaving it a
+# symlink to itself: ELOOP, WorkingDirectory unresolvable, Restart=always looping forever, all of it
+# printed under the word "rolled back". BSD readlink exits 1 on the same input, which is why no Mac
+# and no gate run ever saw it, and why the "first release on this install" branch below was
+# unreachable on the Ubuntu box INSTALL.md targets. A previous release is only previous if it is a
+# link that resolves to a directory that is really there.
+PREVIOUS=''
+if [ -L "$APP_ROOT/current" ]; then
+  PREVIOUS="$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)"
+  [ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ] || PREVIOUS=''
+fi
 # sudo, like the rollback below and the restart after it: `current` is root-owned, so an unprivileged
 # flip fails with Permission denied. Without `set -e` on this line that failure was survivable and
 # silent — the script went on to restart the service, saw it come up on the OLD release, and printed
 # "✓ <tag> is live".
 sudo ln -sfn "$RELEASE" "$APP_ROOT/current" || { echo "✗ could not flip $APP_ROOT/current" >&2; exit 1; }
-echo "$PREVIOUS" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
+# Never record an empty or self-referential way home — a rollback that reads this file has to be
+# able to trust it.
+if [ -n "$PREVIOUS" ]; then
+  echo "$PREVIOUS" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
+else
+  sudo rm -f "$APP_ROOT/.previous-release"
+fi
 
 sudo systemctl restart "$SERVICE"
 
@@ -162,7 +181,7 @@ else
   echo "✗ $TAG is not answering /health on port $PORT — rolling back" >&2
   curl -sS --max-time 5 "http://127.0.0.1:$PORT/health" >&2 || true   # names the shops that are dark
   echo >&2
-  if [ -n "$PREVIOUS" ]; then
+  if [ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ]; then
     sudo ln -sfn "$PREVIOUS" "$APP_ROOT/current"
     sudo systemctl restart "$SERVICE"
     echo "  rolled back to $PREVIOUS" >&2
