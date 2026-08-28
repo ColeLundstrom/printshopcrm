@@ -442,8 +442,11 @@ export async function jobDetailView(id) {
   loadReceiving(id)
   $('#print-ticket').onclick = () => window.open(j.ticket_url || `/p/ticket/${id}`, '_blank')
   $('#stage').onchange = async (e) => {
-    await api.patch(`/api/jobs/${id}/stage`, { stage: e.target.value })
-    toast('Stage updated')
+    // The select has ALREADY moved before this runs, so a failure here is worse than a silent
+    // no-op: the screen shows a stage the server never took, for the rest of the session. The
+    // re-render is outside the catch on purpose — it is what puts the select back to the truth.
+    try { await api.patch(`/api/jobs/${id}/stage`, { stage: e.target.value }); toast('Stage updated') }
+    catch (err) { toast(err.message, true) }
     jobDetailView(id)
   }
   $('#edit').onclick = () => jobForm(j, () => jobDetailView(id))

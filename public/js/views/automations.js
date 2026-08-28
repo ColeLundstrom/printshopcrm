@@ -102,8 +102,13 @@ export async function automationsView() {
 
   on($('#au-body'), '[data-toggle]', async (e, t) => {
     e.stopPropagation()
-    await api.put(`/api/automations/${t.dataset.toggle}`, { enabled: t.checked })
-    toast(t.checked ? 'Automation on' : 'Automation paused')
+    // The checkbox has ALREADY flipped before this runs. A failure that only toasted would leave
+    // it showing Off on a rule that is still on and still texting customers, so the re-render is
+    // outside the catch: either way the checkbox goes back to what the server says.
+    try {
+      await api.put(`/api/automations/${t.dataset.toggle}`, { enabled: t.checked })
+      toast(t.checked ? 'Automation on' : 'Automation paused')
+    } catch (err) { toast(err.message, true) }
     automationsView()
   }, 'change')
 

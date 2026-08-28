@@ -202,6 +202,23 @@ if (typeof window !== 'undefined' && !window.__pscUndoFlush) {
   // lost. Flush it synchronously so the server gets the change the user already saw succeed.
   window.addEventListener('pagehide', () => { try { pendingUndoable?.flush() } catch { /* leaving anyway */ } })
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { try { pendingUndoable?.flush() } catch { /* noop */ } } })
+
+  // One net under every write in the app.
+  //
+  // api.req() THROWS on any non-2xx — including the 502/503 restart window httpMessage() was
+  // written for. A handler shaped `async () => { await api.post(…); toast('Sent') }` therefore
+  // stops BEFORE the toast and before the re-render, and the rejection goes nowhere: pressing
+  // "Email Invoice" on a $4,200 invoice with bad SMTP credentials did absolutely nothing on
+  // screen, so the shop pressed it again. A scan of public/js/views found 24 write handlers in
+  // exactly that shape, which makes it a contract problem rather than a list of oversights — and
+  // a list would grow back. A local catch is still better where the screen has state to put back
+  // (see the job stage select and the automation toggle); this is the floor under all of them.
+  window.addEventListener('unhandledrejection', (e) => {
+    const msg = String(e?.reason?.message || e?.reason || '').trim()
+    if (!msg) return
+    e.preventDefault?.()   // handled — don't also log it as unhandled
+    toast(msg, true)
+  })
 }
 
 export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {}) {

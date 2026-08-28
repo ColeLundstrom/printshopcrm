@@ -3624,6 +3624,73 @@ section('Settings saves every field Settings renders')
   })
 }
 
+/* ---------- a write that fails is never a silent no-op (v10) ----------
+ * api.req() throws on any non-2xx, including the 502/503 restart window. A click handler written
+ * `async () => { await api.post(…); toast('Sent') }` therefore stops BEFORE the toast and before
+ * the re-render, and the rejection goes nowhere: pressing "Email Invoice" on a $4,200 invoice with
+ * bad SMTP credentials does absolutely nothing on screen. A scan of public/js/views found 24 write
+ * handlers in that shape, so this is a contract problem, not six oversights — one net in core.js
+ * catches every one of them, and every one written in future. */
+section('a click that fails says so')
+{
+  const hooks = {}
+  const shown = []
+  const prevWindow = globalThis.window, prevDocument = globalThis.document
+  globalThis.window = { addEventListener: (ev, fn) => { hooks[ev] = fn } }
+  globalThis.document = {
+    createElement: () => ({ set innerHTML(h) { this.content = { firstElementChild: { html: h, remove() {} } } }, content: null }),
+    querySelector: () => null,
+    addEventListener: () => {},
+    body: { appendChild: (n) => shown.push(n) },
+  }
+  // A distinct URL, so this evaluates a FRESH copy of the module with the stubs in place — the
+  // earlier section already imported the plain one without a window.
+  const live = await import('../public/js/core.js?live=1')
+  globalThis.window = prevWindow
+  globalThis.document = prevDocument
+
+  await t('core.js installs one net for every unhandled rejection', () => {
+    assert.equal(typeof hooks.unhandledrejection, 'function', 'no unhandledrejection handler is registered')
+  })
+  await t('…and a failed write reaches the shop as a message, not silence', () => {
+    let defaulted = false
+    globalThis.document = {
+      createElement: () => ({ set innerHTML(h) { this.content = { firstElementChild: { html: h, remove() {} } } }, content: null }),
+      querySelector: () => null,
+      addEventListener: () => {},
+      body: { appendChild: (n) => shown.push(n) },
+    }
+    try {
+      hooks.unhandledrejection({ reason: new Error('The server is restarting — try that again in a moment.'), preventDefault: () => { defaulted = true } })
+    } finally { globalThis.document = prevDocument }
+    assert.equal(shown.length, 1, 'nothing was shown')
+    assert.match(String(shown[0]?.html || ''), /server is restarting/)
+    assert.ok(defaulted, 'the rejection should be marked handled, or the console still logs it as unhandled')
+  })
+  await t('…and the module still imports with no DOM at all, so this suite can use it', () => {
+    assert.equal(typeof live.toast, 'function')
+  })
+}
+
+section('a control that has already moved is put back when the write fails')
+await t('the job stage select and the automation toggle re-read the server either way', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // These two are worse than a silent no-op: the <select> and the checkbox have ALREADY moved
+  // before the handler runs, so on failure the screen shows a stage and an on/off state the
+  // database does not have, for the rest of the session.
+  const board = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  const stage = board.slice(board.indexOf("$('#stage').onchange"), board.indexOf("$('#stage').onchange") + 500)
+  assert.match(stage, /catch/, 'a failed stage change leaves the select showing a stage the server never took')
+  assert.match(stage, /jobDetailView\(id\)/, 'it must re-read the server so the select goes back')
+  const auto = readFileSync(join(root, 'public/js/views/automations.js'), 'utf8')
+  const toggle = auto.slice(auto.indexOf("'[data-toggle]'"), auto.indexOf("'[data-toggle]'") + 800)
+  assert.match(toggle, /catch/, 'a failed toggle leaves the checkbox lying about whether the rule is on')
+  assert.match(toggle, /automationsView\(\)/, 'it must re-read the server so the checkbox goes back')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
