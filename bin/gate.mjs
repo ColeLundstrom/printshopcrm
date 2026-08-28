@@ -383,6 +383,43 @@ await t('front 3c + back 3c ≈ 2× a single 3c location (not >2.5×)', () => {
     `2×=${two.quote.imprintPerPiece} vs 1×=${one.quote.imprintPerPiece}`)
 })
 
+section('pricing: a rush job is priced as a rush job, not just scheduled as one')
+/* Every automated quoting path — Slack quick-quote, Autopilot, email intake, the agent — dropped
+ * the rush surcharge on the floor. priceIntake wrote "RUSH." onto the customer-visible line and
+ * booked the job three business days out instead of ten, and priced the piece exactly as if it
+ * were a standard ten-day run: rush:true and rush:false returned byte-identical totals. The tiers
+ * have always existed (RUSH_TIERS) and were wired only to the manual Quote screen. On 300 tees
+ * that is $2,870.00 quoted where the shop's own 3-day tier makes it $4,280.00. */
+await t('rush costs more than standard, by the shop\'s own published tier', async () => {
+  const { RUSH_TIERS } = await import('../public/js/shared/pricing.js')
+  const base = { garment: 'Gildan 5000', decoration: 'Screen Print', total_pieces: 300, sizes: {}, locations: [{ name: 'Front', colors: 2 }] }
+  const std = priceIntake({ ...base }, SET)
+  const rush = priceIntake({ ...base, rush: true }, SET)
+  assert.ok(rush.totals.total > std.totals.total,
+    `rush ${rush.totals.total} must exceed standard ${std.totals.total}`)
+
+  // The default rush is the 3-day tier, which is what the turnaround it books is too.
+  const three = RUSH_TIERS.find((t) => t.days === 3).mult
+  assert.equal(rush.quote.perPiece, Math.round(std.quote.perPiece * three * 100) / 100, 'per-piece carries the 3-day multiplier')
+  assert.equal(rush.rushDays, 3, 'and the price agrees with the turnaround it hands the scheduler')
+
+  // A faster tier costs more again — next day is 2.0x, not another 1.5x.
+  const next = priceIntake({ ...base, rush: true, rush_days: 1 }, SET)
+  const nextMult = RUSH_TIERS.find((t) => t.days === 1).mult
+  assert.equal(next.quote.perPiece, Math.round(std.quote.perPiece * nextMult * 100) / 100)
+  assert.equal(next.rushDays, 1, 'and it is booked as fast as it was billed')
+
+  // Setup and screens are one-off costs; going faster does not make a screen cost more.
+  assert.equal(rush.quote.screens, std.quote.screens, 'screen charges do not scale with speed')
+
+  // The customer-facing line has to say what they are paying for.
+  const line = rush.items.find((i) => /RUSH/.test(String(i.detail || '')))
+  assert.ok(line, 'the rush line names itself')
+  assert.match(line.detail, /RUSH \+\d+%/, 'and says how much the rush added')
+  assert.ok(!std.items.some((i) => /RUSH/.test(String(i.detail || ''))), 'a standard quote says nothing about rush')
+  assert.equal(std.rushDays, 0, 'and hands the scheduler no rush at all')
+})
+
 section('pricing: tax-exempt buyer pays no tax, and the rate is returned for persistence')
 await t('taxRate 0 → zero tax; returned on the result', () => {
   const ex = priceIntake({ garment: 'Gildan 5000', decoration: 'Screen Print', total_pieces: 100, sizes: {}, locations: [{ name: 'Front', colors: 1 }] }, SET, { taxRate: 0 })
