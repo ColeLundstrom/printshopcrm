@@ -3249,6 +3249,88 @@ section('an automation that fails halfway is not logged as a success')
   })
 }
 
+/* ---------- a reused rowid does not silence an automation (v10) ----------
+ * automation_runs.entity_id is a PERMANENT latch — tick()'s already() blocks any re-fire for the
+ * same rule+entity, deliberately, so a customer is never nagged twice. But it points at a rowid,
+ * and `id INTEGER PRIMARY KEY` with no AUTOINCREMENT means SQLite hands max(rowid)+1 out again
+ * after a delete. Delete the newest quote and the NEXT quote inherits its id, walks straight into
+ * a latch set for a record that no longer exists, and is never chased. Same for the drip queue:
+ * the resume loop's "was this record deleted?" guard is a SELECT by id, which a reused id passes,
+ * so a paused sequence wakes up and runs about the deleted quote. lib/db.mjs:391-403 already
+ * documents and fixes this exact hazard for art_versions; it was never applied to the run log. */
+section('a quote that inherits a deleted quote\'s rowid still gets chased')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  auto.initAutomations(mem)
+  dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (1,?,1,?,?,?)`,
+    'Chase quiet quotes', 'estimate.stale', JSON.stringify({ days: 3 }),
+    JSON.stringify([{ key: 'note.log', config: { body: 'still interested?' } }]))
+  dbmod.run(`INSERT INTO contacts (id, name, email) VALUES (1, 'Casey', 'casey@example.com')`)
+  for (let i = 1; i <= 7; i++) {
+    dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, sent_at, total)
+               VALUES (?,?,1,'sent',datetime('now','-9 days'),100)`, i, `EST-100${i}`)
+  }
+  auto.tick({})                                  // all seven chased once
+  dbmod.run('DELETE FROM estimates WHERE id = 7')  // the shop deletes a quote it raised by mistake
+  dbmod.run(`INSERT INTO estimates (estimate_number, contact_id, status, sent_at, total)
+             VALUES ('EST-2001',1,'sent',datetime('now','-9 days'),4200)`)
+  const reused = dbmod.get('SELECT id, estimate_number FROM estimates ORDER BY id DESC LIMIT 1')
+  await t('SQLite really does hand the deleted quote\'s id to the next one', () => {
+    assert.equal(reused.id, 7)
+    assert.equal(reused.estimate_number, 'EST-2001')
+  })
+  const fired = auto.tick({})
+  await t('the $4,200 quote nine days quiet is chased, not silently skipped', () => {
+    assert.ok(fired.some((f) => /EST-2001/.test(f)), `tick fired ${JSON.stringify(fired)}`)
+  })
+  await t('…and the deleted quote\'s run stays in the log as history', () => {
+    const hist = dbmod.get(`SELECT entity_label, status FROM automation_runs WHERE entity_label = 'EST-1007'`)
+    assert.equal(hist?.status, 'ran')
+  })
+}
+
+section('a paused drip does not wake up about a deleted record')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  auto.initAutomations(mem)
+  dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (1,?,1,?,'{}',?)`,
+    'Two-touch follow-up', 'estimate.sent',
+    JSON.stringify([{ key: 'note.log', config: { body: 'touch 1' } },
+      { key: 'wait', config: { days: 2 } },
+      { key: 'note.log', config: { body: 'touch 2 about {{estimate_number}}' } }]))
+  dbmod.run(`INSERT INTO contacts (id, name, email) VALUES (1, 'Casey', 'casey@example.com')`)
+  for (let i = 1; i <= 7; i++) {
+    dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, total) VALUES (?,?,1,'sent',100)`,
+      i, `EST-100${i}`)
+  }
+  const e7 = dbmod.get('SELECT * FROM estimates WHERE id = 7')
+  auto.fire('estimate.sent', { estimate: e7, contact: dbmod.get('SELECT * FROM contacts WHERE id = 1'), total: e7.total }, {})
+  dbmod.run('DELETE FROM estimates WHERE id = 7')
+  dbmod.run(`INSERT INTO estimates (estimate_number, contact_id, status, total) VALUES ('EST-2001',1,'draft',4200)`)
+  dbmod.run("UPDATE automation_pending SET due_at = datetime('now','-1 day')")
+  const fired = auto.tick({})
+  await t('the queued step is parked, not resumed onto the id\'s new owner', () => {
+    assert.deepEqual(fired.filter((f) => /resume/.test(f)), [], `tick fired ${JSON.stringify(fired)}`)
+  })
+  await t('…and the shop can see why it was dropped', () => {
+    const p = dbmod.get('SELECT status, note FROM automation_pending WHERE label = ?', 'EST-1007')
+    assert.equal(p?.status, 'orphaned')
+    assert.match(String(p?.note || ''), /deleted/)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
