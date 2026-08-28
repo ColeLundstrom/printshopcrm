@@ -3367,12 +3367,32 @@ app.put('/api/pricebook', requireRole('manager'), wrap((req, res) => {
   // Custom price matrix — a shop's OWN per-cell prices, which win over the formula. Merge per cell:
   // a positive number sets the cell, an empty string / 0 / null clears it (reverts that cell to the
   // calculator). Keys are `${bandMin}|${units}`.
+  //
+  // `services` above got a 100-entry cap and a DELETE route after it was used to mint 20,000 junk
+  // services. Its sibling here got neither, and the same trick worked better: the cell-key regex
+  // bounds the SHAPE of a key but not how many there are, so one request minting `1|1` through
+  // `1|60000` wrote 60,000 cells / 5,000 orphan matrices and took settings.price_book from 2 bytes
+  // to 942 KB — a blob getSettings() loads on EVERY request in the process. And a matrix keyed to a
+  // service that does not exist is invisible in GET /api/pricebook, so the owner could not even see
+  // what to remove. The caps mirror lib/matrices.mjs LIMITS (60 rows x 40 cols).
+  const MAX_MATRICES = 100
+  const MAX_CELLS = 60 * 40
   const matrices = { ...priorMatrices }
-  const incMatrices = req.body?.matrices && typeof req.body.matrices === 'object' ? req.body.matrices : null
+  const rawMatrices = req.body?.matrices
+  if (rawMatrices !== undefined && !isPlainObject(rawMatrices)) {
+    return res.status(400).json({ error: 'matrices must be an object keyed by service name', code: 'invalid_matrices' })
+  }
+  const incMatrices = isPlainObject(rawMatrices) ? rawMatrices : null
   if (incMatrices) {
+    if (Object.keys(incMatrices).length > MAX_MATRICES) {
+      return res.status(400).json({ error: `A price book can hold at most ${MAX_MATRICES} price matrices.`, code: 'too_many_matrices' })
+    }
     for (const [svc, cells] of Object.entries(incMatrices)) {
       const key = String(svc).trim().slice(0, 40)
-      if (!key || !cells || typeof cells !== 'object') continue
+      if (!key || !isPlainObject(cells)) continue
+      if (Object.keys(cells).length > MAX_CELLS) {
+        return res.status(400).json({ error: `A price matrix can hold at most ${MAX_CELLS} cells.`, code: 'too_many_cells' })
+      }
       const m = { ...(matrices[key] || {}) }
       for (const [cell, price] of Object.entries(cells)) {
         if (!/^\d+\|\d+$/.test(cell)) continue
@@ -3380,7 +3400,13 @@ app.put('/api/pricebook', requireRole('manager'), wrap((req, res) => {
         if (price === '' || price === null || !(v > 0)) delete m[cell]
         else m[cell] = Math.round(v * 100) / 100
       }
+      if (Object.keys(m).length > MAX_CELLS) {
+        return res.status(400).json({ error: `A price matrix can hold at most ${MAX_CELLS} cells.`, code: 'too_many_cells' })
+      }
       if (Object.keys(m).length) matrices[key] = m; else delete matrices[key]
+    }
+    if (Object.keys(matrices).length > MAX_MATRICES) {
+      return res.status(400).json({ error: `A price book can hold at most ${MAX_MATRICES} price matrices.`, code: 'too_many_matrices' })
     }
   }
   if (Object.keys(matrices).length) saved.matrices = matrices
@@ -3395,6 +3421,10 @@ app.delete('/api/pricebook/:name', requireRole('manager'), wrap((req, res) => {
   let saved = {}
   try { saved = JSON.parse(getSettings().price_book || '{}') } catch { saved = {} }
   if (saved.services) delete saved.services[req.params.name]
+  // …and its matrix. Deleting only the service left the matrix behind, and a matrix keyed to a
+  // service that no longer exists is not listed by GET /api/pricebook — so the bytes stayed in
+  // settings.price_book forever with nothing in the UI able to name them, let alone remove them.
+  if (saved.matrices) delete saved.matrices[req.params.name]
   setSetting('price_book', JSON.stringify(saved))
   res.json({ ok: true })
 }))

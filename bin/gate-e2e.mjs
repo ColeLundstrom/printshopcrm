@@ -1126,6 +1126,47 @@ try {
     chk('a hostile customer name does not break the row shape', String(/ENDTRNS\tPrintShopCRM/.test(iif.text)), '^false$')
   }
 
+  /* ---------- the price book cannot be filled with matrix junk ----------
+   * `services` got a 100-entry cap and a DELETE route after it was used to mint 20,000 junk
+   * services in one request. Its sibling `matrices` got neither, and the same trick worked better:
+   * the cell-key regex bounds the SHAPE of a key, not how many there are, so one request writing
+   * `1|1` through `1|60000` put 60,000 cells and thousands of orphan matrices into
+   * settings.price_book — a blob getSettings() loads on EVERY request in the process — and a matrix
+   * keyed to a service that does not exist is not listed by GET /api/pricebook, so the owner could
+   * not see what to remove. DELETE /api/pricebook/:name returned {"ok":true} and left it there. */
+  {
+    const before = (await req('GET', '/api/settings')).text.length
+
+    const manyCells = {}
+    for (let i = 1; i <= 5000; i++) manyCells[`1|${i}`] = 2.5
+    r = await req('PUT', '/api/pricebook', { body: { matrices: { GiantMatrix: manyCells } } })
+    chk('a matrix with 5,000 cells is refused', String(r.status), '^400$')
+    chk('…with a code the UI can act on', String(r.json?.code || ''), 'too_many_cells')
+
+    const manyMatrices = {}
+    for (let i = 0; i < 200; i++) manyMatrices[`svc${i}`] = { '1|12': 1.5 }
+    r = await req('PUT', '/api/pricebook', { body: { matrices: manyMatrices } })
+    chk('200 separate matrices in one request is refused', String(r.status), '^400$')
+    chk('…with its own code', String(r.json?.code || ''), 'too_many_matrices')
+
+    r = await req('PUT', '/api/pricebook', { body: { matrices: 'Screen Print' } })
+    chk('a string where the matrices object belongs is refused', String(r.status), '^400$')
+
+    const after = (await req('GET', '/api/settings')).text.length
+    chk('…and none of it grew the settings blob', String(after - before < 500), '^true$')
+
+    // A legitimate matrix still saves — and can then be removed from the UI, completely.
+    r = await req('PUT', '/api/pricebook', { body: { matrices: { 'Screen Print': { '1|12': 4.25, '1|24': 3.75 } } } })
+    chk('a real price matrix still saves', String(r.status), '^200$')
+    chk('…and its cells are counted', String(r.json?.cells), '^2$')
+
+    await req('DELETE', '/api/pricebook/Screen%20Print')
+    const s2 = (await req('GET', '/api/settings')).json?.settings || {}
+    let book = {}
+    try { book = JSON.parse(s2.price_book || '{}') } catch { /* stays {} */ }
+    chk('deleting a service removes its price matrix too', String(!!book.matrices?.['Screen Print']), '^false$')
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++
