@@ -1767,6 +1767,28 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
   if (!c) return res.status(404).json({ error: 'Customer not found', code: 'not_found' })
   const live = get("SELECT COUNT(*) AS n FROM invoices WHERE contact_id = ? AND status != 'void'", id).n
   const paid = round2(get('SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.contact_id = ?', id).v)
+
+  // The same guard DELETE /api/jobs/:id has, applied to the customer the jobs hang off.
+  //
+  // jobs.contact_id cascades, so deleting a customer deleted every one of their jobs — including
+  // jobs the job route itself refuses to delete because blanks are still out against them. Void the
+  // invoice (which the shop does when it raised one in error) and this route stopped blocking, so a
+  // customer with 200 pieces on order deleted cleanly: the job vanished, purchase_orders.job_id went
+  // to NULL, and the order was left on no screen in the product. The blanks still turn up at the
+  // shop door, and nothing can receive them.
+  const openPos = all(`SELECT p.*, j.job_number FROM purchase_orders p JOIN jobs j ON j.id = p.job_id
+    WHERE j.contact_id = ?`, id).filter((p) => PO_STILL_OUT.includes(String(p.status)) && poAlreadySent(p))
+  if (openPos.length) {
+    return res.status(409).json({
+      error: `${c.name} has ${openPos.length === 1 ? 'a purchase order that is still out' : `${openPos.length} purchase orders still out`} — `
+        + `${openPos.map((p) => `${p.po_number || 'PO'} on ${p.job_number} (${p.ordered} pcs, ${String(p.status).replace('_', ' ')})`).join(', ')}. `
+        + `Receive or short-close ${openPos.length === 1 ? 'it' : 'them'} on the job first, then delete the customer. `
+        + `Deleting now would take the jobs with the customer and leave the blanks with nothing to receive them against.`,
+      code: 'has_open_purchase_orders',
+      purchase_orders: openPos.map((p) => ({ id: p.id, po_number: p.po_number, job_number: p.job_number, supplier: p.supplier, status: p.status, ordered: p.ordered, received: p.received })),
+    })
+  }
+
   if (live > 0 || paid > 0) {
     const bits = []
     if (live > 0) bits.push(`${live} invoice${live === 1 ? '' : 's'}`)

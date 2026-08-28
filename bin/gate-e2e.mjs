@@ -899,6 +899,42 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- deleting a customer cannot delete work the job route refuses to delete ----------
+   * jobs.contact_id cascades. DELETE /api/jobs/:id has always refused while blanks are still out
+   * against the job — "receive it, or short-close it if the rest is not coming" — and DELETE
+   * /api/contacts/:id went straight through the same wall: it checked invoices and payments only.
+   * Void the invoice (which is exactly what a shop does when it raised one in error) and the
+   * customer deleted cleanly, taking the job with it. purchase_orders.job_id is ON DELETE SET NULL,
+   * so the order survived pointing at nothing: 190 pieces on the way to the shop door, on no screen
+   * in the product, with nothing left that could receive them. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Cascade Carl', email: 'cascade@e2e.test' } })
+    const cascC = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: cascC, title: 'Cascade job', garment: 'Gildan 5000 Heavy Cotton Tee — Black', quantities: '24 S / 60 M' } })
+    const cascJ = r.json?.id
+    await req('PUT', '/api/settings', { body: { sanmar_user: 'gate', sanmar_pass: 'gate', sanmar_cust: '1' } })
+    await req('POST', `/api/jobs/${cascJ}/po/submit`, { body: {} })
+    r = await req('GET', `/api/jobs/${cascJ}/purchase-orders`)
+    const cascPo = (r.json?.purchase_orders || [])[0]
+    const cascLine = (cascPo?.lines || [])[1]
+    await req('POST', `/api/purchase-orders/${cascPo?.id}/receive`, { body: { receipts: [{ line_id: cascLine?.id, qty: cascLine?.qty_ordered }] } })
+    chk('a customer has a job with blanks still out against it', String(!!cascPo?.id), '^true$')
+    // The job route already refuses; this is the precondition the customer route was walking past.
+    chk('…which the job route refuses to delete', String((await req('DELETE', `/api/jobs/${cascJ}`)).status), '^409$')
+
+    r = await req('DELETE', `/api/contacts/${cascC}`)
+    chk('deleting the customer is refused too, for the same reason', String(r.status), '^409$')
+    chk('…naming the order the shop has to deal with', `${r.json?.code} ${r.text}`, 'has_open_purchase_orders')
+    chk('…and the job is still there', String((await req('GET', `/api/jobs/${cascJ}`)).status), '^200$')
+    chk('…still attached to its purchase order',
+      String(((await req('GET', `/api/jobs/${cascJ}/purchase-orders`)).json?.purchase_orders || []).length), '^1$')
+
+    // And the escape works: settle the order the way the refusal says to, and the delete goes through.
+    await req('POST', `/api/purchase-orders/${cascPo?.id}/close`, { body: { reason: 'distributor cancelled the balance' } })
+    chk('…and short-closing the order releases the customer for deletion',
+      String((await req('DELETE', `/api/contacts/${cascC}`)).status), '^200$')
+  }
+
   /* ---------- a documented filter must actually filter ----------
    * docs/API.md has documented `?invoice_id=` on GET /api/v1/payments since the endpoint shipped.
    * The handler ignored it, so an integration reconciling ONE invoice was handed every payment in
