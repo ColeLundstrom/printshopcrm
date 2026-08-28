@@ -1949,6 +1949,46 @@ try {
     chk('…naming it, and what is allowed', String(junk.json?.code), '^unknown_size$')
   }
 
+  /* ---------- an issued invoice still adds up after the shop raises its rates ----------
+   * Line amounts are never stored; every renderer recomputes them from the LIVE size_upcharges
+   * setting. subtotal/tax/total ARE stored, frozen at write time. So one PUT /api/settings — an
+   * ordinary, documented change a shop makes when blank costs go up — retroactively re-priced the
+   * LINES of every estimate and invoice it had ever issued, while their totals stayed put. The
+   * customer is holding that PDF, and the shop is only entitled to collect the stored figure. */
+  {
+    const dc = (await req('POST', '/api/contacts', { body: { name: 'Drift Co', email: 'drift@e2e.test' } })).json
+    await req('PUT', '/api/settings', { body: { size_upcharges: JSON.stringify({ '2XL': 2, '3XL': 3 }) } })
+    const line = { description: 'Tees', unit_price: 8.75, sizes: { M: 100, '2XL': 10, '3XL': 2 } }
+    const de = (await req('POST', '/api/estimates', { body: { contact_id: dc.id, items: [line] } })).json
+    chk('a quote is written at the rates of the day', String(de?.subtotal), '^1006$')
+
+    const conv = await req('POST', `/api/estimates/${de.id}/convert`)
+    const invId = conv.json?.invoice?.id ?? conv.json?.invoice_id ?? conv.json?.id
+    const pdfMoney = async () => {
+      const res = await fetch(`${BASE}/api/invoices/${invId}/pdf`, { headers: { Cookie: cookieHeader() } })
+      const text = Buffer.from(await res.arrayBuffer()).toString('latin1')
+      return [...text.matchAll(/\$([0-9,]+\.[0-9]{2})/g)].map((m) => m[1])
+    }
+    const before = await pdfMoney()
+    chk('…and its invoice PDF prints a line that matches its subtotal', String(before.includes('1,006.00')), '^true$')
+
+    // The shop's blank costs go up, so it raises its extended-size upcharges. Nothing else happens.
+    await req('PUT', '/api/settings', { body: { size_upcharges: JSON.stringify({ '2XL': 4, '3XL': 6 }) } })
+    const after = await pdfMoney()
+    chk('…and raising the shop\'s upcharges does not rewrite that invoice', String(after.join('|')), `^${before.join('|').replace(/[$.|,]/g, (c) => '\\' + c)}$`)
+    chk('…so no $1,032.00 line appears above a $1,006.00 subtotal', String(after.includes('1,032.00')), '^false$')
+    chk('…and the amount the shop may collect is unchanged',
+      String((await req('GET', `/api/invoices/${invId}`)).json?.amount_due), '^1006$')
+
+    // The other half: today's rates must still apply to work written today, or the setting is dead.
+    const fresh = (await req('POST', '/api/estimates', { body: { contact_id: dc.id, items: [line] } })).json
+    chk('a NEW quote is priced at the new rates', String(fresh?.subtotal), '^1032$')
+    // And an unrelated edit must not silently re-price a document that was already issued.
+    await req('PUT', `/api/estimates/${de.id}`, { body: { notes: 'called the customer' } })
+    chk('…while editing an old quote\'s notes re-prices nothing',
+      String((await req('GET', `/api/estimates/${de.id}`)).json?.subtotal), '^1006$')
+  }
+
   /* ---------- an ordinary quantity bump does not collapse a two-garment job ----------
    * The 409 that refuses a flat grid over two garments read jobs.line_sizes RAW. That column
    * arrived by migration, so it is '[]' on every job written before it, and on those the

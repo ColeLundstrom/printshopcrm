@@ -270,6 +270,50 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
   }
 }
 
+/* ---------- an issued document keeps adding up after the shop changes its rates ----------
+ * Line amounts are never stored — every renderer recomputes them — while subtotal/tax/total ARE
+ * stored, frozen at write time. So one PUT /api/settings raising the extended-size upcharges, an
+ * ordinary documented setting, retroactively re-priced the LINES of every estimate and invoice the
+ * shop had ever issued while their totals stayed put. Measured on a live instance: an issued
+ * invoice's printed line went $1,006.00 -> $1,032.00 above a printed Subtotal of $1,006.00. The
+ * customer is holding that document; the shop can only collect the stored figure. */
+{
+  const { lineAmount, lineUpcharge, computeTotals } = await import('../public/js/shared/pricing.js')
+  const LINE = { description: 'Tees', unit_price: 8.75, sizes: { M: 100, '2XL': 10, '3XL': 2 } }
+  const WHEN_WRITTEN = { '2XL': 2, '3XL': 3 }
+  const TODAY = { '2XL': 4, '3XL': 6 }
+
+  section('pricing: a line carries the upcharge table it was priced with')
+  await t('the line is quoted at the rates of the day it was written', () => {
+    // 100 x 8.75 + 10 x (8.75+2) + 2 x (8.75+3)
+    assert.equal(lineAmount({ ...LINE }, WHEN_WRITTEN), 1006)
+  })
+  await t('…and a frozen table beats the shop\'s live one', () => {
+    const frozen = { ...LINE, size_upcharges: WHEN_WRITTEN }
+    assert.equal(lineAmount(frozen, TODAY), 1006, 'the live table must not reach a written line')
+    assert.equal(lineUpcharge(frozen, TODAY), 26)
+  })
+  await t('…so the lines still sum to the subtotal that was stored with them', () => {
+    const frozen = { ...LINE, size_upcharges: WHEN_WRITTEN }
+    const doc = computeTotals([frozen], 0, TODAY)
+    assert.equal(doc.subtotal, 1006)
+    assert.equal(doc.subtotal, lineAmount(frozen, TODAY), 'subtotal and line must agree')
+  })
+  await t('a line written BEFORE the freeze existed still uses the live table', () => {
+    // No re-pricing on upgrade: this is exactly the old behaviour for old rows.
+    assert.equal(lineAmount({ ...LINE }, TODAY), 1032)
+  })
+  await t('…and a new quote written today is priced at today\'s rates', () => {
+    const fresh = { ...LINE, size_upcharges: TODAY }
+    assert.equal(lineAmount(fresh, TODAY), 1032)
+  })
+  await t('a junk snapshot is ignored rather than zeroing the line', () => {
+    for (const junk of [[], 'nope', 7, null]) {
+      assert.equal(lineAmount({ ...LINE, size_upcharges: junk }, WHEN_WRITTEN), 1006, `size_upcharges=${JSON.stringify(junk)}`)
+    }
+  })
+}
+
 /* ---------- pricing money-bugs (v44 audit fixes) ---------- */
 const { priceIntake } = await import('../lib/quickquote.mjs')
 const SET = { tax_rate: '7.75', default_markup: '2', screen_fee: '25', price_book: '{}' }

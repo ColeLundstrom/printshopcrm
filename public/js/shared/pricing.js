@@ -52,6 +52,26 @@ export const round2 = (n) => {
 
 export const upchargeFor = (size, upcharges) => Number((upcharges || DEFAULT_UPCHARGES)[size]) || 0
 
+/**
+ * The upcharge table a LINE was priced with.
+ *
+ * Line amounts are not stored — every renderer recomputes them — while the document's
+ * subtotal/tax/total ARE stored, frozen at write time. So a shop raising its extended-size
+ * upcharges, an ordinary documented setting, retroactively re-priced the LINES of every estimate
+ * and invoice it had ever issued while their totals stayed put. Reproduced on a live instance: one
+ * PUT /api/settings took an issued invoice's printed line from $1,006.00 to $1,032.00, sitting
+ * above a printed Subtotal of $1,006.00 — $26.00 arriving from nowhere on a document the customer
+ * was already holding, with the shop still only entitled to collect the stored figure.
+ *
+ * A document that has been written carries the table it was written with. Lines from before this
+ * existed have no snapshot and fall back to the shop's live table, which is exactly the old
+ * behaviour — nothing re-prices on upgrade.
+ */
+export const lineUpcharges = (item, upcharges) => (
+  item && item.size_upcharges && typeof item.size_upcharges === 'object' && !Array.isArray(item.size_upcharges)
+    ? item.size_upcharges : upcharges
+)
+
 /** Total pieces across the size grid. */
 export function sizeTotal(sizes) {
   if (!sizes) return 0
@@ -124,10 +144,11 @@ export function lineQty(item) {
 export function lineAmount(item, upcharges) {
   const price = Number(item?.unit_price) || 0
   if (item?.sizes && sizeTotal(item.sizes) > 0) {
+    const up = lineUpcharges(item, upcharges)
     let total = 0
     for (const [s, n] of Object.entries(item.sizes)) {
       const qty = Number(n) || 0
-      if (qty > 0) total += qty * (price + upchargeFor(s, upcharges))
+      if (qty > 0) total += qty * (price + upchargeFor(s, up))
     }
     return round2(total)
   }
@@ -137,8 +158,9 @@ export function lineAmount(item, upcharges) {
 /** Sum of upcharges on a line — surfaced so the customer sees why the math isn't qty × rate. */
 export function lineUpcharge(item, upcharges) {
   if (!item?.sizes) return 0
+  const up = lineUpcharges(item, upcharges)
   let total = 0
-  for (const [s, n] of Object.entries(item.sizes)) total += (Number(n) || 0) * upchargeFor(s, upcharges)
+  for (const [s, n] of Object.entries(item.sizes)) total += (Number(n) || 0) * upchargeFor(s, up)
   return round2(total)
 }
 

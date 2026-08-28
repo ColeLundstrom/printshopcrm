@@ -1938,6 +1938,21 @@ function sanitizeEstimateItems(items, rejected = []) {
       }
       out.sizes = sizes
     }
+    // Freeze the upcharge table this line is being priced with, so the document keeps adding up
+    // after the shop changes its rates. Only when absent: an estimate re-saved for an unrelated
+    // reason (a note, a due date) must not silently re-price itself, and its stored subtotal is
+    // recomputed from whatever this resolves to, so the lines and the subtotal always agree.
+    if (out.sizes && Object.keys(out.sizes).length && out.size_upcharges == null) {
+      const live = getUpcharges()
+      const snap = {}
+      for (const [k, v] of Object.entries(live || {})) {
+        const n = Number(v)
+        if (SIZE_KEY.test(String(k).trim().toUpperCase()) && Number.isFinite(n) && n !== 0) snap[String(k).trim().toUpperCase()] = n
+      }
+      out.size_upcharges = snap
+    } else if (out.size_upcharges != null && (typeof out.size_upcharges !== 'object' || Array.isArray(out.size_upcharges))) {
+      delete out.size_upcharges // a caller cannot post junk into the table its own line is priced by
+    }
     if (out.matrix != null) {
       const m = out.matrix
       if (typeof m === 'object' && !Array.isArray(m)) {
