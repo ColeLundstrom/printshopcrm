@@ -126,11 +126,17 @@ Edit `.env`. The minimum for a production install:
 
 ```ini
 PORT=3870
+PSC_HOST=127.0.0.1
 PSC_SECRET=<the value you just generated>
 PSC_DB=/var/lib/printshopcrm/printshop.db
 PSC_PUBLIC_URL=https://shop.example.com
 PSC_AUTH=1
 ```
+
+**`PSC_HOST=127.0.0.1` is what puts the app behind nginx.** Without it the server binds every
+interface, so it also answers directly on the box's LAN and public addresses — around nginx, and
+around the TLS nginx is terminating. Leave it unset in Docker, where the container needs to accept
+connections from outside itself.
 
 **`PSC_SECRET` is required.** Customer share links — estimate approvals, art proofs — are HMACs
 derived from it. Anyone who knows it can forge a link to any customer's documents. Generate it

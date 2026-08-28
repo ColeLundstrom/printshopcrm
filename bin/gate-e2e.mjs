@@ -2754,6 +2754,49 @@ try {
       String(Math.abs(round2e(Number(r.json?.subtotal) + Number(r.json?.tax)) - round2e(r.json?.amount_due)) < 0.005), '^true$')
   }
 
+  /* ---------- the app can bind the address INSTALL.md says it binds ----------
+   * INSTALL.md has described the reference deployment as "nginx terminating SSL, the app on
+   * 127.0.0.1:3870" since it was written, and there was no way to do it: server.listen(PORT) binds
+   * every interface and there was no host variable. So on that exact reference install the app was
+   * ALSO answering on the box's LAN and public addresses — around nginx, and around the TLS nginx
+   * was terminating. A documented security posture the code could not take. */
+  {
+    const { networkInterfaces } = await import('node:os')
+    const T4 = mkdtempSync(join(tmpdir(), 'psc-e2e-host-'))
+    const P4 = PORT + 9
+    const bound = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P4), PSC_HOST: '127.0.0.1', PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P4}` },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    started.push(bound)
+    let boundLog = ''
+    bound.stdout.on('data', (d) => { boundLog += d })
+    try {
+      const reach = async (host) => {
+        try { const res = await fetch(`http://${host}:${P4}/health`, { signal: AbortSignal.timeout(2500) }); return res.status }
+        catch { return 0 }
+      }
+      let up = 0
+      for (let i = 0; i < 120 && up !== 200; i++) { up = await reach('127.0.0.1'); if (up !== 200) await sleep(500) }
+      chk('PSC_HOST=127.0.0.1 still serves the shop on loopback', String(up), '^200$')
+      chk('…and the banner says what it bound to, so an operator can see it', boundLog, 'bound to 127\\.0\\.0\\.1 only')
+
+      // The half that is the actual point: it must NOT be reachable on any other address of this
+      // machine. Skipped rather than faked where the runner has no non-loopback interface.
+      const lan = Object.values(networkInterfaces()).flat()
+        .find((n) => n && n.family === 'IPv4' && !n.internal)?.address
+      if (lan) {
+        chk(`…and is not reachable on this box's own ${lan}, which is the whole point`, String(await reach(lan)), '^0$')
+      } else {
+        say('·', 'no non-loopback interface on this runner — the off-loopback half was not exercised')
+      }
+    } finally {
+      try { bound.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T4, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /* ---------- /health answers for the databases that actually hold shops ----------
    * canWrite() with no tenant context probes the DEFAULT database — which in multi-tenant mode
    * holds no shop at all, and is perfectly writable. So a release whose migration threw on ONE

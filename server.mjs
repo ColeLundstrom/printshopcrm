@@ -80,6 +80,17 @@ function recordMessage({ contact_id, direction, channel = 'email', subject = '',
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3333
+/**
+ * The interface to listen on. Unset means every interface, which is what this server has always
+ * done and what a container needs.
+ *
+ * INSTALL.md has described the reference deployment as "nginx terminating SSL, the app on
+ * 127.0.0.1:3870" since it was written, and there was no way to do that: `server.listen(PORT)`
+ * binds every interface, so on that reference install the app was also answering on the box's LAN
+ * and public addresses, bypassing nginx and its TLS. Setting PSC_HOST=127.0.0.1 now does what the
+ * documentation already promised.
+ */
+const HOST = String(process.env.PSC_HOST || '').trim()
 const SECRET = process.env.PSC_SECRET || 'preview-secret-change-in-prod'
 // In production (multi-tenant), the share-link HMAC secret MUST be set. Booting with the in-repo
 // default would make every estimate/pay/proof/ticket token forgeable — refuse to start.
@@ -6935,11 +6946,11 @@ app.use((err, req, res, _next) => {
   res.status(status).json({ error: status === 413 ? 'That upload is too large.' : 'Something went wrong on our end.' })
 })
 
-server.listen(PORT, () => {
+server.listen(...(HOST ? [PORT, HOST] : [PORT]), () => {
   httpUp = true // from here on, a stray throw is survivable — see the note by fatalStartup
   const s = getSettings()
   console.log(`\n  ${s.brand_name} — ${s.brand_tagline}`)
-  console.log(`  → http://localhost:${PORT}   (ws /ws live)\n`)
+  console.log(`  → http://${HOST || 'localhost'}:${PORT}   (ws /ws live${HOST ? `, bound to ${HOST} only` : ''})\n`)
 
   // Every link this server emails has to name a host, and without PSC_PUBLIC_URL that host comes
   // from somewhere less trustworthy.
