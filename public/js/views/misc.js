@@ -746,13 +746,14 @@ export async function settingsView() {
           <option value="manager">Manager — settings, keys, staff</option>
           ${me.is_owner ? '<option value="owner">Owner — everything incl. billing</option>' : ''}
         </select></div>
-        <div class="field"><label>Temporary password</label><input class="input" name="password" placeholder="they change it after first login"></div>
+        <div class="field"><label>Temporary password</label><input class="input" name="password" minlength="8" placeholder="at least 8 characters"></div>
       </div>
       <p class="dim" style="font-size:11.5px;margin-top:6px">They sign in at your login page with this email and temporary password.</p>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">Send invite</button>`,
     onMount: (bg) => $('#go', bg).onclick = async () => {
       const body = formData(bg)
       if (!body.email || !body.password) { toast('Email and a temporary password are required', true); return }
+      if (String(body.password).length < 8) { toast('The temporary password needs at least 8 characters', true); return }
       try {
         await api.post('/api/members', body)
         closeModal(); toast('Team member added'); settingsView()

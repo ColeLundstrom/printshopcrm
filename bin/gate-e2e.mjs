@@ -998,6 +998,15 @@ try {
     jar.clear(); for (const [k, v] of ownerJar) jar.set(k, v)
     r = await req('POST', '/api/automations/tick', { body: {} })
     chk('…while an owner still can', String(r.status), '^200$')
+
+    /* addMember was the only password-creating path in the product without the length check that
+     * signup, self-change, reset and the CLI all have — so a MANAGER login could be created with
+     * a one-character password, and it signed in. */
+    r = await req('POST', '/api/members', { body: { name: 'Weak', email: 'weak@e2e.test', password: 'a', role: 'manager' } })
+    chk('a staff login cannot be created with a one-character password', String(r.status), '^400$')
+    chk('…and the refusal names the minimum, so it is self-correcting', String(r.json?.error || ''), 'at least 8')
+    r = await req('POST', '/api/members', { body: { name: 'Fine', email: 'fine@e2e.test', password: 'GatePass-123456', role: 'staff' } })
+    chk('…while a real temporary password is still accepted', String(r.status), '^200$')
   }
 
   /* ---------- switching a rule off pauses its queue, it does not delete it ----------
