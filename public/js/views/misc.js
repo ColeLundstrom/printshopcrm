@@ -339,11 +339,13 @@ export async function settingsView() {
       <div class="card-h"><h3>Automation Modes</h3><span class="pill green">AI-first, manual-always</span></div>
       <div class="card-b" id="modes">
         <p class="dim" style="font-size:12.5px;margin-bottom:14px;line-height:1.6">Every workflow runs one of two ways. <strong style="color:var(--txt-2)">AI mode</strong> acts for you; <strong style="color:var(--txt-2)">Manual mode</strong> drafts and waits for a person. You can flip any of them anytime — nothing is ever taken out of your hands.</p>
-        ${mode('mode_intake', 'Inbox → order intake', 'Parse pasted customer messages into draft orders')}
+        <!-- Only switches that are actually wired belong on this card. "Inbox → order intake" and
+             "Art & proofs" were read nowhere in the codebase: intake already hands you a draft to
+             confirm, and no proof has ever auto-advanced, so both switches promised a choice the
+             app does not have. Their defaults stay in SETTING_DEFAULTS so no saved row breaks. -->
         ${mode('mode_estimates', 'Estimate drafting', 'Let the assistant and receptionist draft estimates')}
         ${mode('mode_followups', 'Follow-ups', 'Send nudges on quiet quotes / overdue invoices automatically')}
         ${mode('mode_agent', 'Website receptionist', 'The chatbot replies on its own vs. assist-only')}
-        ${mode('mode_art', 'Art & proofs', 'Auto-advance proofs vs. keep every proof human')}
       </div>
     </div>
 

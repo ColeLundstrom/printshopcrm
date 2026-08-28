@@ -579,6 +579,109 @@ section('receptionist: a website visitor cannot write on an existing customer')
   })
 }
 
+/* ---------- a switch the owner set is a switch the app obeys ----------
+ * Settings → Automation Modes reads, in the card body: "Manual mode drafts and waits for a
+ * person. You can flip any of them anytime — nothing is ever taken out of your hands."
+ *
+ * Of the five switches on that card, ONE was honoured. `mode_agent` was read at exactly one place
+ * that could never fire — `row.mode || s.mode_agent` where bot_config.mode is TEXT DEFAULT 'ai'
+ * and initAgent() always inserts the row, so the left side is never empty. `mode_estimates`,
+ * `mode_intake` and `mode_art` were read nowhere in the codebase at all. Reproduced: an owner set
+ * both "Website receptionist" and "Estimate drafting" to Ask me first, and an anonymous stranger
+ * on the public widget was still quoted $34.75/pc autonomously and still had EST-1015 for $4,195
+ * written onto the shop's books. Nobody was asked. */
+section('receptionist: "Ask me first" is a switch, not a decoration')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); ag.initAgent(db)
+  ag.saveBotConfig({ shop_name: 'Manual Mode Shop', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+
+  // Distinct phone per visitor: captureLead matches on phone as well as email, so reusing one
+  // number would make the second caller a MATCH on the first — a different code path entirely
+  // (the one 91d6024 guards) and not what is being tested here.
+  const quoteChat = async (email, phone) => {
+    const sess = ag.startSession({ channel: 'web' })
+    const cur = () => ag.sessionByPublicId(sess.public_id)
+    for (const l of [
+      'I need a price on 120 gildan 18500 hoodies, screen print, 2 color front',
+      `I am Dana Ruiz, ${email}, ${phone}`,
+    ]) await ag.respond(cur(), l, ag.getBotConfig())
+  }
+
+  await t('with the switch on AI, the receptionist answers on its own — that is the feature', async () => {
+    dbm.setSetting('mode_agent', 'ai'); dbm.setSetting('mode_estimates', 'ai')
+    assert.equal(ag.getBotConfig().mode, 'ai')
+    await quoteChat('auto@newlead.test', '619-555-0134')
+    const c = dbm.get("SELECT * FROM contacts WHERE email = 'auto@newlead.test'")
+    assert.ok(c, 'the lead is captured')
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates WHERE contact_id = ?', c.id).c, 1, 'and the estimate is drafted')
+  })
+
+  await t('"Ask me first" actually reaches the receptionist', () => {
+    dbm.setSetting('mode_agent', 'manual')
+    assert.equal(ag.getBotConfig().mode, 'assist', 'the Settings switch was dead code — row.mode is never empty')
+  })
+
+  await t('…and no estimate is written on the shop\'s books behind the owner\'s back', async () => {
+    dbm.setSetting('mode_estimates', 'manual')
+    const before = dbm.get('SELECT COUNT(*) AS c FROM estimates').c
+    await quoteChat('asked@newlead.test', '619-555-7788')
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates').c, before, 'a stranger drafted a numbered estimate with the switch off')
+  })
+
+  await t('…while the lead itself is still captured, so the shop loses nothing', () => {
+    const c = dbm.get("SELECT * FROM contacts WHERE email = 'asked@newlead.test'")
+    assert.ok(c, 'the customer, the conversation and the deal are the point — only the document waits')
+    assert.ok(dbm.get('SELECT * FROM opportunities WHERE contact_id = ? ORDER BY id DESC', c.id), 'the deal is still filed')
+  })
+
+  await t('flipping it back turns the bot loose again', () => {
+    dbm.setSetting('mode_agent', 'ai')
+    assert.equal(ag.getBotConfig().mode, 'ai')
+  })
+}
+
+// The other half of the same switch: the in-app assistant. "Estimate drafting: Ask me first" names
+// both the assistant and the receptionist, and neither read it.
+await t('the assistant hands back the draft instead of saving it when asked to ask first', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const asst = await import('../lib/assistant.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db)
+  dbm.run('INSERT INTO contacts (name, email, created_at, updated_at) VALUES (?,?,?,?)', 'Northgate', 'ap@northgate.test', dbm.now(), dbm.now())
+
+  dbm.setSetting('mode_estimates', 'manual')
+  const held = await asst.ask('quote 200 gildan 5000 tees, 1 color front, for Northgate')
+  assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates').c, 0, 'nothing may be written to the books')
+  assert.match(String(held?.reply || ''), /Ask me first|haven't saved/i, 'and the assistant has to say why')
+  assert.ok(held?.prefill?.items?.length, 'the work it already did must not be thrown away')
+
+  dbm.setSetting('mode_estimates', 'ai')
+  await asst.ask('quote 200 gildan 5000 tees, 1 color front, for Northgate')
+  assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates').c, 1, 'and with the switch on AI it still saves')
+})
+
+// Every switch on that card must be a switch the app reads. Two of them were read nowhere at all,
+// so the card offered a choice the product does not have.
+await t('the Automation Modes card offers no switch the app ignores', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const card = readFileSync(join(root, 'public/js/views/misc.js'), 'utf8')
+  const offered = [...card.matchAll(/\$\{mode\('(mode_[a-z]+)'/g)].map((m) => m[1])
+  assert.ok(offered.length >= 3, 'the card should still offer the modes that work')
+  const wired = ['server.mjs', 'lib/agent.mjs', 'lib/assistant.mjs', 'lib/nurture.mjs', 'lib/automations.mjs']
+    .map((f) => { try { return readFileSync(join(root, f), 'utf8') } catch { return '' } }).join('\n')
+  for (const key of offered) {
+    assert.ok(new RegExp(`${key}\\s*(!==|===)`).test(wired), `Settings offers "${key}" and nothing in the app reads it`)
+  }
+})
+
 section('receptionist: one long message cannot become an unbounded prompt, forever')
 // Every DIRECT interpolation of the visitor's current message was bounded — 500 chars for intent,
 // 800 for a grounded answer, 1200 for extraction. The REPLAY of the conversation so far was not,
