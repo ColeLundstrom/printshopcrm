@@ -1149,6 +1149,186 @@ try {
     chk('…at a real cost, not zero', String(Number(bpo.est_cost) > 0), '^true$')
   }
 
+  /* ---------- changing the quantities changes what the shop buys ----------
+   * jobs.line_sizes is the per-garment grid the PO, pick ticket, work ticket and print package all
+   * read. It is written once at conversion and PUT never touched it, so a shop that bumped a job
+   * from 100 to 150 pieces — the ordinary case, the customer added shirts — got a board, a job
+   * card and a capacity plan saying 150 while everything that BUYS or PICKS blanks still said 100.
+   * A regression from ff9712f: before it, those documents read the live grid. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Bump Order Betty', email: 'bump@e2e.test' } })
+    const bumpC = r.json?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: bumpC, items: [{ description: 'Gildan 5000 Heavy Cotton Tee — Black — 2/0 Front', sizes: { S: 20, M: 40, L: 30, XL: 10 }, unit_price: 11 }] },
+    })
+    const bumpE = r.json?.id
+    await req('POST', `/api/estimates/${bumpE}/approve`, { body: {} })
+    r = await req('POST', `/api/estimates/${bumpE}/convert`, { body: { due_date: '2026-12-01' } })
+    const bumpJ = r.json?.job_id
+    let bpo = (await req('GET', `/api/jobs/${bumpJ}/po`)).json || {}
+    chk('a converted job orders the quantity it was quoted for', String(bpo.total_units), '^100$')
+
+    r = await req('PUT', `/api/jobs/${bumpJ}`, { body: { quantities: '30 S / 60 M / 45 L / 15 XL' } })
+    chk('the shop can bump the quantities', String(r.status), '^200$')
+    bpo = (await req('GET', `/api/jobs/${bumpJ}/po`)).json || {}
+    chk('…and the purchase order buys the new count, not the old one', String(bpo.total_units), '^150$')
+    const pkg2 = (await req('GET', `/api/jobs/${bumpJ}/print-package`)).json || {}
+    const pkgLines = (pkg2.lines || []).reduce((t, l) => t + Object.values(l.sizes || {}).reduce((a, n) => a + Number(n || 0), 0), 0)
+    chk('…and the print package no longer contradicts itself', String(pkgLines), '^150$')
+  }
+
+  /* ---------- one bad opportunity value must not blank the whole pipeline ----------
+   * round2's non-finite fallback returned Infinity, so `value: "1e400"` stored Inf in the money
+   * column. SUM() over that column then made the shop's Open Pipeline and Weighted Pipeline KPIs
+   * render blank — every card on the dashboard, not just the offending one — and nothing on screen
+   * pointed at the row responsible. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Pipeline Co', email: 'pipe@e2e.test' } })
+    const pipeCid = r.json?.id ?? r.json?.contact?.id
+    await req('POST', '/api/opportunities', { body: { contact_id: pipeCid, title: 'Good deal', value: 5000 } })
+
+    r = await req('POST', '/api/opportunities', { body: { contact_id: pipeCid, title: 'InfOpp', value: '1e400' } })
+    chk('an opportunity value that is not a number is refused', String(r.status), '^400$')
+
+    const board = (await req('GET', '/api/pipeline')).json || {}
+    const stats = board.stats || board
+    chk('…and the shop-wide Open Pipeline KPI is still a real number',
+      String(Number.isFinite(Number(stats.open_value))), '^true$')
+    chk('…as is the Weighted Pipeline KPI',
+      String(Number.isFinite(Number(stats.weighted_value))), '^true$')
+
+    // The board orders cards by sort_order; an object 500'd and "1e400" wrote Infinity into it.
+    const opp = (await req('GET', '/api/pipeline')).json
+    const anyId = (opp?.columns || []).flatMap((c) => c.opps || []).map((o) => o.id)[0]
+    if (anyId) {
+      r = await req('PATCH', `/api/opportunities/${anyId}/stage`, { body: { stage: 'lead', sort_order: { a: 1 } } })
+      chk('a non-numeric sort_order is refused rather than 500ing', String(r.status), '^400$')
+      r = await req('PATCH', `/api/opportunities/${anyId}/stage`, { body: { stage: 'lead', sort_order: '1e400' } })
+      chk('…and so is one that is not finite', String(r.status), '^400$')
+    } else say('·', 'no opportunity id found on the board — sort_order checked without failing')
+  }
+
+  /* ---------- a job title is not a garment ----------
+   * The per-garment PO lookup falls back through jobs.garment for a job created on the board with
+   * no estimate behind it. That fallback must NOT reach for jobs.title: the string it produces is
+   * handed to costFor(), which picks the SKU the purchase order spends real money on, and a title
+   * is free text the shop types. "Reorder — 50 for the 3001 event" matches Bella+Canvas 3001 and
+   * "Repeat of 2000 shirts" matches Gildan 2000 — a confidently wrong order in place of an honest
+   * "no SKU matched" warning the shop can act on. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Board Job Co', email: 'board@e2e.test' } })
+    const bjCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/jobs', {
+      body: { contact_id: bjCid, title: 'Reorder — 50 for the 3001 event', quantities: '50 M', decoration: 'Screen Print' },
+    })
+    const titleJob = r.json?.id ?? r.json?.job?.id
+    if (titleJob) {
+      const po = (await req('GET', `/api/jobs/${titleJob}/po`)).json || {}
+      const skus = [...new Set((po.lines || []).map((l) => l.sku))]
+      chk('a number in the job title does not become a garment order', JSON.stringify(skus), '^\\[(null)?\\]$')
+      chk('…and the shop is told to set the style instead', JSON.stringify(po.warnings || []), 'exact style')
+    } else say('·', `could not create a board job (${r.status}) — title-as-SKU checked without failing`)
+  }
+
+  /* ---------- the edit path clamps the tax rate like every other write ----------
+   * A prior round put a 0-100 clamp on the tax rate and applied it in taxRateFor(), which the
+   * CREATE path uses. The EDIT path built its own rate expression and never got it, so
+   * PUT {tax_rate: 100000} wrote $1,918,000 of tax onto a $1,918 estimate. Worse than a one-off
+   * typo: the editor pre-fills the field from the stored value and the expression falls back to it,
+   * so any later edit that simply omitted tax_rate silently re-applied the bad rate. Those columns
+   * feed A/R, the dashboard, the customer-facing PDF and the invoice amount_due at convert. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Tax Edit Co', email: 'taxedit@e2e.test' } })
+    const txCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: txCid, items: [{ description: 'tees', qty: 100, unit_price: 10, taxable: true }] },
+    })
+    const txEst = r.json?.id ?? r.json?.estimate?.id
+
+    r = await req('PUT', `/api/estimates/${txEst}`, { body: { tax_rate: 100000 } })
+    let row = (await req('GET', `/api/estimates/${txEst}`)).json || {}
+    let doc = row.estimate || row
+    chk('an edit cannot set a tax rate above 100%', String(Number(doc.tax_rate) <= 100), '^true$')
+    chk('…and the tax it stores matches the rate it stored',
+      String(Math.abs(Number(doc.tax) - Number(doc.subtotal) * Number(doc.tax_rate) / 100) < 0.02), '^true$')
+
+    await req('PUT', `/api/estimates/${txEst}`, { body: { tax_rate: -50 } })
+    row = (await req('GET', `/api/estimates/${txEst}`)).json || {}
+    doc = row.estimate || row
+    chk('…and a negative rate cannot write negative tax', String(Number(doc.tax) >= 0), '^true$')
+  }
+
+  /* ---------- a payment method cannot forge a QuickBooks journal entry ----------
+   * IIF is tab-delimited and newline-terminated, and `${p.method}` went into it raw. payments.method
+   * is free text a STAFF account writes, so a staff member could splice a complete, correctly
+   * delimited TRNS/GENERAL JOURNAL/ENDTRNS record into the file the owner imports into their
+   * books — money moved in QuickBooks by editing a payment method in the CRM. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'IIF Co\tInjected\nENDTRNS', email: 'iif@e2e.test' } })
+    const iifCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: { contact_id: iifCid, items: [{ description: 'tees', qty: 10, unit_price: 10, taxable: false }] },
+    })
+    const iifEst = r.json?.id ?? r.json?.estimate?.id
+    r = await req('POST', `/api/estimates/${iifEst}/convert`, { body: { due_date: '2026-11-01' } })
+    const iifInv = r.json?.invoice_id
+
+    const evil = 'cash\tPrintShopCRM\nENDTRNS\nTRNS\tGENERAL JOURNAL\t1/1/2026\tOwner Draw\tThief\t9999.00\t\t\nENDTRNS'
+    r = await req('POST', `/api/invoices/${iifInv}/payments`, { body: { amount: 50, method: evil } })
+    chk('a payment records with a hostile method string', String(r.status), '^200$')
+
+    const iif = await req('GET', '/api/export/quickbooks.iif')
+    chk('the export still generates', String(iif.status), '^200$')
+    chk('…and no forged journal entry reached it', String(/GENERAL JOURNAL/.test(iif.text)), '^false$')
+    chk('…and no forged Owner Draw account either', String(/Owner Draw/.test(iif.text)), '^false$')
+    // Every record must still be exactly the 8 tab-separated columns the header declares.
+    const bad = iif.text.split('\n').filter((l) => /^(TRNS|SPL)\t/.test(l)).filter((l) => l.split('\t').length !== 8)
+    chk('…and every row still has the columns the header declares', String(bad.length), '^0$')
+    // The tab/newline in the CUSTOMER name must not have split a record either.
+    chk('a hostile customer name does not break the row shape', String(/ENDTRNS\tPrintShopCRM/.test(iif.text)), '^false$')
+  }
+
+  /* ---------- the price book cannot be filled with matrix junk ----------
+   * `services` got a 100-entry cap and a DELETE route after it was used to mint 20,000 junk
+   * services in one request. Its sibling `matrices` got neither, and the same trick worked better:
+   * the cell-key regex bounds the SHAPE of a key, not how many there are, so one request writing
+   * `1|1` through `1|60000` put 60,000 cells and thousands of orphan matrices into
+   * settings.price_book — a blob getSettings() loads on EVERY request in the process — and a matrix
+   * keyed to a service that does not exist is not listed by GET /api/pricebook, so the owner could
+   * not see what to remove. DELETE /api/pricebook/:name returned {"ok":true} and left it there. */
+  {
+    const before = (await req('GET', '/api/settings')).text.length
+
+    const manyCells = {}
+    for (let i = 1; i <= 5000; i++) manyCells[`1|${i}`] = 2.5
+    r = await req('PUT', '/api/pricebook', { body: { matrices: { GiantMatrix: manyCells } } })
+    chk('a matrix with 5,000 cells is refused', String(r.status), '^400$')
+    chk('…with a code the UI can act on', String(r.json?.code || ''), 'too_many_cells')
+
+    const manyMatrices = {}
+    for (let i = 0; i < 200; i++) manyMatrices[`svc${i}`] = { '1|12': 1.5 }
+    r = await req('PUT', '/api/pricebook', { body: { matrices: manyMatrices } })
+    chk('200 separate matrices in one request is refused', String(r.status), '^400$')
+    chk('…with its own code', String(r.json?.code || ''), 'too_many_matrices')
+
+    r = await req('PUT', '/api/pricebook', { body: { matrices: 'Screen Print' } })
+    chk('a string where the matrices object belongs is refused', String(r.status), '^400$')
+
+    const after = (await req('GET', '/api/settings')).text.length
+    chk('…and none of it grew the settings blob', String(after - before < 500), '^true$')
+
+    // A legitimate matrix still saves — and can then be removed from the UI, completely.
+    r = await req('PUT', '/api/pricebook', { body: { matrices: { 'Screen Print': { '1|12': 4.25, '1|24': 3.75 } } } })
+    chk('a real price matrix still saves', String(r.status), '^200$')
+    chk('…and its cells are counted', String(r.json?.cells), '^2$')
+
+    await req('DELETE', '/api/pricebook/Screen%20Print')
+    const s2 = (await req('GET', '/api/settings')).json?.settings || {}
+    let book = {}
+    try { book = JSON.parse(s2.price_book || '{}') } catch { /* stays {} */ }
+    chk('deleting a service removes its price matrix too', String(!!book.matrices?.['Screen Print']), '^false$')
+  }
+
   /* ---------- the customer's decision is theirs, and it is made once ----------
    * Two halves of the same story, both on the estimate a customer actually looks at.
    *

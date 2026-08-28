@@ -2408,9 +2408,32 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const nextQuantities = b.quantities ?? j.quantities
   const reparsed = b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
   const nextSizes = reparsed || j.sizes || '{}'
+  // jobs.line_sizes is the per-garment grid the PO, the pick ticket, the work ticket and the print
+  // package all read. It is written once at conversion, and PUT never touched it — so a shop that
+  // bumped a job from 100 pieces to 150 (the ordinary case: the customer added shirts) got a board,
+  // a job card and a capacity plan saying 150, while everything that BUYS or PICKS blanks still
+  // said 100. The print package contradicted itself on one screen.
+  let nextLines = j.line_sizes
+  if (reparsed) {
+    const stored = parse(j.line_sizes, [])
+    const lines = Array.isArray(stored) ? stored.filter((l) => l && sizeTotal(l.sizes || {}) > 0) : []
+    if (lines.length <= 1) {
+      const one = lines[0] || { description: j.garment || '', garment: j.garment || '' }
+      nextLines = JSON.stringify([{ ...one, sizes: JSON.parse(reparsed) }])
+    } else {
+      // Two or more garments cannot be re-split out of one flat "24 S / 60 M" string, and guessing
+      // would put the wrong count against the wrong style on a real purchase order. Refuse, and
+      // say which garments are involved so the shop knows what it is looking at.
+      return res.status(409).json({
+        error: `${j.job_number} covers ${lines.length} garments — edit the size split per garment on the estimate, not the combined grid.`,
+        code: 'multi_garment_quantities',
+        lines: lines.map((l) => ({ garment: l.garment || l.description || '', sizes: l.sizes })),
+      })
+    }
+  }
   const nextGarment = b.garment !== undefined ? (str(b.garment).trim() || null) : j.garment
-  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
-    b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, b.due_date ?? j.due_date,
+  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
+    b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, nextLines, b.due_date ?? j.due_date,
     b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush ? 1 : 0, now(), id)
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
