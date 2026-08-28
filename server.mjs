@@ -2672,9 +2672,41 @@ app.get('/api/automations', wrap((_req, res) => {
       enabled: get(`SELECT COUNT(*) AS c FROM automations WHERE enabled = 1`).c,
       total_runs: get(`SELECT COALESCE(SUM(run_count),0) AS c FROM automations`).c,
       runs_7d: get(`SELECT COUNT(*) AS c FROM automation_runs WHERE status='ran' AND created_at > datetime('now','-7 day')`).c,
-      pending: get(`SELECT COUNT(*) AS c FROM automation_pending`).c,
+      pending: get(`SELECT COUNT(*) AS c FROM automation_pending WHERE status IS NULL`).c,
+      parked: get(`SELECT COUNT(*) AS c FROM automation_pending WHERE status IS NOT NULL`).c,
     },
+    // The queue itself, not just a count. A drip that is waiting, paused behind a switched-off
+    // rule, or parked because its record was deleted was previously visible only as an integer
+    // on a KPI card — there was no screen anywhere that could name WHO was in a sequence, and no
+    // way to resume or cancel one. A queue a human cannot see is a queue they cannot fix.
+    pending: all(`SELECT id, automation_id, automation_name, trigger, next_index, due_at, label,
+                         status, attempts, note, created_at
+                    FROM automation_pending ORDER BY status IS NULL DESC, due_at LIMIT 100`),
   })
+}))
+
+/**
+ * Resume or cancel one queued sequence. Both are the shop's call and neither existed: an owner
+ * could not restart a drip their own off switch had stalled, nor clear one whose customer had
+ * asked to be left alone.
+ */
+app.post('/api/automations/pending/:id/resume', requireRole('manager'), wrap((req, res) => {
+  const p = get('SELECT * FROM automation_pending WHERE id = ?', +req.params.id)
+  if (!p) return res.status(404).json({ error: 'That queued sequence is no longer there.', code: 'not_found' })
+  const rule = get('SELECT enabled FROM automations WHERE id = ?', p.automation_id)
+  if (!rule) return res.status(409).json({ error: 'The rule behind this sequence was deleted, so there is nothing left to run. Cancel it instead.', code: 'rule_deleted' })
+  if (!rule.enabled) return res.status(409).json({ error: 'That rule is switched off. Turn it back on and the sequence picks up where it stopped.', code: 'rule_disabled' })
+  run("UPDATE automation_pending SET status = NULL, note = NULL, attempts = 0, due_at = datetime('now') WHERE id = ?", p.id)
+  logActivity('note', `Automation sequence resumed — ${p.automation_name}${p.label ? ` · ${p.label}` : ''}`, {})
+  res.json({ ok: true })
+}))
+
+app.delete('/api/automations/pending/:id', requireRole('manager'), wrap((req, res) => {
+  const p = get('SELECT * FROM automation_pending WHERE id = ?', +req.params.id)
+  if (!p) return res.status(404).json({ error: 'That queued sequence is no longer there.', code: 'not_found' })
+  run('DELETE FROM automation_pending WHERE id = ?', p.id)
+  logActivity('note', `Automation sequence cancelled — ${p.automation_name}${p.label ? ` · ${p.label}` : ''}`, {})
+  res.json({ ok: true })
 }))
 
 // An automation sends real customer email and SMS on the shop's behalf, so authoring one is a

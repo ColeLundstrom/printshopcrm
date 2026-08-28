@@ -29,8 +29,31 @@ export async function automationsView() {
       <div class="kpi"><div class="lbl">Total fires</div><div class="val">${d.stats.total_runs}</div>
         <div class="sub">Since setup</div></div>
       <div class="kpi ${d.stats.pending ? 'info' : ''}"><div class="lbl">In a sequence</div><div class="val">${d.stats.pending || 0}</div>
-        <div class="sub">Waiting mid-drip</div></div>
+        <div class="sub">${d.stats.parked ? `${d.stats.parked} stopped` : 'Waiting mid-drip'}</div></div>
     </div>
+
+    ${(d.pending || []).length ? `<div class="card" style="margin-bottom:14px">
+      <div class="card-h"><h3>In a sequence</h3><div class="spacer"></div>
+        <span class="dim" style="font-size:12px">who is mid-drip, and what is holding them up</span></div>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Customer</th><th>Rule</th><th>Next step</th><th>Status</th><th class="num"></th></tr></thead>
+        <tbody>${d.pending.map((p) => {
+          const rule = d.automations.find((a) => a.id === p.automation_id)
+          const stopped = !!p.status
+          const why = p.status === 'orphaned' ? (p.note || 'the record it was about is gone')
+            : p.status === 'failed' ? (p.note || 'the step kept failing')
+              : rule && !rule.enabled ? 'the rule is switched off' : ''
+          return `<tr data-pending="${p.id}">
+            <td style="font-weight:600">${esc(p.label || '—')}</td>
+            <td>${esc(p.automation_name || '')}</td>
+            <td class="dim" style="font-size:12px">${stopped ? '—' : relTime(p.due_at)}</td>
+            <td>${stopped || why
+              ? `<span class="pill ${stopped ? 'red' : 'gray'}" title="${esc(why)}">${esc(p.status || 'paused')}</span>`
+              : '<span class="pill gray">waiting</span>'}${why ? `<div class="dim" style="font-size:11px;margin-top:2px">${esc(why)}</div>` : ''}</td>
+            <td class="num">${stopped ? `<button class="btn ghost sm" data-resume="${p.id}">Resume</button> ` : ''}<button class="btn ghost sm" data-cancel-seq="${p.id}">Cancel</button></td>
+          </tr>`
+        }).join('')}</tbody></table></div>
+    </div>` : ''}
 
     <div class="cols">
       <div class="card">
@@ -97,6 +120,23 @@ export async function automationsView() {
   on($('#au-body'), '[data-edit]', (e, t) => {
     if (e.target.closest('[data-nodrag]')) return
     autoForm(d.automations.find((x) => x.id === +t.dataset.edit))
+  })
+
+  on($('#au-body'), '[data-resume]', async (e, t) => {
+    e.stopPropagation()
+    try { await api.post(`/api/automations/pending/${t.dataset.resume}/resume`); toast('Sequence resumed') }
+    catch (err) { toast(err.message, true) }
+    automationsView()
+  })
+
+  on($('#au-body'), '[data-cancel-seq]', (e, t) => {
+    e.stopPropagation()
+    const p = (d.pending || []).find((x) => x.id === +t.dataset.cancelSeq)
+    confirmModal('Cancel this sequence?', `${p?.label || 'This customer'} will get no more steps of “${p?.automation_name || 'this rule'}”.`, async () => {
+      await api.del(`/api/automations/pending/${t.dataset.cancelSeq}`)
+      toast('Sequence cancelled')
+      automationsView()
+    }, 'Cancel sequence')
   })
 
   $('#new-auto').onclick = () => autoForm(null)

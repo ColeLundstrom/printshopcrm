@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
@@ -60,6 +61,19 @@ async function req(method, path, { body, headers = {}, cookies = true } = {}) {
   let json = null
   try { json = JSON.parse(text) } catch { /* html or empty is fine */ }
   return { status: res.status, text, json }
+}
+
+/**
+ * Reach into the shop's own database on a second connection.
+ *
+ * Only for winding a clock forward that a test cannot sit and wait out — a drip whose next step
+ * is two days away, an invoice that has to be overdue. It is a second WAL reader/writer against
+ * the file the server is already using, not a back door for asserting state: everything a test
+ * CHECKS should still come back through the API, because that is what the shop can see.
+ */
+const shopDb = (slug, fn) => {
+  const d = new DatabaseSync(join(TMP, 'tenants', slug, 'printshop.db'))
+  try { d.exec('PRAGMA busy_timeout = 5000'); return fn(d) } finally { try { d.close() } catch { /* already closed */ } }
 }
 
 /* ---------- boot a server against a throwaway db ---------- */
@@ -943,6 +957,49 @@ try {
     jar.clear(); for (const [k, v] of ownerJar) jar.set(k, v)
     r = await req('POST', '/api/automations/tick', { body: {} })
     chk('…while an owner still can', String(r.status), '^200$')
+  }
+
+  /* ---------- switching a rule off pauses its queue, it does not delete it ----------
+   * The drip resume loop DELETEd the automation_pending row before checking whether the rule was
+   * still enabled, and committed that delete in autocommit. So an owner who paused a rule for an
+   * hour — to edit the copy, to hold sends over a holiday, because a customer complained —
+   * permanently destroyed step 2 and step 3 of every sequence that came due in that window.
+   * Re-enabling brought nothing back, nothing was logged, and the original run row went on
+   * saying "2 step(s) queued" about a queue that no longer existed. There was no route that
+   * could list automation_pending and no screen that could show one, so the shop could not even
+   * learn WHO had been dropped: the ctx naming the customer went with the row.
+   * The off switch was a delete button. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Drip Survivor', email: 'drip-survivor@example.test' } })
+    chk('a new lead enters the seeded nurture sequence', String(r.status), '^200$')
+
+    let a = await req('GET', '/api/automations')
+    const queued = (a.json?.pending || []).find((p) => p.label === 'Drip Survivor')
+    chk('the queue is visible to the shop, not just a number', String(!!queued), '^true$')
+
+    const ruleId = queued?.automation_id
+    r = await req('PUT', `/api/automations/${ruleId}`, { body: { enabled: false } })
+    chk('the owner switches that rule off', String(r.status), '^200$')
+
+    // Wind the wait forward so it expires while the rule is off — the exact window that
+    // destroyed the drip. Two real days is not something a gate can sit through.
+    shopDb('gate-shop', (db) => db.exec("UPDATE automation_pending SET due_at = datetime('now','-1 day')"))
+    r = await req('POST', '/api/automations/tick', { body: {} })
+
+    a = await req('GET', '/api/automations')
+    const survived = (a.json?.pending || []).find((p) => p.label === 'Drip Survivor')
+    chk('a paused rule does not destroy the sequence waiting behind it', String(!!survived), '^true$')
+
+    r = await req('PUT', `/api/automations/${ruleId}`, { body: { enabled: true } })
+    a = await req('GET', '/api/automations')
+    const resumable = (a.json?.pending || []).find((p) => p.label === 'Drip Survivor')
+    chk('…and it is still there to resume once the rule is back on', String(!!resumable), '^true$')
+
+    // The shop can now act on it without a shell: cancel is a real, reachable verb.
+    r = await req('DELETE', `/api/automations/pending/${resumable?.id}`)
+    chk('a sequence can be cancelled from the UI', String(r.status), '^200$')
+    a = await req('GET', '/api/automations')
+    chk('…and cancelling really removes it', String(!!(a.json?.pending || []).find((p) => p.label === 'Drip Survivor')), '^false$')
   }
 
   /* ---------- a backup that archived nothing must not report success ----------
