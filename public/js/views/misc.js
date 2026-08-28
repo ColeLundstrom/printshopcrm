@@ -61,8 +61,14 @@ export async function outboxView() {
   const status = (m) => {
     if (m.delivered) return `<span class="deliv ok"><span class="dot"></span>${esc(m.via || 'sent')}</span>`
     if (m.via === 'error') return `<span class="deliv err" title="${esc(m.delivery_error || '')}"><span class="dot"></span>failed</span>`
+    // A draft is not "logged". 'draft' means Follow-ups are on Manual and this message is waiting
+    // for a person to press Send; 'logged' means no email is connected at all and nothing is
+    // expected of anyone. Rendering both the same told a shop in Manual mode that its whole queue
+    // was fine, while nothing had gone out and nothing ever would.
+    if (m.via === 'draft') return `<span class="deliv"><span class="dot"></span>draft — needs sending</span>`
     return `<span class="deliv"><span class="dot"></span>logged</span>`
   }
+  const sendable = (m) => !m.delivered && (m.via === 'draft' || m.via === 'error')
   $('#view').innerHTML = `
     <div class="card" style="margin-bottom:14px;border-color:var(--line-2)"><div class="card-b">
       <strong style="font-size:13px">${live ? '✉ Delivery is live' : '▤ Logging only'}</strong>
@@ -88,9 +94,22 @@ export async function outboxView() {
   on($('#outbox-list'), '[data-id]', (_e, t) => {
     const m = rows.find((r) => r.id === +t.dataset.id)
     if (!m) return
-    modal({ title: m.subject, body: `<div class="dim" style="font-size:12px;margin-bottom:12px">To: ${esc(m.to_email)} · ${fmtDate(m.created_at)}</div>
+    modal({ title: m.subject, body: `<div class="dim" style="font-size:12px;margin-bottom:12px">To: ${esc(m.to_email || '—')} · ${fmtDate(m.created_at)}</div>
+      ${m.via === 'draft' ? '<div class="dim" style="font-size:12px;margin-bottom:12px;color:var(--amber)">Follow-ups are on “Ask me first”, so this was drafted and is waiting for you.</div>' : ''}
+      ${m.via === 'error' && m.delivery_error ? `<div class="dim" style="font-size:12px;margin-bottom:12px;color:var(--red)">It did not go out: ${esc(m.delivery_error)}</div>` : ''}
       <div style="white-space:pre-wrap;font-size:13.5px;line-height:1.65;background:var(--bg);padding:15px;border-radius:8px;border:1px solid var(--line)">${esc(m.body)}</div>`,
-      footer: `<button class="btn ghost" data-close>Close</button>` })
+      footer: `<button class="btn ghost" data-close>Close</button>${sendable(m) ? '<button class="btn" id="ob-send">Send it</button>' : ''}`,
+      // onMount, not a delegated #view binding: bin/gate.mjs forbids the latter, and this modal is
+      // re-created on every row click.
+      onMount: (bg) => {
+        const btn = $('#ob-send', bg)
+        if (!btn) return
+        btn.onclick = async () => {
+          btn.disabled = true
+          try { const out = await api.post(`/api/outbox/${m.id}/send`, {}); toast(`Sent to ${out.to}`); closeModal(); outboxView() }
+          catch (err) { btn.disabled = false; toast(err.message, true) }
+        }
+      } })
   })
 }
 

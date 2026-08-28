@@ -5137,6 +5137,50 @@ app.get('/api/outbox', wrap((_req, res) => {
   res.json(all('SELECT * FROM email_log ORDER BY id DESC LIMIT 50'))
 }))
 
+/**
+ * Send — or re-send — one message from the Outbox. The missing half of it.
+ *
+ * Two ordinary states put a row here that nothing in the product could ever move on:
+ *
+ *   'draft'  Settings → Automation Modes → Follow-ups set to Manual. The card promises the system
+ *            "drafts and waits for a person" and queueEmail's own comment says the message will
+ *            "land in the outbox as drafts for a person to send". The person had no button, on any
+ *            screen, so every drafted nudge sat there forever and Manual mode sent nothing, ever.
+ *            The Outbox even rendered it as "logged" — the label for "no email is connected" —
+ *            so a shop in Manual mode was told nothing was expected of them.
+ *
+ *   'error'  the send was attempted and the mail server refused it: wrong password, expired API
+ *            token, greylisted. The estimate says "sent", the customer never got it, and the only
+ *            way to try again was to re-send the estimate itself, which re-stamps sent_at and
+ *            re-fires every estimate.sent automation behind it.
+ *
+ * The QuickBooks queue and the automation sequence queue each already ship exactly this button.
+ */
+app.post('/api/outbox/:id/send', wrap(async (req, res) => {
+  const row = get('SELECT * FROM email_log WHERE id = ?', +req.params.id)
+  if (!row) return res.status(404).json({ error: 'Message not found', code: 'not_found' })
+  if (row.delivered) return res.status(409).json({ error: 'That message has already gone out.', code: 'already_sent' })
+  const c = row.contact_id ? get('SELECT email, phone FROM contacts WHERE id = ?', row.contact_id) : null
+  const to = String(row.to_email || '').trim() || String((row.kind === 'sms' ? c?.phone : c?.email) || '').trim()
+  if (!to) return res.status(400).json({ error: 'No address on file for this message — add one to the customer first.', code: 'no_recipient' })
+  const s = getSettings()
+  const r = row.kind === 'sms'
+    ? await sendSms({ to, body: row.body, settings: s })
+    : await sendEmail({ to, subject: row.subject, body: row.body, settings: s })
+  run('UPDATE email_log SET to_email = ?, delivered = ?, via = ?, delivery_error = ? WHERE id = ?',
+    to, r.delivered ? 1 : 0, r.via || 'logged', r.error || null, row.id)
+  logActivity('note', `Outbox: "${row.subject}" ${r.delivered ? 'sent to' : 'could NOT be sent to'} ${to}${r.error ? ` — ${String(r.error).slice(0, 140)}` : ''}`, { contact_id: row.contact_id })
+  if (!r.delivered) {
+    return res.status(502).json({
+      ok: false,
+      code: 'not_delivered',
+      error: r.error || 'No email connection yet — add your SMTP details under Settings → Message Delivery and try again.',
+      via: r.via || 'logged',
+    })
+  }
+  res.json({ ok: true, via: r.via, to })
+}))
+
 app.get('/api/settings', wrap((req, res) => {
   // publicSettings() redacts every secret (API keys, tokens, passwords) to a `<key>_set` flag —
   // secrets are never sent to the browser. Staff (the sign-in accounts) come from the members table.

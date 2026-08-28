@@ -942,6 +942,45 @@ try {
     chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
   }
 
+  /* ---------- a drafted follow-up can actually be sent, and a failed one retried ----------
+   * Settings → Automation Modes says "Manual mode drafts and waits for a person", and queueEmail's
+   * own comment says those messages "land in the outbox as drafts for a person to send". GET
+   * /api/outbox was the only outbox route in the file. There was no Send button on any screen, so
+   * every drafted nudge sat there forever and Manual mode sent nothing, ever — while the Outbox
+   * rendered the draft as "logged", the label for "no email is connected", so the shop was told
+   * nothing was expected of it.
+   *
+   * The same route covers the other stuck state: a send the mail server refused. The estimate says
+   * "sent", the customer never got it, and the only way to try again was to re-send the estimate,
+   * which re-stamps sent_at and re-fires every estimate.sent automation behind it. */
+  {
+    await req('PUT', '/api/settings', { body: { mode_followups: 'manual' } })
+    r = await req('POST', '/api/contacts', { body: { name: 'Manual Mode Molly', email: 'manual-mode@e2e.test' } })
+    const mmId = r.json?.id
+    // A reorder nudge is the ordinary Manual-mode path: queueEmail with deliver:false.
+    r = await req('POST', `/api/reorders/${mmId}/nudge`, { body: {} })
+    chk('a reorder nudge in Manual mode reports that it was drafted, not sent', String(r.json?.delivered ?? 'missing'), '^false$')
+    await sleep(300)
+    let box = (await req('GET', '/api/outbox')).json || []
+    const draft = box.find((m) => m.via === 'draft')
+    chk('Manual mode leaves the message in the outbox as a draft', String(!!draft), '^true$')
+    chk('…and it is not marked delivered', String(draft?.delivered ?? 0), '^0|^false')
+
+    r = await req('POST', `/api/outbox/${draft?.id}/send`, { body: {} })
+    // No SMTP in the gate, so the send cannot succeed — what matters is that pressing Send does
+    // something, reports honestly, and does not leave the row claiming to be delivered.
+    chk('a drafted message has a Send that reaches the mail layer', String(r.status), '^200$|^502$')
+    chk('…and says plainly whether it went out', r.text, 'ok|not.*connect|Message Delivery|smtp')
+    box = (await req('GET', '/api/outbox')).json || []
+    const after = box.find((m) => m.id === draft?.id)
+    chk('…and never claims delivery it did not get', String(after?.delivered ? 'claimed' : 'honest'), '^honest$')
+    chk('…while leaving the row out of the "draft, nobody has touched it" state', String(after?.via ?? ''), '^(?!draft$).+')
+
+    r = await req('POST', '/api/outbox/999999/send', { body: {} })
+    chk('sending a message that is not there says so', String(r.status), '^404$')
+    await req('PUT', '/api/settings', { body: { mode_followups: 'ai' } })
+  }
+
   /* ---------- a webhook that used up its retries is not lost forever ----------
    * MAX_WEBHOOK_ATTEMPTS is 3 and the backoff spends them inside about ten minutes, after which
    * the row is 'failed' with next_attempt_at NULL — and retryDueWebhooks() only ever looks at
