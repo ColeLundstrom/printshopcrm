@@ -55,11 +55,28 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&a
 
 export const initials = (s) => String(s || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
 
-export const today = () => new Date().toISOString().slice(0, 10)
+/**
+ * The shop's own calendar day. Every due date in the product means "the day it is here", so this
+ * must NOT be toISOString(), which is UTC: west of UTC that made `today()` tomorrow from 5pm
+ * local onwards, and it feeds daysOut() and the overdue colouring on the board.
+ */
+export const localDay = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+export const today = () => localDay()
 
 export function fmtDate(d) {
   if (!d) return '—'
-  const dt = new Date(String(d).includes('T') || String(d).includes(' ') ? d : `${d}T12:00:00`)
+  // lib/db.mjs stores UTC as 'YYYY-MM-DD HH:MM:SS' — no T, no Z — and new Date() parses that shape
+  // as LOCAL time. So an invoice created at 9:05pm Pacific (04:05 UTC the next day) printed
+  // "Aug 28" in every date column while relTime() beside it, on the same value, said "just now":
+  // relTime appends the Z and this did not. Every stored timestamp was a day out west of UTC
+  // after ~5pm, and a day out the other way east of it late at night.
+  const s = String(d)
+  const dt = /\d\d:\d\d/.test(s)
+    ? new Date(s.replace(' ', 'T') + (/[Zz]$|[+-]\d\d:?\d\d$/.test(s) ? '' : 'Z'))
+    // A bare date is a calendar day, not an instant — anchor it at local noon so no timezone
+    // shift can slide it onto the day either side.
+    : new Date(`${s}T12:00:00`)
   if (isNaN(dt)) return String(d)
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: dt.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })
 }

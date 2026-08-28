@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast , onOnce} from '../core.js'
+import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast , onOnce, localDay } from '../core.js'
 
 /**
  * Capacity & Promise Dates — the question no MIS answers: can the shop physically hit this date
@@ -172,5 +172,5 @@ function wire(d) {
 function nextFriday() {
   const d = new Date(`${today()}T12:00:00`)
   d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7))
-  return d.toISOString().slice(0, 10)
+  return localDay(d)
 }

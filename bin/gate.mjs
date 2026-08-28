@@ -1260,6 +1260,70 @@ await t('parse() hands back the fallback for a NULL column', async () => {
  *   Developers — three visits, then one click rotated the API key 3 times, so the owner copies a
  *                key that is already dead
  * onOnce() is keyed on (root, event, selector), so the fourth instance of this cannot ship. */
+/* lib/db.mjs stores UTC as 'YYYY-MM-DD HH:MM:SS' — no T, no Z — and new Date() parses that shape
+ * as LOCAL time. fmtDate() handed it straight over; relTime(), five lines below, appends the Z.
+ * So the same stored value rendered two different days on the same screen: an invoice created at
+ * 9:05pm Pacific showed "Aug 28" in the Created column while relTime beside it said "just now".
+ * Every date the app printed for a stored timestamp was a day wrong west of UTC after ~5pm, and
+ * a day wrong the other way east of it late at night. today() was UTC too, and it feeds the
+ * board's overdue colouring and the convert dialog's due date — which is POSTed and stored
+ * verbatim on invoices.due_date and jobs.due_date. Run in a child process because TZ has to be
+ * set before the first Date use in the process. */
+section('the app prints the day a timestamp actually happened')
+for (const [tz, stored, want, why] of [
+  ['America/Los_Angeles', '2026-08-28 04:05:20', 'Aug 27', '9:05pm Pacific is still the 27th'],
+  ['America/Los_Angeles', '2026-08-28', 'Aug 28', 'a bare date is a calendar day and must not move'],
+  ['Europe/Berlin', '2026-08-27 23:30:00', 'Aug 28', '23:30 UTC is already the 28th in Berlin'],
+  ['UTC', '2026-08-28 04:05:20', 'Aug 28', 'UTC is unchanged'],
+]) {
+  await t(`${tz}: ${stored} prints ${want} — ${why}`, async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      process.stdout.write(m.fmtDate(${JSON.stringify(stored)}))
+    `], { env: { ...process.env, TZ: tz }, encoding: 'utf8' })
+    assert.equal(out.trim(), want)
+  })
+}
+await t('fmtDate and relTime never disagree about which day a value falls on', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // relTime is the one that was already right; fmtDate must land on the same instant.
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+    const stored = '2026-08-28 04:05:20'
+    const asRelTime = new Date(stored.replace(' ', 'T') + 'Z')
+    process.stdout.write(JSON.stringify({
+      fmt: m.fmtDate(stored),
+      same: m.fmtDate(stored) === asRelTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    }))
+  `], { env: { ...process.env, TZ: 'America/Los_Angeles' }, encoding: 'utf8' })
+  assert.equal(JSON.parse(out).same, true, `fmtDate said ${JSON.parse(out).fmt}, relTime's instant says otherwise`)
+})
+await t('a date the app STORES is the shop\'s calendar day, not UTC\'s', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // 17:00 Pacific on the 27th is 00:00 UTC on the 28th: today() must still say the 27th.
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+    process.stdout.write(m.localDay(new Date('2026-08-28T00:30:00Z')))
+  `], { env: { ...process.env, TZ: 'America/Los_Angeles' }, encoding: 'utf8' })
+  assert.equal(out.trim(), '2026-08-27')
+  // And no view may go back to building a stored date out of UTC.
+  for (const f of ['public/js/views/estimates.js', 'public/js/views/capacity.js']) {
+    assert.ok(!/toISOString\(\)\.slice\(0, 10\)/.test(readFileSync(join(root, f), 'utf8')),
+      `${f} builds a stored date from UTC — use localDay()`)
+  }
+})
+
 section('a delegated handler on a persistent root is bound once, not once per render')
 await t('no view binds on() to the shared #view', async () => {
   const { readFileSync, readdirSync } = await import('node:fs')

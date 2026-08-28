@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today } from '../core.js'
+import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
@@ -531,7 +531,10 @@ export async function estimateDetailView(id) {
 }
 
 function convertModal(e) {
-  const due = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10)
+  // localDay, not toISOString: this date is POSTed and stored verbatim on invoices.due_date and
+  // jobs.due_date, so a UTC roll after 5pm Pacific dated every invoice a day early.
+  const d14 = new Date(); d14.setDate(d14.getDate() + 14)
+  const due = localDay(d14)
   // Lite has no production floor. The server still opens a job row (it links the records together),
   // but the shop must never be told about it or — worse — navigated onto the Job Board, which is not
   // in this edition's nav at all. That dead end was the single most jarring thing in the lite flow.
