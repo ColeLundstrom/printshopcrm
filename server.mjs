@@ -3950,17 +3950,62 @@ app.get('/api/suppliers/inventory', wrap(async (req, res) => {
  * paid invoice + payment row + a job in 'complete' so the board stays clean (board shows only
  * status='active'). Re-imports are idempotent on the source order number.
  */
+/**
+ * Fold an order export's per-line rows into one order each, and decide what the order was worth.
+ *
+ * A `Total` column means one of two different things depending on who wrote the export: the ORDER
+ * total, repeated on every line, or THAT LINE's extended total. The fold used to take the largest
+ * value it saw, which is right for the first shape and badly wrong for the second — a real
+ * three-line order of 1000 + 600 + 300 was recorded as a $1,900 subtotal under a $1,000 total, and
+ * a $1,000 invoice was written and marked paid. $900 of the shop's own history simply disappeared,
+ * on an import whose whole promise is that leaving a competitor costs you nothing.
+ *
+ * The file carries the evidence to tell them apart: quantity x unit price, which the exporter
+ * computed independently of whichever total it chose to print. Whichever reading lands closer to
+ * that is the one it meant. When the file gives no unit price at all there is nothing to weigh, and
+ * an identical total on every single line is the signature of a repeated order total, so that case
+ * keeps the old behaviour.
+ */
+function groupImportedOrders(orders) {
+  const qtyOf = (l) => (l.sizes && sizeTotal(l.sizes) > 0 ? sizeTotal(l.sizes) : Number(l.quantity) || 0)
+  const grouped = []
+  const byRef = new Map()
+  for (const o of orders || []) {
+    const key = o.order_number ? `#${String(o.order_number).toLowerCase()}` : ''
+    if (key && byRef.has(key)) { byRef.get(key)._lines.push(o); continue }
+    const g = { ...o, _lines: [o] }
+    grouped.push(g)
+    if (key) byRef.set(key, g)
+  }
+  for (const g of grouped) {
+    const totals = g._lines.map((l) => Number(l.total)).filter((n) => Number.isFinite(n) && n > 0)
+    if (!totals.length) { g.total = null; continue }
+    if (totals.length === 1) { g.total = round2(totals[0]); continue }
+    const sum = round2(totals.reduce((a, b) => a + b, 0))
+    const max = Math.max(...totals)
+    const hasUnitPrice = g._lines.some((l) => Number(l.unit_price) > 0)
+    if (!hasUnitPrice && totals.every((n) => n === totals[0])) { g.total = round2(max); continue }
+    const evidence = round2(g._lines.reduce((a, l) => a + (Number(l.unit_price) || 0) * qtyOf(l), 0))
+    g.total = Math.abs(sum - evidence) <= Math.abs(max - evidence) ? sum : round2(max)
+  }
+  return grouped
+}
+
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap((req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
   const rows = parseCsv(text)
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
   const mapped = mapOrderRows(rows)
-  const summary = summarizeImport(mapped)
+  // Preview what the import will WRITE, not what the file contains. Folded per line-item rows are
+  // one order, not four, and the value shown has to be the value that lands: a three-line $1,900
+  // order previewed as "3 orders — $1,900 of history" and then wrote one $1,000 invoice.
+  const previewOrders = groupImportedOrders(mapped.orders)
+  const summary = summarizeImport({ orders: previewOrders, warnings: mapped.warnings })
   const preview = req.body?.preview === 'true' || req.body?.preview === true
-  if (preview) return res.json({ preview: true, ...summary, sample: mapped.orders.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+  if (preview) return res.json({ preview: true, ...summary, sample: previewOrders.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
 
-  let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0
+  let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0
   const findContact = (name, email) => {
     let c = email ? get('SELECT * FROM contacts WHERE lower(email) = lower(?)', email) : null
     if (!c && name) c = get('SELECT * FROM contacts WHERE lower(name) = lower(?)', name)
@@ -3974,21 +4019,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // Many exports are one row PER LINE ITEM, with the order number repeated. Fold those into a
   // single order before writing, or a 4-line order becomes 4 separate one-line orders (or, with
   // idempotency on, 1 order and 3 silently dropped lines).
-  const grouped = []
-  const byRef = new Map()
-  for (const o of mapped.orders) {
-    const key = o.order_number ? `#${String(o.order_number).toLowerCase()}` : ''
-    if (key && byRef.has(key)) {
-      const g = byRef.get(key)
-      g._lines.push(o)
-      // The exported order total repeats on every line; don't sum it into a multiple.
-      if (Number(o.total) > Number(g.total || 0)) g.total = o.total
-      continue
-    }
-    const g = { ...o, _lines: [o] }
-    grouped.push(g)
-    if (key) byRef.set(key, g)
-  }
+  const grouped = groupImportedOrders(mapped.orders)
   // The export's own status decides how much of the graph gets written.
   const classify = (status) => {
     const s = String(status || '').toLowerCase()
@@ -4036,14 +4067,28 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       })
       const allSizes = rollupSizes(items)
       const t = computeTotals(items, 0, getUpcharges())
-      const total = Number(o.total) > 0 ? Number(o.total) : t.total
+      // A document must never hide money between its subtotal and its total — 8e9239e. The file's
+      // total is authoritative, because it is what the shop actually billed; the reconstructed
+      // lines are what the document PRINTS, and an export's total routinely carries setup, rush,
+      // shipping or tax that no line accounts for. Storing one over the other reproduced that exact
+      // defect one layer down: Subtotal $1,000.00 / Tax $0.00 / TOTAL $1,180.00, with $180 arriving
+      // from nowhere, stored, carried into the invoice's frozen amount_due and posted to the books.
+      // Give the difference a line of its own instead, so the money is named rather than missing.
+      const filed = Number(o.total) > 0 ? round2(Number(o.total)) : null
+      const gap = filed == null ? 0 : round2(filed - t.total)
+      if (Math.abs(gap) >= 0.01) {
+        items.push({ description: gap > 0 ? 'Other charges' : 'Discount', qty: 1, unit_price: gap, taxable: false })
+        reconciled++
+      }
+      const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
+      const total = filed != null ? doc.total : t.total
       const kind = classify(o.status)
       // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
       const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
 
       const estStatus = kind === 'quote' ? 'sent' : 'approved'
       const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, source_ref, imported_at, sent_at, approved_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), t.subtotal, t.tax, total, 0,
+        c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), doc.subtotal, doc.tax, total, 0,
         notes, ref, stamp, when, kind === 'quote' ? null : when, when).lastInsertRowid)
       created++
       if (kind === 'quote') { openQuotes++; continue }
@@ -4065,8 +4110,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
         o.due_date || null, notes, stamp, when, when)
     }
   })
-  logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}) from a CSV`, {})
-  res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, warnings: mapped.warnings.slice(0, 20) })
+  logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {})
+  res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
 }))
 
 /* ================= PUBLIC REST API v1 =================

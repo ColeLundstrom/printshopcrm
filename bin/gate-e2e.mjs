@@ -1257,6 +1257,63 @@ try {
     chk('a different export still imports', String(Number(r.json?.imported) > 0), '^true$')
   }
 
+  /* ---------- an imported order is worth what the file says it was worth ----------
+   * Two defects, one arithmetic. A `Total` column is either the ORDER total repeated on every
+   * line, or THAT LINE's extended total, and the fold took the largest value it saw — so a real
+   * three-line 1000 + 600 + 300 order was written as a $1,900 subtotal under a $1,000 total, and
+   * a $1,000 invoice was raised and marked paid. $900 of the shop's own history disappeared, on
+   * the feature whose entire promise is that leaving your old tool costs you nothing.
+   *
+   * And where the file's total legitimately exceeds its lines — setup, rush, shipping, old tax —
+   * that total was stored on top of a subtotal computed from the lines, printing Subtotal
+   * $1,000.00 / Tax $0.00 / TOTAL $1,180.00 with $180 arriving from nowhere. That is exactly the
+   * defect 8e9239e closed on the shop's own documents, reopened one layer down by the importer,
+   * and it is carried into the invoice's frozen amount_due and out to the books. */
+  {
+    // Per-line totals that differ: they are line totals, and they must be added up.
+    const lineCsv = [
+      'Order Number,Customer,Email,Date,Qty,Unit Price,Total,Status,Product',
+      'SO-7001,Sum Lines Screen,sumlines@e2e.test,2026-04-02,100,10.00,1000.00,paid,Tee',
+      'SO-7001,Sum Lines Screen,sumlines@e2e.test,2026-04-02,50,12.00,600.00,paid,Hoodie',
+      'SO-7001,Sum Lines Screen,sumlines@e2e.test,2026-04-02,20,15.00,300.00,paid,Cap',
+    ].join('\n')
+    r = await req('POST', '/api/import/orders', { body: { text: lineCsv, preview: true } })
+    chk('a per-line export previews as one order, not three', String(r.json?.orders), '^1$')
+    chk('…and promises the money the file actually contains', String(r.json?.totalValue), '^1900$')
+
+    r = await req('POST', '/api/import/orders', { body: { text: lineCsv } })
+    chk('a per-line export imports as one order', String(r.json?.imported), '^1$')
+    const sumC = (await req('GET', '/api/contacts?q=Sum%20Lines%20Screen')).json?.contacts?.[0]
+    chk('…worth every line of it, not just the biggest one', String(Number(sumC?.lifetime_value || 0)), '^1900$')
+
+    // The same order shape with the ORDER total repeated on each line must NOT be summed.
+    const repCsv = [
+      'Order Number,Customer,Email,Date,Qty,Unit Price,Total,Status,Product',
+      'SO-7002,Repeat Total Tees,repeat@e2e.test,2026-04-03,100,10.00,1900.00,paid,Tee',
+      'SO-7002,Repeat Total Tees,repeat@e2e.test,2026-04-03,50,12.00,1900.00,paid,Hoodie',
+      'SO-7002,Repeat Total Tees,repeat@e2e.test,2026-04-03,20,15.00,1900.00,paid,Cap',
+    ].join('\n')
+    await req('POST', '/api/import/orders', { body: { text: repCsv } })
+    const repC = (await req('GET', '/api/contacts?q=Repeat%20Total%20Tees')).json?.contacts?.[0]
+    chk('a repeated order total is still not multiplied by its line count', String(Number(repC?.lifetime_value || 0)), '^1900$')
+
+    // A total the lines cannot explain: setup + shipping on a single-line order.
+    const gapCsv = [
+      'Order Number,Customer,Email,Date,Qty,Unit Price,Total,Status,Product',
+      'SO-7003,Setup Fee Signs,setupfee@e2e.test,2026-04-04,100,10.00,1180.00,paid,Tee',
+    ].join('\n')
+    r = await req('POST', '/api/import/orders', { body: { text: gapCsv } })
+    chk('an order whose total exceeds its lines still imports', String(r.json?.imported), '^1$')
+    chk('…and the shop is told its lines did not explain it', String(r.json?.totals_reconciled), '^1$')
+    const estList = (await req('GET', '/api/estimates')).json
+    const gapEst = (Array.isArray(estList) ? estList : estList?.data || []).find((e) => String(e.notes || '').includes('SO-7003'))
+    chk('…the imported document adds up', String(round2e(Number(gapEst?.subtotal) + Number(gapEst?.tax))), `^${round2e(Number(gapEst?.total))}$`)
+    chk('…at the total the file gave', String(round2e(Number(gapEst?.total))), '^1180$')
+    const gapItems = typeof gapEst?.items === 'string' ? JSON.parse(gapEst.items) : (gapEst?.items || [])
+    chk('…and the difference is a line the shop can read, not a gap',
+      String(gapItems.some((i) => /other charges|discount/i.test(String(i.description || '')) && Math.abs(Number(i.unit_price) - 180) < 0.01)), '^true$')
+  }
+
   /* ---------- changing the quantities changes what the shop buys ----------
    * jobs.line_sizes is the per-garment grid the PO, pick ticket, work ticket and print package all
    * read. It is written once at conversion and PUT never touched it, so a shop that bumped a job

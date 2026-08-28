@@ -129,7 +129,11 @@ export function importOrders(after) {
               ${r.sample?.length ? `<table class="tbl" style="margin-top:8px"><tbody>${r.sample.map((o) => `<tr><td style="font-weight:600">${esc(o.customer_name || o.customer_email || '?')}</td><td class="dim" style="font-size:12px">${esc(o.order_number || '')}</td><td class="dim" style="font-size:12px">${esc(o.date || '')}</td><td class="num">${money0(o.total || 0)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`
             $('#ocsv-go', bg).disabled = r.orders === 0
           } else {
+            // Say when a total did not match its own lines. The difference is written as a named
+            // line on the document rather than left as a gap between subtotal and total, and the
+            // shop is the only one who knows whether it was shipping, a rush fee or old tax.
             out.innerHTML = `<div style="color:var(--accent);font-size:13px">✓ Imported ${r.imported} order${r.imported === 1 ? '' : 's'} (${r.new_customers} new customer${r.new_customers === 1 ? '' : 's'}${r.open_quotes ? `, ${r.open_quotes} open quotes` : ''}${r.unpaid_invoices ? `, ${r.unpaid_invoices} unpaid invoices` : ''}${r.skipped_duplicates ? `, ${r.skipped_duplicates} duplicates skipped` : ''}).</div>`
+              + (r.totals_reconciled ? `<div class="dim" style="font-size:11.5px;margin-top:5px">${r.totals_reconciled} order${r.totals_reconciled === 1 ? ' had a total that did not match its' : 's had totals that did not match their'} lines — the difference is on each document as “Other charges” or “Discount”, so every one of them adds up.</div>` : '')
             toast(`Imported ${r.imported} orders with history`)
             setTimeout(() => { closeModal(); after?.() }, 1200)
           }
