@@ -2316,6 +2316,60 @@ section('a document never hides money between its subtotal and its total')
   })
 }
 
+/* ---------- an automation that half-failed says so (v6) ----------
+ * runAutomation RESERVES the run-log row as 'ran' before executing, and the detail UPDATE sat
+ * inside the try. So a rule whose second action threw left status='ran' with an EMPTY detail —
+ * rendered by the Automations screen as an ordinary success — for a run that tagged the customer,
+ * died on step 2, and never sent the email on step 4. The only trace was one console line.
+ * Meanwhile 'error' was checked by the dedupe latch and had a red pill waiting for it in the UI,
+ * and NOTHING in the codebase ever wrote it. */
+section('an automation that fails halfway is not logged as a success')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  auto.initAutomations(mem)
+
+  const rule = {
+    id: 1,
+    name: 'BrokenRule',
+    trigger: 'job.stage',
+    conditions: [],
+    // Step 2 throws — a 'move the job to a stage' step saved with the Stage field left blank,
+    // which POST /api/automations accepts.
+    actions: [
+      { key: 'contact.tag', config: { tag: 'step-1-ok' } },
+      { key: 'job.move', config: {} },
+      { key: 'contact.tag', config: { tag: 'step-3-never' } },
+    ],
+  }
+  mem.exec("CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT, tags TEXT DEFAULT '', updated_at DATETIME)")
+  mem.exec("CREATE TABLE jobs (id INTEGER PRIMARY KEY, job_number TEXT, stage TEXT, updated_at DATETIME)")
+  dbmod.run('INSERT INTO contacts (id, name, tags) VALUES (1, ?, ?)', 'Casey', '')
+  dbmod.run('INSERT INTO jobs (id, job_number, stage) VALUES (1, ?, ?)', 'JOB-1027', 'new')
+  // automation_runs.automation_id is a real FK, so the rule has to exist to be logged against.
+  dbmod.run('INSERT INTO automations (id, name, enabled, trigger, actions) VALUES (?,?,1,?,?)',
+    rule.id, rule.name, rule.trigger, JSON.stringify(rule.actions))
+  auto.runAutomation(rule, 'job.stage', { contact: { id: 1, name: 'Casey' }, job: { id: 1, job_number: 'JOB-1027' } }, {})
+
+  const row = dbmod.get('SELECT status, detail FROM automation_runs ORDER BY id DESC LIMIT 1')
+  await t('the run is recorded as an error, not a green success', () => {
+    assert.equal(row?.status, 'error')
+  })
+  await t('…and the detail names how far it actually got', () => {
+    assert.match(String(row?.detail || ''), /1 of 3 step\(s\) ran/)
+  })
+  await t('…including the step that did run, so the shop knows what already went out', () => {
+    assert.match(String(row?.detail || ''), /contact\.tag/)
+  })
+  await t('…and the reason it stopped', () => {
+    assert.match(String(row?.detail || ''), /then failed:/)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

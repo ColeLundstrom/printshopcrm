@@ -92,7 +92,7 @@ export async function automationsView() {
                 ${r.status === 'ran' ? '' : `<span class="pill ${r.status === 'error' ? 'red' : 'gray'}">${esc(r.status)}</span>`}
               </div>
               <div class="dim" style="font-size:11.5px;margin-top:2px">${esc(r.entity_label || '')} — ${esc(r.detail || '')}</div>
-              <div class="dt">${relTime(r.created_at)}</div>
+              <div class="dt">${relTime(r.created_at)}${r.status === 'error' ? ` · <button class="btn ghost sm" data-retry-run="${r.id}">Try again</button>` : ''}</div>
             </div>`).join('')}</div>`
             : '<div class="dim">Nothing has fired yet. Hit “Run timed rules now” to see them work.</div>'}
         </div>
@@ -120,6 +120,13 @@ export async function automationsView() {
   on($('#au-body'), '[data-edit]', (e, t) => {
     if (e.target.closest('[data-nodrag]')) return
     autoForm(d.automations.find((x) => x.id === +t.dataset.edit))
+  })
+
+  on($('#au-body'), '[data-retry-run]', async (e, t) => {
+    e.stopPropagation()
+    try { await api.post(`/api/automations/runs/${t.dataset.retryRun}/retry`); toast('Queued — it will go again on the next sweep') }
+    catch (err) { toast(err.message, true) }
+    automationsView()
   })
 
   on($('#au-body'), '[data-resume]', async (e, t) => {

@@ -2701,6 +2701,22 @@ app.post('/api/automations/pending/:id/resume', requireRole('manager'), wrap((re
   res.json({ ok: true })
 }))
 
+/**
+ * Let a failed timed run go again. The dedupe latch deliberately does NOT retry on its own — a
+ * rule that failed after emailing the customer must not re-email them every five minutes — but
+ * that made a transient failure (SMTP down for ten minutes) permanent, silently, for every
+ * overdue-invoice chase and stale-quote nudge that landed in the window. Stamping 'retry' keeps
+ * the failure in the history and releases the latch, so the next tick picks the entity up again.
+ */
+app.post('/api/automations/runs/:id/retry', requireRole('manager'), wrap((req, res) => {
+  const r = get('SELECT * FROM automation_runs WHERE id = ?', +req.params.id)
+  if (!r) return res.status(404).json({ error: 'That run is no longer in the log.', code: 'not_found' })
+  if (r.status !== 'error') return res.status(409).json({ error: 'That run did not fail, so there is nothing to retry.', code: 'not_failed' })
+  run("UPDATE automation_runs SET status = 'retry' WHERE id = ?", r.id)
+  logActivity('note', `Automation retry queued — ${r.automation_name}${r.entity_label ? ` · ${r.entity_label}` : ''}`, {})
+  res.json({ ok: true })
+}))
+
 app.delete('/api/automations/pending/:id', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM automation_pending WHERE id = ?', +req.params.id)
   if (!p) return res.status(404).json({ error: 'That queued sequence is no longer there.', code: 'not_found' })
