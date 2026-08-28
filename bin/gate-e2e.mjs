@@ -1015,6 +1015,28 @@ try {
     chk('the print package carries both garments', String((pkg.lines || []).length), '^2$')
   }
 
+  /* ---------- a job title is not a garment ----------
+   * The per-garment PO lookup falls back through jobs.garment for a job created on the board with
+   * no estimate behind it. That fallback must NOT reach for jobs.title: the string it produces is
+   * handed to costFor(), which picks the SKU the purchase order spends real money on, and a title
+   * is free text the shop types. "Reorder — 50 for the 3001 event" matches Bella+Canvas 3001 and
+   * "Repeat of 2000 shirts" matches Gildan 2000 — a confidently wrong order in place of an honest
+   * "no SKU matched" warning the shop can act on. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Board Job Co', email: 'board@e2e.test' } })
+    const bjCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/jobs', {
+      body: { contact_id: bjCid, title: 'Reorder — 50 for the 3001 event', quantities: '50 M', decoration: 'Screen Print' },
+    })
+    const titleJob = r.json?.id ?? r.json?.job?.id
+    if (titleJob) {
+      const po = (await req('GET', `/api/jobs/${titleJob}/po`)).json || {}
+      const skus = [...new Set((po.lines || []).map((l) => l.sku))]
+      chk('a number in the job title does not become a garment order', JSON.stringify(skus), '^\\[(null)?\\]$')
+      chk('…and the shop is told to set the style instead', JSON.stringify(po.warnings || []), 'exact style')
+    } else say('·', `could not create a board job (${r.status}) — title-as-SKU checked without failing`)
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

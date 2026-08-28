@@ -3474,7 +3474,13 @@ const jobLines = (j) => {
     const gl = garmentLines(parse(get('SELECT items FROM estimates WHERE id = ?', j.estimate_id)?.items, []))
     if (gl.length) return gl
   }
-  return [{ description: j.garment || j.title || '', garment: j.garment || '', sizes: parse(j.sizes, {}) }]
+  // `garment` ONLY — never j.title. This description is handed to costFor(), which picks the SKU
+  // the purchase order spends money on, and a job title is free text the shop types. "Reorder — 50
+  // for the 3001 event" would have ordered 50 Bella+Canvas 3001, and "Repeat of 2000 shirts" a
+  // Gildan 2000, both with matched:true and no warning. A board-created job with no garment on it
+  // must keep coming back sku:null with the honest "set the exact style before submitting" warning:
+  // a visible dead end is recoverable, a confidently wrong order is not.
+  return [{ description: j.garment || '', garment: j.garment || '', sizes: parse(j.sizes, {}) }]
 }
 
 /** Build the supplier PO for a job's blanks (ready to submit when a supplier is connected). */
