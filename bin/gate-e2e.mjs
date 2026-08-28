@@ -86,15 +86,27 @@ let serverLog = ''
 server.stdout.on('data', (d) => { serverLog += d })
 server.stderr.on('data', (d) => { serverLog += d })
 
+/**
+ * Every server this run starts, so cleanup can kill all of them.
+ *
+ * A run that dies without cleaning up leaves a server holding the port, and the NEXT run then
+ * fails with "An account with that email already exists" and a cascade of 401s — which reads as a
+ * regression rather than as a stale process. The gate is meant to be run ten times in a row; one
+ * leaked server poisons every run after it. SIGPIPE is the one that actually bites: piping the
+ * gate into `grep`/`head` kills it the moment the reader closes.
+ */
+const started = [server]
 let cleanedUp = false
 function cleanup() {
   if (cleanedUp) return
   cleanedUp = true
-  try { server.kill() } catch { /* already gone */ }
+  for (const p of started) { try { p.kill('SIGKILL') } catch { /* already gone */ } }
   try { rmSync(TMP, { recursive: true, force: true }) } catch { /* best effort */ }
 }
 process.on('exit', cleanup)
-process.on('SIGINT', () => { cleanup(); process.exit(130) })
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGPIPE']) {
+  process.on(sig, () => { cleanup(); process.exit(sig === 'SIGINT' ? 130 : 143) })
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const round2e = (n) => Math.round((Number(n) || 0) * 100) / 100
@@ -107,7 +119,26 @@ async function waitForBoot() {
   const started = Date.now()
   while (Date.now() - started < LIMIT_MS) {
     if (server.exitCode !== null) throw new Error(`server exited early (${server.exitCode})\n${serverLog}`)
-    try { if ((await fetch(`${BASE}/health`)).ok) return } catch { /* not up yet */ }
+    let healthy = false
+    try { healthy = (await fetch(`${BASE}/health`)).ok } catch { /* not up yet */ }
+    if (healthy) {
+      // Something is answering — but is it OURS? A server left behind by a run that was killed
+      // holds the port, our server dies with EADDRINUSE, and the whole suite then runs against
+      // the STALE database: "An account with that email already exists" followed by a cascade of
+      // 401s, which reads as a pile of regressions rather than as a stale process. The bind error
+      // is asynchronous, so give it a beat to land before trusting the port.
+      await sleep(300)
+      if (server.exitCode !== null) {
+        throw new Error(
+          `port ${PORT} is already answering /health, and this run's own server exited (${server.exitCode}).\n` +
+          `  That is a server left behind by an earlier run. Kill it and try again:\n` +
+          `    lsof -ti:${PORT} | xargs kill -9\n` +
+          `  Or run this suite on another port:  PSC_GATE_PORT=${PORT + 100} npm run test:e2e\n` +
+          `  Server output:\n${serverLog.trim() || '  (nothing)'}`,
+        )
+      }
+      return
+    }
     await sleep(500)
   }
   // Whoever reads this is debugging a red gate with no other clue, so say what we know.
@@ -1397,7 +1428,7 @@ try {
       catch { return { status: 0, text: '' } }
     }
     const up = async (want) => { for (let i = 0; i < 120; i++) { const h = await hit('/health'); if (h.status === want) return h; await sleep(500) } return await hit('/health') }
-    let s2p = boot()
+    let s2p = boot(); started.push(s2p)
     try {
       await up(200)
       let res = await fetch(`http://127.0.0.1:${P2}/api/auth/signup`, {
@@ -1415,7 +1446,7 @@ try {
       d.prepare("INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, source_ref) VALUES (NULL,'EST-9002','draft','[]',0,0,0,'LEGACY-77')").run()
       d.close()
 
-      s2p = boot()
+      s2p = boot(); started.push(s2p)
       const h = await up(503)
       chk('a shop whose database will not open makes /health fail', String(h.status), '^503$')
       chk('…and /health names the shop, so a human knows which one', h.text, 'alpha-ink')
