@@ -1117,6 +1117,26 @@ await t('a real address is still found', async () => {
   assert.equal(extract('hi, reach me at dana.ruiz+shop@print-co.example.com thanks', {}).email,
     'dana.ruiz+shop@print-co.example.com')
 })
+
+/* There were TWO copies of that regex. Round 1 bounded the receptionist's and left the one in
+ * lib/slack.mjs — which is what POST /api/autopilot runs the pasted email through, and what the
+ * Slack ingest runs every inbound message through. Measured on the shipped pattern: 319ms at
+ * 20KB, 2.7s at 60KB, 11s at 120KB, all of it holding the single event loop, so /health and every
+ * other shop on the box waited behind it. A staffer pasting a long forwarded thread — the exact
+ * thing the Autopilot textarea asks for, with no maximum length client-side or server-side —
+ * froze the whole fleet. */
+await t('the autopilot / Slack email parser cannot be made to hang either', async () => {
+  const { findEmail } = await import('../lib/slack.mjs')
+  const started = Date.now()
+  for (const n of [10_000, 100_000, 400_000]) findEmail('a'.repeat(n) + '@' + 'b'.repeat(200))
+  const ms = Date.now() - started
+  assert.ok(ms < 1000, `parsing 510 KB of hostile paste took ${ms}ms — the regex is backtracking again`)
+})
+await t('…and still finds the addressee in a forwarded thread', async () => {
+  const { findEmail } = await import('../lib/slack.mjs')
+  assert.equal(findEmail('From: shop@us.example\nTo: priya.n@northgate-booster.k12.ca.us\n\n200 tees please'),
+    'priya.n@northgate-booster.k12.ca.us')
+})
 await t('a year in a sentence is not an order quantity', async () => {
   const { extract } = await import('../lib/agent.mjs')
   // This quoted 2026 pieces — over $13,000 — and drafted the estimate, because the unit noun was
