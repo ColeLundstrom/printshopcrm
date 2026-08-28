@@ -1219,6 +1219,43 @@ try {
     chk('…at a real cost, not zero', String(Number(bpo.est_cost) > 0), '^true$')
   }
 
+  /* ---------- re-running an order-history import does not double the shop's revenue ----------
+   * The dedupe keys on the source system's order number — and plenty of real exports have no
+   * order-number column at all (customer, date, product, qty, price is an ordinary shape). Those
+   * rows got an EMPTY ref, which skipped the dedupe check entirely, so importing the same file
+   * twice wrote everything again: every customer's lifetime value exactly doubled, and their order
+   * count with it — which is what Reorder Radar computes cadence from, so the "due to reorder" list
+   * ran off a buying pattern that never happened. One double-click or one refresh was enough, and
+   * the dialog on screen promised at that very moment that re-running an export was safe. Nothing
+   * in the product lists imported orders, so there was no way to find or undo them. */
+  {
+    const csv = [
+      'Customer,Email,Date,Status,Product,Qty,Unit Price,Total',
+      'Dedupe Diner,dedupe@e2e.test,2026-05-02,paid,Gildan 5000 Tee,10,11,110',
+      'Dedupe Diner,dedupe@e2e.test,2026-06-11,paid,Gildan 5000 Tee,20,11,220',
+    ].join('\n')
+
+    r = await req('POST', '/api/import/orders', { body: { text: csv } })
+    chk('an export with no order-number column imports', String(r.json?.imported), '^2$')
+    const after1 = (await req('GET', '/api/contacts?q=Dedupe%20Diner')).json?.contacts?.[0]
+    const lifetime1 = Number(after1?.lifetime_value || 0)
+    chk('…and records the money that was actually in it', String(lifetime1), '^330$')
+
+    // The double-click / "did that work?" retry.
+    r = await req('POST', '/api/import/orders', { body: { text: csv } })
+    chk('re-running the same export imports nothing', String(r.json?.imported), '^0$')
+    chk('…and says how many it recognised', String(r.json?.skipped_duplicates), '^2$')
+    const after2 = (await req('GET', '/api/contacts?q=Dedupe%20Diner')).json?.contacts?.[0]
+    chk('…and the customer\'s lifetime value did not double', String(Number(after2?.lifetime_value || 0)), `^${lifetime1}$`)
+    chk('…nor their order count, which Reorder Radar reads as their cadence',
+      String(Number(after2?.job_count || 0)), `^${Number(after1?.job_count || 0)}$`)
+
+    // A genuinely different export must still import — refusing real data is the worse error.
+    const csv2 = csv.replace('2026-06-11', '2026-07-19').replace(',20,11,220', ',30,11,330')
+    r = await req('POST', '/api/import/orders', { body: { text: csv2 } })
+    chk('a different export still imports', String(Number(r.json?.imported) > 0), '^true$')
+  }
+
   /* ---------- changing the quantities changes what the shop buys ----------
    * jobs.line_sizes is the per-garment grid the PO, pick ticket, work ticket and print package all
    * read. It is written once at conversion and PUT never touched it, so a shop that bumped a job

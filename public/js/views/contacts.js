@@ -103,7 +103,7 @@ export function importOrders(after) {
   modal({
     title: 'Import order history from CSV',
     wide: true,
-    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Drop your old system's <strong>orders / invoices export</strong> (Printavo: Reports → Export → Quotes/Invoices; also works with YoPrint, InkSoft and DecoNetwork order summaries). Each row becomes real history on the right customer — completed jobs, paid invoices, open quotes stay open — dated when it actually happened. Reorder Radar and "same as last time" light up immediately. Duplicate order numbers are skipped, so re-running an export is safe.</p>
+    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Drop your old system's <strong>orders / invoices export</strong> (Printavo: Reports → Export → Quotes/Invoices; also works with YoPrint, InkSoft and DecoNetwork order summaries). Each row becomes real history on the right customer — completed jobs, paid invoices, open quotes stay open — dated when it actually happened. Reorder Radar and "same as last time" light up immediately. Re-running the same export is safe — orders already on file are skipped, whether or not your export has an order-number column.</p>
       <label class="csv-drop" id="ocsv-drop"><input type="file" id="ocsv-file" accept=".csv,text/csv,text/plain" hidden>
         <div id="ocsv-drop-txt">Choose the orders CSV — or paste rows below</div></label>
       <div class="field" style="margin-top:10px"><label>…or paste CSV rows</label>

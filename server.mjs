@@ -3997,13 +3997,29 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     return 'paid' // complete/delivered/shipped/closed/paid/blank — treat as settled history
   }
   const stamp = now()
+  // Every imported order needs a stable identity, and plenty of real exports have no order-number
+  // column at all — customer, date, product, qty, price is a perfectly ordinary shape. Those rows
+  // got an EMPTY ref, which skipped the dedupe check entirely, so re-importing the same file wrote
+  // everything a second time: 300 rows became 600 estimates, 600 invoices and 600 payments, and
+  // every customer's lifetime value doubled ($208,800 recorded where $104,400 was real). Reorder
+  // Radar computes cadence from that same order count, so the shop's "due to reorder" list was
+  // then driven off a buying pattern that never happened — while the dialog on screen promised
+  // re-running an export was safe. One double-click or one refresh was enough, and there is no
+  // screen anywhere that lists imported orders, so nothing could be found or undone afterwards.
+  //
+  // A content hash of the file plus the row's position gives those rows an identity. It is
+  // deliberately per-FILE: two different exports that happen to contain the same order both
+  // import, exactly as today, because refusing data the shop meant to add is the worse error.
+  const fileTag = crypto.createHash('sha1').update(text).digest('hex').slice(0, 12)
+  let rowIndex = -1
   tx(() => {
     for (const o of grouped) {
+      rowIndex++
       // Idempotent on the source system's order number, matched EXACTLY against its own column.
       // (This was a substring LIKE over the notes text, so importing INV-9 after INV-90 silently
       // discarded the whole order as a "duplicate".)
-      const ref = o.order_number ? String(o.order_number).slice(0, 120) : ''
-      if (ref && get('SELECT id FROM estimates WHERE source_ref = ?', ref)) { skippedDupes++; continue }
+      const ref = o.order_number ? String(o.order_number).slice(0, 120) : `csv:${fileTag}:${rowIndex}`
+      if (get('SELECT id FROM estimates WHERE source_ref = ?', ref)) { skippedDupes++; continue }
 
       const c = findContact(o.customer_name, o.customer_email)
       const when = o.date ? `${o.date} 12:00:00` : now()
@@ -4022,12 +4038,13 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       const t = computeTotals(items, 0, getUpcharges())
       const total = Number(o.total) > 0 ? Number(o.total) : t.total
       const kind = classify(o.status)
-      const notes = `Imported${ref ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
+      // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
+      const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
 
       const estStatus = kind === 'quote' ? 'sent' : 'approved'
       const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, source_ref, imported_at, sent_at, approved_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), t.subtotal, t.tax, total, 0,
-        notes, ref || null, stamp, when, kind === 'quote' ? null : when, when).lastInsertRowid)
+        notes, ref, stamp, when, kind === 'quote' ? null : when, when).lastInsertRowid)
       created++
       if (kind === 'quote') { openQuotes++; continue }
 

@@ -1367,6 +1367,22 @@ await t('onOnce really binds once, however many times the view is re-entered', a
   assert.equal(listeners.length, 2)
 })
 
+await t('the import dialog does not promise more than the code delivers', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // "Duplicate order numbers are skipped, so re-running an export is safe" was false for any
+  // export without an order-number column — which is most of them — and the shop reads that
+  // sentence at the exact moment it is deciding whether to click Import a second time.
+  const js = readFileSync(join(root, 'public/js/views/contacts.js'), 'utf8')
+  assert.ok(!/Duplicate order numbers are skipped, so re-running an export is safe/.test(js),
+    'the import dialog promises idempotency it only has when the export carries order numbers')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  assert.match(src, /const fileTag = crypto\.createHash\('sha1'\)\.update\(text\)/,
+    'every imported order needs a stable source_ref, order number or not')
+})
+
 section('the install instructions produce the install they describe')
 await t('every documented way to start the app reads the .env it tells you to write', async () => {
   const { readFileSync } = await import('node:fs')
