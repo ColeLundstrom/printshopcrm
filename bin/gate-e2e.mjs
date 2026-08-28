@@ -2014,6 +2014,19 @@ try {
       // The owner loads the app on the host the shop actually uses. That is the evidence.
       await raw('GET', '/api/auth/me', { Host: `127.0.0.1:${P4}`, Cookie: sc })
 
+      // And now a STRANGER signs up. On an open-signup install anybody is an owner five seconds
+      // after they arrive, so "a host an owner has signed in on" is not evidence of anything
+      // unless it is evidence about THAT OWNER'S OWN SHOP. One free trial and one GET with a
+      // chosen Host header repointed the reset link for EVERY shop on the box — the same takeover
+      // the learned origin was added to close, one signup further away, and persisted to the
+      // control database so it survived restarts with nothing in the product able to show or
+      // clear it.
+      const evBody = JSON.stringify({ shop_name: 'Evil Tees', owner_name: 'Eve', owner_email: 'eve@evil.test', password: 'GatePass-123456' })
+      const ev = await raw('POST', '/api/auth/signup', { Host: `127.0.0.1:${P4}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(evBody) }, evBody)
+      const evc = [].concat(ev.headers['set-cookie'] || []).map((c) => String(c).split(';')[0]).join('; ')
+      chk('a stranger can sign up for a free trial, as anyone can', String(ev.status), '^200$')
+      await raw('GET', '/api/auth/me', { Host: 'evil.attacker.example', Cookie: evc })
+
       // The welcome email is fire-and-forget, so let it land before clearing — otherwise it is the
       // message these assertions read, and they pass without the reset link ever being examined.
       for (let i = 0; i < 40; i++) { if (sent.length) break; await sleep(250) }

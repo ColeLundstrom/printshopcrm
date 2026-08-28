@@ -217,9 +217,18 @@ const publicOrigin = (req) => String(process.env.PSC_PUBLIC_URL || '').replace(/
  * else's todo list.
  *
  * So the app learns the answer rather than asking for it. A signed-in OWNER loading the app is
- * proof of a host the shop genuinely uses, and an attacker cannot manufacture one without already
- * holding an owner session. That host is remembered on the control database and used for links
- * built off unauthenticated requests from then on.
+ * proof of a host the shop genuinely uses. That host is remembered on the control database and
+ * used for links built off unauthenticated requests from then on.
+ *
+ * PER SHOP, and this is the whole of it. The first version of this kept ONE platform-wide value,
+ * written by whichever owner happened to make the last GET — and on an open-signup install
+ * anybody is an owner five seconds after they arrive. One free trial and one GET with a chosen
+ * Host header repointed the reset link for EVERY shop on the box, which is the exact takeover the
+ * learned origin was added to prevent, one signup further away: the next owner anywhere on the
+ * install to forget their password handed a live token to a stranger. It was persisted, so it
+ * survived restarts, and nothing in the product could show or clear it. A shop may only ever
+ * teach us its OWN address, and ann@alpha's reset link is built from what ALPHA's owners have
+ * actually signed in on.
  *
  * It is deliberately NOT used for the rest of them. Every other link is generated behind auth,
  * where Host is whatever the shop's own staff are looking at, and overriding it there would send a
@@ -227,21 +236,29 @@ const publicOrigin = (req) => String(process.env.PSC_PUBLIC_URL || '').replace(/
  * brand-new install where nobody has signed in yet this falls straight through to today's
  * behaviour, because refusing to send a new shop its welcome email is the worse failure.
  */
-let learnedOrigin = null // null = not read yet, '' = read and nothing stored
+let learnedOrigins = null // slug -> origin; null = not read from the control db yet
 const ORIGIN_RE = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?$/i
-const learnedPublicOrigin = () => {
-  if (learnedOrigin === null) {
-    try { learnedOrigin = String(getPlatformConfig().public_origin || '') } catch { learnedOrigin = '' }
+const learnedOriginFor = (slug) => {
+  if (learnedOrigins === null) {
+    learnedOrigins = new Map()
+    try {
+      for (const [k, v] of Object.entries(getPlatformConfig())) {
+        if (k.startsWith('origin:')) learnedOrigins.set(k.slice(7), String(v || ''))
+      }
+    } catch { /* start empty — the PSC_PUBLIC_URL and Host fallbacks below still work */ }
   }
-  return learnedOrigin
+  return (slug && learnedOrigins.get(slug)) || ''
 }
 const rememberPublicOrigin = (req) => {
+  const slug = req.tenant?.slug || ''
   const o = `${req.protocol}://${req.get('host') || ''}`
-  if (!ORIGIN_RE.test(o) || o === learnedPublicOrigin()) return
-  try { setPlatformConfig({ public_origin: o }); learnedOrigin = o } catch (e) { console.error('learn origin:', e.message) }
+  if (!slug || !ORIGIN_RE.test(o) || o === learnedOriginFor(slug)) return
+  try { setPlatformConfig({ [`origin:${slug}`]: o }); learnedOrigins.set(slug, o) } catch (e) { console.error('learn origin:', e.message) }
 }
-const trustedOrigin = (req) =>
-  String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || learnedPublicOrigin() || publicOrigin(req)
+// `tenant` is the shop the LINK is for, which on /api/auth/forgot is not the shop that sent the
+// request — an unauthenticated request has no shop at all. createPasswordReset() returns it.
+const trustedOrigin = (req, tenant = req.tenant) =>
+  String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || learnedOriginFor(tenant?.slug) || publicOrigin(req)
 
 const slackRaw = express.raw({ type: '*/*', limit: '256kb' }) // Slack payloads are far under this
 
@@ -928,7 +945,7 @@ app.post('/api/auth/signup', ipLimit(6), wrap(async (req, res) => {
     // founder to 'staff' mid-session) the day that owner is demoted.
     const owner = listMembers(t.id).find((m) => m.role === 'owner')
     setSessionCookie(res, createSession(t.id, owner?.id || null), req)
-    sendWelcomeEmail(t, trustedOrigin(req)) // fire-and-forget; delivers if platform SMTP is set
+    sendWelcomeEmail(t, trustedOrigin(req, t)) // fire-and-forget; delivers if platform SMTP is set
     res.json({ ok: true, slug: t.slug, shop_name: t.shop_name, onboarding: true })
   } catch (e) {
     res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message })
@@ -1005,7 +1022,7 @@ app.post('/api/auth/forgot', ipLimit(6), rateLimit({ max: 4 }), wrap((req, res) 
   // mailed the real owner a working reset link pointing at the attacker, who then owned the shop.
   // trustedOrigin() prefers PSC_PUBLIC_URL and then the host an owner has actually signed in on,
   // and only falls back to this request's Host on an install where neither exists yet.
-  const origin = trustedOrigin(req)
+  const origin = trustedOrigin(req, r.tenant)
   const link = `${origin}/reset?token=${encodeURIComponent(r.token)}`
   const body = `Hi${r.member.name ? ' ' + r.member.name : ''},
 
