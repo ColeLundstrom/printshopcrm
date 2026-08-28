@@ -802,6 +802,25 @@ try {
       String((list.json?.purchase_orders || []).length), '^1$')
   }
 
+  /* ---------- AGPL §13: the source link is served, on every page a user can reach ----------
+   * §13 is a licence obligation, not a style choice: run a modified version over a network and its
+   * users must be offered the corresponding source. sourceLinkHtml() renders it into index.html
+   * and auth.html — and NOTHING in either suite has ever asserted that, so four rounds of releases
+   * verified it by hand after the fact. A conditional, a template rename, or a stray edit to
+   * either shell would have shipped a licence violation with a green gate. */
+  {
+    for (const [path, what] of [['/', 'the app'], ['/login', 'the login page'], ['/signup', 'the signup page'], ['/reset', 'the reset page']]) {
+      const page = await req('GET', path, { cookies: false })
+      chk(`${what} serves the AGPL source link`, page.text, 'class="source-link"')
+      chk(`…pointing somewhere a user can actually fetch it`, page.text, 'href="https?://[^"]+"[^>]*class="source-link"|class="source-link" href="https?://[^"]+"')
+      chk(`…and no unreplaced placeholder is left on ${what}`, String(page.text.includes('__SOURCE_LINK__')), '^false$')
+    }
+    // The customer-facing /p/ pages are served by their own renderer, so they are not asserted here
+    // — §13 applies to users interacting with the software remotely, which is the app itself.
+    const shell = await req('GET', '/', { cookies: false })
+    chk('the link names the licence, so it is recognisable as the §13 offer', shell.text, 'AGPL-3\\.0')
+  }
+
   /* ---------- a backorder the distributor cancelled does not wedge the job forever ----------
    * DELETE /api/jobs/:id has told shops to "short-close it if the rest is not coming" since it was
    * written, and nothing anywhere could: 'closed' is READ by poAlreadySent and written by nobody,
