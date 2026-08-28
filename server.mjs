@@ -48,7 +48,7 @@ import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
-import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailConfigured } from './lib/notify.mjs'
+import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
 import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor } from './lib/pricebook.mjs'
@@ -964,18 +964,23 @@ app.post('/api/auth/forgot', ipLimit(6), rateLimit({ max: 4 }), wrap((req, res) 
   const email = String(req.body?.email || '').trim()
   const generic = { ok: true, message: 'If that email has an account, a reset link is on its way.' }
   // Before promising a link, check that this install can send one at all. Reset mail goes out on
-  // the platform relay (`platform: true` below, with no shop SMTP behind it), so with no relay
-  // configured the answer is always "nothing will arrive" — and the owner sat waiting, retried,
-  // hit the 4/hour limit, and was locked out of a database sitting on their own disk. The fix was
-  // logged to stdout, where someone running under systemd or Docker will never see it.
+  // the SERVER's own mail — `platform: true` below, with no shop SMTP behind it — so on an install
+  // with none of the three arrangements configured the answer is always "nothing will arrive", and
+  // the owner sat waiting, retried, hit the 4/hour limit, and was locked out of a database sitting
+  // on their own disk. The fix was logged to stdout, where someone running under systemd or Docker
+  // will never see it.
   //
   // This is an install-wide fact, not a per-address one, so answering honestly reveals nothing
   // about whether the account exists — the enumeration guard below still stands.
-  if (!platformEmailConfigured()) {
+  // Ask whether ANY route can deliver it, not whether one particular relay is wired up. Gating on
+  // GoHighLevel alone refused installs whose SMTP_HOST/USER/PASS — the arrangement .env.example
+  // documents — would have sent the mail, and then told the owner to fix it in a Settings card that
+  // does not exist in this edition and would not have applied to reset mail if it did.
+  if (!platformEmailDeliverable()) {
     return res.status(503).json({
       ok: false,
       error: 'This install has no email configured, so a reset link cannot be sent.',
-      fix: `Whoever runs this server can set the password directly:\n  npm run admin -- reset-password ${email || '<your-email>'}\n\nThen sign in and connect email under Settings → Sending Email so this works next time.`,
+      fix: `Whoever runs this server can set the password directly:\n  npm run admin -- reset-password ${email || '<your-email>'}\n\nReset mail goes out on the SERVER's own mail settings, not a shop's. To make this work next time set SMTP_HOST / SMTP_USER / SMTP_PASS (or PSC_POSTMARK_TOKEN, or PSC_RESEND_KEY) in the server's .env and restart — see .env.example.`,
     })
   }
   if (!email) return res.json(generic)

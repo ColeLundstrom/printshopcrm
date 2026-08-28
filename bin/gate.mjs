@@ -2122,6 +2122,47 @@ await t('a server that accepts and never greets is given up on, not waited out',
   }
 })
 
+section('a locked-out owner is refused only when the server really cannot mail')
+// POST /api/auth/forgot gated on platformEmailConfigured(), which asks one question: is
+// GoHighLevel wired up? sendEmail({platform:true}) will use server-wide SMTP first, then GHL, then
+// the Postmark/Resend relay — so an install configured exactly the way .env.example documents
+// (SMTP_HOST / SMTP_USER / SMTP_PASS) was told "this install has no email configured, so a reset
+// link cannot be sent", 503, and its locked-out owner was sent to a shell command on a server that
+// would have delivered the reset. Two of the three supported arrangements were invisible to the one
+// check that decides whether anybody can get back in.
+await t('server-wide SMTP counts as being able to send a password reset', async () => {
+  const OLD = { ...process.env }
+  try {
+    for (const k of ['GHL_PIT', 'GHL_LOCATION_ID', 'GHL_EMAIL_FROM', 'PSC_POSTMARK_TOKEN', 'PSC_RESEND_KEY']) delete process.env[k]
+    process.env.SMTP_HOST = 'smtp.example.com'
+    process.env.SMTP_USER = 'shop@example.com'
+    process.env.SMTP_PASS = 'hunter2hunter2'
+    const n = await import('../lib/notify.mjs')
+    assert.ok(n.emailConfigured({}), 'sanity: this is the branch sendEmail({platform:true}) would take')
+    assert.equal(n.platformEmailConfigured(), false, 'sanity: and the GHL relay is deliberately not configured')
+    assert.ok(n.platformEmailDeliverable(), 'the reset route must not refuse an install whose SMTP would have sent it')
+  } finally { process.env = OLD }
+})
+
+await t('…as does the Postmark/Resend relay', async () => {
+  const OLD = { ...process.env }
+  try {
+    for (const k of ['GHL_PIT', 'GHL_LOCATION_ID', 'GHL_EMAIL_FROM', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS']) delete process.env[k]
+    process.env.PSC_POSTMARK_TOKEN = 'pm-token'
+    const n = await import('../lib/notify.mjs')
+    assert.ok(n.platformEmailDeliverable(), 'the relay is a documented way to configure platform mail')
+  } finally { process.env = OLD }
+})
+
+await t('…and an install with genuinely no mail is still refused honestly', async () => {
+  const OLD = { ...process.env }
+  try {
+    for (const k of ['GHL_PIT', 'GHL_LOCATION_ID', 'GHL_EMAIL_FROM', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'PSC_POSTMARK_TOKEN', 'PSC_RESEND_KEY']) delete process.env[k]
+    const n = await import('../lib/notify.mjs')
+    assert.equal(n.platformEmailDeliverable(), false, 'promising a link nothing will deliver is the worse failure')
+  } finally { process.env = OLD }
+})
+
 section('every api.<verb>() a screen calls actually exists')
 // public/js/core.js exports the verb as `del`. Two screens called `api.delete(...)`, which is not
 // a function on that object — so the whole handler threw before it reached the server, and the

@@ -1591,6 +1591,44 @@ try {
     }
   }
 
+  /* ---------- and it is only refused when the server really cannot mail ----------
+   * The refusal gated on platformEmailConfigured(), which asks one question — is GoHighLevel wired
+   * up? — while sendEmail({platform:true}) uses server-wide SMTP first, then GHL, then the
+   * Postmark/Resend relay. So an install configured exactly the way .env.example documents got a
+   * 503 "this install has no email configured", and its locked-out owner was pushed to a shell
+   * command on a server that would have delivered the reset. The fix it printed then named a
+   * Settings card that does not exist in this edition and would not apply to reset mail if it did.
+   * The SMTP host here is deliberately unreachable: the send is fire-and-forget, so what is being
+   * asserted is the refusal decision, not a delivery. */
+  {
+    const T5 = mkdtempSync(join(tmpdir(), 'psc-e2e-smtpreset-'))
+    const P5 = PORT + 11
+    const env5 = { ...process.env, PORT: String(P5), PSC_DB: join(T5, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P5}`, SMTP_HOST: '127.0.0.1', SMTP_PORT: '1', SMTP_USER: 'shop@example.com', SMTP_PASS: 'hunter2hunter2', SMTP_FROM: 'shop@example.com' }
+    for (const k of ['GHL_PIT', 'GHL_LOCATION_ID', 'GHL_EMAIL_FROM', 'PSC_POSTMARK_TOKEN', 'PSC_RESEND_KEY']) delete env5[k]
+    const s5 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env5, stdio: ['ignore', 'pipe', 'pipe'] })
+    started.push(s5)
+    const hit5 = async (path, body) => {
+      try {
+        const res = await fetch(`http://127.0.0.1:${P5}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        return { status: res.status, text: await res.text() }
+      } catch { return { status: 0, text: '' } }
+    }
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P5}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      let out = await hit5('/api/auth/signup', { shop_name: 'Smtp Shop', owner_name: 'S', owner_email: 'smtp@reset.test', password: 'GatePass-123456' })
+      chk('a shop signs up on an install using server-wide SMTP', String(out.status), '^200$')
+      out = await hit5('/api/auth/forgot', { email: 'smtp@reset.test' })
+      chk('…and its locked-out owner is not told the server cannot mail', String(out.status), '^200$')
+      chk('…they are told a link is coming', out.text, 'on its way|check your (inbox|email)|if that address')
+    } finally {
+      try { s5.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T5, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /* ---------- a reset link points where the shop lives, not where a stranger says ----------
    *
    * The link in a password-reset email carries a one-time token that SETS the account password.
