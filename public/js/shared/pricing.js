@@ -40,6 +40,26 @@ export function rollupSizes(items) {
 }
 
 /**
+ * The sized lines of an order, one entry per garment, with their grids kept APART.
+ *
+ * rollupSizes() above answers "how many pieces in total" and is right for capacity and piece
+ * counts. It is the wrong answer for anything that has to BUY or PICK the blanks: merging
+ * tees {S20,M40,L30,XL10} with hoodies {M10,L20,XL20} into one {S20,M50,L50,XL30} loses which
+ * style each piece belongs to, so the purchase order bought 150 tees and zero hoodies.
+ * `garment` is the description up to the em-dash, which is where the style number lives
+ * ("Gildan 18500 Heavy Blend Hoodie — Black — 2/0 Front").
+ */
+export function garmentLines(items) {
+  return (items || [])
+    .filter((i) => i && i.sizes && sizeTotal(i.sizes) > 0)
+    .map((i) => ({
+      description: String(i.description || ''),
+      garment: String(i.description || '').split('—')[0].trim(),
+      sizes: i.sizes,
+    }))
+}
+
+/**
  * A line's quantity. Size-gridded lines derive it (so qty can never disagree with the
  * grid); flat lines like setup fees or artwork keep their own qty.
  */

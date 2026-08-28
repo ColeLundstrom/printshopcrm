@@ -33,6 +33,11 @@ h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; margin: 
 .tk-sz td { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .tk-sz .t { background: #ddd; }
 .tk-sz th.t { background: #444; }
+/* One size table per garment: the garment's name above its own grid, and a grand total under
+   the set. A merged grid cannot be picked or pressed from when an order has two styles. */
+.tk-gname { font-size: 13px; font-weight: 800; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .4px; }
+.tk-gname:first-of-type { margin-top: 0; }
+.tk-gtotal { margin-top: 6px; font-size: 12px; font-weight: 700; text-align: right; letter-spacing: .3px; }
 
 .tk-screens { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .tk-scr { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }

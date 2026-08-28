@@ -958,6 +958,63 @@ try {
     } finally { rmSync(box, { recursive: true, force: true }) }
   }
 
+  /* ---------- a two-garment order must buy both garments ----------
+   * The estimate -> job conversion merged every line's size grid into ONE flat grid on jobs.sizes
+   * and kept only the FIRST line's description as jobs.garment. The purchase order — the call that
+   * spends real money at the distributor — then bought that single style for the whole quantity.
+   * Tees + hoodies for one team is among the most common orders a small shop takes; the shop
+   * ordered 150 tees, received 150 tees, and discovered on press day that the 50 hoodies had never
+   * been bought, with the date already promised.
+   *
+   * NB the merge preserved the piece COUNT (150 either way) — what it destroyed was which style
+   * each piece belonged to. So the assertion that matters is the SPLIT, not the total. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Two Garment Co', email: 'two@e2e.test' } })
+    const tgCid = r.json?.id ?? r.json?.contact?.id
+    r = await req('POST', '/api/estimates', {
+      body: {
+        contact_id: tgCid,
+        items: [
+          { description: 'Gildan 5000 Heavy Cotton Tee — Black — 2/0 Front', sizes: { S: 20, M: 40, L: 30, XL: 10 }, unit_price: 11, taxable: true },
+          { description: 'Gildan 18500 Heavy Blend Hoodie — Black — 2/0 Front', sizes: { M: 10, L: 20, XL: 20 }, unit_price: 34, taxable: true },
+          { description: 'Screen setup', qty: 2, unit_price: 25, taxable: false },
+        ],
+      },
+    })
+    const tgEst = r.json?.id ?? r.json?.estimate?.id
+    r = await req('POST', `/api/estimates/${tgEst}/convert`, { body: { due_date: '2026-10-15' } })
+    const tgJob = r.json?.job_id
+
+    const po = (await req('GET', `/api/jobs/${tgJob}/po`)).json || {}
+    const skus = [...new Set((po.lines || []).map((l) => l.sku))].sort()
+    chk('a two-garment order puts both garments on the purchase order', skus.join(','), '^G185,G500$')
+    const hoodies = (po.lines || []).filter((l) => l.sku === 'G185').reduce((s, l) => s + l.qty, 0)
+    const tees = (po.lines || []).filter((l) => l.sku === 'G500').reduce((s, l) => s + l.qty, 0)
+    chk('…the 50 hoodies are actually ordered', String(hoodies), '^50$')
+    chk('…and only the 100 tees are ordered as tees', String(tees), '^100$')
+    chk('…and every piece on the job is covered', String(po.total_units), '^150$')
+
+    // The two screens the owner trusts must now agree about the same job's blank spend. Before
+    // this, the PO said $480 (150 pieces all costed as $3.20 tees) while ROI costed the hoodies
+    // properly off the estimate items — a 58% disagreement on one job, with nothing to reconcile
+    // them. They do NOT land on the same number even when correct: ROI multiplies by the spoilage
+    // allowance (100x$3.20 + 50x$16.50 = $1,145, x1.02 = $1,167.90) because it costs what the job
+    // will CONSUME, while the PO orders what the customer bought. So assert the gap is the
+    // spoilage allowance and nothing more.
+    const roi = (await req('GET', `/api/roi/${tgJob}`)).json || {}
+    const roiGarment = Number(roi.breakdown?.garment ?? roi.garment ?? NaN)
+    if (Number.isFinite(roiGarment) && roiGarment > 0) {
+      const gap = Math.abs(Number(po.est_cost) - roiGarment) / roiGarment
+      chk('…and the PO no longer disagrees with ROI about the blank spend', String(gap < 0.05), '^true$')
+    } else say('·', 'ROI breakdown shape not found — PO/ROI agreement checked without failing')
+
+    // The floor documents must not contradict themselves either.
+    const pick = await req('GET', `/api/jobs/${tgJob}/pick-ticket.pdf`)
+    chk('the pick ticket names the hoodies it is asking someone to pick', pick.text, '18500|Hoodie')
+    const pkg = (await req('GET', `/api/jobs/${tgJob}/print-package`)).json || {}
+    chk('the print package carries both garments', String((pkg.lines || []).length), '^2$')
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

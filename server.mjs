@@ -6,7 +6,7 @@ import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
-  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, lineQty, sizeTotal,
+  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, onContactCreated, SECRET_KEYS,
 } from './lib/db.mjs'
@@ -36,7 +36,7 @@ import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { ask } from './lib/assistant.mjs'
-import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
+import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
 import * as qbo from './lib/quickbooks.mjs'
 import * as gdrive from './lib/gdrive.mjs'
@@ -2015,6 +2015,10 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   // Carry the actual size grid onto the job — the press and packing table need
   // "40 S / 90 M / 110 L", not a piece count.
   const sizes = rollupSizes(items)
+  // …and keep the per-garment grids beside it. The rolled-up total is right for piece counts and
+  // capacity, and wrong for anything that buys or picks blanks: merging tees and hoodies into one
+  // grid is why the purchase order used to order the first style for the whole quantity.
+  const lines = garmentLines(items)
   const qty = items.reduce((s, i) => s + lineQty(i), 0)
 
   // Invoice + job + estimate-status, atomically. Before this was three unguarded writes: a crash
@@ -2026,9 +2030,9 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
       id, e.contact_id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
     const jobNum = nextJobNumber()
     const garmentText = (items.find((i) => i.sizes)?.description || items[0]?.description || '').split('—')[0].trim()
-    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, quantities, due_date, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       e.contact_id, id, invId, jobNum, title, 'active', 'new', items[0]?.decoration || 'Screen Print', garmentText || null,
-      JSON.stringify(sizes), sizeSummary(sizes) || `${qty} pcs`,
+      JSON.stringify(sizes), JSON.stringify(lines), sizeSummary(sizes) || `${qty} pcs`,
       req.body?.due_date || new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10), e.notes || '', now(), now()).lastInsertRowid)
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
     return { invId, jobId, invNum, jobNum }
@@ -2863,9 +2867,9 @@ app.post('/api/autopilot', async (req, res) => {
     const turnaroundDays = order.due_hint
       ? Math.max(1, businessDaysBetween(new Date().toISOString().slice(0, 10), dueDate))
       : (order.rush ? 3 : 10)
-    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, job_number, title, status, stage, decoration, garment, sizes, quantities, due_date, turnaround_days, approval_gated, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, approval_gated, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       contact.id, estId, jobNum, `${pieces} ${order.garment}`, 'active', 'new', order.decoration, order.garment,
-      JSON.stringify(grid), sizeSummary(grid),
+      JSON.stringify(grid), JSON.stringify(garmentLines(items)), sizeSummary(grid),
       // 16 placeholders need 16 arguments. This bound only 15, and node:sqlite pads the tail with
       // NULL instead of throwing — so every Autopilot job landed shifted one column left:
       // due_date got the turnaround number (3/10), approval_gated got the notes text, and notes got
@@ -3451,11 +3455,33 @@ app.get('/api/products', wrap((_req, res) => {
   res.json({ garments, byBrand, count: garments.length, suppliers: supplierStatus(getSettings()) })
 }))
 
+/**
+ * A job's garments and their own size grids, one entry per sized quote line.
+ *
+ * Three sources, in order of trust:
+ *   1. jobs.line_sizes — written at conversion/quote/autopilot/import since the column existed.
+ *   2. the estimate's items — every job written BEFORE that column has an empty line_sizes, and
+ *      the per-garment data is still sitting on the estimate. This is what the packing slip has
+ *      always read, which is why the packing slip was the one document that got it right.
+ *   3. the flat rolled-up grid — a board-created job with no estimate behind it. Single garment
+ *      by construction, so one entry is the whole truth.
+ * No backfill migration is needed: (2) covers the entire history.
+ */
+const jobLines = (j) => {
+  const stored = parse(j.line_sizes, [])
+  if (Array.isArray(stored) && stored.length) return stored
+  if (j.estimate_id) {
+    const gl = garmentLines(parse(get('SELECT items FROM estimates WHERE id = ?', j.estimate_id)?.items, []))
+    if (gl.length) return gl
+  }
+  return [{ description: j.garment || j.title || '', garment: j.garment || '', sizes: parse(j.sizes, {}) }]
+}
+
 /** Build the supplier PO for a job's blanks (ready to submit when a supplier is connected). */
 app.get('/api/jobs/:id/po', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
-  const po = buildPurchaseOrder(j, parse(j.sizes, {}), j.garment, getSettings())
+  const po = buildJobPurchaseOrder(j, jobLines(j), getSettings())
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="PO-${j.job_number}.json"`)
   res.json(po)
 }))
@@ -3468,14 +3494,10 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const s = getSettings()
-  // Fall back to the estimate's own garment text when the job row didn't capture one.
-  let garmentText = j.garment
-  if (!garmentText && j.estimate_id) {
-    const est = get('SELECT items FROM estimates WHERE id = ?', j.estimate_id)
-    const its = parse(est?.items, [])
-    garmentText = (its.find((i) => i.sizes)?.description || its[0]?.description || '').split('—')[0].trim() || null
-  }
-  const po = buildPurchaseOrder(j, parse(j.sizes, {}), garmentText || j.garment || '', s)
+  // Every garment on the job, each costed against its own style. jobLines() already falls back to
+  // the estimate's items and then to the flat grid, which is what the old single-garment fallback
+  // here was reaching for — one style at a time.
+  const po = buildJobPurchaseOrder(j, jobLines(j), s)
   po.po_number = `PSC-${j.job_number}`
   if (req.body?.dry_run) return res.json({ ok: true, dry_run: true, po })
   if (!po.lines.length) return res.status(400).json({ error: 'This job has no sized quantities to order.', po })
@@ -3560,7 +3582,9 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="print-package-${j.job_number}.json"`)
   res.json({
     job: j.job_number, title: j.title, garment: j.garment,
-    sizes: parse(j.sizes, {}), quantities: j.quantities,
+    // `sizes` is the rolled-up total; `lines` carries each garment with its own grid, so a RIP
+    // package for a two-style order no longer describes it as one merged run.
+    sizes: parse(j.sizes, {}), lines: jobLines(j), quantities: j.quantities,
     approved_art: approved ? { file: `/uploads/${approved.filename}`, version: approved.version } : null,
     separation: sep ? { mode: sep.mode, screens: sep.screens, inks: sep.inks, dark: sep.dark } : null,
     ready: !!(approved && sep),
@@ -3639,7 +3663,7 @@ app.get('/api/jobs/:id/pick-ticket.pdf', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).send('Not found')
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${j.job_number}-pick-ticket.pdf"`)
-  res.send(pickTicket({ job: j, settings: getSettings(), sizes: parse(j.sizes, {}) }))
+  res.send(pickTicket({ job: j, settings: getSettings(), sizes: parse(j.sizes, {}), lines: jobLines(j) }))
 }))
 
 /** Live blank inventory across connected distributors (degrades to empty when none/unverified). */
@@ -3751,10 +3775,10 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
 
       // The job row is what Reorder Radar reads cadence from — created_at MUST be the
       // historical order date, or every imported customer looks like they ordered today.
-      run(`INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, sizes, due_date, notes, imported_at, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      run(`INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, sizes, line_sizes, due_date, notes, imported_at, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         c.id, estId, invId, nextJobNumber(), o.garment || o.order_number || 'Imported order',
-        'complete', 'complete', o.decoration || 'Screen Print', JSON.stringify(allSizes),
+        'complete', 'complete', o.decoration || 'Screen Print', JSON.stringify(allSizes), JSON.stringify(garmentLines(items)),
         o.due_date || null, notes, stamp, when, when)
     }
   })
@@ -5434,6 +5458,13 @@ app.get('/p/ticket/:id', pPage((req, res) => {
     })
   const sizes = Object.entries(grid).filter(([, n]) => Number(n) > 0)
   const total = sizes.reduce((t, [, n]) => t + Number(n), 0)
+  // The ticket used to name both garments in the Imprint block and then print ONE merged size
+  // table below it — the same page contradicting itself. Render a table per garment instead.
+  const tkLines = jobLines(j)
+  const sizeTables = tkLines
+    .map((l) => ({ garment: l.description || l.garment || '', cells: Object.entries(l.sizes || {}).filter(([, n]) => Number(n) > 0) }))
+    .filter((b) => b.cells.length)
+  const grandTotal = sizeTables.reduce((t, b) => t + b.cells.reduce((s, [, n]) => s + Number(n), 0), 0)
   const art = all('SELECT * FROM art_versions WHERE job_id = ? ORDER BY version DESC', j.id)
   const approved = art.find((a) => a.status === 'approved')
 
@@ -5449,13 +5480,18 @@ app.get('/p/ticket/:id', pPage((req, res) => {
           <div class="tk-bc">${code128Svg(j.job_number, { height: 44, module: 1.6 })}<div class="tk-bc-num">${esc(j.job_number)} — scan to advance</div></div></div>
       </div>
       <div class="tk-meta">
-        ${[['Decoration', j.decoration], ['Garment', j.garment], ['Stage', String(j.stage || '').replace('_', ' ')],
+        ${[['Decoration', j.decoration], ['Garment', sizeTables.map((b) => b.garment.split('—')[0].trim()).filter(Boolean).join(' + ') || j.garment], ['Stage', String(j.stage || '').replace('_', ' ')],
            ['Assigned', j.assigned_to || '—'], ['Invoice', j.invoice_number || '—'], ['Estimate', j.estimate_number || '—']]
           .map(([k, v]) => `<div><span>${esc(k)}</span><strong>${esc(v || '—')}</strong></div>`).join('')}
       </div>
       <h2>Size Breakdown</h2>
-      <table class="tk-sz"><tr>${sizes.map(([sz]) => `<th>${esc(sz)}</th>`).join('')}<th class="t">TOTAL</th></tr>
-        <tr>${sizes.map(([, n]) => `<td>${esc(n)}</td>`).join('')}<td class="t">${total}</td></tr></table>
+      ${sizeTables.length
+        ? sizeTables.map((b) => `${sizeTables.length > 1 ? `<div class="tk-gname">${esc(b.garment || '—')}</div>` : ''}
+        <table class="tk-sz"><tr>${b.cells.map(([sz]) => `<th>${esc(sz)}</th>`).join('')}<th class="t">TOTAL</th></tr>
+          <tr>${b.cells.map(([, n]) => `<td>${esc(n)}</td>`).join('')}<td class="t">${b.cells.reduce((s, [, n]) => s + Number(n), 0)}</td></tr></table>`).join('')
+          + (sizeTables.length > 1 ? `<div class="tk-gtotal">All garments — ${grandTotal} pieces</div>` : '')
+        : `<table class="tk-sz"><tr>${sizes.map(([sz]) => `<th>${esc(sz)}</th>`).join('')}<th class="t">TOTAL</th></tr>
+        <tr>${sizes.map(([, n]) => `<td>${esc(n)}</td>`).join('')}<td class="t">${total}</td></tr></table>`}
       ${(() => {
         const sep = parse(j.separation, null)
         if (sep) {

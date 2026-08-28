@@ -1794,6 +1794,122 @@ await t('the terminal error handler ends a response whose headers already went o
   assert.match(branch, /res\.end\(\)/, `headersSent must not return without ending the socket — got: ${branch.trim()}`)
 })
 
+section('a two-garment order stays two garments all the way to the purchase order')
+// The single worst production bug this codebase has shipped. An estimate for tees AND hoodies
+// converted to a job whose sizes were MERGED into one flat grid, keeping only the first line's
+// description as `garment`. The purchase order then bought that one style for the whole quantity:
+// 150 tees, ZERO hoodies, 50 pieces vanished, and the shop found out on press day with the date
+// already promised. ROI costed it correctly off the estimate ($1,167.90) while the PO said $480 —
+// the two screens the owner trusts disagreeing by $687.90 on one job, with nothing to reconcile
+// them. The pick ticket said "pull 50 L" when only 30 of those were tees.
+//
+// The per-garment data was never lost: it sits on estimates.items, which is why the packing slip
+// was the one document that got it right. garmentLines() is that shape, and it is now carried onto
+// the job (jobs.line_sizes) and read by the PO, the pick ticket and the work ticket.
+{
+  const { garmentLines, sizeTotal } = await import('../lib/db.mjs')
+  const TWO = [
+    { description: 'Gildan 5000 Heavy Cotton Tee — Black — 2/0 Front', sizes: { S: 20, M: 40, L: 30, XL: 10 }, unit_price: 11 },
+    { description: 'Gildan 18500 Heavy Blend Hoodie — Black — 2/0 Front', sizes: { M: 10, L: 20, XL: 20 }, unit_price: 34 },
+    { description: 'Screen setup', qty: 2, unit_price: 25 },
+  ]
+
+  await t('garmentLines keeps one entry per sized line, and drops the flat fee', () => {
+    const lines = garmentLines(TWO)
+    assert.equal(lines.length, 2)
+    assert.equal(lines[0].garment, 'Gildan 5000 Heavy Cotton Tee')
+    assert.equal(lines[1].garment, 'Gildan 18500 Heavy Blend Hoodie')
+    assert.equal(sizeTotal(lines[0].sizes), 100)
+    assert.equal(sizeTotal(lines[1].sizes), 50)
+  })
+
+  await t('…and the grids stay apart instead of rolling into one', async () => {
+    const { rollupSizes } = await import('../lib/db.mjs')
+    // The merged view is still correct for piece counts — it is the only thing it is correct for.
+    assert.equal(sizeTotal(rollupSizes(TWO)), 150)
+    assert.deepEqual(garmentLines(TWO).map((l) => sizeTotal(l.sizes)), [100, 50])
+  })
+
+  await t('the purchase order buys BOTH garments, not the first one twice', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+
+    const po = sup.buildJobPurchaseOrder({ job_number: 'JOB-1001' }, garmentLines(TWO), {})
+    const styles = new Set(po.lines.map((l) => l.sku))
+    assert.equal(styles.size, 2, `a two-style order needs two SKUs on the PO — got ${[...styles]}`)
+    assert.ok(styles.has('G500') && styles.has('G185'), `expected G500 + G185, got ${[...styles]}`)
+    // The merge preserved the piece COUNT (150 either way) — what it lost was which style each
+    // piece belongs to, so all 150 were bought as tees. Assert the split, not just the total.
+    assert.equal(po.total_units, 150, 'every piece on the job must be ordered')
+    const tees = po.lines.filter((l) => l.sku === 'G500').reduce((s, l) => s + l.qty, 0)
+    assert.equal(tees, 100, 'only 100 of these are tees — ordering 150 buys 50 blanks the shop cannot use')
+    const hoodies = po.lines.filter((l) => l.sku === 'G185').reduce((s, l) => s + l.qty, 0)
+    assert.equal(hoodies, 50, 'the 50 hoodies must actually be ordered')
+  })
+
+  await t('…and the blank spend reflects both styles, not the cheap one', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+
+    const lines = garmentLines(TWO)
+    const both = sup.buildJobPurchaseOrder({ job_number: 'J' }, lines, {})
+    const teeOnly = sup.buildPurchaseOrder({ job_number: 'J' }, { S: 20, M: 50, L: 50, XL: 30 }, TWO[0].description, {})
+    // A hoodie costs multiples of a tee; costing 200 pieces as tees understated the spend badly.
+    assert.ok(both.est_cost > teeOnly.est_cost, `both-garment PO (${both.est_cost}) must cost more than 150 tees (${teeOnly.est_cost})`)
+    const sum = both.lines.reduce((s, l) => s + l.qty * (l.unit_cost || 0), 0)
+    assert.ok(Math.abs(both.est_cost - sum) < 0.01, 'est_cost must equal the sum of its own lines')
+  })
+
+  await t('a warning names the garment it belongs to', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+    const po = sup.buildJobPurchaseOrder({ job_number: 'J' }, garmentLines([
+      { description: 'Gildan 5000 Tee', sizes: { M: 10 } },
+      { description: 'Something With No Catalogue Entry At All', sizes: { M: 5 } },
+    ]), {})
+    assert.ok(po.warnings.some((w) => /Something With No Catalogue/.test(w)),
+      `a multi-garment PO must say WHICH garment each warning is about — got ${JSON.stringify(po.warnings)}`)
+  })
+
+  await t('one garment behaves exactly as it always did', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+    const one = [{ description: 'Gildan 5000 Tee — Black', sizes: { S: 10, M: 20 } }]
+    const viaJob = sup.buildJobPurchaseOrder({ job_number: 'J' }, garmentLines(one), {})
+    const direct = sup.buildPurchaseOrder({ job_number: 'J' }, { S: 10, M: 20 }, 'Gildan 5000 Tee — Black', {})
+    assert.deepEqual(viaJob.lines, direct.lines)
+    assert.equal(viaJob.est_cost, direct.est_cost)
+    assert.equal(viaJob.color, direct.color, 'a single-garment PO keeps its detected colour')
+  })
+
+  await t('the pick ticket names each garment and totals them together', async () => {
+    const { pickTicket } = await import('../lib/pdf.mjs')
+    const pdf = pickTicket({
+      job: { job_number: 'JOB-1001', due_date: '2026-10-15', decoration: 'Screen Print' },
+      settings: { shop_name: 'Test Shop' },
+      lines: garmentLines(TWO),
+    }).toString('latin1')
+    assert.match(pdf, /18500|Hoodie/, 'the hoodies must appear on the pick ticket')
+    assert.match(pdf, /5000|Cotton Tee/, 'the tees must appear on the pick ticket')
+    assert.match(pdf, /SUBTOTAL/, 'each garment needs its own subtotal to be pickable')
+    assert.match(pdf, /\(150\)/, 'the grand total is every piece on the job')
+    assert.match(pdf, /\(100\)/, 'the tee subtotal')
+    assert.match(pdf, /\(50\)/, 'the hoodie subtotal — the number the picker needs and never had')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
