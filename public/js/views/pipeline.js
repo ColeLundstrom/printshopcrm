@@ -7,6 +7,13 @@ import { api, $, $$, esc, money, money0, relTime, initials, setPage, empty, toas
  * without the shop maintaining a second list.
  */
 const STAGE_COLOR = { lead: '#5f6b7d', quoted: '#7c6cff', sent: '#4aa8ff', negotiation: '#f7b955', won: '#10d39a', lost: '#ff5f6d' }
+// Mirrors lib/pipeline.mjs STAGES. The board's only way to change a stage was to DRAG a card, so a
+// deal could never be marked Won or Lost without a mouse: no keyboard path, and after the touch
+// fix in wireDnd() no finger path either. The stage was printed in the deal as dead text.
+const STAGE_OPTIONS = [
+  ['lead', 'Lead'], ['quoted', 'Quoted'], ['sent', 'Sent'],
+  ['negotiation', 'Negotiating'], ['won', 'Won'], ['lost', 'Lost'],
+]
 let dragEndedAt = 0
 let st = null
 
@@ -58,6 +65,9 @@ function columnAt(x) {
 function wireDnd() {
   $('#pipe').addEventListener('pointerdown', (e) => {
     const card = e.target.closest('.jcard'); if (!card || e.button !== 0) return
+    // Same rule as the job board: a finger scrolls the column, it does not drag a deal. Tapping the
+    // card opens the deal, which is where a touch user changes its stage.
+    if (e.pointerType === 'touch') return
     const r = card.getBoundingClientRect()
     st = { card, id: card.dataset.id, from: card.closest('.col'), x0: e.clientX, y0: e.clientY, ox: e.clientX - r.left, oy: e.clientY - r.top, w: r.width, moved: false, ghost: null, col: null }
   })
@@ -129,7 +139,11 @@ function oppForm(o) {
           <div class="field"><label>Value ($)</label><input class="input" name="value" type="number" min="0" value="${esc(o?.value || '')}"></div>
         </div>
         <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Where it came from, next step…">${esc(o?.notes || '')}</textarea></div>
-        ${o ? `<div class="dim" style="font-size:11.5px">Stage: <strong>${esc(o.stage)}</strong>${o.estimate_id ? ` · <a href="#/estimates/${o.estimate_id}" style="color:var(--accent)">view estimate →</a>` : ''}</div>` : ''}`,
+        ${o ? `<div class="field"><label for="opp-stage">Stage</label>
+          <select class="input" id="opp-stage">${STAGE_OPTIONS.map(([k, l]) => `<option value="${k}" ${o.stage === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          <div class="field" id="opp-lost-wrap" style="display:${o.stage === 'lost' ? 'block' : 'none'}"><label for="opp-lost">What happened? (optional)</label>
+          <input class="input" id="opp-lost" value="${esc(o.lost_reason || '')}" placeholder="Price · went with another shop · ghosted…"></div>
+          ${o.estimate_id ? `<div class="dim" style="font-size:11.5px"><a href="#/estimates/${o.estimate_id}" style="color:var(--accent)">view estimate →</a></div>` : ''}` : ''}`,
       footer: `${o ? '<button class="btn danger" id="del" style="margin-right:auto">Delete</button>' : ''}<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${isNew ? 'Create' : 'Save'}</button>`,
       onMount: (bg) => {
         $('#save', bg).onclick = async () => {
@@ -137,10 +151,20 @@ function oppForm(o) {
           if (isNew && !data.title) return toast('Give it a title', true)
           try {
             if (isNew) await api.post('/api/opportunities', data)
-            else await api.put(`/api/opportunities/${o.id}`, data)
+            else {
+              await api.put(`/api/opportunities/${o.id}`, data)
+              // Stage moves through its own route (it fires the won/lost automations), so send it
+              // only when it actually changed.
+              const stage = $('#opp-stage', bg)?.value
+              if (stage && stage !== o.stage) {
+                await api.patch(`/api/opportunities/${o.id}/stage`, { stage, lost_reason: $('#opp-lost', bg)?.value || '' })
+              }
+            }
             closeModal(); toast(isNew ? 'Opportunity created' : 'Saved'); pipelineView()
           } catch (e) { toast(e.message, true) }
         }
+        const stageSel = $('#opp-stage', bg)
+        if (stageSel) stageSel.onchange = () => { $('#opp-lost-wrap', bg).style.display = stageSel.value === 'lost' ? 'block' : 'none' }
         $('#del', bg)?.addEventListener('click', () => confirmModal('Delete opportunity?', `"${o.title}" will be removed.`, async () => {
           await api.del(`/api/opportunities/${o.id}`); closeModal(); toast('Deleted'); pipelineView()
         }))

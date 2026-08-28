@@ -2020,6 +2020,72 @@ await t('the overpayment arithmetic names the right difference', () => {
   assert.equal(over(3150, 0), 3150, 'a payment against a zero balance is entirely an overpayment')
 })
 
+section('the board and the pipeline are usable without a mouse')
+// `.jcard { touch-action: none }` existed so pointermove could drive the drag. On a phone it meant
+// a finger on a card scrolled nothing — and cards fill the column, so the job board, the pipeline
+// and the orders list could not be scrolled at all on the device a shop floor actually carries.
+// Worse: any finger movement past 5px started a drag, and columnAt() picks the target column purely
+// from clientX, so the natural sideways swipe across a 7-column board committed a stage change. The
+// job moved because somebody looked at it.
+//
+// And a deal could never be marked Won or Lost without a mouse at all: api.patch(.../stage) was
+// called from exactly two places, both inside the pointerup drag handler, while the deal form
+// printed the stage as dead text.
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const css = readFileSync(join(root, 'public/css/app.css'), 'utf8')
+  const board = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  const pipe = readFileSync(join(root, 'public/js/views/pipeline.js'), 'utf8')
+
+  await t('a card does not block touch scrolling', () => {
+    // Find the .jcard rule body and assert it no longer kills touch panning.
+    const i = css.indexOf('.jcard {')
+    assert.ok(i > 0, '.jcard rule should still exist')
+    const rule = css.slice(i, css.indexOf('}', i))
+    assert.ok(!/touch-action:\s*none/.test(rule),
+      '.jcard must not set touch-action:none — it makes every board column unscrollable on a phone')
+  })
+
+  await t('a finger scrolls the board instead of moving a job', () => {
+    const i = board.indexOf("addEventListener('pointerdown'")
+    assert.ok(i > 0, 'the board should still wire pointerdown')
+    const handler = board.slice(i, i + 700)
+    assert.match(handler, /pointerType === 'touch'/,
+      'a touch pointer must not start a drag — a sideways swipe was committing a stage change')
+  })
+
+  await t('…and the same on the pipeline', () => {
+    const i = pipe.indexOf("addEventListener('pointerdown'")
+    assert.ok(i > 0, 'the pipeline should still wire pointerdown')
+    assert.match(pipe.slice(i, i + 700), /pointerType === 'touch'/)
+  })
+
+  await t('a deal can be marked Won or Lost without dragging it', () => {
+    assert.match(pipe, /id="opp-stage"/, 'the deal form needs a real stage control')
+    // The control must actually reach the stage route, not just render.
+    const i = pipe.indexOf("$('#save', bg).onclick")
+    assert.ok(i > 0)
+    const save = pipe.slice(i, i + 1200)
+    assert.match(save, /opportunities\/\$\{o\.id\}\/stage/, 'saving must PATCH the stage route')
+    assert.match(pipe, /STAGE_OPTIONS/, 'and offer every stage, including won and lost')
+    for (const k of ['lead', 'quoted', 'sent', 'negotiation', 'won', 'lost']) {
+      assert.ok(pipe.includes(`'${k}'`), `stage ${k} must be offered`)
+    }
+  })
+
+  await t('the stage list matches the server exactly', async () => {
+    const { STAGE_KEYS } = await import('../lib/pipeline.mjs')
+    const m = pipe.match(/const STAGE_OPTIONS = \[([\s\S]*?)\]\n/)
+    assert.ok(m, 'STAGE_OPTIONS should be findable')
+    const keys = [...m[1].matchAll(/\['([a-z]+)',/g)].map((x) => x[1])
+    assert.deepEqual(keys, STAGE_KEYS,
+      'the picker and lib/pipeline.mjs must offer the same stages, or the UI writes a 400')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

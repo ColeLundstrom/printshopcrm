@@ -354,7 +354,13 @@ table.tbl tbody tr.click:hover { background: var(--panel-2); }
 .jcard {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-5);
   cursor: grab; transition: .12s; position: relative;
-  touch-action: none; /* let pointermove drive the drag instead of scrolling the column */
+  /* touch-action was `none` here so pointermove could drive the drag. On a phone that meant a
+     finger on a card scrolled NOTHING — and cards fill the column, so the board, the pipeline and
+     the orders list could not be scrolled at all on the device the shop floor actually carries.
+     Worse, any finger movement over 5px became a drag, and columnAt(clientX) turned the natural
+     sideways swipe across a 7-column board into a stage write: looking at the board moved a job.
+     Touch now scrolls (see board.js — a drag only starts for mouse or pen); tapping a card opens
+     the job, where the stage select has always been. */
   user-select: none;
 }
 .jcard:hover { border-color: var(--line-2); transform: translateY(-1px); box-shadow: var(--shadow); }

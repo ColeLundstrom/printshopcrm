@@ -100,6 +100,10 @@ function wireDnd() {
   $('#board').addEventListener('pointerdown', (e) => {
     const card = e.target.closest('.jcard')
     if (!card || e.button !== 0) return
+    // A finger scrolls; it does not drag. columnAt() picks the target column purely from clientX,
+    // so a sideways swipe to scroll a 7-column board used to commit a stage change — the job moved
+    // because somebody looked at it. Tapping the card opens the job, where the stage select is.
+    if (e.pointerType === 'touch') return
     const r = card.getBoundingClientRect()
     st = { card, id: card.dataset.id, from: card.closest('.col'), x0: e.clientX, y0: e.clientY,
       ox: e.clientX - r.left, oy: e.clientY - r.top, w: r.width, moved: false, ghost: null, col: null }
