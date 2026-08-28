@@ -1850,7 +1850,15 @@ app.post('/api/estimates/:id/send', wrap((req, res) => {
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
   const s = getSettings()
-  run(`UPDATE estimates SET status='sent', sent_at=? WHERE id=?`, now(), id)
+  // Re-sending emails a copy. It must not REVERSE the customer's decision. This UPDATE was
+  // unconditional, so "resend the estimate" on an already-approved, already-invoiced, part-paid
+  // job rolled its status back to 'sent' — which put the Approve button back on the public page
+  // for a customer who had already approved it, and unwound the board stage on the shop's own
+  // screen. An estimate that has moved past 'sent' keeps where it got to; only the timestamp and
+  // the email are refreshed.
+  const settled = ['approved', 'declined', 'invoiced'].includes(e.status)
+  if (settled) run('UPDATE estimates SET sent_at=? WHERE id=?', now(), id)
+  else run(`UPDATE estimates SET status='sent', sent_at=? WHERE id=?`, now(), id)
   queueEmail({ contact: c, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`,
     template: s.email_template_estimate,
     vars: { contact_name: c?.name || '', estimate_number: e.estimate_number, total: money(e.total) } })
@@ -5440,6 +5448,14 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
   if (!checkToken('estimate', id, req.query.k)) return res.status(403).send('Forbidden')
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).send('Not found')
+  // Approve once. Its sibling /p/art/:id/decide has had exactly this guard, for exactly this
+  // reason, since it was written — and this route did not. An estimate link gets forwarded around
+  // a purchasing department and re-opened for weeks, and without a guard every re-POST re-stamped
+  // approved_at, wrote another "APPROVED" line on the customer's timeline, and re-fired
+  // estimate.approved: 50 unauthenticated POSTs in 277ms produced 50 real customer emails out of
+  // the shop's own SMTP and 50 webhook deliveries. Event-triggered automations have no dedupe of
+  // their own — only the timed path does — so this was the whole brake.
+  if (e.status === 'approved' || e.status === 'invoiced') return res.redirect(`/p/estimate/${id}?k=${req.query.k}${sQ(req)}`)
   run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
   const c = get('SELECT name FROM contacts WHERE id = ?', e.contact_id)
   logActivity('estimate', `Estimate ${e.estimate_number} APPROVED by ${c?.name || 'customer'} online`, { contact_id: e.contact_id })

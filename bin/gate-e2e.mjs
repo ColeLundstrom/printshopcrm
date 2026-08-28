@@ -1269,6 +1269,50 @@ try {
     chk('deleting a service removes its price matrix too', String(!!book.matrices?.['Screen Print']), '^false$')
   }
 
+  /* ---------- the customer's decision is theirs, and it is made once ----------
+   * Two halves of the same story, both on the estimate a customer actually looks at.
+   *
+   * (a) POST /api/estimates/:id/send set status='sent' unconditionally, so "resend a copy" on an
+   *     already-approved estimate rolled the customer's decision BACK — putting the Approve
+   *     button in front of someone who had already approved, and unwinding the shop's own board.
+   * (b) POST /p/estimate/:id/approve had no idempotency guard and no rate limit, while its
+   *     sibling /p/art/:id/decide has had exactly that guard, with a comment explaining why,
+   *     since it was written. A forwarded link re-POSTed 50 times produced 50 real customer
+   *     emails out of the shop's SMTP, 50 webhook deliveries and 50 "APPROVED" timeline rows —
+   *     unauthenticated, in under a third of a second. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Approve Once', email: 'approve-once@e2e.test' } })
+    const apprContact = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: apprContact, items: [{ description: '24 tees', sizes: { M: 24 }, unit_price: 12 }] } })
+    const apprEst = r.json?.id
+    r = await req('POST', `/api/estimates/${apprEst}/send`, { body: {} })
+    const shareUrl = r.json?.share_url || ''
+    chk('a sent estimate hands back a customer link', String(!!shareUrl), '^true$')
+    const share = shareUrl.replace(/^https?:\/\/[^/]+/, '')
+
+    const approveOnce = async () => fetch(`${BASE}${share.replace('/p/estimate/', '/p/estimate/').replace('?', '/approve?')}`, {
+      method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: '',
+    })
+    await approveOnce()
+    r = await req('GET', `/api/estimates/${apprEst}`)
+    chk('the customer can approve from the link', String(r.json?.status), '^approved$')
+
+    // The forwarded-link case: hammer it the way a purchasing department does. Every one of these
+    // re-stamped approved_at, wrote another APPROVED row on the customer's timeline, and re-fired
+    // estimate.approved into the shop's automations and webhooks.
+    for (let i = 0; i < 10; i++) await approveOnce()
+    const approvals = ((await req('GET', '/api/activities')).json || [])
+      .filter((a) => /APPROVED by .* online/.test(String(a.description || ''))).length
+    // 11 timeline rows before the guard, one after. (approved_at is second-resolution, so a
+    // same-second re-stamp is not something a test can tell apart — the row count is.)
+    chk('a forwarded approval link approves once, however many times it is opened', String(approvals), '^1$')
+
+
+    // Re-sending a copy must not reverse a decision the customer already made.
+    r = await req('POST', `/api/estimates/${apprEst}/send`, { body: {} })
+    chk('re-sending an approved estimate does not un-approve it', String(r.json?.estimate?.status), '^approved$')
+  }
+
   /* ---------- /health answers for the databases that actually hold shops ----------
    * canWrite() with no tenant context probes the DEFAULT database — which in multi-tenant mode
    * holds no shop at all, and is perfectly writable. So a release whose migration threw on ONE
