@@ -149,7 +149,15 @@ done
 
 if [ "$HEALTHY" = '1' ]; then
   echo "✓ $TAG is live and answering /health"
-  [ -n "$PREVIOUS" ] && echo "  roll back with: sudo ln -sfn $PREVIOUS $APP_ROOT/current && sudo systemctl restart $SERVICE"
+  # `[ … ] && echo …` as the LAST command of the script makes its exit status the test's. On an
+  # install's very first deploy there is no previous release, so the script printed "is live" and
+  # then exited 1 — every CI step wrapping it went red over a deploy that had worked, and re-running
+  # was refused because the release directory now existed. An `if` has no exit status to leak.
+  if [ -n "$PREVIOUS" ]; then
+    echo "  roll back with: sudo ln -sfn $PREVIOUS $APP_ROOT/current && sudo systemctl restart $SERVICE"
+  else
+    echo "  first release on this install — nothing to roll back to yet"
+  fi
 else
   echo "✗ $TAG is not answering /health on port $PORT — rolling back" >&2
   curl -sS --max-time 5 "http://127.0.0.1:$PORT/health" >&2 || true   # names the shops that are dark

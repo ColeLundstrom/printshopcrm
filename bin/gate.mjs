@@ -2032,7 +2032,7 @@ await t('INSTALL.md clears public/uploads before symlinking it', async () => {
 //
 // This runs the actual script against a fake install with every external command stubbed, because
 // asserting on the text of a deploy script is not the same as watching it deploy.
-const rehearseRelease = async ({ healthy }) => {
+const rehearseRelease = async ({ healthy, first = false }) => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, chmodSync, existsSync, readlinkSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
@@ -2054,8 +2054,9 @@ const rehearseRelease = async ({ healthy }) => {
       d.close()
     }
     writeFileSync(join(APP_ROOT, '.env'), 'PSC_SECRET=x\nPORT=39777\n')
-    // A release is already live, so the rollback below has somewhere to go back to.
-    execFileSync('ln', ['-sfn', join(APP_ROOT, 'releases', 'v0.0.1'), join(APP_ROOT, 'current')])
+    // A release is already live, so the rollback below has somewhere to go back to — EXCEPT when
+    // rehearsing the very first deploy, which is the case this harness always skipped past.
+    if (!first) execFileSync('ln', ['-sfn', join(APP_ROOT, 'releases', 'v0.0.1'), join(APP_ROOT, 'current')])
     writeFileSync(join(SRC, 'bin', 'gate.mjs'), '')
     execFileSync('cp', [join(root, 'deploy', 'release.sh'), join(SRC, 'deploy', 'release.sh')])
     // Every external the script shells out to. `node` too: release.sh runs the gate against the
@@ -3772,6 +3773,104 @@ await t('a secret sent at creation is the secret deliveries are signed with', as
   assert.ok(row, 'the webhooks row is gone from docs/API.md')
   assert.match(row, /24 characters|generated/, 'the docs must say what happens to a secret the caller sends')
 })
+
+/* ---------- the first deploy an install ever does succeeds (v10) ----------
+ * The success branch ends `[ -n "$PREVIOUS" ] && echo "  roll back with: …"`. With no previous
+ * release that test is false, so the last command in the script exits 1 — and it does it right
+ * after printing "✓ v1.0.0 is live and answering /health". A self-hoster's very first deploy
+ * therefore reports success and fails, every CI step wrapping it goes red, and re-running is
+ * refused because the release directory now exists. This harness never caught it because it
+ * always created a previous release first. */
+section('the first release an install ever cuts is not reported as a failure')
+{
+  const r = await rehearseRelease({ healthy: true, first: true })
+  await t('a first deploy with no previous release exits 0', () => {
+    assert.equal(r.code, 0, `exit ${r.code}, having printed:\n${r.out}`)
+  })
+  await t('…and still says it is live', () => {
+    assert.match(r.out, /is live and answering \/health/)
+  })
+  await t('…and a deploy that DOES have a previous release still prints the way back', async () => {
+    const r2 = await rehearseRelease({ healthy: true })
+    assert.equal(r2.code, 0)
+    assert.match(r2.out, /roll back with:/)
+  })
+}
+
+/* ---------- the Docker backup produces something that restores (v10) ----------
+ * deploy/DEPLOY.md's only backup command tarred a LIVE SQLite volume — the exact thing
+ * deploy/backup.sh has warned against since it was written, because a copy can capture a write in
+ * progress and restore to a corrupt database. tar exits 0 either way, so the shop finds out on the
+ * day they need it. The shipped image has node and no sqlite3 binary, hence bin/snapshot.mjs and
+ * SQLite's own VACUUM INTO. This runs it for real, against a database being written to. */
+section('a backup taken while the shop is working still restores')
+{
+  const { mkdtempSync, rmSync, mkdirSync, existsSync, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const { DatabaseSync } = await import('node:sqlite')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-snapshot-'))
+  let out = '', code = 0, rows = 0, names = [], stale = []
+  try {
+    mkdirSync(join(dir, 'tenants', 'acme'), { recursive: true })
+    // Two shops, in WAL mode, with an OPEN connection holding uncheckpointed writes — which is
+    // what a live install looks like at 3am when cron fires.
+    const live = []
+    for (const rel of ['printshop.db', 'tenants/acme/printshop.db']) {
+      const d = new DatabaseSync(join(dir, rel))
+      d.exec('PRAGMA journal_mode = WAL')
+      d.exec('CREATE TABLE invoices (id INTEGER PRIMARY KEY, total REAL)')
+      for (let i = 0; i < 500; i++) d.prepare('INSERT INTO invoices (total) VALUES (?)').run(42.5)
+      live.push(d)
+    }
+    try {
+      out = execFileSync(process.execPath, ['--no-warnings', join(root, 'bin', 'snapshot.mjs'), dir], { encoding: 'utf8' })
+    } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}`; code = e.status }
+    for (const d of live) d.close()
+    const snap = join(dir, '_snapshot')
+    names = existsSync(snap) ? readdirSync(snap) : []
+    // A snapshot must be a standalone file: no -wal beside it, or "restoring" means replaying a
+    // log from the crash you are recovering from over the database you just put back.
+    stale = names.filter((n) => /-wal$|-shm$/.test(n))
+    if (names.includes('tenants__acme__printshop.db')) {
+      const r = new DatabaseSync(join(snap, 'tenants__acme__printshop.db'), { readOnly: true })
+      rows = r.prepare('SELECT COUNT(*) AS n FROM invoices').get().n
+      r.close()
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+
+  await t('every shop on the volume is snapshotted, with the app still writing', () => {
+    assert.equal(code, 0, out)
+    assert.deepEqual(names.sort(), ['printshop.db', 'tenants__acme__printshop.db'])
+  })
+  await t('…and every row committed before it ran is in there', () => {
+    assert.equal(rows, 500)
+  })
+  await t('…and it verified each one rather than hoping', () => {
+    assert.match(out, /quick_check ok/)
+  })
+  await t('…and carries no write-ahead log to replay over a restore', () => {
+    assert.deepEqual(stale, [])
+  })
+  await t('an empty data root is a failure, not a silent zero-database backup', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'psc-snapshot-empty-'))
+    try {
+      execFileSync(process.execPath, ['--no-warnings', join(root, 'bin', 'snapshot.mjs'), empty], { encoding: 'utf8', stdio: 'pipe' })
+      assert.fail('a backup of nothing should not exit 0')
+    } catch (e) { assert.equal(e.status, 1) } finally { rmSync(empty, { recursive: true, force: true }) }
+  })
+  await t('deploy/DEPLOY.md no longer tells Docker shops to tar a live database', async () => {
+    const { readFileSync } = await import('node:fs')
+    const md = readFileSync(join(root, 'deploy', 'DEPLOY.md'), 'utf8')
+    const backup = md.slice(md.indexOf('**Backups.**'), md.indexOf('**Backups.**') + 1400)
+    assert.ok(!/tar czf [^\n]*\/data\b(?![^\n]*_snapshot)/.test(backup),
+      'the Docker backup still archives the live /data directly')
+    assert.match(backup, /snapshot\.mjs/, 'it should take a consistent snapshot first')
+  })
+}
 
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)

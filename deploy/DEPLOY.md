@@ -76,14 +76,43 @@ docker compose down                       # stop (data is safe)
 docker compose down -v                    # stop AND DELETE THE DATA — that's what -v means
 ```
 
-**Backups.** Everything is in the two named volumes:
+**Backups.** Everything — the databases and the customer artwork — is on the `printshopcrm-data`
+volume. Take a **consistent snapshot first**, then archive the snapshot:
 
 ```bash
+# Snapshots every database on the volume with SQLite's own VACUUM INTO and verifies each one.
+# Safe while the shop is working; the container has node, which is all this needs.
+docker compose exec -T app node --no-warnings bin/snapshot.mjs /data /data/_snapshot
+
 docker run --rm -v printshopcrm-data:/data -v "$PWD:/backup" alpine \
-  tar czf /backup/printshopcrm-$(date +%F).tar.gz /data
+  tar czf /backup/printshopcrm-$(date +%F).tar.gz -C /data _snapshot uploads
 ```
 
-Put it somewhere other than the machine it came from.
+Do **not** `tar` the live `/data` directly. A copy of a database that is being written to can
+capture a write in progress and restore to a corrupt archive — `tar` exits 0 either way, and you
+find out on the day you need it. `deploy/backup.sh` takes the same care on the non-Docker path.
+
+Put the archive somewhere other than the machine it came from.
+
+**Restoring.** Stop the app first, and delete any `-wal`/`-shm` left beside the database you are
+replacing — a write-ahead log from the crash you are recovering from will otherwise be replayed
+straight over the file you just restored:
+
+```bash
+tar xzf printshopcrm-2026-08-28.tar.gz -C /tmp
+docker compose stop app
+docker run --rm -v printshopcrm-data:/data -v /tmp:/restore alpine sh -c '
+  rm -f /data/printshop.db-wal /data/printshop.db-shm /data/tenants/*/printshop.db-wal /data/tenants/*/printshop.db-shm
+  cp /restore/_snapshot/printshop.db          /data/printshop.db
+  cp /restore/_snapshot/control.db            /data/control.db 2>/dev/null || true
+  for f in /restore/_snapshot/tenants__*; do
+    n=${f##*/tenants__}; slug=${n%%__*}
+    mkdir -p "/data/tenants/$slug" && cp "$f" "/data/tenants/$slug/printshop.db"
+  done
+  cp -a /restore/uploads/. /data/uploads/ 2>/dev/null || true'
+docker compose start app
+curl -fsS http://127.0.0.1:3333/health          # every shop opened, or it names the ones that did not
+```
 
 ---
 
