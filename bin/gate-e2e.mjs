@@ -1989,6 +1989,47 @@ try {
       String((await req('GET', `/api/estimates/${de.id}`)).json?.subtotal), '^1006$')
   }
 
+  /* ---------- a quantity that overflows the money arithmetic is refused, not stored as $0 ------
+   * unit_price got a cap after `1e308` overflowed computeTotals and stored a null subtotal. The
+   * OTHER operand never got one. round2 multiplies by 100 before rounding and floors a non-finite
+   * result to 0 — deliberately, it is the money helper — so quantity 1e300 at $10,000,000 came
+   * back 201 with `subtotal 0, total 0`: the exact "$0 estimate a customer could approve" the
+   * file's own comments say was closed. representableLines only asked whether qty * price was
+   * finite, which 1e307 is; it overflowed one step later. And 50 lines that each pass on their own
+   * could overflow in the SUM, which nothing checked at all. */
+  {
+    const oc = (await req('POST', '/api/contacts', { body: { name: 'Overflow Co', email: 'overflow@e2e.test' } })).json
+    const post = (items) => req('POST', '/api/estimates', { body: { contact_id: oc.id, items } })
+
+    let o = await post([{ description: 'X', qty: 1e300, unit_price: 1e7 }])
+    chk('an overflowing quantity is refused', String(o.status), '^400$')
+    chk('…rather than stored as a $0 estimate', String(o.json?.subtotal ?? 'none'), '^none$')
+    chk('…with the code the UI already knows', String(o.json?.code), '^invalid_total$')
+
+    o = await post(Array.from({ length: 50 }, () => ({ description: 'X', qty: 1e298, unit_price: 1e7 })))
+    chk('50 lines that only overflow when summed are refused too', String(o.status), '^400$')
+
+    // The guard must not touch anything a shop would really type, including sub-cent unit prices.
+    o = await post([{ description: 'Tees', qty: 500, unit_price: 12.5 }])
+    chk('a real order is unaffected', String(o.json?.subtotal), '^6250$')
+    o = await post([{ description: 'Thread', qty: 1, unit_price: 0.001 }])
+    chk('…and so is a sub-cent line', String(o.status), '^200$')
+
+    // Same two holes on the public API, where an integration cannot see a silently-changed number.
+    // Uses the suite's live key via asKey(): rotating a fresh one here would revoke the key the
+    // webhook cases further down are still holding, which is exactly what the first draft did.
+    const v1 = (items) => req('POST', '/api/v1/estimates', { body: { customer_id: oc.id, items }, ...asKey() })
+    let v = await v1([{ description: 'X', quantity: 1e300, unit_price: 1e7 }])
+    chk('the public API refuses an overflowing quantity', String(v.status), '^400$')
+    chk('…naming it as a quantity problem', String(v.json?.code), '^invalid_quantity$')
+    // Number.isInteger(1e300) is true, so the sizes branch had no cap at all and stored 1e302.
+    v = await v1([{ description: 'X', sizes: { M: 1e300 }, unit_price: 100 }])
+    chk('…and an absurd size count, which Number.isInteger called valid', String(v.status), '^400$')
+    chk('…rather than storing a subtotal of 1e+302', String(v.json?.subtotal ?? 'none'), '^none$')
+    v = await v1([{ description: 'Tees', quantity: 500, unit_price: 12.5 }])
+    chk('…while a real integration order still posts', String(v.json?.subtotal), '^6250$')
+  }
+
   /* ---------- an ordinary quantity bump does not collapse a two-garment job ----------
    * The 409 that refuses a flat grid over two garments read jobs.line_sizes RAW. That column
    * arrived by migration, so it is '[]' on every job written before it, and on those the

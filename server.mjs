@@ -1987,13 +1987,30 @@ const representableTotals = (t) => [t.subtotal, t.tax, t.total].every(Number.isF
  * have turned a refusal into a silently stored $0 estimate. That is the worse of the two failures,
  * so the overflow is checked where it happens instead of being inferred downstream.
  */
-const representableLines = (items) => (items || []).every((it) => {
-  if (!it || typeof it !== 'object') return true
-  const qty = lineQty(it)
-  const price = Number(it.unit_price ?? 0)
-  if (!Number.isFinite(qty) || !Number.isFinite(price)) return false
-  return Number.isFinite(qty * price)
-})
+/**
+ * Can round2() carry this number without flooring it to zero?
+ *
+ * `Number.isFinite(qty * price)` was not enough: round2 multiplies by 100 before rounding, so a
+ * FINITE product that overflows only in that step came back 0. quantity 1e300 at $10,000,000 was
+ * a 201 with `subtotal 0, total 0` — the exact "$0 estimate a customer could approve" this file's
+ * own comments say was closed for unit_price, still open on the other operand — and 50 lines that
+ * each pass individually could overflow in the SUM, which nothing checked at all.
+ */
+const representable = (n) => Number.isFinite(n) && Number.isFinite(n * 100)
+
+const representableLines = (items) => {
+  let sum = 0
+  for (const it of items || []) {
+    if (!it || typeof it !== 'object') continue
+    const qty = lineQty(it)
+    const price = Number(it.unit_price ?? 0)
+    if (!Number.isFinite(qty) || !Number.isFinite(price)) return false
+    const amount = qty * price
+    if (!representable(amount)) return false
+    sum += amount
+  }
+  return representable(sum)
+}
 const NOT_REPRESENTABLE = { error: 'Those line items do not add up to an amount we can store — check the quantities and prices.', code: 'invalid_total' }
 
 app.post('/api/estimates', wrap((req, res) => {
@@ -4639,6 +4656,10 @@ app.post('/api/v1/estimates', wrap((req, res) => {
         if (!SIZES.includes(k)) return res.status(400).json({ error: `${where}.sizes has unknown size "${k}" — allowed: ${SIZES.join(', ')}` })
         const n = Number(v)
         if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0` })
+        // Number.isInteger(1e300) is true. Uncapped, that reached the money arithmetic and came
+        // back a stored subtotal of 1e302. The app's own screens clamp to MAX_PIECES; the public
+        // API refuses instead, because an integration must never see a silently-changed quantity.
+        if (n > MAX_PIECES) return res.status(400).json({ error: `${where}.sizes["${k}"] must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
         sizes[k] = n
       }
       if (!Object.values(sizes).some((n) => n > 0)) return res.status(400).json({ error: `${where}.sizes must contain at least one quantity greater than zero` })
@@ -4650,6 +4671,9 @@ app.post('/api/v1/estimates', wrap((req, res) => {
       // 0.4 became 0 pieces and a $0 estimate, and 2.5 billed the caller for 3. Shirts do not
       // come in halves, so a fractional quantity is a caller bug worth reporting, not guessing at.
       if (!Number.isInteger(q)) return res.status(400).json({ error: `${where}.quantity must be a whole number (got ${q})`, code: 'invalid_quantity' })
+      // The operand PRICE_CAP's twin was missing. 1e300 pieces at $10,000,000 overflowed round2
+      // and stored a $0 estimate, with a 201.
+      if (q > MAX_PIECES) return res.status(400).json({ error: `${where}.quantity must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
       sizes = { M: q }
     }
     // Reject, never coerce. An omitted unit_price used to default to 0, so a caller that forgot
