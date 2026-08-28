@@ -1,7 +1,13 @@
 # PrintShopCRM
 #
 #   docker build -t printshopcrm .
-#   docker run -p 3333:3333 -v printshopcrm-data:/data printshopcrm
+#   docker run -p 3333:3333 -e PSC_AUTH=1 -e PSC_SECRET=$(openssl rand -hex 32) \
+#     -v printshopcrm-data:/data printshopcrm
+#
+# PSC_AUTH=1 is what turns logins on; without it anyone who can reach the port has the whole app
+# and the whole API. PSC_SECRET signs every customer share link — leave it unset and the app falls
+# back to a value published in this repository, so anyone can forge a link to any customer's
+# documents. Neither is optional on a port you publish. See SECURITY.md.
 #
 # Or just `docker compose up -d`, which wires the volumes and .env for you.
 #

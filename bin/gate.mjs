@@ -1616,14 +1616,20 @@ await t('every documented docker run publishes a port with authentication turned
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  for (const doc of ['README.md', 'INSTALL.md', 'HOSTING.md', 'deploy/DEPLOY.md']) {
+  // The Dockerfile is on this list because it carries its own `docker run` in the header, and it
+  // is the file somebody building the image actually reads. Every .md was fixed once and that one
+  // survived, publishing port 3333 with no login and the fallback share-link secret.
+  for (const doc of ['README.md', 'INSTALL.md', 'HOSTING.md', 'deploy/DEPLOY.md', 'Dockerfile']) {
     const src = readFileSync(join(root, doc), 'utf8')
     // Fenced blocks, joined across backslash continuations, so a multi-line docker run reads as one.
-    for (const block of src.split('```').filter((_, i) => i % 2 === 1)) {
+    // A Dockerfile has no fences — its runnable examples live in `#` comments, so take it whole.
+    const blocks = doc === 'Dockerfile' ? [src] : src.split('```').filter((_, i) => i % 2 === 1)
+    for (const block of blocks) {
       const joined = block.replace(/\\\s*\n\s*/g, ' ')
       for (const line of joined.split('\n')) {
         if (!/\bdocker run\b/.test(line) || !/\s-p\s/.test(line)) continue
         assert.match(line, /PSC_AUTH=1/, `${doc} publishes a port with no login: ${line.trim().slice(0, 120)}`)
+        assert.match(line, /PSC_SECRET/, `${doc} publishes a port with the fallback share-link secret: ${line.trim().slice(0, 120)}`)
       }
     }
   }
