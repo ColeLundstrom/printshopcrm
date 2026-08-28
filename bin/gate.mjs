@@ -887,6 +887,28 @@ await t('European thousands-dot money parses as thousands, not a decimal', async
   assert.equal(coerceMoney('240.00'), 240)      // a real decimal is still a decimal
   assert.equal(coerceMoney('1.284,50'), 1284.5)
 })
+// …but the thousands reading must not eat an ordinary three-decimal price, and the cents reading
+// must not stop at three figures. Both were wrong by a factor of a thousand and a hundred.
+await t('a three-decimal unit price is not read as thousands', async () => {
+  const { coerceMoney } = await import('../lib/csv.mjs')
+  // Nobody writes a thousands group with a leading zero. "0.750" is how three-decimal unit prices
+  // come out of plenty of exports, and it was importing as $750.00 — then multiplied by the line
+  // quantity, on every row it touched.
+  assert.equal(coerceMoney('0.750'), 0.75)
+  assert.equal(coerceMoney('0.005'), 0.005)
+  assert.equal(coerceMoney('1.200'), 1200, 'and the European thousands case still reads as thousands')
+})
+await t('a four-figure European total keeps its cents', async () => {
+  const { coerceMoney } = await import('../lib/csv.mjs')
+  // A thousands group is always exactly three digits, so ",dd" at the end of the string can never
+  // be one — whatever precedes it. Bounding the integer part at three digits stripped the comma
+  // out of "1234,56" and imported it as $123,456.00.
+  assert.equal(coerceMoney('1234,56'), 1234.56)
+  assert.equal(coerceMoney('12345,99'), 12345.99)
+  assert.equal(coerceMoney('12,50'), 12.5)
+  assert.equal(coerceMoney('1,200'), 1200, 'and a US thousands group is still a thousands group')
+  assert.equal(coerceMoney('1,200.50'), 1200.5)
+})
 await t('one plan: every feature answers yes for every tier string', async () => {
   const { planAllows, litePlanAllows, PLANS, PLAN_ORDER } = await import('../lib/billing.mjs')
   for (const tier of ['', 'free', 'starter', 'growth', 'pro', 'control', 'everything', undefined]) {
