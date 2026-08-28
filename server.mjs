@@ -337,6 +337,13 @@ const uploadMem = multer({ storage: multer.memoryStorage(), limits: { fileSize: 
 /* ---------- helpers ---------- */
 
 const parse = (s, fallback) => { try { return JSON.parse(s) } catch { return fallback } }
+
+/**
+ * The largest piece count any single line or capacity question may carry. A million shirts in one
+ * size cell is already three orders of magnitude past a real screen-print run; past that the
+ * number is not an order, and it reaches the day-by-day scheduling loops in lib/capacity.mjs.
+ */
+const MAX_PIECES = 1_000_000
 // node:sqlite refuses to bind undefined, an object, or an array, and surfaces it as
 // "Provided value cannot be bound to SQLite parameter N" — a 500. Request bodies are external
 // input, so an omitted field, or a client that sends {} or [] where a string is expected, must not
@@ -1400,7 +1407,7 @@ app.get('/api/capacity', wrap((_req, res) => {
 app.post('/api/capacity/promise', wrap((req, res) => {
   const b = req.body || {}
   res.json(capacityPromise(activeJobsForCapacity(), getSettings(), {
-    pieces: Math.max(0, Number(b.pieces) || 0),
+    pieces: Math.min(MAX_PIECES, Math.max(0, Number(b.pieces) || 0)),
     colors: Math.max(1, Number(b.colors) || 1),
     dueDate: b.due_date || null,
   }))
@@ -1726,7 +1733,12 @@ function sanitizeEstimateItems(items) {
         for (const [k, v] of Object.entries(out.sizes)) {
           if (!SIZES.includes(k)) continue // the editor only ever writes keys from SIZES
           const n = Math.trunc(Number(v))
-          if (Number.isFinite(n) && n >= 0) sizes[k] = n
+          // Clamped, not just finite. A finite-but-absurd count produced a perfectly storable
+          // estimate (the money stayed representable), and the JOB it converted to then made the
+          // Capacity page walk business days one at a time forever — 100% CPU on the shared
+          // process, every tenant on the box down, on every visit to that page. MAX_PIECES is
+          // three orders of magnitude past any real screen-print run.
+          if (Number.isFinite(n) && n >= 0) sizes[k] = Math.min(n, MAX_PIECES)
         }
       }
       out.sizes = sizes

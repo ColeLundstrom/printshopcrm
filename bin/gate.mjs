@@ -1165,6 +1165,47 @@ await t('but more presses still finish a BATCH of jobs sooner', async () => {
   assert.ok(new Date(last(jobs, many)) < new Date(last(jobs, one)), 'parallel jobs must benefit from more presses')
 })
 
+/* Both scheduling loops consumed a job's press minutes one business day at a time with no bound.
+ * A piece count large enough to outrun the shop's daily capacity was therefore an infinite loop:
+ * 100% CPU on the single shared process, /health timing out, every other tenant on the box dark,
+ * with no recovery but a restart. Persisted it was worse — an estimate with sizes {M:1e12} stored
+ * fine (the money stayed finite, so nothing refused it), and the job it converted to made the
+ * Capacity page do it again on every visit.
+ *
+ * These assertions are TIMED on purpose. Without the bound they do not fail — they hang the gate,
+ * which is indistinguishable from a slow machine. */
+section('capacity: an impossible piece count is answered, not looped over forever')
+await t('promise() returns quickly and says the job is beyond the horizon', async () => {
+  const { promise } = await import('../lib/capacity.mjs')
+  const settings = { capacity_stations: 2, capacity_hours_per_day: 8, utilization_pct: 70, press_type: 'auto' }
+  const started = Date.now()
+  const r = promise([], settings, { pieces: 1e13, colors: 6 })
+  const ms = Date.now() - started
+  assert.ok(ms < 2000, `promise() took ${ms}ms — the day-by-day loop is unbounded again`)
+  assert.equal(r.feasible, false)
+  assert.equal(r.beyondHorizon, true)
+  assert.match(String(r.reason || ''), /split it into smaller runs/, 'the shop must be told what to do about it')
+})
+await t('schedule() does the same for a job already saved with that count', async () => {
+  const { schedule, jobMinutes } = await import('../lib/capacity.mjs')
+  const settings = { capacity_stations: 2, capacity_hours_per_day: 8, utilization_pct: 70, press_type: 'auto' }
+  const j = { id: 1, due: null, sizes: JSON.stringify({ M: 1e13 }), colors: 6 }
+  const started = Date.now()
+  const out = schedule([{ ...j, minutes: jobMinutes(j, settings) }], settings).jobs[0]
+  const ms = Date.now() - started
+  assert.ok(ms < 2000, `schedule() took ${ms}ms — the day-by-day loop is unbounded again`)
+  assert.equal(out.projectedFinish, null)
+  assert.equal(out.beyondHorizon, true)
+})
+await t('…and an ordinary job still schedules to a real date', async () => {
+  const { schedule, jobMinutes } = await import('../lib/capacity.mjs')
+  const settings = { capacity_stations: 2, capacity_hours_per_day: 8, utilization_pct: 70, press_type: 'auto' }
+  const j = { id: 1, due: '2026-12-31', sizes: JSON.stringify({ M: 500 }), colors: 2 }
+  const out = schedule([{ ...j, minutes: jobMinutes(j, settings) }], settings).jobs[0]
+  assert.match(String(out.projectedFinish), /^\d{4}-\d{2}-\d{2}$/)
+  assert.ok(!out.beyondHorizon)
+})
+
 section('contact lookup is indexed, not a full scan')
 // The CSV order import matches every row on lower(email)/lower(name), inside one synchronous
 // transaction. Without an index each match is a full table scan, so a few thousand rows meant
