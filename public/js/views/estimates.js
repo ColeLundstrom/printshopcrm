@@ -334,11 +334,14 @@ export async function estimateEditor(id) {
     }
     if (!payload.contact_id) return toast('Choose a customer for this estimate first', true)
     if (!payload.items.length) return toast('Add at least one line item', true)
+    // Saving a NEW estimate is a create: two clicks made two estimates, with two estimate numbers,
+    // and the shop then has to work out which one the customer was sent.
+    const btn = $('#save'); btn.disabled = true; btn.textContent = 'Saving…'
     try {
       const saved = isNew ? await api.post('/api/estimates', payload) : await api.put(`/api/estimates/${id}`, payload)
       toast(isNew ? `Estimate ${saved.estimate_number} created` : 'Estimate saved')
       go(`/estimates/${saved.id}`)
-    } catch (e) { toast(e.message, true) }
+    } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = isNew ? 'Create Estimate' : 'Save' }
   }
   draw()
 }

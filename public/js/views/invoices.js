@@ -145,13 +145,20 @@ export async function invoiceDetailView(id) {
       <p class="dim" style="font-size:12px">Balance due is ${money(bal)}. Partial payments are fine. The invoice flips to <em>partial</em>.</p>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">Record Payment</button>`,
     onMount: (bg) => {
+      // In-flight guard, the same one the Terms dialog below has always had. Without it the button
+      // stayed live and the dialog stayed open for the whole round trip, so on shop wifi a second
+      // impatient click posted the payment again. A full-balance double-click is caught by the
+      // server (the second one is over the remaining balance) — a PARTIAL payment is not: $500
+      // twice on a $1,000 invoice records $1,000, flips the invoice to paid, and the shop believes
+      // it collected money it never got.
       $('#go', bg).onclick = async () => {
+        const btn = $('#go', bg); btn.disabled = true; btn.textContent = 'Recording…'
         try {
           await api.post(`/api/invoices/${id}/payments`, formData(bg))
           closeModal()
           toast('Payment recorded')
           invoiceDetailView(id)
-        } catch (e) { toast(e.message, true) }
+        } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Record Payment' }
       }
     },
   })

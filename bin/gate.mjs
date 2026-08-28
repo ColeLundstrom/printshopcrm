@@ -4541,6 +4541,40 @@ await t('the source link is not faded below the readable minimum', async () => {
  *              tab switch: by the sixth tab one click on a row ran go() six times.
  *   Dashboard— a raw addEventListener on #view, the most-visited screen in the app: the fourth
  *              visit fired go() four times per click. */
+section('a second click cannot post the same thing twice')
+/* The dialog stays open for the whole round trip, so on shop wifi an impatient second click posts
+ * again before the first answer lands.
+ *   Record Payment — the server catches a duplicated FULL balance (the second one is over the
+ *     remaining balance) and does not catch a PARTIAL one: $500 twice on a $1,000 invoice records
+ *     $1,000, flips the invoice to paid, and the shop believes it collected money it never got.
+ *     The Terms dialog fifteen lines below it in the same file has always disabled its button.
+ *   Estimate Save — on a new estimate this is a create, so two clicks made two estimates with two
+ *     estimate numbers, and the shop then has to work out which one the customer was sent. */
+await t('Record Payment disables itself while the payment is in flight', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/invoices.js'), 'utf8')
+  const handler = src.slice(src.indexOf("$('#go', bg).onclick"), src.indexOf("$('#pay')?"))
+  assert.ok(handler.length > 40, 'found the Record Payment handler')
+  assert.match(handler, /disabled = true/, 'the button must be dead before the POST goes out')
+  assert.ok(handler.indexOf('disabled = true') < handler.indexOf('api.post'), 'and dead BEFORE it, not after')
+  assert.match(handler, /catch[\s\S]*disabled = false/, 'a failed payment has to leave a button the shop can press again')
+})
+await t('…and so does Save on a new estimate', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/estimates.js'), 'utf8')
+  const handler = src.slice(src.indexOf("$('#save').onclick"), src.indexOf('  draw()\n}'))
+  assert.ok(handler.length > 40, 'found the estimate Save handler')
+  assert.match(handler, /disabled = true/, 'two clicks must not create two estimates')
+  assert.ok(handler.indexOf('disabled = true') < handler.indexOf('api.post'), 'and dead BEFORE the create')
+  assert.match(handler, /catch[\s\S]*disabled = false/, 'a rejected save must leave the quote editable')
+})
+
 section('nothing binds a listener during a render onto a root that outlives it')
 await t('Invoices binds its row handler once per visit, not once per tab', async () => {
   const { readFileSync } = await import('node:fs')
