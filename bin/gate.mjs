@@ -1984,6 +1984,42 @@ await t('the session minted after a reset is still alive a tick later', async ()
   } finally { rmSync(box, { recursive: true, force: true }) }
 })
 
+section('an online payment is recorded at the amount that actually arrived')
+// recordStripePayment clamped to the remaining balance and threw the difference away:
+//   const amount = Math.min(paid, bal); if (!(amount > 0)) return syncInvoiceStatus(inv.id)
+// A customer with the deposit link open in one tab and the balance link in another paid $9,450 on a
+// $6,300 invoice; the shop recorded $6,300 and the other $3,150 existed nowhere but at Stripe. At an
+// already-zero balance the whole payment vanished — no payment row, no activity, no notification —
+// while the customer was shown "your payment went through / Balance $0.00". The card was charged.
+//
+// Asserted at the source, because the function needs a live Stripe session to drive end to end;
+// the balance arithmetic it now performs is checked directly underneath.
+await t('the clamp that dropped an overpayment is gone', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf('function recordStripePayment')
+  assert.ok(i > 0, 'recordStripePayment should still exist')
+  const body = src.slice(i, src.indexOf('\napp.', i))
+  assert.ok(!/const amount = Math\.min\(paid, bal\)/.test(body),
+    'the arrived amount must not be clamped to the balance — that is what dropped the money')
+  assert.match(body, /refund the difference at Stripe/,
+    'an overpayment must be recorded with something that tells the shop to refund it')
+  assert.match(body, /OVERPAID/, 'and it must reach the activity log, not only the payment note')
+})
+
+await t('the overpayment arithmetic names the right difference', () => {
+  // The shape recordStripePayment now uses: record what arrived, and report the excess over the
+  // balance that was actually owed.
+  const over = (paid, bal) => Math.max(0, Math.round((paid - Math.max(0, bal)) * 100) / 100)
+  assert.equal(over(6300, 6300), 0, 'paying the balance exactly is not an overpayment')
+  assert.equal(over(3150, 6300), 0, 'a part payment is not an overpayment')
+  assert.equal(over(9450, 6300), 3150, 'two tabs: $9,450 against a $6,300 balance is $3,150 over')
+  assert.equal(over(3150, 0), 3150, 'a payment against a zero balance is entirely an overpayment')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

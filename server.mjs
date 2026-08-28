@@ -5324,17 +5324,33 @@ function recordStripePayment(inv, session, sessionId, kind) {
     return syncInvoiceStatus(inv.id)
   }
   const paid = round2((Number(session.amountCents) || 0) / 100)
-  // Never let the invoice show more than 100% paid — if two checkout tabs both completed, the
-  // second records at most the remaining balance (the extra sits at Stripe for the shop to refund).
   const fresh = get('SELECT amount_due, amount_paid FROM invoices WHERE id = ?', inv.id)
   const bal = round2((fresh?.amount_due || 0) - (fresh?.amount_paid || 0))
-  const amount = Math.min(paid, bal)
-  if (!(amount > 0)) return syncInvoiceStatus(inv.id)
+  // This used to clamp to the remaining balance and DROP the difference: `Math.min(paid, bal)`,
+  // then `if (!(amount > 0)) return` — so a customer with the deposit link open in one tab and the
+  // balance link in another paid $9,450 on a $6,300 invoice, the shop recorded $6,300, and the
+  // remaining $3,150 existed nowhere but at Stripe. At an already-zero balance the whole payment
+  // vanished: no payment row, no activity, no notification, and the customer was shown
+  // "your payment went through / Balance $0.00". The card really was charged.
+  //
+  // Record what ARRIVED. The void branch a dozen lines above already takes exactly this position:
+  // money that reached Stripe is real, and the shop cannot refund what it was never told about.
+  // The invoice going past 100% paid is a true state the shop has to resolve, not one to hide —
+  // A/R aging filters on a positive balance so an overpaid invoice drops out of it cleanly.
+  if (!(paid > 0)) return syncInvoiceStatus(inv.id)
+  const over = Math.max(0, round2(paid - Math.max(0, bal)))
+  const label = `Online ${kind === 'deposit' ? 'deposit' : 'payment'} (Stripe)`
   run('INSERT INTO payments (invoice_id, amount, method, note, stripe_session, created_at) VALUES (?,?,?,?,?,?)',
-    inv.id, amount, 'card', `Online ${kind === 'deposit' ? 'deposit' : 'payment'} (Stripe)`, sessionId, now())
+    inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at Stripe` : label, sessionId, now())
+  const amount = paid
   const updated = syncInvoiceStatus(inv.id)
   advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Online ${money(amount)} on ${inv.invoice_number} (card)`, { contact_id: inv.contact_id })
+  if (over > 0.005) {
+    // Loud, and on the customer's own timeline, because the shop has to act on it at Stripe.
+    logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at Stripe`, { contact_id: inv.contact_id })
+    rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` })
+  }
   if (updated.status === 'paid' && inv.status !== 'paid') {
     fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
   }
