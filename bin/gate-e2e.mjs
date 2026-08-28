@@ -15,6 +15,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { WebSocket } from 'ws'
+import { request as rawHttp } from 'node:http'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
@@ -1587,6 +1588,85 @@ try {
     } finally {
       try { s2p.kill() } catch { /* already gone */ }
       try { rmSync(T2, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+  /* ---------- a reset link points where the shop lives, not where a stranger says ----------
+   *
+   * The link in a password-reset email carries a one-time token that SETS the account password.
+   * publicOrigin() falls back to the request's Host header, and Host is chosen by whoever sent the
+   * request — so an unauthenticated `POST /api/auth/reset` with `Host: evil.example` mails the real
+   * owner a working takeover link on the attacker's server. PSC_PUBLIC_URL closes it.
+   *
+   * The suite already asserts "an emailed link ignores a poisoned Host header" — and it passes for
+   * the wrong reason: this harness sets PSC_PUBLIC_URL on its own server, and PSC_PUBLIC_URL is
+   * precisely the variable that is NOT set on the production install this was found on, four
+   * releases after the app started warning about it at boot. So this instance is booted WITHOUT
+   * it, which is the configuration real installs are actually in.
+   *
+   * The assertion reads the email that would really be sent: GHL_BASE points at a stub here, so
+   * the platform relay is exercised end to end instead of being mocked out at the callsite. */
+  {
+    const T4 = mkdtempSync(join(tmpdir(), 'psc-e2e-origin-'))
+    const P4 = PORT + 9
+    const P4RELAY = PORT + 10
+    const sent = []
+    const { createServer } = await import('node:http')
+    const relay = createServer((rq, rs) => {
+      let body = ''
+      rq.on('data', (d) => { body += d })
+      rq.on('end', () => {
+        if (rq.url.includes('/conversations/messages')) sent.push(body)
+        rs.writeHead(200, { 'Content-Type': 'application/json' })
+        rs.end(JSON.stringify({ contact: { id: 'stub-contact' }, emailMessageId: 'stub-msg' }))
+      })
+    })
+    await new Promise((r) => relay.listen(P4RELAY, '127.0.0.1', r))
+    // PSC_PUBLIC_URL is deliberately absent from this env — that is the whole point of the case.
+    const env4 = { ...process.env, PORT: String(P4), PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', GHL_BASE: `http://127.0.0.1:${P4RELAY}`, GHL_PIT: 'stub-token', GHL_LOCATION_ID: 'stub-loc', GHL_EMAIL_FROM: 'stub@printshopcrm.test' }
+    delete env4.PSC_PUBLIC_URL
+    const s4 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env4, stdio: ['ignore', 'pipe', 'pipe'] })
+    started.push(s4)
+    const raw = (method, path, headers, body) => new Promise((resolve) => {
+      const rq = rawHttp({ host: '127.0.0.1', port: P4, method, path, headers }, (resp) => {
+        let b = ''; resp.on('data', (d) => { b += d }); resp.on('end', () => resolve({ status: resp.statusCode, text: b, headers: resp.headers }))
+      })
+      rq.on('error', (e) => resolve({ status: 0, text: `error ${e.message}`, headers: {} }))
+      rq.end(body)
+    })
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P4}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const suBody = JSON.stringify({ shop_name: 'Origin Ink', owner_name: 'O', owner_email: 'owner@origin.test', password: 'GatePass-123456' })
+      const su = await raw('POST', '/api/auth/signup', { Host: `127.0.0.1:${P4}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(suBody) }, suBody)
+      chk('a shop signs up on an install with no PSC_PUBLIC_URL', String(su.status), '^200$')
+      const sc = [].concat(su.headers['set-cookie'] || []).map((c) => String(c).split(';')[0]).join('; ')
+
+      // The owner loads the app on the host the shop actually uses. That is the evidence.
+      await raw('GET', '/api/auth/me', { Host: `127.0.0.1:${P4}`, Cookie: sc })
+
+      // The welcome email is fire-and-forget, so let it land before clearing — otherwise it is the
+      // message these assertions read, and they pass without the reset link ever being examined.
+      for (let i = 0; i < 40; i++) { if (sent.length) break; await sleep(250) }
+      sent.length = 0
+      const rsBody = JSON.stringify({ email: 'owner@origin.test' })
+      const rr = await raw('POST', '/api/auth/forgot', { Host: 'evil.attacker.example', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(rsBody) }, rsBody)
+      chk('a reset link can be requested', String(rr.status), '^200$')
+      let mail = ''
+      for (let i = 0; i < 60; i++) {
+        const m = sent.filter((x) => x.includes('/reset?token=')).join('\n')
+        if (m) { mail = m; break }
+        await sleep(250)
+      }
+      chk('…and the reset email really goes out', String(mail.length > 0), '^true$')
+      chk('…carrying a link to where the shop actually lives', mail, `127\\.0\\.0\\.1(:|%3A)${P4}(\\\\u002F|/)reset`)
+      chk('…and never to the host the request asked for', mail.includes('evil.attacker.example') ? 'takeover' : 'safe', '^safe$')
+    } finally {
+      try { s4.kill('SIGKILL') } catch { /* already gone */ }
+      await new Promise((r) => relay.close(r))
+      try { rmSync(T4, { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
 

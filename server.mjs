@@ -205,6 +205,44 @@ app.post('/webhooks/stripe', express.raw({ type: '*/*' }), (req, res) => stripeW
  */
 const publicOrigin = (req) => String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`
 
+/**
+ * The origin an emailed link may point at when the request that triggered it is UNAUTHENTICATED.
+ *
+ * publicOrigin() falls back to the request's own Host header, and Host is chosen by whoever sent
+ * the request. On the password-reset route that is a complete account takeover: POST
+ * /api/auth/reset with `Host: evil.example` mails the REAL owner a working, one-time link that
+ * sets their password — hosted by the attacker. PSC_PUBLIC_URL closes it, the app has warned at
+ * boot when it is unset since 3527b14, and it is STILL unset on the install this was found on,
+ * four releases later. A warning nobody acts on is not a fix; it is a fix that lives in someone
+ * else's todo list.
+ *
+ * So the app learns the answer rather than asking for it. A signed-in OWNER loading the app is
+ * proof of a host the shop genuinely uses, and an attacker cannot manufacture one without already
+ * holding an owner session. That host is remembered on the control database and used for links
+ * built off unauthenticated requests from then on.
+ *
+ * It is deliberately NOT used for the rest of them. Every other link is generated behind auth,
+ * where Host is whatever the shop's own staff are looking at, and overriding it there would send a
+ * share link to the wrong address for anyone whose office URL and public URL differ. And on a
+ * brand-new install where nobody has signed in yet this falls straight through to today's
+ * behaviour, because refusing to send a new shop its welcome email is the worse failure.
+ */
+let learnedOrigin = null // null = not read yet, '' = read and nothing stored
+const ORIGIN_RE = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?$/i
+const learnedPublicOrigin = () => {
+  if (learnedOrigin === null) {
+    try { learnedOrigin = String(getPlatformConfig().public_origin || '') } catch { learnedOrigin = '' }
+  }
+  return learnedOrigin
+}
+const rememberPublicOrigin = (req) => {
+  const o = `${req.protocol}://${req.get('host') || ''}`
+  if (!ORIGIN_RE.test(o) || o === learnedPublicOrigin()) return
+  try { setPlatformConfig({ public_origin: o }); learnedOrigin = o } catch (e) { console.error('learn origin:', e.message) }
+}
+const trustedOrigin = (req) =>
+  String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || learnedPublicOrigin() || publicOrigin(req)
+
 const slackRaw = express.raw({ type: '*/*', limit: '256kb' }) // Slack payloads are far under this
 
 /**
@@ -652,6 +690,9 @@ app.use((req, res, next) => {
     req.tenant = tenant
     req.member = member
     req.role = member?.role || 'staff'
+    // A host an OWNER really signed in on is the only host we have any evidence for. Remember it,
+    // so an emailed reset link never has to trust a Host header a stranger chose — trustedOrigin().
+    if (req.role === 'owner' && req.method === 'GET') rememberPublicOrigin(req)
     const lp = gatePath(req)
     // Soft paywall: once the trial lapses with no plan, block new work (writes) but keep read + billing open.
     const isWrite = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
@@ -874,7 +915,7 @@ app.post('/api/auth/signup', ipLimit(6), wrap(async (req, res) => {
     // founder to 'staff' mid-session) the day that owner is demoted.
     const owner = listMembers(t.id).find((m) => m.role === 'owner')
     setSessionCookie(res, createSession(t.id, owner?.id || null), req)
-    sendWelcomeEmail(t, publicOrigin(req)) // fire-and-forget; delivers if platform SMTP is set
+    sendWelcomeEmail(t, trustedOrigin(req)) // fire-and-forget; delivers if platform SMTP is set
     res.json({ ok: true, slug: t.slug, shop_name: t.shop_name, onboarding: true })
   } catch (e) {
     res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message })
@@ -944,8 +985,9 @@ app.post('/api/auth/forgot', ipLimit(6), rateLimit({ max: 4 }), wrap((req, res) 
   // NEVER build this from the raw Host header. The link carries a one-time token that sets the
   // account password, and Host is chosen by whoever sent the request — so `Host: evil.example`
   // mailed the real owner a working reset link pointing at the attacker, who then owned the shop.
-  // publicOrigin() exists for exactly this and was already used for the Slack links.
-  const origin = publicOrigin(req)
+  // trustedOrigin() prefers PSC_PUBLIC_URL and then the host an owner has actually signed in on,
+  // and only falls back to this request's Host on an install where neither exists yet.
+  const origin = trustedOrigin(req)
   const link = `${origin}/reset?token=${encodeURIComponent(r.token)}`
   const body = `Hi${r.member.name ? ' ' + r.member.name : ''},
 
