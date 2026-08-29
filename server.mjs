@@ -970,6 +970,28 @@ function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = n
     next()
   }
 }
+/**
+ * Outbound customer mail and SMS, on the SHOP'S own SMTP and Twilio credentials.
+ *
+ * `POST /api/notify/test` carries a manager gate and a recipient allowlist, and its own comment
+ * says why: "with a free-form `to` this was an authenticated open relay — any member could mail or
+ * text arbitrary strangers from the shop's SMTP and Twilio accounts, on the shop's dime and its
+ * sending reputation." The conversation reply routes are the same capability one door over, and
+ * they had no gate of any kind. They send to a real contact row rather than a free-form address —
+ * which is the reason they stay open to staff, because answering a customer is what staff do —
+ * but POST /api/contacts is ungated too, so the recipient is still the sender's choice, the
+ * subject and the body are wholly theirs, and it goes out From: the shop with the shop's SPF
+ * alignment. Measured off the wire: one `staff` account sent "Your invoice is overdue — pay here"
+ * to an arbitrary external address from the shop's real relay.
+ *
+ * Keyed per MEMBER, not per IP: the point is to bound what one signed-in account can send.
+ */
+const outboundLimit = rateLimit({
+  windowMs: 60 * 60_000, max: 60,
+  keyFn: (req) => `member:${req.member?.id || clientIp(req)}`,
+  message: 'That is a lot of messages in one hour — give it a moment before sending more.',
+})
+
 // The embed chat is unauthenticated and the shop key is public (it sits in the widget script tag on
 // the shop's own website), so anyone can call it. Each message runs a billed LLM call and writes a
 // chat_sessions row, so without a cap one scraper can burn a shop's AI budget and grow its DB
@@ -3665,16 +3687,24 @@ app.get('/api/conversations/:contactId', wrap((req, res) => {
   res.json({ contact: { ...c, tags: c.tags ? c.tags.split(',').filter(Boolean) : [] }, messages })
 }))
 
-app.post('/api/conversations/:contactId/reply', wrap((req, res) => {
+app.post('/api/conversations/:contactId/reply', outboundLimit, wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', +req.params.contactId)
   if (!c) return res.status(404).json({ error: 'Customer not found' })
   const body = String(req.body?.body || '').trim()
   if (!body) return res.status(400).json({ error: 'Write a reply first' })
   const channel = req.body?.channel === 'sms' ? 'sms' : 'email'
+  // A customer with no address on file was answered with 200 and an activity row reading
+  // "Replied to No Email Ned (email)" — a timeline entry saying a thing happened that did not.
+  // The same guard was applied to three sibling routes and missed here.
+  if (channel === 'email' && requireCustomerEmail(c, res, 'reply')) return
+  if (channel === 'sms' && !c.phone) {
+    return res.status(400).json({ error: `${c.name || 'This customer'} has no mobile number on file, so the reply could not be sent. Add one on their record and try again.`, code: 'no_phone' })
+  }
   const subject = channel === 'sms' ? 'SMS' : (req.body?.subject || 'Re: your order')
   if (channel === 'sms') queueSms({ contact: c, body })
   else queueEmail({ contact: c, subject, template: body, vars: {}, kind: 'reply' })
-  logActivity('note', `Replied to ${c.name} (${channel})`, { contact_id: c.id })
+  // Name the sender. A shop with staff had no way to tell WHO mailed a customer from its account.
+  logActivity('note', `Replied to ${c.name} (${channel})${req.member?.email ? ` by ${req.member.email}` : ''}`, { contact_id: c.id })
   res.json({ ok: true })
 }))
 
@@ -3984,7 +4014,7 @@ app.get('/api/agent/sessions/:pid', wrap((req, res) => {
 }))
 
 /** A human takes over a bot chat. Records the reply, and delivers it to the visitor if we have a way. */
-app.post('/api/agent/sessions/:pid/reply', wrap((req, res) => {
+app.post('/api/agent/sessions/:pid/reply', outboundLimit, wrap((req, res) => {
   const s = sessionByPublicId(req.params.pid)
   if (!s) return res.status(404).json({ error: 'Session not found' })
   const text = String(req.body?.text || '').trim()

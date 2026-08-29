@@ -3655,6 +3655,42 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- what one signed-in account can mail out of the shop is bounded, and honest ----------
+   * POST /api/notify/test carries a manager gate and a recipient allowlist, and its own comment
+   * names the reason: "with a free-form `to` this was an authenticated open relay — any member
+   * could mail or text arbitrary strangers from the shop's SMTP and Twilio accounts, on the shop's
+   * dime and its sending reputation." The conversation reply routes are the same capability one
+   * door over with no gate at all. They send to a real contact row rather than a free-form address,
+   * which is why they stay open to staff — answering a customer is what staff do — but POST
+   * /api/contacts is ungated too, so the recipient, the subject and the body were all the sender's,
+   * and it went out From: the shop with the shop's SPF alignment. Measured off the wire: one
+   * `staff` account sent "Your invoice is overdue — pay here" to an arbitrary external address.
+   *
+   * Separately: a customer with no address on file was answered with 200 and an activity row
+   * reading "Replied to No Email Ned (email)" — the timeline recording something that did not
+   * happen. The same guard is on three sibling routes and was missed here. */
+  {
+    const noAddr = (await req('POST', '/api/contacts', { body: { name: 'No Email Ned' } })).json
+    const lie = await req('POST', `/api/conversations/${noAddr.id}/reply`, { body: { channel: 'email', body: 'Thanks!' } })
+    chk('a reply to a customer with no address is refused', String(lie.status), '^400$')
+    chk('…with the code the screen already knows', String(lie.json?.code), '^no_email$')
+    chk('…and the timeline does not claim it was sent',
+      String(((await req('GET', `/api/contacts/${noAddr.id}`)).text || '').includes('Replied to No Email Ned')), '^false$')
+    chk('…and the SMS half says the same about a missing number',
+      String((await req('POST', `/api/conversations/${noAddr.id}/reply`, { body: { channel: 'sms', body: 'Thanks!' } })).json?.code), '^no_phone$')
+
+    const reachable = (await req('POST', '/api/contacts', { body: { name: 'Reachable Rita', email: 'rita@e2e.test' } })).json
+    chk('an ordinary reply to a real customer still sends',
+      String((await req('POST', `/api/conversations/${reachable.id}/reply`, { body: { channel: 'email', body: 'On it.' } })).status), '^200$')
+
+    // 60 an hour per member. Unbounded before: the loop below never tripped.
+    let last = 200
+    for (let i = 0; i < 70 && last === 200; i++) {
+      last = (await req('POST', `/api/conversations/${reachable.id}/reply`, { body: { channel: 'email', body: `bulk ${i}` } })).status
+    }
+    chk('…but one account cannot send without limit', String(last), '^429$')
+  }
+
   /* ---------- the widget may only drive a conversation the widget opened ----------
    * captureLead() decides whether an anonymous website visitor may WRITE on an existing customer
    * from one value: `session.channel !== 'preview'`. /api/embed/chat/start was hardened to STAMP
