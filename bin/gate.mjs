@@ -3697,6 +3697,88 @@ await t('deleting an estimate takes its mockups with it, so a reused id cannot i
  * refuses to ship the release that would have fixed it.
  * The e2e proves the two answers. This pins WHO ASKS WHICH, which is the half a config edit can
  * silently undo. */
+/* ---------- the three overlays that never went through modal() (v20) ----------
+ * modal() has had a dialog role, a focus trap and focus restore since v11. Three overlays are
+ * hand-rolled and got none of it: the ⌘K palette (offered as the app's front door), the keyboard
+ * shortcuts help (written FOR the keyboard user, and the one they were most stranded inside) and
+ * the Assistant. Tab walked out of all three into the sidebar behind a dimmed backdrop, where
+ * Enter fired whatever it landed on; closing dropped focus on <body>; and a screen reader was
+ * never told the palette had opened at all — it announced "edit text, blank" and its results were
+ * plain <div>s, so arrowing through them spoke nothing.
+ * The Assistant had a fourth: it was missing from keys.js's dialogOpen(), so with focus on a chip
+ * every global single key fired through the open panel — `n` navigated the page out from under it,
+ * `t` flipped the theme mid-conversation. And its result cards, which the module's own docstring
+ * calls the point of the answer, were `<a>` with no href: not links, not focusable, not reachable
+ * by Tab or Enter at all. */
+section('the three overlays that never went through modal()')
+{
+  const readSrc = async (f) => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    return readFileSync(join(join(dirname(fileURLToPath(import.meta.url)), '..'), f), 'utf8')
+  }
+
+  await t('core publishes the trap and the focus-keeper, so an overlay reuses them rather than copying', async () => {
+    const core = await readSrc('public/js/core.js')
+    assert.match(core, /export function trapTab\(/, 'the Tab rule has to be reachable from a hand-rolled overlay')
+    assert.match(core, /export function focusKeeper\(/, '…and so does focus restore')
+    // …and modal() must be on the SAME one, or there are two rules that can drift apart.
+    const m = core.slice(core.indexOf('export function modal('), core.indexOf('const escClose'))
+    assert.match(m, /trapTab\(bg, e\)/, 'modal() must use the shared trap, not its own copy')
+  })
+
+  for (const [file, what, root] of [
+    ['public/js/views/search.js', 'the ⌘K palette', 'box'],
+    ['public/js/keys.js', 'the shortcuts help', 'ov'],
+  ]) {
+    await t(`${what} announces itself, keeps Tab, and gives focus back`, async () => {
+      const src = await readSrc(file)
+      assert.match(src, /role="dialog"/, `${what} never told a screen reader the page behind was blocked`)
+      assert.match(src, /aria-modal="true"/, '…nor that it is modal')
+      assert.match(src, /aria-label(ledby)?=/, '…nor what it is called')
+      assert.match(src, new RegExp(`trapTab\\(${root}, e\\)`), `Tab walked out of ${what} into the sidebar behind it`)
+      assert.match(src, /focusKeeper\(\)/, `closing ${what} dropped focus on <body>`)
+    })
+  }
+
+  await t('…and the palette speaks the row the arrow keys are on', async () => {
+    const src = await readSrc('public/js/views/search.js')
+    assert.match(src, /role="listbox"/, 'the results were a plain div, so they were not a list of anything')
+    assert.match(src, /role="option" id="cmd-i-\$\{i\}"/, '…and the rows were not options')
+    assert.match(src, /aria-selected="\$\{i === cursor\}"/, 'the highlight is drawn with a class a screen reader cannot see')
+    assert.match(src, /aria-activedescendant/, '…so arrowing has to point the combobox at the row')
+  })
+
+  await t('the Assistant is a dialog, and the global single-key shortcuts stop at its edge', async () => {
+    const a = await readSrc('public/js/views/assistant.js')
+    assert.match(a, /class="asst" role="dialog" aria-label=/, 'a screen reader was never told a panel had opened')
+    assert.match(a, /focusKeeper\(\)/, 'closing it dropped focus on <body>')
+    assert.match(a, /if \(e\.key === 'Escape'\) \{ e\.stopPropagation\(\); closeAssistant\(\) \}/,
+      'Escape only worked from the textarea, not from a chip or a card')
+    const keys = await readSrc('public/js/keys.js')
+    const dlg = keys.split('\n').find((l) => l.startsWith('const dialogOpen ='))
+    assert.ok(dlg && dlg.includes("$('.asst')"),
+      "with focus on an Assistant chip, `n` navigated the page out from under the open panel and `t` flipped the theme")
+  })
+
+  await t("…and the Assistant's answer can be reached with a keyboard and heard with a screen reader", async () => {
+    const a = await readSrc('public/js/views/assistant.js')
+    // The cards ARE the answer — "every result links into the app so the human can take over".
+    assert.doesNotMatch(a, /<a class="asst-card" data-href=/,
+      'an <a> with no href is not a link: not focusable, not Tab-reachable, not Enter-activatable')
+    assert.match(a, /<a class="asst-card" href="#\$\{esc\(c\.href\)\}"/, 'give the card a real href')
+    assert.match(a, /id="asst-log"[^>]*aria-live="polite"/, 'the log was silent — the answer was never spoken')
+    assert.match(a, /announce\(thinking\.reply/, '…and render() rewrites the whole list, so the reply must be said once')
+    // A real link picks up the browser's underline and link colour; the card must still look
+    // like a card, or this fix is a visual regression on every answer.
+    const css = await readSrc('public/css/app.css')
+    const rule = (css.match(/^\.asst-card \{[^}]*\}/m) || [''])[0]
+    assert.match(rule, /text-decoration:\s*none/, 'the card is an <a> now and would be underlined')
+    assert.match(rule, /color:\s*inherit/, '…and rendered in the link colour')
+  })
+}
+
 section('liveness and the deploy gate are different questions')
 await t('ship.sh asks the strict question and the platform probes ask the plain one', async () => {
   const { readFileSync } = await import('node:fs')
@@ -6455,7 +6537,13 @@ await t('a single-key shortcut is disarmed while a dialog is open', async () => 
   const body = src.slice(src.indexOf('export function wireKeys'), src.indexOf('export function helpOverlay'))
   assert.match(body, /if \(dialogOpen\(\)\) return/, 'the shortcut switch still runs with a dialog on screen')
   assert.ok(body.indexOf('dialogOpen()') < body.indexOf("case 'n'"), 'the guard has to come before the shortcuts, not after')
-  assert.match(body, /kbd-help'\)\?\.remove\(\)/, 'the help overlay had no keyboard close at all — Escape did nothing')
+  // v11 pinned the literal `$('.kbd-help')?.remove()`. v20 routes Escape through the overlay's own
+  // close instead, so that it hands focus back the way the × and the backdrop now do — a bare
+  // remove() left a keyboard user on <body>. The requirement is unchanged: Escape must close it.
+  assert.match(body, /if \(e\.key === 'Escape'\) \{ closeHelp\?\.\(\); return \}/,
+    'the help overlay had no keyboard close at all — Escape did nothing')
+  const help = src.slice(src.indexOf('export function helpOverlay'))
+  assert.match(help, /closeHelp = close/, '…and that close has to be the one that also restores focus')
 })
 
 /* ---------- every file this app accepts can be chosen without a mouse (v11) ----------

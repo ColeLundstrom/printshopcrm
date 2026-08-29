@@ -700,7 +700,7 @@ body.dragging { cursor: grabbing; user-select: none; }
 .asst-bub strong { font-weight: 700; }
 .asst-ai { font-size: var(--fs-3xs); font-weight: 800; letter-spacing: .5px; color: var(--violet); border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 0 var(--sp-2); vertical-align: middle; }
 
-.asst-card { display: flex; align-items: center; gap: var(--sp-5); margin-top: var(--sp-4); padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg); cursor: pointer; transition: .12s; width: 88%; }
+.asst-card { display: flex; align-items: center; gap: var(--sp-5); margin-top: var(--sp-4); padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg); cursor: pointer; transition: .12s; width: 88%; text-decoration: none; color: inherit; }
 .asst-card:hover { border-color: var(--accent); background: var(--accent-glow); }
 .asst-card-ic { font-size: var(--fs-lg); flex: none; }
 .asst-card-t { display: block; font-size: var(--fs-xs); font-weight: 600; }

@@ -312,7 +312,32 @@ export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {
 // announces nothing at all — the dialog simply stops existing mid-sentence.
 let modalReturnFocus = null
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-const focusable = (root) => [...$$(FOCUSABLE, root)].filter((n) => n.offsetParent !== null || n === document.activeElement)
+export const focusable = (root) => [...$$(FOCUSABLE, root)].filter((n) => n.offsetParent !== null || n === document.activeElement)
+/**
+ * Keep Tab inside an overlay. Exported because three overlays in this app are hand-rolled rather
+ * than built by modal() — the ⌘K palette, the shortcuts help and the Assistant — and every one of
+ * them let Tab walk invisibly into the sidebar behind a dimmed backdrop, where Enter then fired
+ * whatever it landed on. This is the same rule modal() applies below, in one place, so the next
+ * hand-rolled overlay gets it by calling one function instead of copying twenty lines.
+ */
+export function trapTab(root, e) {
+  if (e.key !== 'Tab') return
+  const f = focusable(root)
+  if (!f.length) return
+  const first = f[0], last = f[f.length - 1]
+  if (e.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) { e.preventDefault(); last.focus() }
+  else if (!e.shiftKey && (document.activeElement === last || !root.contains(document.activeElement))) { e.preventDefault(); first.focus() }
+}
+/**
+ * Remember what opened an overlay so it can be handed focus back when the overlay goes.
+ * closeModal() has done this since v11; the three hand-rolled overlays dropped focus on <body>,
+ * which dumps a keyboard user at the top of the document with the whole sidebar to Tab through.
+ */
+export function focusKeeper() {
+  const opener = document.activeElement
+  const held = (opener && opener !== document.body && document.contains(opener)) ? opener : null
+  return () => { if (held && typeof held.focus === 'function' && document.contains(held)) { try { held.focus() } catch { /* detached mid-teardown */ } } }
+}
 let modalSeq = 0
 
 /**
@@ -377,14 +402,7 @@ export function modal({ title, body, footer = '', wide = false, onMount }) {
   // a paragraph, so the focus line below found nothing to focus and focus STAYED on the trigger
   // behind the overlay — went straight into the sidebar, and Enter re-fired the button that opened
   // the dialog. Escape and focus-restore were already right; this is the half that was missing.
-  bg.addEventListener('keydown', (e) => {
-    if (e.key !== 'Tab') return
-    const f = focusable(bg)
-    if (!f.length) return
-    const first = f[0], last = f[f.length - 1]
-    if (e.shiftKey && (document.activeElement === first || !bg.contains(document.activeElement))) { e.preventDefault(); last.focus() }
-    else if (!e.shiftKey && (document.activeElement === last || !bg.contains(document.activeElement))) { e.preventDefault(); first.focus() }
-  })
+  bg.addEventListener('keydown', (e) => trapTab(bg, e))
   onMount?.(bg)
   // Land inside the dialog, always. A dialog with no form control (every confirmModal) used to
   // leave focus on the control behind the overlay.

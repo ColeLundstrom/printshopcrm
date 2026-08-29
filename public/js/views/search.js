@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, go, on } from '../core.js'
+import { api, $, $$, el, esc, go, on, trapTab, focusKeeper } from '../core.js'
 
 /**
  * ⌘K command palette — "go to anything, do anything".
@@ -12,6 +12,9 @@ let box = null
 let items = []
 let cursor = 0
 let seq = 0
+// Where focus goes when the palette closes. `box.remove()` used to drop it on <body>, so opening
+// the app's own front door and pressing Escape dumped a keyboard user at the top of the document.
+let boxReturnFocus = null
 
 const themeToggle = () => $('#theme-toggle')?.click()
 
@@ -57,25 +60,46 @@ function fuzzy(query, text) {
   return qi === q.length ? score : -1
 }
 
+/**
+ * The palette is offered as the app's front door — ⌘K from anywhere, the header search button, and
+ * `/` — and it was a full-screen overlay with none of the semantics modal() has had since v11.
+ * A screen-reader user opening it was told only "edit text, blank": no dialog role, so the page
+ * behind was never announced as blocked; the results were plain <div>s, so arrowing through them
+ * spoke nothing at all; and Tab walked invisibly out into the sidebar behind a dimmed backdrop
+ * where Enter fired whatever it landed on.
+ */
 export function openSearch() {
   if (box) return
+  boxReturnFocus = focusKeeper()
   box = el(`<div class="cmd-bg">
-    <div class="cmd">
-      <div class="cmd-in"><span class="cmd-ico">⌕</span>
-        <input id="cmd-q" placeholder="Search or run a command…" autocomplete="off" spellcheck="false">
+    <div class="cmd" role="dialog" aria-modal="true" aria-label="Search and run commands">
+      <div class="cmd-in"><span class="cmd-ico" aria-hidden="true">⌕</span>
+        <input id="cmd-q" placeholder="Search or run a command…" autocomplete="off" spellcheck="false"
+          role="combobox" aria-expanded="true" aria-controls="cmd-list" aria-autocomplete="list" aria-label="Search or run a command">
         <kbd>esc</kbd></div>
-      <div class="cmd-list" id="cmd-list"></div>
+      <div class="cmd-list" id="cmd-list" role="listbox" aria-label="Results"></div>
     </div></div>`)
   document.body.appendChild(box)
   box.addEventListener('mousedown', (e) => { if (e.target === box) closeSearch() })
   const input = $('#cmd-q', box)
+  // The palette is Arrow-driven and its only focusable control is the input, so trapTab's
+  // first/last wrap collapses to "stay here" — which is exactly right, and is the same rule
+  // rather than a second one.
+  box.addEventListener('keydown', (e) => trapTab(box, e))
 
   const draw = () => {
-    if (!items.length) { $('#cmd-list', box).innerHTML = '<div class="cmd-empty">No matches</div>'; return }
-    $('#cmd-list', box).innerHTML = items.map((r, i) => `<div class="cmd-i ${i === cursor ? 'on' : ''}" data-i="${i}">
-      <span class="ci">${r.icon}</span>
+    if (!items.length) {
+      $('#cmd-list', box).innerHTML = '<div class="cmd-empty">No matches</div>'
+      input.setAttribute('aria-activedescendant', '')
+      return
+    }
+    $('#cmd-list', box).innerHTML = items.map((r, i) => `<div class="cmd-i ${i === cursor ? 'on' : ''}" role="option" id="cmd-i-${i}" aria-selected="${i === cursor}" data-i="${i}">
+      <span class="ci" aria-hidden="true">${r.icon}</span>
       <div class="ct"><div class="c1">${esc(r.title)}</div>${r.sub ? `<div class="c2">${esc(r.sub)}</div>` : ''}</div>
       ${r.hint ? `<span class="cmd-hintkey">${r.hint.split(' ').map((k) => `<kbd>${esc(k)}</kbd>`).join('')}</span>` : `<span class="cty">${r.type || 'go'}</span>`}</div>`).join('')
+    // The highlight is drawn with a class; aria-activedescendant is how a screen reader is told
+    // which row that class is on, so Arrow-Down actually reads the next result out.
+    input.setAttribute('aria-activedescendant', `cmd-i-${cursor}`)
     on($('#cmd-list', box), '[data-i]', (_e, t) => pick(+t.dataset.i))
   }
 
@@ -123,7 +147,10 @@ export function openSearch() {
 }
 
 export function closeSearch() {
+  const back = boxReturnFocus
+  boxReturnFocus = null
   box?.remove(); box = null; items = []; cursor = 0
+  back?.()
 }
 
 /** ⌘K / Ctrl-K anywhere. (`/` and other keys are handled by the keyboard system.) */

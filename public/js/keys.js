@@ -1,4 +1,4 @@
-import { $, $$, el, esc, go, on } from './core.js'
+import { $, $$, el, esc, go, on, trapTab, focusKeeper } from './core.js'
 import { openSearch } from './views/search.js'
 
 /**
@@ -52,7 +52,10 @@ const SHORTCUTS = [
 
 const isTyping = (e) => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable
 /** True while a modal, the search palette, the help overlay or the mobile drawer is up. */
-const dialogOpen = () => !!($('#modal-root')?.firstElementChild || $('.kbd-help') || $('.cmd-bg') || $('#sidebar')?.classList.contains('open'))
+// `.asst` was missing. With focus on an Assistant chip or its send button, `n` navigated the page
+// out from under the open panel, `t` flipped the theme mid-conversation and `g b` jumped to the
+// board — the exact bug the comment below was written to fix, one overlay short of covering it.
+const dialogOpen = () => !!($('#modal-root')?.firstElementChild || $('.kbd-help') || $('.cmd-bg') || $('.asst') || $('#sidebar')?.classList.contains('open'))
 const path = () => location.hash.replace(/^#/, '').split('?')[0] || '/'
 
 let awaitingG = false
@@ -67,8 +70,9 @@ export function wireKeys() {
     if (isTyping(e)) return
 
     // The help overlay had no keyboard close at all: Escape did nothing and the only exits were
-    // clicking its × or its backdrop.
-    if (e.key === 'Escape') { $('.kbd-help')?.remove(); return }
+    // clicking its × or its backdrop. It goes through the same close as the × and the backdrop,
+    // or Escape leaves focus on <body> instead of handing it back to whatever opened the overlay.
+    if (e.key === 'Escape') { closeHelp?.(); return }
 
     // A dialog owns the keyboard while it is open. These are single, unmodified keys and
     // isTyping() only covers a focused INPUT/TEXTAREA/SELECT — so with focus on the Delete button
@@ -96,11 +100,22 @@ export function wireKeys() {
   })
 }
 
+/**
+ * The overlay the keyboard user is most stranded inside, because it is the one written FOR them.
+ *
+ * It was a bare `<div class="kbd-help" tabindex="-1">`: no dialog role, so a screen reader was
+ * never told the page behind was blocked; no focus trap, so Tab walked invisibly into the sidebar
+ * under the blur and Enter fired whatever it landed on; and `ov.remove()` dropped focus on <body>,
+ * so the reward for reading the shortcut list was being dumped at the top of the document.
+ * modal() has done all three correctly since v11 — this one just never went through it.
+ */
+let closeHelp = null
 export function helpOverlay() {
-  if ($('.kbd-help')) return $('.kbd-help').remove()
-  const ov = el(`<div class="kbd-help" tabindex="-1">
-    <div class="kbd-card">
-      <div class="kbd-h"><h3>Keyboard shortcuts</h3><button class="x" data-close aria-label="Close the shortcut list">&times;</button></div>
+  if ($('.kbd-help')) return (closeHelp || (() => $('.kbd-help').remove()))()
+  const back = focusKeeper()
+  const ov = el(`<div class="kbd-help">
+    <div class="kbd-card" role="dialog" aria-modal="true" aria-labelledby="kbd-help-t">
+      <div class="kbd-h"><h3 id="kbd-help-t">Keyboard shortcuts</h3><button class="x" data-close aria-label="Close the shortcut list">&times;</button></div>
       <div class="kbd-cols">
         <div><div class="kbd-sec">Anywhere</div>
           ${SHORTCUTS.map((s) => `<div class="kbd-row"><span>${s.desc}</span><span class="kbd-keys">${s.keys.map((k) => `<kbd>${esc(k)}</kbd>`).join('')}</span></div>`).join('')}</div>
@@ -110,7 +125,10 @@ export function helpOverlay() {
       <div class="kbd-foot">Every shortcut also has a button — nothing here is the only way to do it.</div>
     </div></div>`)
   document.body.appendChild(ov)
-  on(ov, '[data-close]', () => ov.remove())
-  ov.addEventListener('mousedown', (e) => { if (e.target === ov) ov.remove() })
-  ov.focus()
+  const close = () => { ov.remove(); closeHelp = null; back() }
+  closeHelp = close
+  on(ov, '[data-close]', close)
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close() })
+  ov.addEventListener('keydown', (e) => trapTab(ov, e))
+  $('[data-close]', ov)?.focus()
 }
