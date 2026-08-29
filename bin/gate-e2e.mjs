@@ -636,6 +636,39 @@ try {
     chk('assistant: no estimate is left with a NULL tax_rate', String(nullRate), '^false$')
   }
 
+  /* ---------- the assistant charges for a rush the way every other path does ----------
+   * v1.18.0 gave every automated quoting path the rush surcharge by routing it through
+   * priceIntake. The in-app assistant still built its own price with a hand-rolled
+   * quoteScreenPrint call, so it wrote a bare "RUSH." onto the customer-visible line, scheduled
+   * nothing differently, and charged the standard rate: rush and non-rush came back
+   * byte-identical. On 300 tees the shop's own published 3-day tier is a 50% uplift on the piece.
+   * Two expressions reading one input, which is how they were free to disagree. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Northgate Athletics Club', email: 'northgate-club@e2e.test' } })
+    const raC = r.json?.id
+    // Newest by id — the list is not ordered oldest-first, and picking the wrong end of it
+    // compares one estimate with itself.
+    const newestFor = async () => ((await req('GET', '/api/estimates')).json || [])
+      .filter((e) => e.contact_id === raC).sort((a, b) => b.id - a.id)[0]
+    const priceOf = async (text) => {
+      await req('POST', '/api/assistant', { body: { message: text } })
+      return Number((await newestFor())?.subtotal || 0)
+    }
+    const std = await priceOf('quote 300 tees, 2 color front, for Northgate Athletics Club')
+    const rush = await priceOf('quote 300 tees, 2 color front, RUSH, for Northgate Athletics Club')
+    chk('the assistant saves a standard quote', String(std > 0), '^true$')
+    chk('…and a rush quote is not byte-identical to it', String(rush !== std), '^true$')
+    chk('…it is dearer, because a rush costs the shop more', String(rush > std), '^true$')
+    // The published 3-day tier is +50% on the per-piece; setup does not scale with speed, so the
+    // uplift on the whole quote lands between the piece uplift and nothing. Assert the direction
+    // and the magnitude, not a hardcoded dollar figure the price book can legitimately move.
+    chk(`…by roughly the shop's own 3-day tier (${std} → ${rush})`,
+      String(rush > std * 1.2 && rush < std * 1.6), '^true$')
+    const full = (await req('GET', `/api/estimates/${(await newestFor())?.id}`)).json
+    chk('…and the customer line says what the surcharge is, not a bare "RUSH."',
+      JSON.stringify(full?.items || []), 'RUSH \\+\\d+%')
+  }
+
   /* ---------- changing your password keeps THIS device signed in ----------
    * setMemberPassword now signs out every session (so a compromised one dies), and the route
    * re-issues a fresh session for the current device. If the re-issue broke, a user would lock
