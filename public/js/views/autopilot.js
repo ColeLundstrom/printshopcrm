@@ -40,10 +40,22 @@ const STEPS = [
 ]
 
 let uploadedArt = null
+/** Drop the held blob and its object URL. Called on every (re)render and before every new pick. */
+function releaseArt() {
+  if (uploadedArt) { try { URL.revokeObjectURL(uploadedArt) } catch { /* already released */ } }
+  uploadedArt = null
+}
 let mode = localStorage.getItem('psc-ap-mode') || 'review' // conservative default
 
 export async function autopilotView() {
   setPage('Autopilot')
+  // uploadedArt is module state, so it outlives the render — and "Run another" IS this function,
+  // as is navigating away and coming back. It was only ever written, never cleared, while the drop
+  // zone repainted to its neutral placeholder: the screen said no file was attached and run() still
+  // preferred `uploadedArt` over synthArt(). The next customer's proof, mockup and job art therefore
+  // carried the PREVIOUS customer's logo, uploaded under the new job's number, and the step list
+  // reported "Pulled from the attachment" for an attachment that customer never sent.
+  releaseArt()
   $('#view').innerHTML = `
     <div class="ap">
       <div class="ap-hero">
@@ -95,10 +107,10 @@ export async function autopilotView() {
   }
   const fileEl = $('#ap-file'); const drop = $('#ap-drop')
   drop.onclick = () => fileEl.click()
-  fileEl.onchange = (e) => { const f = e.target.files[0]; if (f) { uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
+  fileEl.onchange = (e) => { const f = e.target.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over') }
   drop.ondragleave = () => drop.classList.remove('over')
-  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) { uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
   on($('#ap-dial'), '[data-mode]', (_e, t) => {
     mode = t.dataset.mode; localStorage.setItem('psc-ap-mode', mode)
     $$('#ap-dial button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode))

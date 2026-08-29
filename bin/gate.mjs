@@ -1510,6 +1510,40 @@ await t('it does not claim an approval, a deposit or a job on the floor unless t
   }
 })
 
+/* ---------- "Run another" is a different customer (v20) ----------
+ * uploadedArt is module scope, so it outlives the render — and "Run another" IS autopilotView(),
+ * as is navigating away and coming back. It was written on pick and drop and cleared nowhere, while
+ * the drop zone repainted to its neutral placeholder. The screen said no file was attached; run()
+ * still preferred `uploadedArt` over synthArt(), so the next customer's proof, mockup and job art
+ * carried the PREVIOUS customer's logo, uploaded under the new job's number, and the step list
+ * reported "Pulled from the attachment" for an attachment that customer never sent.
+ * Same shape as the two module-level Maps this codebase has already shipped and had to fix. */
+section('"Run another" is a different customer')
+await t('the previous customer\'s artwork does not follow the next one onto their job', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/autopilot.js'), 'utf8')
+  const i = src.indexOf('export async function autopilotView()')
+  assert.ok(i > 0, 'the view function should still be there')
+  // Everything from the entry point down to the first `$('#view').innerHTML` — the render is the
+  // point of no return, because after it the drop zone is showing the neutral placeholder again.
+  const head = src.slice(i, src.indexOf("$('#view').innerHTML", i))
+  assert.match(head, /releaseArt\(\)/,
+    'autopilotView() must drop the held attachment before it repaints the drop zone empty')
+  const rel = src.slice(src.indexOf('function releaseArt()'), src.indexOf('let mode ='))
+  assert.match(rel, /uploadedArt = null/, 'releasing has to actually clear the variable run() reads')
+  assert.match(rel, /revokeObjectURL/, '…and hand the blob back, or a long shift leaks every file picked')
+  // Both the file picker and the drop handler write it; neither may leak the one it replaces.
+  const writes = [...src.matchAll(/uploadedArt = URL\.createObjectURL/g)]
+  assert.equal(writes.length, 2, 'the picker and the drop zone are the only two writers')
+  for (const w of writes) {
+    assert.match(src.slice(Math.max(0, w.index - 60), w.index), /releaseArt\(\)/,
+      'every write must release the URL it is replacing')
+  }
+})
+
 section('every stored credential has a way out')
 await t('every secret setting belongs to an integration that can be disconnected', async () => {
   const { readFileSync } = await import('node:fs')
