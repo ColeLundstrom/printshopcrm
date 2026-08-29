@@ -1146,12 +1146,15 @@ section('receptionist: a website visitor cannot write on an existing customer')
     'quote 200 gildan 5000 tees, screen print, 1 color front',
     'I am Dana Ruiz, dana@brand-new-lead.test, 619-555-0134',
   ])
-  await t('a brand-new lead still gets a contact, a qualified deal and a drafted estimate', () => {
+  await t('a brand-new lead still gets a contact, a deal in a real column, and a drafted estimate', () => {
     const c = dbm.get("SELECT * FROM contacts WHERE email = 'dana@brand-new-lead.test'")
     assert.ok(c, 'a new visitor still becomes a customer')
     assert.equal(c.phone, '619-555-0134', 'their own details are still captured')
     const o = dbm.get('SELECT * FROM opportunities WHERE contact_id = ? ORDER BY id DESC', c.id)
-    assert.equal(o?.stage, 'qualified')
+    // v11 pinned 'qualified' here. 'qualified' is in no STAGE_KEYS, so pipelineBoard() drew this
+    // card in NO column — the shop could see it counted and could not touch it. 'quoted' is the
+    // stage syncFromEstimate already uses for a priced enquiry that has not been sent.
+    assert.equal(o?.stage, 'quoted')
     assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates WHERE contact_id = ?', c.id).c, 1)
   })
 }
@@ -3969,6 +3972,78 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
   for (const p of ['/css/app.css', '/js/core.js', '/docs-api.html', '/manifest.json', '/embed/gangsheet.js', '/icon.svg', '/sw.js']) {
     assert.ok(!rx.test(p), `${p} has no handler above the static mount — refusing it takes the app down`)
   }
+})
+
+/* ---------- every deal is in a column the shop can drag it out of (v20) ----------
+ * lib/agent.mjs filed the receptionist's happy-path deals under stage 'qualified', which is in no
+ * STAGE_KEYS and never has been. pipelineBoard() builds its columns from STAGES, so the card was
+ * drawn in NO column at all: it could not be opened, edited, dragged or corrected from any screen.
+ * And the two readers disagreed about whether to count it — pipelineStats() uses an allowlist,
+ * pipelineBoard() used a denylist — so ONE unknown value made the Dashboard KPI and the Pipeline
+ * board's own header report different open pipeline out of the same table. Measured: one $8,400
+ * receptionist deal beside one $670 quote read as $670 on the Dashboard and $9,070 on the board,
+ * with the $8,400 card visible nowhere. */
+section('every deal is in a column the shop can drag it out of')
+await t('the Dashboard and the Pipeline board cannot disagree about open value', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const P = await import('../lib/pipeline.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Website Visitor')")
+    for (const k of P.STAGE_KEYS) dbm.run("INSERT INTO opportunities (contact_id, title, stage, value, source) VALUES (1, ?, ?, 100, 'manual')", k, k)
+    dbm.run("INSERT INTO opportunities (contact_id, title, stage, value, source) VALUES (1, 'Website inquiry', 'qualified', 8400, 'ai-receptionist')")
+    const s = P.pipelineStats(), b = P.pipelineBoard()
+    assert.equal(s.open_value, b.stats.open_value, 'the Dashboard KPI and the board header read the same table')
+    assert.equal(s.open_count, b.stats.open_count, '…and must count the same rows')
+    // …and the invariant that actually matters to the shop: every deal is SOMEWHERE it can be
+    // reached from. A card in no column is a record no screen in the product can correct.
+    const drawn = b.columns.reduce((n, c) => n + c.opps.length, 0)
+    const total = dbm.get('SELECT COUNT(*) AS c FROM opportunities').c
+    assert.equal(drawn, total, 'a deal drawn in no column can never be opened, edited or dragged')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('…and a database already carrying one is rescued on the next boot', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const P = await import('../lib/pipeline.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Website Visitor')")
+    dbm.run("INSERT INTO opportunities (contact_id, title, stage, value, source) VALUES (1, 'Website inquiry', 'qualified', 8400, 'ai-receptionist')")
+    dbm.run("DELETE FROM schema_migrations WHERE name = 'opportunity_stage_is_a_real_stage'")
+    dbm.initDb(db)   // the upgrade
+    assert.equal(dbm.get('SELECT stage FROM opportunities WHERE id = 1').stage, 'lead',
+      'the card was in no column, so nothing in the product could move it')
+    assert.equal(P.pipelineBoard().columns.reduce((n, c) => n + c.opps.length, 0), 1, 'and now it is drawable')
+    // Latched: a stage a person has typed since is theirs.
+    dbm.run("UPDATE opportunities SET stage = 'negotiation' WHERE id = 1")
+    dbm.initDb(db)
+    assert.equal(dbm.get('SELECT stage FROM opportunities WHERE id = 1').stage, 'negotiation', 'the sweep must not re-run')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('and nothing can write a stage the board has no column for', async () => {
+  const P = await import('../lib/pipeline.mjs')
+  assert.equal(typeof P.normStage, 'function', 'the vocabulary needs one place that closes it')
+  assert.equal(P.normStage('qualified'), 'lead')
+  assert.equal(P.normStage('quoted'), 'quoted')
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // Every INSERT into opportunities, anywhere, must go through a guard. POST /api/opportunities
+  // has always had one inline; the receptionist never did.
+  const ag = readFileSync(join(root, 'lib/agent.mjs'), 'utf8')
+  assert.match(ag, /normStage\(stage\)/, 'the receptionist writes the stage straight in')
+  assert.doesNotMatch(ag, /\? 'lead' : 'qualified'/, "'qualified' is not a stage this app has")
+  const srv = readFileSync(join(root, 'server.mjs'), 'utf8')
+  assert.match(srv, /pipeline\.STAGE_KEYS\.includes\(b\.stage\)/, 'the manual route must keep its guard too')
 })
 
 section('the pipeline follows the quote it was opened from')
