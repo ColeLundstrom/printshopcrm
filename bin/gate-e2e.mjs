@@ -4292,6 +4292,58 @@ try {
     }
   }
 
+  /* ---------- signing out closes the live feed too ----------
+   * A socket was authorised ONCE, at upgrade, and never re-checked: lib/realtime.mjs kept only
+   * ws.__slug, and the 30s heartbeat tested liveness, never authorisation. Measured:
+   * POST /api/auth/logout returned 200, the session row was deleted, GET /api/auth/me on the same
+   * cookie correctly answered authed:false — and the socket stayed OPEN and received the next
+   * board event. Nothing in the product closed it; no route iterates wss.clients and
+   * closeRealtime() only runs at shutdown. The same held for a member who had been deactivated
+   * and for a shop that had been suspended, which is the operator's only lever against a shop
+   * defrauding people. Its own server, own database, own port, and a heartbeat turned down so the
+   * assertion does not take half a minute. */
+  {
+    const T9 = mkdtempSync(join(tmpdir(), 'psc-e2e-wsauth-'))
+    const P9 = PORT + 11
+    const s9 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P9), PSC_DB: join(T9, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P9}`, PSC_WS_HEARTBEAT_MS: '300' },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s9)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P9}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P9}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Live Feed Ink', owner_name: 'L', owner_email: 'l@live.test', password: 'GatePass-123456' }),
+      })
+      const raw = su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)
+      const cookie = raw.map((c) => String(c).split(';')[0]).join('; ')
+      chk('the live-feed instance has a signed-in shop', String(su.status), '^200$')
+
+      const sock = new WebSocket(`ws://127.0.0.1:${P9}/ws`, { headers: { Cookie: cookie } })
+      const opened = await new Promise((r2) => {
+        sock.on('open', () => r2(true)); sock.on('close', () => r2(false)); sock.on('error', () => r2(false))
+      })
+      chk('…and a tab holding a live socket to it', String(opened), '^true$')
+      const closeCode = new Promise((r2) => { sock.on('close', (c) => r2(c)); setTimeout(() => r2(0), 6000).unref?.() })
+
+      const out = await fetch(`http://127.0.0.1:${P9}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } })
+      chk('the owner signs out', String(out.status), '^200$')
+      const me = await (await fetch(`http://127.0.0.1:${P9}/api/auth/me`, { headers: { Cookie: cookie } })).json()
+      chk('…and the HTTP side is properly dead', String(me?.authed), '^false$')
+
+      chk('…so the live feed is closed too, not left streaming', String(await closeCode), '^4001$')
+      chk('…and the socket really is gone', String(sock.readyState), '^3$')
+    } finally {
+      try { s9.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T9, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /* ---------- a deploy drains instead of being killed, even with a tab open ----------
    *
    * server.close() waits for every open connection to finish, and an upgraded WebSocket never
