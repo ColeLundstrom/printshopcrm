@@ -6,6 +6,7 @@ import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
+  freezeUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, canWrite, SECRET_KEYS,
@@ -1777,7 +1778,7 @@ app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   if (!c) return res.status(404).json({ error: 'Contact not found' })
   const last = get("SELECT * FROM estimates WHERE contact_id = ? AND items != '[]' ORDER BY id DESC", c.id)
   if (!last) return res.status(400).json({ error: 'No previous order on file for this customer yet.' })
-  const items = parse(last.items, [])
+  const items = freezeUpcharges(parse(last.items, []))
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
@@ -2029,7 +2030,10 @@ const unknownSizes = (keys) => ({
 })
 
 function sanitizeEstimateItems(items, rejected = []) {
-  return items.map((it) => {
+  // Freeze the upcharge table these lines are priced with (lib/db.mjs freezeUpcharges), so the
+  // document keeps adding up after the shop changes its rates. Every writer of an estimate does
+  // this now — the gate holds that — but this is still the door the editor comes through.
+  return freezeUpcharges(items.map((it) => {
     if (!it || typeof it !== 'object' || Array.isArray(it)) return {}
     const out = { ...it }
     if (out.sizes != null) {
@@ -2057,21 +2061,6 @@ function sanitizeEstimateItems(items, rejected = []) {
       }
       out.sizes = sizes
     }
-    // Freeze the upcharge table this line is being priced with, so the document keeps adding up
-    // after the shop changes its rates. Only when absent: an estimate re-saved for an unrelated
-    // reason (a note, a due date) must not silently re-price itself, and its stored subtotal is
-    // recomputed from whatever this resolves to, so the lines and the subtotal always agree.
-    if (out.sizes && Object.keys(out.sizes).length && out.size_upcharges == null) {
-      const live = getUpcharges()
-      const snap = {}
-      for (const [k, v] of Object.entries(live || {})) {
-        const n = Number(v)
-        if (SIZE_KEY.test(String(k).trim().toUpperCase()) && Number.isFinite(n) && n !== 0) snap[String(k).trim().toUpperCase()] = n
-      }
-      out.size_upcharges = snap
-    } else if (out.size_upcharges != null && (typeof out.size_upcharges !== 'object' || Array.isArray(out.size_upcharges))) {
-      delete out.size_upcharges // a caller cannot post junk into the table its own line is priced by
-    }
     if (out.matrix != null) {
       const m = out.matrix
       if (typeof m === 'object' && !Array.isArray(m)) {
@@ -2079,7 +2068,7 @@ function sanitizeEstimateItems(items, rejected = []) {
       } else delete out.matrix
     }
     return out
-  })
+  }))
 }
 
 /**
@@ -2333,7 +2322,7 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   const src = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!src) return res.status(404).json({ error: 'Estimate not found' })
   const contactId = Number(req.body?.contact_id) || src.contact_id
-  const items = parse(src.items, [])
+  const items = freezeUpcharges(parse(src.items, []))
   // Copying a taxed estimate onto a DIFFERENT buyer must re-derive the rate against that buyer —
   // otherwise "duplicate this for the wholesale account" carries the taxable rate across.
   const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null)
@@ -3635,7 +3624,7 @@ app.post('/api/autopilot', async (req, res) => {
     mark('customer', isNew ? 'Added the customer' : 'Matched the customer', contact.name, { contact_id: contact.id })
 
     // 3 — write the estimate
-    const items = priced.items
+    const items = freezeUpcharges(priced.items)
     const t = priced.totals
     const estNum = nextEstimateNumber()
     const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -4731,6 +4720,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       }
     })
     const allSizes = rollupSizes(items)
+    freezeUpcharges(items).forEach((it, i) => { items[i] = it })
     const t = computeTotals(items, 0, getUpcharges())
     // A document must never hide money between its subtotal and its total — 8e9239e. The file's
     // total is authoritative, because it is what the shop actually billed; the reconstructed
@@ -4976,6 +4966,7 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     })
   }
   const rate = taxRateFor(contact.id)
+  freezeUpcharges(items).forEach((it, i) => { items[i] = it })
   const t = computeTotals(items, rate, getUpcharges())
   // Backstop: never store a total the arithmetic could not produce. A NULL subtotal on a document
   // a customer can approve is worse than a refusal.
@@ -6137,7 +6128,7 @@ app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this
     // The public builder prices the sheet client-side from /api/embed/config, which carries no tax
     // rate — so the button on the shop's own website says $11.40 while adding tax here charged the
     // card $12.28. The quoted sheet price is what gets charged; tax stays out of the embed flow.
-    const estItems = [{ description: desc, detail: `Built on ${s.shop_name}'s website`, decoration: 'DTF Transfer', qty: 1, unit_price: price.subtotal, taxable: false }]
+    const estItems = freezeUpcharges([{ description: desc, detail: `Built on ${s.shop_name}'s website`, decoration: 'DTF Transfer', qty: 1, unit_price: price.subtotal, taxable: false }])
     const t = computeTotals(estItems, s.tax_rate, getUpcharges())
     const num = nextEstimateNumber()
     const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, sent_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',

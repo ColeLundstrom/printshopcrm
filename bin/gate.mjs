@@ -465,6 +465,64 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
       assert.equal(lineAmount({ ...LINE, size_upcharges: junk }, WHEN_WRITTEN), 1006, `size_upcharges=${JSON.stringify(junk)}`)
     }
   })
+
+  section('pricing: EVERY writer of an estimate stamps that table, not just the editor')
+  // The freeze shipped inside sanitizeEstimateItems, which guards the two hand-edited routes.
+  // Nine other writers stored bare lines: reorder, duplicate, autopilot, the CSV order import, the
+  // v1 API, gang sheets, quick quote, the receptionist and the assistant. A 300-tee autopilot
+  // quote printed lines summing $3,499.00 under its own stored "Subtotal $3,369.00" after one
+  // upcharge change — and lines that disagree with the invoice total permanently park the
+  // QuickBooks push behind "refusing to push: lines total X but the invoice is Y", which is
+  // unresolvable from any screen because the number that moved is not written on the invoice.
+  {
+    const { freezeUpcharges } = await import('../lib/db.mjs')
+    await t('a line with a size grid comes back carrying the table it was priced with', () => {
+      const [out] = freezeUpcharges([{ ...LINE }], WHEN_WRITTEN)
+      assert.deepEqual(out.size_upcharges, WHEN_WRITTEN)
+      assert.equal(lineAmount(out, TODAY), 1006, 'and the live table can no longer reach it')
+    })
+    await t('…and it only ever fills a blank, so a re-save does not re-price', () => {
+      const already = { ...LINE, size_upcharges: WHEN_WRITTEN }
+      assert.deepEqual(freezeUpcharges([already], TODAY)[0].size_upcharges, WHEN_WRITTEN)
+    })
+    await t('…a line with no size grid is left exactly as it was', () => {
+      const flat = { description: 'Screen setup', qty: 2, unit_price: 25 }
+      assert.deepEqual(freezeUpcharges([flat], WHEN_WRITTEN)[0], flat)
+      assert.deepEqual(freezeUpcharges([{ ...LINE, sizes: {} }], WHEN_WRITTEN)[0].size_upcharges, undefined)
+    })
+    await t('…and a caller cannot post junk into the table its own line is priced by', () => {
+      for (const junk of [[], 'nope', 7]) {
+        assert.equal(freezeUpcharges([{ ...LINE, size_upcharges: junk }], WHEN_WRITTEN)[0].size_upcharges, undefined)
+      }
+    })
+    await t('…and zero, non-numeric and non-size entries never enter a snapshot', () => {
+      const [out] = freezeUpcharges([{ ...LINE }], { '2XL': 2, '3XL': 0, 'not a size': 9, '4XL': 'x' })
+      assert.deepEqual(out.size_upcharges, { '2XL': 2 })
+    })
+
+    await t('no route can write an estimate without stamping it — every INSERT is covered', async () => {
+      // Structural, deliberately: the defect was nine writers that each looked fine on its own.
+      // The next one cannot ship unguarded without this failing.
+      const fs = await import('node:fs')
+      const path = await import('node:path')
+      const root = new URL('../', import.meta.url)
+      const files = ['server.mjs', ...fs.readdirSync(new URL('lib', root)).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`)]
+      const unguarded = []
+      let sites = 0
+      for (const f of files) {
+        const lines = fs.readFileSync(new URL(f, root), 'utf8').split('\n')
+        lines.forEach((l, i) => {
+          if (!l.includes('INSERT INTO estimates')) return
+          sites++
+          const window = lines.slice(Math.max(0, i - 45), i + 1).join('\n')
+          if (!/freezeUpcharges|sanitizeEstimateItems/.test(window)) unguarded.push(`${f}:${i + 1}`)
+        })
+      }
+      assert.ok(sites >= 9, `expected to find the estimate writers, found ${sites}`)
+      assert.deepEqual(unguarded, [], `these write an estimate without freezing its upcharge table: ${unguarded.join(', ')}`)
+      void path
+    })
+  }
 }
 
 /* ---------- pricing money-bugs (v44 audit fixes) ---------- */

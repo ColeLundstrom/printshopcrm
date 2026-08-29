@@ -2534,6 +2534,68 @@ try {
       String((await req('GET', `/api/estimates/${de.id}`)).json?.subtotal), '^1006$')
   }
 
+  /* ---------- and EVERY writer of an estimate stamps that table, not just the editor ----------
+   * The freeze above lives in sanitizeEstimateItems, which guards the two hand-edited routes.
+   * Nine other writers stored bare lines — reorder, duplicate, autopilot, the CSV order import,
+   * the v1 API, gang sheets, quick quote, the receptionist and the assistant — so a document
+   * written through any of them re-priced its own LINES the next time the shop touched an
+   * ordinary documented setting, while its stored subtotal stayed put. Lines that disagree with
+   * the invoice total also park the QuickBooks push forever behind "refusing to push: lines total
+   * X but the invoice is Y", which cannot be resolved from any screen: the number that moved is
+   * not written anywhere on the invoice. Each writer below is driven for real, then the rates are
+   * moved underneath it. */
+  {
+    const RATES_THEN = JSON.stringify({ '2XL': 2, '3XL': 3 })
+    const RATES_NOW = JSON.stringify({ '2XL': 40, '3XL': 60 })
+    await req('PUT', '/api/settings', { body: { size_upcharges: RATES_THEN } })
+    const fc = (await req('POST', '/api/contacts', { body: { name: 'Freeze Co', email: 'freeze@e2e.test' } })).json
+    const LINE = { description: 'Tees', unit_price: 8.75, sizes: { M: 100, '2XL': 10, '3XL': 2 } }
+
+    // Seed one estimate the ordinary way, so reorder and duplicate have something to work from.
+    const seed = (await req('POST', '/api/estimates', { body: { contact_id: fc.id, items: [LINE] } })).json
+
+    // Reuse the suite's live key — rotating here would invalidate it for every later case.
+    const apiKey = key
+    // Each of these returns its own shape; the estimate ROW is what all of them have to get right.
+    const idOf = (r) => r.json?.id ?? r.json?.estimate?.id ?? r.json?.estimate_id ?? null
+    const written = {
+      reorder: idOf(await req('POST', `/api/contacts/${fc.id}/reorder`)),
+      duplicate: idOf(await req('POST', `/api/estimates/${seed.id}/duplicate`)),
+      v1: idOf(await req('POST', '/api/v1/estimates', {
+        cookies: false,
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: { customer: { name: 'Freeze Co', email: 'freeze@e2e.test' }, items: [LINE] },
+      })),
+      autopilot: idOf(await req('POST', '/api/autopilot', {
+        body: { text: 'Please quote 100 M, 10 2XL and 2 3XL Gildan 5000 tees in black, 1 color front. Freeze Co freeze@e2e.test' },
+      })),
+    }
+    const linesOf = (row) => (Array.isArray(row?.items) ? row.items : JSON.parse(row?.items || '[]'))
+    const rowOf = async (id) => (await req('GET', `/api/estimates/${id}`)).json
+
+    for (const [who, id] of Object.entries(written)) {
+      chk(`${who} writes an estimate`, String(id ?? 'none'), '^[0-9]+$')
+      const sized = linesOf(await rowOf(id)).filter((l) => l.sizes && Object.keys(l.sizes).length)
+      chk(`…and every sized line ${who} wrote carries the table it was priced with`,
+        String(sized.length > 0 && sized.every((l) => l.size_upcharges?.['2XL'] === 2)), '^true$')
+    }
+
+    // The shop raises its extended-size upcharges twentyfold. Nothing else happens.
+    await req('PUT', '/api/settings', { body: { size_upcharges: RATES_NOW } })
+    const { computeTotals } = await import('../public/js/shared/pricing.js')
+    const live = JSON.parse(RATES_NOW)
+    for (const [who, id] of Object.entries(written)) {
+      const fresh = await rowOf(id)
+      const recomputed = computeTotals(linesOf(fresh), 0, live).subtotal
+      chk(`…so ${who}'s lines still sum to the subtotal stored with them`,
+        `${recomputed} vs ${fresh?.subtotal}`, `^${fresh?.subtotal} vs ${fresh?.subtotal}$`)
+    }
+    // And the setting is not dead: work written today is priced at today's rates.
+    const now2 = (await req('POST', '/api/estimates', { body: { contact_id: fc.id, items: [LINE] } })).json
+    chk('a quote written after the change is priced at the new rates', String(now2?.subtotal), '^1500$')
+    await req('PUT', '/api/settings', { body: { size_upcharges: RATES_THEN } })
+  }
+
   /* ---------- a quantity that overflows the money arithmetic is refused, not stored as $0 ------
    * unit_price got a cap after `1e308` overflowed computeTotals and stored a null subtotal. The
    * OTHER operand never got one. round2 multiplies by 100 before rounding and floors a non-finite
