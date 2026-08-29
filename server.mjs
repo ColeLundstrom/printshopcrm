@@ -420,7 +420,7 @@ const upload = multer({
     filename: (_req, file, cb) => {
       const raw = extname(file.originalname || '').toLowerCase()
       const ext = /^\.[a-z0-9]{1,8}$/.test(raw) ? raw : ''
-      cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`)
+      cb(null, `${Date.now()}-${crypto.randomBytes(16).toString('hex')}${ext}`)
     },
   }),
 })
@@ -483,6 +483,29 @@ const checkToken = (kind, id, k, slug = curSlug()) => {
 const shareUrl = (kind, id) => {
   const s = curSlug()
   return `/p/${kind}/${id}?k=${token(kind, id)}${s ? `&s=${s}` : ''}`
+}
+/**
+ * A capability token for ONE uploaded file, bound to ONE shop.
+ *
+ * Uploaded art is customer property — unreleased logos, team rosters with player names, brand
+ * assets under NDA — and it used to be served straight out of public/uploads by express.static,
+ * which runs after the auth gate has already waved every non-/api path through. So a second
+ * shop's signed-in owner, and an anonymous caller with no cookie at all, both fetched another
+ * shop's proof: 200, full bytes. The database layer is airtight; this was the one surface where
+ * tenants shared storage.
+ *
+ * Staff are resolved by their session like every other route. Customers have no session, so the
+ * images on the server-rendered /p/ pages carry this instead — the same promise the page's own
+ * ?k= makes, narrowed to a single filename. It is scoped to the shop, so it cannot be replayed
+ * against another shop's file, and the handler re-checks that the shop still owns the file, so
+ * deleting a proof really does take the artwork off the internet.
+ */
+const fileToken = (filename, slug = curSlug()) =>
+  crypto.createHmac('sha256', SECRET).update(`file:${slug}:${filename}`).digest('hex').slice(0, 16)
+/** The customer-facing URL for an uploaded file: the path, plus proof the shop handed it out. */
+const uploadUrl = (filename, slug = curSlug()) => {
+  const f = String(filename || '')
+  return `/uploads/${encodeURIComponent(f)}?t=${fileToken(f, slug)}${slug ? `&s=${encodeURIComponent(slug)}` : ''}`
 }
 // Negatives read as -$40.00, not $-40.00 — discount credits appear on customer documents.
 const money = (n) => { const v = Number(n) || 0; return `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
@@ -6169,7 +6192,7 @@ const SAFE_UPLOAD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/
 const logoImg = (s) => {
   const f = String(s?.shop_logo || '')
   if (!f || !SAFE_UPLOAD_NAME.test(f) || f.includes('..')) return ''
-  return `<img class="shop-logo" src="/uploads/${f}" alt="">`
+  return `<img class="shop-logo" src="${esc(uploadUrl(f))}" alt="">`
 }
 
 /**
@@ -6528,7 +6551,7 @@ app.get('/p/ticket/:id', pPage((req, res) => {
       <div class="tk-cols">
         <div><h2>Notes</h2><div class="tk-notes">${esc(j.notes || 'None.')}</div></div>
         <div><h2>Approved Art</h2>
-          ${approved ? `<div class="tk-art"><img src="/uploads/${encodeURIComponent(approved.filename)}" alt="v${esc(approved.version)}">
+          ${approved ? `<div class="tk-art"><img src="${esc(uploadUrl(approved.filename))}" alt="v${esc(approved.version)}">
             <div class="cap">v${esc(approved.version)} — approved ${esc((approved.decided_at || '').slice(0, 10))} by ${esc(approved.decided_by || '')}</div></div>`
             : '<div class="warnbox">⚠ NO APPROVED ART — do not print.</div>'}
         </div>
@@ -6563,8 +6586,8 @@ app.get('/p/art/:id', pPage((req, res) => {
     <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">Artwork for approval</div></div>
       <div class="right"><div class="doc">PROOF</div><div class="num2">v${esc(a.version)}</div></div></div>
     <div class="to">${subject}</div>
-    <div class="proof">${isImg ? `<img src="/uploads/${encodeURIComponent(a.filename)}" alt="Proof v${esc(a.version)}">`
-      : `<a class="btn ghost" href="/uploads/${encodeURIComponent(a.filename)}" target="_blank">Open ${esc(a.original_name)}</a>`}</div>
+    <div class="proof">${isImg ? `<img src="${esc(uploadUrl(a.filename))}" alt="Proof v${esc(a.version)}">`
+      : `<a class="btn ghost" href="${esc(uploadUrl(a.filename))}" target="_blank">Open ${esc(a.original_name)}</a>`}</div>
     <div class="check"><strong>Check before approving:</strong> spelling, placement, size, colors, and garment. Once approved, this is exactly what we print.</div>
     ${decided ? `<div class="${a.status === 'approved' ? 'ok' : 'warn'}">${a.status === 'approved'
         // "Moving this to production" is only true when a job exists. On an estimate-attached mockup
@@ -6606,6 +6629,63 @@ app.post('/p/art/:id/decide', express.urlencoded({ extended: false }), pPage((re
 /* ================= STATIC + SPA ================= */
 
 const PUBLIC = join(ROOT, 'public')
+
+/**
+ * /uploads/* — the one path in the app that serves another person's private property.
+ *
+ * express.static below serves everything under public/, and the auth gate ends with
+ * `return next()` for every non-/api path, so this directory answered with no session and no
+ * tenant check at all. Reproduced on two shops sharing one process: shop B's signed-in owner
+ * fetched shop A's proof, 200, full bytes; so did a caller with no cookie. Filenames are random,
+ * but "hard to guess" is a different promise from "tenant isolation is absolute", and it is not
+ * the one the product makes.
+ *
+ * Now the caller is resolved the same way every other route resolves one: a signed-in member of
+ * the shop that owns the file, or a customer holding a token this shop minted for this filename.
+ * Ownership is re-read on every request, so DELETE on a proof revokes the artwork too.
+ *
+ * It must NEVER call next(): falling through would hand the request to express.static, which is
+ * the thing being fixed. Every path out of here ends the response.
+ */
+app.get('/uploads/:file', (req, res) => {
+  const f = String(req.params.file || '')
+  if (!SAFE_UPLOAD_NAME.test(f) || f.includes('..')) return res.status(404).end()
+  // Does THIS shop's database claim the file? Proof/mockup art, or the shop's own logo (which is
+  // branding on the customer's invoice, not a secret, but still belongs to exactly one shop).
+  const ownedHere = () => {
+    try {
+      if (get('SELECT 1 AS x FROM art_versions WHERE filename = ? LIMIT 1', f)) return true
+      return String(getSettings()?.shop_logo || '') === f
+    } catch { return false }
+  }
+  let ok = false
+  if (!AUTH_ENABLED || req.tenant) {
+    // Single-tenant (no login anywhere in the product), or a signed-in member: the gate already
+    // put us in that shop's database, so this asks "is it yours?" and nothing else.
+    ok = ownedHere()
+  } else {
+    const slug = String(req.query.s || '')
+    const want = Buffer.from(fileToken(f, slug))
+    const got = Buffer.from(String(req.query.t || ''))
+    if (slug && want.length === got.length && crypto.timingSafeEqual(want, got)) {
+      const t = getTenantBySlug(slug)
+      if (t) { try { ok = withTenant(t.slug, ownedHere) } catch { ok = false } }
+    }
+  }
+  // 404, not 403: a 403 would confirm the file exists to a caller who should not learn that.
+  if (!ok) return res.status(404).end()
+  // Uploaded art is attacker-supplied and served from the app origin. Neutralize active content —
+  // an uploaded SVG with an inline <script> would otherwise run as us. Carried over verbatim from
+  // the express.static mount these files used to come from.
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; sandbox")
+  // private: a shared proxy must not cache one shop's artwork and hand it to the next caller.
+  res.setHeader('Cache-Control', 'private, max-age=86400')
+  res.sendFile(join(UPLOADS, f), { dotfiles: 'deny' }, (err) => {
+    if (err && !res.headersSent) res.status(404).end()
+  })
+})
+
 app.use(express.static(PUBLIC, {
   index: false,
   setHeaders: (res, p) => {

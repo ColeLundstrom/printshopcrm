@@ -2253,6 +2253,77 @@ try {
     chk('…at the count they were quoted at', String(prePo.total_units), '^142$')
   }
 
+  /* ---------- one shop's artwork is not the whole internet's artwork ----------
+   * public/uploads is a single directory served by express.static, and the auth gate ends with
+   * `return next()` for every non-/api path — so uploaded proofs answered with no session and no
+   * tenant check. Reproduced before the fix on this very instance: an anonymous fetch of the raw
+   * filename returned 200 with the full bytes, and so did a DIFFERENT shop's signed-in owner.
+   * Art files are customer property: unreleased logos, team rosters with player names and
+   * numbers, brand assets under NDA. The database layer is airtight (every cross-tenant probe in
+   * this suite 404s); this was the one surface where two shops shared storage.
+   *
+   * The customer must still be able to see their own proof, with no login — that is the whole
+   * point of the /p/ page — so the check has to pass the tokened URL the page itself renders. */
+  {
+    const uc = (await req('POST', '/api/contacts', { body: { name: 'Confidential Athletics', email: 'confidential@e2e.test' } })).json
+    const uj = (await req('POST', '/api/jobs', { body: { contact_id: uc.id, title: 'Unreleased Logo Tees', decoration: 'Screen Print' } })).json
+    const uf = new FormData()
+    uf.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"><!--UNRELEASED-LOGO--></svg>'], { type: 'image/svg+xml' }), 'secret-logo.svg')
+    const uup = await fetch(`${BASE}/api/jobs/${uj.id}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: uf })
+    const uart = await uup.json().catch(() => ({}))
+    chk('a shop uploads its customer\'s unreleased artwork', String(uup.status), '^200$')
+
+    // The exact request the report was filed on: the bare path, no cookie, no token.
+    const anon = await fetch(`${BASE}/uploads/${uart.filename}`)
+    const anonBody = await anon.text()
+    chk('a stranger with the filename and no cookie gets nothing', String(anon.status), '^404$')
+    chk('…and certainly not the bytes', String(/UNRELEASED-LOGO/.test(anonBody)), '^false$')
+
+    // A second, real shop on the same box. Signed in, valid session — just not this shop.
+    const bres = await fetch(`${BASE}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shop_name: 'Neighbour Ink', owner_name: 'Nell', owner_email: 'neighbour@e2e.test', password: 'GatePass-123456' }),
+    })
+    const bCookie = (bres.headers.getSetCookie?.() ?? [bres.headers.get('set-cookie')].filter(Boolean))
+      .map((c) => String(c).split(';')[0]).join('; ')
+    chk('a second shop signs up on the same instance', String(bres.status), '^200$')
+    chk('…and really is signed in', String((await fetch(`${BASE}/api/estimates`, { headers: { Cookie: bCookie } })).status), '^200$')
+    const nb = await fetch(`${BASE}/uploads/${uart.filename}`, { headers: { Cookie: bCookie } })
+    const nbBody = await nb.text()
+    chk('the shop next door cannot read it either', String(nb.status), '^404$')
+    chk('…and gets no bytes', String(/UNRELEASED-LOGO/.test(nbBody)), '^false$')
+
+    // The shop that owns it still opens it from its own board.
+    const mine = await fetch(`${BASE}/uploads/${uart.filename}`, { headers: { Cookie: cookieHeader() } })
+    chk('the shop that owns the art still opens it', String(mine.status), '^200$')
+    chk('…with the file itself', String(/UNRELEASED-LOGO/.test(await mine.text())), '^true$')
+
+    // …and the customer, who has no login at all, still sees the proof the shop emailed them.
+    const usent = await req('POST', `/api/art/${uart.id}/send`)
+    const ulink = String(usent.json?.share_url || '').replace(/^https?:\/\/[^/]+/, '')
+    const upage = await fetch(`${BASE}${ulink}`)
+    const uhtml = await upage.text()
+    chk('the customer\'s proof page still opens with no login', String(upage.status), '^200$')
+    const imgSrc = (/<img src="(\/uploads\/[^"]+)"/.exec(uhtml) || [])[1] || ''
+    chk('…and the artwork on it carries proof the shop handed it out', String(/[?&]t=/.test(imgSrc)), '^true$')
+    const shown = await fetch(`${BASE}${imgSrc.replace(/&amp;/g, '&')}`)
+    chk('…and that image really loads for them', String(shown.status), '^200$')
+    chk('…showing the artwork', String(/UNRELEASED-LOGO/.test(await shown.text())), '^true$')
+
+    // A token minted for one shop must not open another shop's file, and a token for one file
+    // must not open the file next to it.
+    const tok = (/[?&]t=([a-f0-9]+)/.exec(imgSrc) || [])[1] || ''
+    const swapped = await fetch(`${BASE}/uploads/${uart.filename}?t=${tok}&s=neighbour-ink`)
+    chk('a customer token cannot be replayed against the wrong shop', String(swapped.status), '^404$')
+
+    // Deleting the proof takes the artwork off the internet, not just off the page. Before this
+    // there was no revocation at all: the URL in the customer's inbox worked forever.
+    await req('DELETE', `/api/jobs/${uj.id}/art/${uart.id}`)
+    const afterDel = await fetch(`${BASE}${imgSrc.replace(/&amp;/g, '&')}`)
+    chk('deleting the proof revokes the link the customer was sent', String(afterDel.status), '^404$')
+  }
+
   /* ---------- a share link dies with the record it was minted for ----------
    * token() is HMAC(kind:id:slug) — a pure function of a ROWID, and SQLite hands a freed rowid to
    * the next INSERT. So the estimate link already sitting in one customer's inbox opens the NEXT
