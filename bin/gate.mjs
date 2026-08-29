@@ -1113,6 +1113,39 @@ await t('a 60-invoice statement paginates and buckets land where the calendar sa
  * `state.params` went to the server empty — so the owner read "new" off the screen and saved a
  * rule that fired on every column. The server refusal (proved in gate-e2e) makes the shape
  * unstorable; this keeps the SCREEN honest, so the common path never has to hit that refusal. */
+/* Google Drive was the only integration in the product with a way out. The rest were write-only:
+ * a secret field renders blank, blanking it is a deliberate no-op, and there was no route that
+ * removed one. A shop whose Slack admin or bookkeeper just left could not take that connection
+ * out of the app from any screen. This keeps the next integration from shipping without an exit. */
+section('every stored credential has a way out')
+await t('every secret setting belongs to an integration that can be disconnected', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const { SECRET_KEYS } = await import('../lib/db.mjs')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf('const DISCONNECT_GROUPS = {')
+  assert.ok(i > 0, 'the grouped disconnect route should still be there')
+  const map = src.slice(i, src.indexOf('\n}', i))
+  const covered = new Set([...map.matchAll(/'([a-z_0-9]+)'/g)].map((m) => m[1]))
+  // Drive has its own route with its own semantics (it also clears gdrive_connected).
+  const driveOwn = (k) => k.startsWith('gdrive_')
+  const orphans = SECRET_KEYS.filter((k) => !covered.has(k) && !driveOwn(k))
+  assert.deepEqual(orphans, [],
+    `these credentials can be set and never removed: ${orphans.join(', ')} — add them to DISCONNECT_GROUPS`)
+})
+await t('…and the settings form has one value that means erase, distinct from unchanged', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const { CLEAR_SECRET } = await import('../lib/db.mjs')
+  assert.ok(CLEAR_SECRET && CLEAR_SECRET !== '', 'blank has to keep meaning "unchanged" — erase needs its own spelling')
+  const misc = readFileSync(join(root, 'public/js/views/misc.js'), 'utf8')
+  assert.match(misc, /data-disconnect/, 'and the screen has to offer it, not just the API')
+})
+
 section('the automation builder saves the trigger it is showing')
 await t('an untouched trigger parameter is seeded from its default, not left empty', async () => {
   const { readFileSync } = await import('node:fs')

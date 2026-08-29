@@ -1,4 +1,4 @@
-import { api, $, esc, money, setPage, on, toast, empty , onOnce} from '../core.js'
+import { api, $, esc, money, setPage, on, toast, empty, confirmModal, onOnce } from '../core.js'
 
 /**
  * Books — the bookkeeper page: A/R aging (the report InkSoft users say they can't get) and the
@@ -62,8 +62,22 @@ function render(aging, qbo) {
            ${qbo.rows.length ? `<table class="tbl">
              <tr><th>Invoice</th><th class="r">Amount</th><th>Status</th><th>Detail</th><th></th></tr>
              ${qbo.rows.map(qboRow).join('')}
-           </table>` : '<p class="dim">No sync activity yet — record a payment and it will queue itself.</p>'}`}
+           </table>` : '<p class="dim">No sync activity yet — record a payment and it will queue itself.</p>'}
+           <div class="row" style="gap:8px;margin-top:12px">
+             <button class="btn ghost sm" type="button" id="qbo-disconnect">Disconnect QuickBooks</button>
+             <span class="dim" style="font-size:11.5px">Removes the saved keys and tokens. Nothing already synced is touched.</span>
+           </div>`}
     </div>`
+
+  // The only way to take QuickBooks back out. Its keys and tokens are all secrets, so blanking
+  // them on the settings form was a deliberate no-op and there was no route that cleared them —
+  // a shop whose bookkeeper left could not disconnect the books from any screen.
+  if ($('#qbo-disconnect')) $('#qbo-disconnect').onclick = () => confirmModal('Disconnect QuickBooks?',
+    'The saved app keys and tokens are removed from this shop. Invoices already synced stay in QuickBooks, and anything waiting will queue until you connect again.',
+    async () => {
+      try { await api.post('/api/settings/disconnect/quickbooks', {}); toast('QuickBooks disconnected'); booksView() }
+      catch (e) { toast(e.message, true) }
+    }, 'Disconnect')
 
   onOnce($('#view'), '[data-qbo-retry]', async (e) => {
     const btn = e.target.closest('[data-qbo-retry]')

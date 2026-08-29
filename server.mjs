@@ -5800,9 +5800,45 @@ app.post('/api/slack-test', requireRole('manager'), wrap(async (req, res) => {
 }))
 
 app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
-  // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged).
+  // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged),
+  // and erases it for the one sentinel value that means erase — see CLEAR_SECRET.
   applySettingsPatch(req.body || {})
   res.json(publicSettings())
+}))
+
+/**
+ * Disconnect an integration — the exit every one of them was missing.
+ *
+ * Google Drive was the only integration in the product with a way out. Everything else was
+ * write-only: a secret field renders blank, blanking it is a deliberate no-op, and there was no
+ * route that removed one. So a shop that pasted the wrong Stripe key, or whose Slack admin,
+ * bookkeeper or office manager just left with the credentials in their head, could not take that
+ * connection out of the product from any screen. The answer was sqlite3, which is the definition
+ * of a state a human cannot fix.
+ *
+ * Grouped, so the UI names an integration rather than having to know which six keys make up a
+ * QuickBooks connection. setSetting, NOT applySettingsPatch — see the note at /api/gdrive/disconnect.
+ */
+const DISCONNECT_GROUPS = {
+  slack: ['slack_bot_token', 'slack_signing_secret'],
+  stripe: ['stripe_secret', 'stripe_publishable'],
+  twilio: ['twilio_sid', 'twilio_token', 'twilio_from'],
+  smtp: ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_secure'],
+  ai: ['ai_api_key'],
+  quickbooks: ['qbo_realm_id', 'qbo_client_id', 'qbo_client_secret', 'qbo_access_token', 'qbo_refresh_token', 'qbo_token_expires', 'qbo_oauth_state'],
+  ss: ['ss_account', 'ss_api_key'],
+  sanmar: ['sanmar_user', 'sanmar_pass', 'sanmar_cust'],
+  alpha: ['alpha_account', 'alpha_pass'],
+}
+app.post('/api/settings/disconnect/:group', requireRole('manager'), wrap((req, res) => {
+  const group = String(req.params.group)
+  const keys = DISCONNECT_GROUPS[Object.hasOwn(DISCONNECT_GROUPS, group) ? group : '']
+  if (!keys) return res.status(404).json({ error: 'No such integration', code: 'unknown_group' })
+  for (const k of keys) setSetting(k, '')
+  // On the shop's own timeline, because removing a credential is the kind of thing someone asks
+  // about a week later — and in a shop with staff it needs to be traceable to a person.
+  logActivity('note', `${group} disconnected — its credentials were removed`, {})
+  res.json({ ok: true, cleared: keys, settings: publicSettings() })
 }))
 
 /**

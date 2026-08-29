@@ -165,6 +165,19 @@ function staffCard(d, me, esc) {
     </div></div>`
 }
 
+/**
+ * "Disconnect" — the exit every integration except Google Drive was missing.
+ *
+ * A secret field renders blank (the browser never sees a stored value), so blanking it means
+ * "unchanged" and there was no value that meant "remove it". A shop that pasted the wrong key, or
+ * whose Slack admin or bookkeeper just left with the credentials in their head, had no way to
+ * take that connection out of the product. Rendered unconditionally: clearing a group that holds
+ * nothing is a harmless no-op, and a button that appears only once you are connected is a button
+ * nobody finds when they need it.
+ */
+const disconnectBtn = (group, label) =>
+  `<button class="btn ghost sm" type="button" data-disconnect="${group}" data-label="${label}">Disconnect</button>`
+
 /** The Bring-Your-Own-Model card. Provider + key live in the shop's own settings; usage bills to them. */
 function aiCard(aiInfo, esc) {
   const providers = aiInfo?.providers || []
@@ -189,6 +202,7 @@ function aiCard(aiInfo, esc) {
       <p class="dim" style="font-size:12.5px;margin-bottom:12px;line-height:1.6">AI features run on <strong style="color:var(--txt-2)">your</strong> account and bill to you, never to us. Leave it <strong style="color:var(--txt-2)">Off</strong> and the shop still works: the built-in parser reads size runs and colors without a model.</p>
       <div class="row" style="gap:10px;align-items:center">
         <button class="btn ghost sm" id="ai-test" type="button">Test connection</button>
+        ${disconnectBtn('ai', 'AI model')}
         <span class="dim" id="ai-note" style="font-size:11.5px">${statusNote}</span>
       </div>
       <details class="disc"><summary>${configured ? 'Change provider, model or API key' : 'Set up AI — pick a provider and paste your key'}</summary>
@@ -247,6 +261,7 @@ function slackCard(esc) {
           </div>
           <div class="row" style="gap:10px;align-items:center">
             <button class="btn ghost sm" id="slack-test" type="button">Test connection</button>
+            ${disconnectBtn('slack', 'Slack')}
             <span class="dim" id="slack-note" style="font-size:11.5px">Checks both values and sends a test ping to your Slack app.</span>
           </div>
         </li>
@@ -388,14 +403,14 @@ export async function settingsView() {
             <div class="grid2">${f('smtp_host', 'SMTP host', 'e.g. smtp.postmarkapp.com, email-smtp.us-east-1.amazonaws.com')}${f('smtp_port', 'Port', '587 (TLS) or 465 (SSL)', 'number')}</div>
             <div class="grid2">${f('smtp_user', 'SMTP username')}${sf('smtp_pass', 'SMTP password / API token')}</div>
             ${f('smtp_from', 'From address', 'The address customers see. Defaults to your shop email.')}
-            <div class="row" style="gap:8px"><button class="btn ghost sm" id="verify-email">Verify SMTP</button><button class="btn ghost sm" id="test-email">Send test email</button><span class="dim" id="email-test-note" style="font-size:11.5px"></span></div>
+            <div class="row" style="gap:8px"><button class="btn ghost sm" id="verify-email">Verify SMTP</button><button class="btn ghost sm" id="test-email">Send test email</button>${disconnectBtn('smtp', 'email sending')}<span class="dim" id="email-test-note" style="font-size:11.5px"></span></div>
           </div></details>
 
         <details class="disc"><summary>Text-message settings — ${notif.sms ? `texting from ${esc(notif.sms_from || 'your number')}` : 'not connected, add your Twilio details'}</summary>
           <div class="disc-b">
             <div class="grid2">${f('twilio_sid', 'Twilio Account SID', 'ACxxxxxxxx')}${sf('twilio_token', 'Twilio Auth Token')}</div>
             ${f('twilio_from', 'From number or Messaging Service SID', '+1XXXXXXXXXX or MGxxxxxxxx')}
-            <div class="row" style="gap:8px"><button class="btn ghost sm" id="test-sms">Send test SMS</button><span class="dim" id="sms-test-note" style="font-size:11.5px"></span></div>
+            <div class="row" style="gap:8px"><button class="btn ghost sm" id="test-sms">Send test SMS</button>${disconnectBtn('twilio', 'text messaging')}<span class="dim" id="sms-test-note" style="font-size:11.5px"></span></div>
           </div></details>
       </div>
     </div>`}
@@ -424,6 +439,7 @@ export async function settingsView() {
               ${sf('stripe_secret', 'Your Stripe secret key', 'In Stripe: Developers → API keys → Secret key → Reveal. Starts <code>sk_live_</code> or <code>sk_test_</code> — not the publishable <code>pk_</code> one. Stays on your server.')}
               ${f('stripe_publishable', 'Your Stripe publishable key (optional)', 'Same page, starts <code>pk_live_</code> — not required for checkout')}
             </div>
+            <div class="row" style="gap:8px;margin-top:8px">${disconnectBtn('stripe', 'Stripe')}</div>
             <div id="stripe-err" style="font-size:11.5px;line-height:1.6;color:var(--red)"></div>
           </div></details>
 
@@ -477,6 +493,9 @@ export async function settingsView() {
               ${sf('sanmar_pass', 'SanMar password')}
             </div>
             ${f('sanmar_cust', 'SanMar customer #', 'Required for SanMar customer-specific pricing')}
+            <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap">
+              ${disconnectBtn('ss', 'S&amp;S Activewear')}${disconnectBtn('sanmar', 'SanMar')}${disconnectBtn('alpha', 'AlphaBroder')}
+            </div>
           </div></details>
         <div class="row" style="gap:10px;align-items:center;margin-top:10px">
           <button class="btn sm ghost" type="button" id="sup-test">Test with a real style</button>
@@ -732,6 +751,19 @@ export async function settingsView() {
   }
   if ($('#gdrive-disconnect')) $('#gdrive-disconnect').onclick = async () => {
     try { await api.post('/api/gdrive/disconnect', {}); toast('Google Drive disconnected'); location.reload() } catch (e) { toast(e.message, true) }
+  }
+  // Every other integration's way out. Confirmed, because removing a credential is not undoable
+  // from here — the shop has to paste it again — but it must be REACHABLE, which it was not.
+  for (const btn of document.querySelectorAll('[data-disconnect]')) {
+    btn.onclick = () => {
+      const { disconnect: group, label } = btn.dataset
+      confirmModal(`Disconnect ${label}?`,
+        'Its saved credentials are removed from this shop. Nothing else is deleted, and you can connect it again by pasting the keys back in.',
+        async () => {
+          try { await api.post(`/api/settings/disconnect/${group}`, {}); toast(`${label} disconnected`); location.reload() }
+          catch (e) { toast(e.message, true) }
+        }, 'Disconnect')
+    }
   }
   if ($('#sup-test')) $('#sup-test').onclick = async () => {
     const note = $('#sup-test-note')

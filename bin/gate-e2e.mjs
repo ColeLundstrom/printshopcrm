@@ -1638,6 +1638,51 @@ try {
     chk('…and cancelling really removes it', String(!!(a.json?.pending || []).find((p) => p.label === 'Drip Survivor')), '^false$')
   }
 
+  /* ---------- a credential a shop wants gone can be removed from a screen ----------
+   * Every stored secret was write-only. The settings form renders a secret blank — the browser
+   * never sees the value — so an empty submission has to mean "unchanged", and applySettingsPatch
+   * skips it deliberately. The consequence was that NO value meant "remove it": a shop that
+   * pasted the wrong Stripe key, or whose Slack admin, bookkeeper or office manager just left
+   * with the credentials in their head, could not take that connection out of the product from
+   * any screen. Google Drive was the only integration in the whole app with a way out; the
+   * answer for the other nine was sqlite3, which is the definition of a state a human cannot fix. */
+  {
+    await req('PUT', '/api/settings', { body: { slack_bot_token: 'xoxb-real-token', slack_signing_secret: 'signing-secret' } })
+    let sset = (await req('GET', '/api/settings')).json?.settings || {}
+    chk('a shop connects Slack', String(sset.slack_bot_token_set), '^true$')
+
+    // The thing that used to be a no-op, and the reason it has to stay one.
+    await req('PUT', '/api/settings', { body: { slack_bot_token: '' } })
+    sset = (await req('GET', '/api/settings')).json?.settings || {}
+    chk('saving the form blank still keeps the key, because the form renders it blank', String(sset.slack_bot_token_set), '^true$')
+
+    r = await req('POST', '/api/settings/disconnect/slack')
+    chk('Slack can be disconnected', String(r.status), '^200$')
+    sset = (await req('GET', '/api/settings')).json?.settings || {}
+    chk('…and the token is really gone', String(sset.slack_bot_token_set), '^false$')
+    chk('…along with the rest of that connection', String(sset.slack_signing_secret_set), '^false$')
+
+    // The other integrations, each of which had exactly the same dead end.
+    await req('PUT', '/api/settings', { body: { stripe_secret: 'sk_test_gate', ai_api_key: 'sk-ant-gate', ss_api_key: 'ss-gate', ss_account: '1234' } })
+    for (const [group, key] of [['stripe', 'stripe_secret_set'], ['ai', 'ai_api_key_set'], ['ss', 'ss_api_key_set']]) {
+      chk(`${group} disconnects`, String((await req('POST', `/api/settings/disconnect/${group}`)).status), '^200$')
+      const now = (await req('GET', '/api/settings')).json?.settings || {}
+      chk(`…and ${group}'s credential is gone`, String(now[key]), '^false$')
+    }
+    chk('…and S&S\'s account number went with its key', String(((await req('GET', '/api/settings')).json?.settings || {}).ss_account || ''), '^$')
+
+    // An unknown integration is a 404, not a silent 200 that teaches the UI it worked.
+    chk('an integration that does not exist is refused', String((await req('POST', '/api/settings/disconnect/nope')).status), '^404$')
+    chk('…and a prototype key is not an integration either', String((await req('POST', '/api/settings/disconnect/constructor')).status), '^404$')
+
+    // The other half: an explicit erase through the ordinary settings form.
+    await req('PUT', '/api/settings', { body: { slack_bot_token: 'xoxb-again' } })
+    chk('a key can be put back', String(((await req('GET', '/api/settings')).json?.settings || {}).slack_bot_token_set), '^true$')
+    await req('PUT', '/api/settings', { body: { slack_bot_token: '__CLEAR__' } })
+    chk('…and erased deliberately, without a route per integration',
+      String(((await req('GET', '/api/settings')).json?.settings || {}).slack_bot_token_set), '^false$')
+  }
+
   /* ---------- a rule that names no stage does not mail the customer at every stage ----------
    * fire() skipped its stage filter when `params.stage` was falsy, on the reading that "no stage
    * set" means "unfiltered". It does not: a rule that names no stage is a rule nobody finished
