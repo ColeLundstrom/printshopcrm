@@ -330,7 +330,13 @@ function panel(key) {
 }
 
 /* ---------- wiring ---------- */
-function markStep(key, status) { return api.post('/api/onboarding/step', { key, status }).catch(() => {}) }
+// A checklist tick that did not stick is not worth blocking setup over, but it is worth saying:
+// silently swallowed, a step marked done on screen and not on the server is indistinguishable
+// from one that saved, and the shop finds out when the checklist reappears.
+function markStep(key, status) {
+  return api.post('/api/onboarding/step', { key, status })
+    .catch((e) => { console.warn('setup step not recorded', e); toast('Saved — but the setup checklist could not be updated', true) })
+}
 function saveSettings(root) {
   const out = {}
   for (const el of $$('[name]', root)) out[el.name] = el.type === 'number' && el.value === '' ? '' : el.value
@@ -498,7 +504,12 @@ function wire(key) {
       if (form && $$('[name]', form).length) await saveSettings(form)
       if (key === 'pricing') {
         const svc = {}; $$('[data-svc]').forEach((el) => { svc[el.dataset.svc] = el.value })
-        await api.put('/api/onboarding/service-pricing', svc).catch(() => {})
+        // No .catch here. This is the shop's per-service pricing — the numbers every quote it
+        // ever writes is built from — and swallowing the failure meant a 400, a 403 from
+        // requireRole, a 500 or the 502/503 restart window all ended with markStep('done'),
+        // advance(), and a wizard that slid to the next screen as if the prices had saved. The
+        // outer catch already toasts the message and re-enables the button.
+        await api.put('/api/onboarding/service-pricing', svc)
       }
       await markStep(key, 'done')
       await advance()

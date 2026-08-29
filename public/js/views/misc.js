@@ -529,6 +529,34 @@ export async function settingsView() {
       : '<div class="row" style="justify-content:flex-end"><button class="btn" id="save">Save Settings</button></div>'}
   </div>`
 
+  /* Settings is ONE long form — eleven cards and a single Save Settings button at the bottom — and
+   * five controls on that same page used to throw the whole thing away without asking: a logo
+   * upload, a logo removal, returning from Stripe Connect, and both Disconnect buttons, two of
+   * which called location.reload(). Each re-rendered from the STORED values, so an owner who
+   * pasted their SMTP password, their Stripe keys and their costing numbers and then uploaded
+   * their logo got "Logo saved" and an empty form. There was no dirty tracking anywhere; the only
+   * beforeunload guard in the app is the price-matrix editor's, which is the pattern copied here.
+   *
+   * location.reload() was worse than a repaint: it also drops the hash route. */
+  let settingsDirty = false
+  for (const el of $$('#view [name]')) el.addEventListener('input', () => { settingsDirty = true })
+  const repaint = () => {
+    if (!settingsDirty) return settingsView()
+    confirmModal('Reload settings?',
+      'You have changes on this page that have not been saved. Reloading discards them.',
+      () => { settingsDirty = false; settingsView() }, 'Discard and reload')
+  }
+  const repaintChrome = () => { repaint(); window.dispatchEvent(new Event('psc:settings')) }
+  // The paths the app does not control: tab close, reload, the browser's Back button. Bound once,
+  // and it only speaks while the settings form is actually on screen.
+  if (!window.__pscSettingsGuard) {
+    window.__pscSettingsGuard = true
+    window.addEventListener('beforeunload', (e) => {
+      if (!settingsDirty || !document.getElementById('save')) return
+      e.preventDefault(); e.returnValue = ''
+    })
+  }
+
   // Embed snippet — an iframe the shop drops onto their own site. Carries the shop's embed key
   // so orders route to this shop's account and Stripe.
   const snippet = `<iframe src="${location.origin}/embed/gangsheet${me.embed_key ? `?shop=${me.embed_key}` : ''}" title="Gang Sheet Builder"
@@ -552,7 +580,7 @@ export async function settingsView() {
     try {
       const st = await api.get('/api/stripe/connect/status')
       toast(st.charges_enabled ? 'Stripe connected — you can take payments' : 'Stripe setup started — finish the remaining steps to go live')
-      if (st.charges_enabled) settingsView()
+      if (st.charges_enabled) repaint()
     } catch { /* non-fatal */ }
   }
 
@@ -571,13 +599,13 @@ export async function settingsView() {
         const d = await r.json().catch(() => ({}))
         if (!r.ok) throw new Error(d.error || 'Upload failed')
         toast('Logo saved')
-        settingsView(); window.dispatchEvent(new Event('psc:settings'))
+        repaintChrome()
       } catch (e) { toast(e.message, true); pick.disabled = false; pick.textContent = 'Upload logo' }
     }
   }
   const logoClear = $('#logo-clear')
   if (logoClear) logoClear.onclick = async () => {
-    try { await api.del('/api/settings/logo'); toast('Logo removed'); settingsView() }
+    try { await api.del('/api/settings/logo'); toast('Logo removed'); repaintChrome() }
     catch (e) { toast(e.message, true) }
   }
 
@@ -612,7 +640,7 @@ export async function settingsView() {
           smtp_user: user, smtp_from: user, smtp_pass: pass,
         })
         toast('Email connected — send yourself a test to be sure')
-        settingsView()
+        repaint()
       } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Connect email' }
     }
 
@@ -676,7 +704,7 @@ export async function settingsView() {
       toast(bad.msg, true)
       return
     }
-    try { await api.put('/api/settings', payload); toast('Settings saved'); settingsView(); window.dispatchEvent(new Event('psc:settings')) }
+    try { await api.put('/api/settings', payload); toast('Settings saved'); settingsDirty = false; settingsView(); window.dispatchEvent(new Event('psc:settings')) }
     catch (e) { toast(e.message, true) }
   }
 
@@ -743,7 +771,7 @@ export async function settingsView() {
     } catch (e) { note.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
   }
   if ($('#gdrive-disconnect')) $('#gdrive-disconnect').onclick = async () => {
-    try { await api.post('/api/gdrive/disconnect', {}); toast('Google Drive disconnected'); location.reload() } catch (e) { toast(e.message, true) }
+    try { await api.post('/api/gdrive/disconnect', {}); toast('Google Drive disconnected'); repaintChrome() } catch (e) { toast(e.message, true) }
   }
   // Every other integration's way out. Confirmed, because removing a credential is not undoable
   // from here — the shop has to paste it again — but it must be REACHABLE, which it was not.
@@ -753,7 +781,7 @@ export async function settingsView() {
       confirmModal(`Disconnect ${label}?`,
         'Its saved credentials are removed from this shop. Nothing else is deleted, and you can connect it again by pasting the keys back in.',
         async () => {
-          try { await api.post(`/api/settings/disconnect/${group}`, {}); toast(`${label} disconnected`); location.reload() }
+          try { await api.post(`/api/settings/disconnect/${group}`, {}); toast(`${label} disconnected`); repaintChrome() }
           catch (e) { toast(e.message, true) }
         }, 'Disconnect')
     }

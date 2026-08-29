@@ -2278,6 +2278,64 @@ for (const [tz, stored, want, why] of [
  * a recorded payment, remove a team member and delete an automation — every one destructive.
  * matrices.js already shipped the correct pattern; the rule below is written over every view so
  * the thirteenth is caught when it is written rather than in a later audit. */
+/* ---------- a screen does not throw away work nobody asked it to throw away ----------
+ * Round 15 closed the half-written REPLY. Three more of the same shape were left, on the two
+ * screens where a shop types the most before it saves once. */
+section('the app does not discard what the shop has typed')
+{
+  const readFile = async (f) => {
+    const fs = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    return fs.readFileSync(join(join(dirname(fileURLToPath(import.meta.url)), '..'), f), 'utf8')
+  }
+
+  /** Source with comments removed — these rules are about what the code DOES. */
+  const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  await t('Settings is one form with one Save, and nothing on it silently repaints', async () => {
+    const misc = code(await readFile('public/js/views/misc.js'))
+    // Five controls on the settings page used to re-render it from the STORED values with no
+    // prompt: a logo upload, a logo removal, returning from Stripe Connect, and both Disconnect
+    // buttons — the last two via location.reload(), which also drops the hash route. An owner who
+    // pasted their SMTP password, Stripe keys and costing numbers and then uploaded their logo
+    // got "Logo saved" and an empty form.
+    assert.doesNotMatch(misc, /location\.reload\(\)/, 'Settings must not hard-reload over an unsaved form')
+    assert.match(misc, /let settingsDirty = false/, 'it has to know whether anything is unsaved')
+    assert.match(misc, /const repaint = \(\)/, 'and go through one guarded repaint')
+    assert.doesNotMatch(misc, /toast\('Logo saved'\)\s*\n\s*settingsView\(\)/, 'a logo upload must not repaint over typed settings')
+    assert.match(misc, /beforeunload/, 'and the tab-close path needs the same promise the matrix editor makes')
+  })
+
+  await t('answering a website chat does not wipe the knowledge base being written', async () => {
+    const agent = code(await readFile('public/js/views/agent.js'))
+    // The receptionist screen holds the bot name, greeting, persona, capability switches, a 160px
+    // knowledge-base textarea and every FAQ row — none of it on the server until Save is pressed.
+    assert.doesNotMatch(agent, /toast\('Reply sent'\); agentView\(\)/, 'a takeover reply must not rebuild the page')
+    assert.match(agent, /renderSessions\(fresh\.sessions\)/, 'it should refresh only the chats list')
+    assert.match(agent, /window\.__pscAgentDirty/, 'and publish whether the form is dirty')
+  })
+
+  await t('…and neither does a colleague answering one from their own desk', async () => {
+    const app = code(await readFile('public/js/app.js'))
+    // server.mjs rtBroadcast('chat') on every takeover reply goes to the WHOLE shop room.
+    assert.doesNotMatch(app, /path\.startsWith\('\/conversations'\) \|\| path\.startsWith\('\/receptionist'\)\) runRouter\(\)/,
+      'a realtime chat event must not blow away a half-written knowledge base')
+    assert.match(app, /__pscAgentDirty\?\.\(\)/, 'the realtime handler has to ask first')
+  })
+
+  await t('the setup wizard does not say "done" when the prices did not save', async () => {
+    const ob = code(await readFile('public/js/views/onboarding.js'))
+    // `.catch(() => {})` on the service-pricing PUT, then markStep('done') and advance(). A 400, a
+    // 403 from requireRole, a 500 or the restart window all ended with the wizard sliding to the
+    // next screen — and every quote the shop writes priced off the defaults.
+    assert.doesNotMatch(ob, /service-pricing[^\n]*\.catch\(\(\) => \{\}\)/,
+      'the wizard must not swallow a failed price save and advance anyway')
+    assert.doesNotMatch(ob, /onboarding\/step[^\n]*\.catch\(\(\) => \{\}\)/,
+      'a checklist tick that did not record must say so')
+  })
+}
+
 section('every destructive control says what it destroys')
 await t('no glyph-only button is left for a screen reader to guess at', async () => {
   const fs = await import('node:fs')

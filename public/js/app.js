@@ -481,7 +481,11 @@ function handleRealtime(m) {
     if (path.startsWith('/board')) runRouter()   // someone (or the bot) moved a job
     refreshChrome()
   } else if (m.type === 'conversation' || m.type === 'chat') {
-    if (path.startsWith('/conversations') || path.startsWith('/receptionist')) runRouter()
+    // The receptionist screen holds an unsaved form — knowledge base, greeting, persona, FAQ rows
+    // — and rtBroadcast('chat') reaches the WHOLE shop on every takeover reply, so a colleague
+    // answering a website chat from their own desk used to wipe whatever this person was writing.
+    if (path.startsWith('/receptionist')) { if (!window.__pscAgentDirty?.()) runRouter() }
+    else if (path.startsWith('/conversations')) runRouter()
     refreshChrome()
   }
 }

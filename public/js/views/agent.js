@@ -106,7 +106,29 @@ export async function agentView() {
   bindConfig()
   resetPreview()
   bindSessions()
+  trackDirty()
 }
+
+/* -------------------------------------------------------------------------------------------------
+ * This screen holds the shop's unsaved receptionist configuration — the bot name, the greeting,
+ * the personality, the four capability switches, the knowledge base (a 160px textarea the owner
+ * types paragraphs into) and every FAQ row they have added. None of it exists on the server until
+ * Save receptionist is pressed. agentView() rebuilds the whole screen from the server, and two
+ * paths called it with no dirty check at all: answering a lead from this same page, and a realtime
+ * 'chat' event — which server.mjs broadcasts to the WHOLE shop on every takeover reply, so a
+ * second person answering a website chat from their own desk wiped the first person's work.
+ * ---------------------------------------------------------------------------------------------- */
+let cfgDirty = false
+function trackDirty() {
+  cfgDirty = false
+  for (const el of $$('#view input, #view textarea, #view select')) {
+    el.addEventListener('input', () => { cfgDirty = true })
+    el.addEventListener('change', () => { cfgDirty = true })
+  }
+}
+// app.js asks before it repaints this screen out from under someone.
+if (typeof window !== 'undefined') window.__pscAgentDirty = () => cfgDirty
+
 
 /* Supercharged status. Reads the `ai` status object off the /api/agent/config
    payload ({ available, provider, model }); falls back to a boolean `supercharged`
@@ -172,7 +194,7 @@ function bindConfig() {
     $('#save').disabled = true; $('#save-note').textContent = 'Saving…'
     try {
       const r = await api.put('/api/agent/config', body)
-      cfg = r.config; $('#save-note').textContent = 'Saved ✓'
+      cfg = r.config; cfgDirty = false; $('#save-note').textContent = 'Saved ✓'
       toast('Receptionist updated')
       updateEmbed(); resetPreview()
       setTimeout(() => { $('#save-note').textContent = '' }, 2500)
@@ -270,8 +292,14 @@ function openSession(pid) {
       onMount: (bg) => {
         $('#send-take', bg).onclick = async () => {
           const text = $('#takeover', bg).value.trim(); if (!text) return
-          try { await api.post(`/api/agent/sessions/${pid}/reply`, { text }); closeModal(); toast('Reply sent'); agentView() }
-          catch (e) { toast(e.message, true) }
+          try {
+            await api.post(`/api/agent/sessions/${pid}/reply`, { text })
+            closeModal(); toast('Reply sent')
+            // Refresh the chats list only. Rebuilding the page would discard the knowledge base,
+            // greeting, persona and FAQ rows the owner has typed and not yet saved.
+            const fresh = await api.get('/api/agent/sessions')
+            $('#sessions').innerHTML = renderSessions(fresh.sessions)
+          } catch (e) { toast(e.message, true) }
         }
         // Supercharged assist: ask the AI to draft a reply grounded in the shop's knowledge.
         // Endpoint may be absent in older builds — degrade gracefully on 404 / non-ok.
