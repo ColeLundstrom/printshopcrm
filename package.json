@@ -30,6 +30,7 @@
     "reset": "node --no-warnings --env-file-if-exists=.env bin/reset.mjs && npm run seed",
     "admin": "node --no-warnings --env-file-if-exists=.env bin/admin.mjs",
     "restore": "node --no-warnings --env-file-if-exists=.env bin/restore.mjs",
+    "drive": "node --no-warnings --env-file-if-exists=.env bin/backup-drive.mjs",
     "test": "node bin/gate.mjs",
     "test:e2e": "node bin/gate-e2e.mjs",
     "test:all": "npm test && npm run test:e2e"

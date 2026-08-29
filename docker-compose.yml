@@ -24,6 +24,13 @@ services:
       # Databases live on the volume, never in the container filesystem.
       PSC_DB: /data/printshop.db
 
+      # The port mapping above and the healthcheck below are both fixed at 3333, so the container
+      # has to listen on 3333 whatever .env says. Without this pin, `env_file: .env` carried PORT
+      # straight in: setting PORT=8080 in .env — which .env.example invites — made the app bind
+      # 8080 INSIDE while compose published host 8080 -> container 3333. Nothing answers, and the
+      # healthcheck fails forever. `${PORT}` is the HOST port; this is the container's.
+      PORT: 3333
+
       # REQUIRED. Customer share links (estimate approvals, art proofs) are HMACs of this, so
       # anyone who knows it can forge a link to any customer's documents. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"

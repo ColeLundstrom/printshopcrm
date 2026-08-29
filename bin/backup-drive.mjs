@@ -2,9 +2,13 @@
 /**
  * Copy a backup archive to Google Drive, so it lives somewhere other than the disk that made it.
  *
- *   node bin/backup-drive.mjs connect            # one-time: mint a refresh token
- *   node bin/backup-drive.mjs upload <file>      # upload one archive, prune old ones
- *   node bin/backup-drive.mjs status             # who is connected, quota, what's stored
+ *   npm run drive -- connect          # one-time: mint a refresh token
+ *   npm run drive -- upload <file>    # upload one archive, prune old ones
+ *   npm run drive -- status           # who is connected, quota, what's stored
+ *
+ * Always through `npm run drive`, never `node bin/backup-drive.mjs` directly: the wrapper carries
+ * --env-file-if-exists=.env, and every credential this script needs is documented as living in
+ * .env. Run bare, it reads none of them and refuses the setup step the docs just told you to do.
  *
  * WHOSE DRIVE: yours. This reads credentials from the environment of the machine it runs on, so
  * every install backs up to the Drive of whoever runs it. There is no shared or default account,
@@ -66,12 +70,12 @@ function requireApp() {
 /** An access token for this run. Never persisted — it expires in about an hour anyway. */
 async function accessToken() {
   requireApp()
-  if (!REFRESH) die('No PSC_BACKUP_GDRIVE_REFRESH_TOKEN. Run:  node bin/backup-drive.mjs connect')
+  if (!REFRESH) die('No PSC_BACKUP_GDRIVE_REFRESH_TOKEN. Run:  npm run drive -- connect')
   const t = await refreshAccessToken({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, refreshToken: REFRESH })
   // Same non-throwing contract: report what Google actually said rather than guessing.
   if (!t?.ok || !t.accessToken) {
     die(`Google refused the refresh token: ${t?.error || 'no access token returned'}\n` +
-        '  If it was revoked or the client secret changed, run:  node bin/backup-drive.mjs connect')
+        '  If it was revoked or the client secret changed, run:  npm run drive -- connect')
   }
   return t.accessToken
 }
@@ -154,14 +158,14 @@ ${url}
 
     PSC_BACKUP_GDRIVE_REFRESH_TOKEN=${t.refreshToken}
 
-  Then check it with:  node bin/backup-drive.mjs status
+  Then check it with:  npm run drive -- status
 `)
     break
   }
 
   /* ----------------------------------------------------------------- upload */
   case 'upload': {
-    const file = args[0] || die('usage: node bin/backup-drive.mjs upload <path-to-archive>')
+    const file = args[0] || die('usage: npm run drive -- upload <path-to-archive>')
     let size
     try { size = statSync(file).size } catch { die(`No such file: ${file}`) }
     if (!size) die(`${file} is empty — refusing to upload a zero-byte backup.`)
@@ -215,9 +219,12 @@ ${url}
     console.log(`
   Off-site backups to Google Drive — your Drive, your credentials.
 
-    node bin/backup-drive.mjs connect          one-time consent, prints a refresh token
-    node bin/backup-drive.mjs upload <file>    upload an archive and prune old ones
-    node bin/backup-drive.mjs status           connection, retention, quota
+    npm run drive -- connect          one-time consent, prints a refresh token
+    npm run drive -- upload <file>    upload an archive and prune old ones
+    npm run drive -- status           connection, retention, quota
+
+  Run it through npm, not as `node bin/backup-drive.mjs`: the script needs the credentials in
+  .env, and only the npm wrapper passes --env-file-if-exists=.env.
 
   Scope is drive.file: this can only see files it created itself, never the rest of your Drive.
 `)

@@ -2402,6 +2402,27 @@ await t('Floor Mode\'s stage buttons are a size a thumb can hit', async () => {
   assert.match(css, /\.scan-stages \{[^}]*gap:\s*(?:1[0-9]|[2-9][0-9])px/, 'and the pills need spacing between them')
 })
 
+await t('a compose install still answers after the operator changes PORT', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const compose = readFileSync(join(root, 'docker-compose.yml'), 'utf8')
+  // `ports: "${PORT:-3333}:3333"` + `env_file: .env` and no PORT in `environment:` — so PORT bled
+  // into the container. Setting PORT=8080 in .env, exactly as .env.example invites, made the app
+  // bind 8080 inside while compose published host 8080 -> container 3333: nothing answers, and the
+  // healthcheck (hardcoded 3333) fails forever. The file already pins PSC_DB and PSC_TRUST_PROXY
+  // against this same bleed-through and simply missed PORT. `docker run -e PORT=…` is fine,
+  // because the Dockerfile's HEALTHCHECK uses ${PORT} — only the compose path was broken.
+  const mapping = compose.match(/-\s*"\$\{PORT[^}]*\}:(\d+)"/)
+  assert.ok(mapping, 'the compose file should publish ${PORT} to a fixed container port')
+  const inside = mapping[1]
+  assert.match(compose, new RegExp(`^\\s*PORT:\\s*${inside}\\s*$`, 'm'),
+    `the container side of the mapping is ${inside}, so environment: must pin PORT: ${inside}`)
+  const health = compose.match(/127\.0\.0\.1:(\d+)\/health/)
+  assert.equal(health && health[1], inside, 'and the healthcheck has to check the port it listens on')
+})
+
 section('the install the docs describe can be followed to the end')
 await t('the account the unit runs as is one the docs tell you to create', async () => {
   const { readFileSync } = await import('node:fs')
@@ -2902,8 +2923,33 @@ await t('the recovery tool loads the .env the server uses, and does not lie abou
   // path problem, at exactly the moment the owner cannot get in any other way.
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   for (const [name, cmd] of Object.entries(pkg.scripts || {})) {
-    if (!/\b(server|seed|bin\/admin)\.mjs/.test(cmd)) continue
+    // The gates themselves are the exception, deliberately: they must run against a throwaway
+    // database with no shop's configuration anywhere near them.
+    if (/bin\/gate(-e2e)?\.mjs/.test(cmd)) continue
+    if (!/\b(server|seed)\.mjs|\bbin\/[\w-]+\.mjs/.test(cmd)) continue
     assert.match(cmd, /--env-file-if-exists=\.env/, `npm run ${name} opens the database without loading .env`)
+  }
+  // …and the same rule for the DOCS. INSTALL.md told the operator to put their Google credentials
+  // in .env and then run `node bin/backup-drive.mjs connect`, which reads none of them: it answers
+  // "Set PSC_BACKUP_GDRIVE_CLIENT_ID and PSC_BACKUP_GDRIVE_CLIENT_SECRET first" on a correctly
+  // configured install. So the documented off-site backup could not be set up at all — upstream of
+  // the known problem that the cron never sources the token, because there was no token to source.
+  for (const doc of ['INSTALL.md', 'README.md', '.env.example', 'deploy/backup.sh', 'deploy/DEPLOY.md', 'HOSTING.md']) {
+    let text = ''
+    try { text = readFileSync(join(root, doc), 'utf8') } catch { continue }
+    for (const line of text.split('\n')) {
+      const m = line.match(/(?:^|[`\s])((?:sudo -u \S+ )?node\s+(?:--\S+\s+)*bin\/([\w-]+\.mjs)\b)/)
+      if (!m) continue
+      // Only scripts that read the shop's own PSC_ configuration. The gates are excluded by name
+      // — they must run against a throwaway database with no shop's config near them — and
+      // bin/snapshot.mjs takes its paths as arguments rather than from .env.
+      if (/^gate(-e2e)?\.mjs$/.test(m[2])) continue
+      let script = ''
+      try { script = readFileSync(join(root, 'bin', m[2]), 'utf8') } catch { continue }
+      if (!/process\.env\.PSC_/.test(script)) continue
+      assert.match(m[1], /--env-file/,
+        `${doc} tells the operator to run ${JSON.stringify(m[1])}, which reads none of the .env the same doc says to write`)
+    }
   }
   // setMemberPassword deletes every session for the member. The tool used to promise otherwise.
   const admin = readFileSync(join(root, 'bin/admin.mjs'), 'utf8')

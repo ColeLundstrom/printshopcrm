@@ -114,7 +114,7 @@ SIZE="$(du -h "$DEST.tar.gz" 2>/dev/null | cut -f1)"
 # Off-site copy. A backup on the disk that just failed is not a backup.
 #
 # Runs only when PSC_BACKUP_GDRIVE_REFRESH_TOKEN is set, and uploads to the Drive of whoever
-# configured it — your install, your Google account. See `node bin/backup-drive.mjs connect`.
+# configured it — your install, your Google account. See `npm run drive -- connect`.
 # A failed upload is reported but does NOT fail the local backup, which already succeeded.
 # ---------------------------------------------------------------------------
 # Where the app itself lives, so we can find the uploader.
@@ -157,7 +157,7 @@ echo "$(date +%Y-%m-%dT%H:%M:%S%z) backup ok — $count database(s), $DEST.tar.g
 # OFF-SITE OPTIONS
 #
 # Google Drive is built in — your own Drive, one-time setup:
-#   node bin/backup-drive.mjs connect
+#   npm run drive -- connect
 # then set PSC_BACKUP_GDRIVE_* in the environment this script runs under.
 #
 # Or use anything else you already have:

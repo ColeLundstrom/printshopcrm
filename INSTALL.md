@@ -285,7 +285,7 @@ one-time setup:
 4. Run the consent flow:
 
    ```bash
-   node bin/backup-drive.mjs connect
+   npm run drive -- connect
    ```
 
    It prints a URL and waits for the redirect. **On a headless server**, either forward the port
@@ -298,7 +298,7 @@ one-time setup:
    or skip the port entirely and paste the redirected URL back instead:
 
    ```bash
-   node bin/backup-drive.mjs connect --manual
+   npm run drive -- connect --manual
    ```
 
    (The browser will show a "can't reach this page" error at `127.0.0.1` — that's expected. Copy
@@ -310,7 +310,7 @@ Port 4765 is the default; set `PSC_BACKUP_GDRIVE_PORT` if it clashes, and use th
 Google Cloud.
 
 From then on `backup.sh` uploads every nightly archive automatically and keeps the most recent 30
-in Drive. Check it any time with `node bin/backup-drive.mjs status`.
+in Drive. Check it any time with `npm run drive -- status`.
 
 **This is your Drive and your Google account.** The credentials live in your own environment; there
 is no shared account and no default destination. Two things worth knowing:
