@@ -2304,6 +2304,95 @@ section('the shop\'s own mail credentials are the shop\'s own')
   })
 }
 
+/* ---------- a display name is a display name, not a second address ----------
+ * `${settings?.shop_name} <${c.from}>` was raw interpolation of a field any manager can PUT. Set
+ * shop_name to `Alpha Tees <ceo@beta-prints.test>` and the header became
+ * `Alpha Tees <ceo@beta-prints.test> <orders@alpha.test>` — the parser takes the FIRST angle-addr,
+ * so the envelope sender captured off the wire was `MAIL FROM:<ceo@beta-prints.test>` and the
+ * shop's own configured address was demoted into the display name. On a shared operator relay
+ * that is one shop sending as another; on the shop's own server it is mail leaving with the
+ * shop's SPF alignment for a domain nobody checked. lib/relay.mjs:59 has always quoted and
+ * stripped correctly; this path never did.
+ *
+ * Asserted off the wire, against a real SMTP conversation, because the header is only half of it
+ * — the envelope sender is what a receiving server actually checks. */
+section('the shop\'s name cannot rewrite the address its mail comes from')
+{
+  const net = await import('node:net')
+  const { sendEmail } = await import('../lib/notify.mjs')
+
+  /** A minimal SMTP sink: enough of the conversation for nodemailer, and it keeps what it heard. */
+  const catcher = async () => {
+    const seen = { mailFrom: '', headers: '' }
+    const srv = net.createServer((sock) => {
+      let buf = '', inData = false
+      sock.write('220 gate ESMTP\r\n')
+      sock.on('data', (chunk) => {
+        buf += chunk.toString('utf8')
+        if (inData) {
+          const end = buf.indexOf('\r\n.\r\n')
+          if (end < 0) return
+          seen.headers += buf.slice(0, end)
+          buf = ''; inData = false
+          sock.write('250 2.0.0 Ok: queued\r\n')
+          return
+        }
+        let i
+        while ((i = buf.indexOf('\r\n')) >= 0) {
+          const line = buf.slice(0, i); buf = buf.slice(i + 2)
+          if (/^EHLO|^HELO/i.test(line)) sock.write('250-gate\r\n250 AUTH PLAIN LOGIN\r\n')
+          else if (/^AUTH/i.test(line)) sock.write('235 2.7.0 Accepted\r\n')
+          else if (/^MAIL FROM:/i.test(line)) { seen.mailFrom = line.replace(/^MAIL FROM:\s*/i, '').split(' ')[0]; sock.write('250 Ok\r\n') }
+          else if (/^RCPT TO:/i.test(line)) sock.write('250 Ok\r\n')
+          else if (/^DATA/i.test(line)) { inData = true; sock.write('354 End data with <CR><LF>.<CR><LF>\r\n'); break }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end() }
+          else sock.write('250 Ok\r\n')
+        }
+      })
+      sock.on('error', () => { /* the client hanging up is not our problem */ })
+    })
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+    return { seen, port: srv.address().port, close: () => srv.close() }
+  }
+
+  const send = async (shopName) => {
+    const c = await catcher()
+    try {
+      const out = await sendEmail({
+        to: 'customer@example.test', subject: 'Your proof', body: 'hello',
+        settings: { shop_name: shopName, smtp_host: '127.0.0.1', smtp_port: c.port, smtp_user: 'u', smtp_pass: 'p', smtp_from: 'orders@theshop.test', smtp_secure: 'false' },
+      })
+      return { ...c.seen, delivered: out.delivered, error: out.error }
+    } finally { c.close() }
+  }
+
+  const SPOOF = 'Alpha Tees <ceo@beta-prints.test>'
+  const spoofed = await send(SPOOF)
+  await t('the mail is accepted by the shop\'s own server', () => {
+    assert.equal(spoofed.delivered, true, spoofed.error || 'not delivered')
+  })
+  await t('…and the envelope sender is the address the shop configured', () => {
+    assert.equal(spoofed.mailFrom, '<orders@theshop.test>')
+  })
+  await t('…and the From: header names exactly one address, the shop\'s own', () => {
+    const from = spoofed.headers.split('\r\n').find((l) => /^From:/i.test(l)) || ''
+    // The smuggled address may survive as TEXT inside the quoted display name — any display name
+    // can claim anything — but it must not be an addr-spec. One '<', and it is the shop's.
+    assert.equal((from.match(/</g) || []).length, 1, `From: was ${JSON.stringify(from)}`)
+    assert.match(from, /<orders@theshop\.test>\s*$/, `From: was ${JSON.stringify(from)}`)
+    assert.doesNotMatch(from, /<ceo@beta-prints\.test>/)
+  })
+  await t('…and a name with a newline in it cannot add a header', async () => {
+    const injected = await send('Alpha\r\nBcc: everyone@example.test')
+    assert.ok(!/^Bcc:/mi.test(injected.headers), 'a display name must not be able to add a header')
+  })
+  await t('an ordinary shop name still names the sender', async () => {
+    const plain = await send('Rebel Ink Press')
+    assert.match(plain.headers, /^From: .*Rebel Ink Press.*<orders@theshop\.test>/mi)
+    assert.equal(plain.mailFrom, '<orders@theshop.test>')
+  })
+}
+
 section('a date formatter cannot become a script tag')
 await t('an unparseable date comes back escaped, not verbatim', async () => {
   const core = await import('../public/js/core.js')
