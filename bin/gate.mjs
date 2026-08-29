@@ -423,6 +423,80 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
   if (prevAuth !== undefined) process.env.PSC_AUTH = prevAuth
 }
 
+/* ---------- `npm run reset` must not delete somebody's shop ----------
+ * package.json's `reset` was the ONE script that did not pass --env-file-if-exists=.env. So
+ * bin/reset.mjs resolved PSC_DB from a bare environment and deleted ./data/printshop.db — usually
+ * nothing, reported as success — while the `&& npm run seed` half DID read .env and wiped whatever
+ * PSC_DB really pointed at. Two halves of one documented command ("wipe and reseed", INSTALL.md),
+ * aimed at two different databases. seed.mjs then runs unguarded DELETE FROM over contacts,
+ * estimates, invoices, jobs, payments, messages and settings, and writes back "Rebel Ink Press"
+ * with a 7.75% California tax rate. No prompt, no path printed, no undo. */
+section('reset/seed: a demo script may not overwrite a real shop')
+{
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  await t('both halves of `npm run reset` read the same .env, so they aim at the same database', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const envFlag = /--env-file-if-exists=\.env/
+    assert.match(pkg.scripts.reset, envFlag, 'bin/reset.mjs must resolve PSC_DB the way seed does')
+    assert.match(pkg.scripts.seed, envFlag, 'precondition: seed reads .env')
+  })
+
+  const seedInto = (dbPath, env = {}) => {
+    try {
+      const out = execFileSync(process.execPath, ['--no-warnings', join(root, 'seed.mjs')],
+        { cwd: root, env: { ...process.env, PSC_DB: dbPath, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { code: 0, out }
+    } catch (e) { return { code: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` } }
+  }
+  const countIn = (dbPath) => {
+    const out = execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', `
+      const { DatabaseSync } = await import('node:sqlite')
+      const d = new DatabaseSync(${JSON.stringify('DBPATH')})
+      process.stdout.write(String(d.prepare('SELECT COUNT(*) AS n FROM contacts').get().n))
+    `.replace(JSON.stringify('DBPATH'), JSON.stringify(dbPath))], { encoding: 'utf8' })
+    return Number(out)
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), 'psc-seed-'))
+  try {
+    const dbPath = join(tmp, 'shop.db')
+    await t('a fresh database seeds, and says which file it is writing to', () => {
+      const r = seedInto(dbPath)
+      assert.equal(r.code, 0, r.out)
+      assert.match(r.out, new RegExp(`seeding ${dbPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'it must print the path it is about to wipe')
+      assert.ok(countIn(dbPath) > 0, 'the demo shop should exist')
+    })
+    await t('…and re-seeding the demo shop still works, because that is what the script is for', () => {
+      assert.equal(seedInto(dbPath).code, 0)
+    })
+
+    await t('…but a shop that has named itself and has records is refused', () => {
+      execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', `
+        const { DatabaseSync } = await import('node:sqlite')
+        const d = new DatabaseSync(${JSON.stringify(dbPath)})
+        d.prepare("INSERT INTO settings (key,value) VALUES ('shop_name','Northgate Print Co') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run()
+      `], { encoding: 'utf8' })
+      const before = countIn(dbPath)
+      const r = seedInto(dbPath)
+      assert.equal(r.code, 1, 'seeding a real shop must fail, loudly')
+      assert.match(r.out, /Refusing to seed/)
+      assert.match(r.out, /Northgate Print Co/, 'it must name the shop it just protected')
+      assert.equal(countIn(dbPath), before, 'and it must not have deleted a single row')
+    })
+    await t('…and the refusal names a way through, so it is not a dead end', () => {
+      const r = seedInto(dbPath)
+      assert.match(r.out, /PSC_SEED_FORCE=1/)
+      assert.equal(seedInto(dbPath, { PSC_SEED_FORCE: '1' }).code, 0, 'the escape it prints must work')
+    })
+  } finally { rmSync(tmp, { recursive: true, force: true }) }
+}
+
 /* ---------- an issued document keeps adding up after the shop changes its rates ----------
  * Line amounts are never stored — every renderer recomputes them — while subtotal/tax/total ARE
  * stored, frozen at write time. So one PUT /api/settings raising the extended-size upcharges, an

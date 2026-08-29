@@ -7,11 +7,43 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
-import { db, run, get, all, computeTotals, syncInvoiceStatus, getSettings, seedSettings, getUpcharges, rollupSizes, sizeSummary, lineQty } from './lib/db.mjs'
+import { db, run, get, all, computeTotals, syncInvoiceStatus, getSettings, seedSettings, getUpcharges, rollupSizes, sizeSummary, lineQty, DB_PATH } from './lib/db.mjs'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const UPLOADS = join(ROOT, 'public', 'uploads')
 mkdirSync(UPLOADS, { recursive: true })
+
+/**
+ * Say what is about to be destroyed, and refuse to destroy somebody's shop.
+ *
+ * `npm run reset` is documented as "wipe and reseed" and was the one script in package.json that
+ * did not pass --env-file-if-exists=.env — so bin/reset.mjs deleted ./data/printshop.db (usually
+ * nothing, reporting success) while `&& npm run seed` DID read .env and wiped whatever PSC_DB
+ * pointed at. Two halves of one command, aimed at two different databases. The deletes below are
+ * unguarded `DELETE FROM` over contacts, estimates, invoices, jobs, payments, messages and
+ * settings, and what comes back is "Rebel Ink Press" with a 7.75% California tax rate.
+ *
+ * The env-file half is fixed in package.json. This is the second lock: seeding is a demo action,
+ * so it may create a shop and it may replace the demo shop, and it may not overwrite a real one.
+ * A shop that has named itself and has records is a real one.
+ */
+const rows = (t) => { try { return get(`SELECT COUNT(*) AS n FROM ${t}`)?.n || 0 } catch { return 0 } }
+const existing = ['contacts', 'estimates', 'invoices', 'jobs', 'payments'].reduce((n, t) => n + rows(t), 0)
+const shopName = String(getSettings()?.shop_name || '').trim()
+const isDemo = !shopName || shopName === 'Rebel Ink Press'
+console.log(`  seeding ${DB_PATH}`)
+if (existing > 0 && !isDemo && process.env.PSC_SEED_FORCE !== '1') {
+  console.error(`\n  Refusing to seed: that database belongs to a real shop.\n`)
+  console.error(`    database   ${DB_PATH}`)
+  console.error(`    shop       ${shopName}`)
+  console.error(`    records    ${existing} across contacts, estimates, invoices, jobs and payments\n`)
+  console.error(`  Seeding DELETES all of them and replaces the shop with the "Rebel Ink Press" demo.`)
+  console.error(`  If you want a demo database, point PSC_DB somewhere else:`)
+  console.error(`    PSC_DB=./data/demo.db npm run seed\n`)
+  console.error(`  If you really mean to wipe this one, back it up first and then:`)
+  console.error(`    PSC_SEED_FORCE=1 npm run seed\n`)
+  process.exit(1)
+}
 
 // Ids restart at 1 after a full delete — these tables use plain INTEGER PRIMARY KEY, no AUTOINCREMENT.
 for (const t of ['payments', 'art_versions', 'activities', 'jobs', 'invoices', 'estimates', 'contacts', 'email_log', 'messages', 'opportunities']) {

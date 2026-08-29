@@ -27,7 +27,7 @@
     "start": "node --no-warnings --env-file-if-exists=.env server.mjs",
     "dev": "node --no-warnings --env-file-if-exists=.env --watch server.mjs",
     "seed": "node --no-warnings --env-file-if-exists=.env seed.mjs",
-    "reset": "node bin/reset.mjs && npm run seed",
+    "reset": "node --no-warnings --env-file-if-exists=.env bin/reset.mjs && npm run seed",
     "admin": "node --no-warnings --env-file-if-exists=.env bin/admin.mjs",
     "restore": "node --no-warnings --env-file-if-exists=.env bin/restore.mjs",
     "test": "node bin/gate.mjs",
