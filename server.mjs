@@ -2547,8 +2547,19 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
       code: 'invoice_void',
     })
   }
-  const amount = round2(req.body?.amount)
-  if (!(amount > 0)) return res.status(400).json({ error: 'Payment amount must be greater than zero' })
+  // Reject, never coerce — the same rule the v1 API's quantity fields got, on the one route in
+  // the product that puts cash on an invoice. round2() starts `Number(n) || 0`, so `true` came
+  // through as a $1.00 payment and `[40]` as $40.00, both with a 200, both inserted into
+  // `payments`, counted in Revenue MTD, written to the customer's timeline and queued for
+  // QuickBooks. A checkbox serialised into the wrong field, or a form library that posts a
+  // single-value array, is enough — and the invoice then reads part-paid against money nobody
+  // received. A numeric string is still accepted: that is what an HTML form posts.
+  const rawAmount = req.body?.amount
+  if (typeof rawAmount !== 'number' && !(typeof rawAmount === 'string' && rawAmount.trim() !== '')) {
+    return res.status(400).json({ error: 'Payment amount must be a number', code: 'invalid_amount' })
+  }
+  const amount = round2(rawAmount)
+  if (!Number.isFinite(Number(rawAmount)) || !(amount > 0)) return res.status(400).json({ error: 'Payment amount must be greater than zero', code: 'invalid_amount' })
   // Guard fat-finger over-payment: a manual entry can't exceed the remaining balance.
   const bal = round2(inv.amount_due - inv.amount_paid)
   if (amount > bal + 0.01) return res.status(400).json({ error: `That's more than the ${money(bal)} balance due.` })

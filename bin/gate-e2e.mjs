@@ -509,6 +509,26 @@ try {
 
     // Money already recorded is a bookkeeping fact — voiding around it would orphan the payment.
     const invId2 = r.json?.invoice_id
+
+    /* ---------- the cash route refuses what it cannot count ----------
+     * `const amount = round2(req.body?.amount)` and round2 starts `Number(n) || 0`, so
+     * Number(true) === 1 and Number([40]) === 40 both survived every check below and were
+     * INSERTed into `payments` as real money: counted in Revenue MTD, walked the order card to
+     * paid, written to the customer's timeline and queued to QuickBooks. A checkbox serialised
+     * into the wrong field, or a form library that posts a single-value array, is enough. This is
+     * the same "reject, never coerce" rule every quantity field got in v1.18.0 — applied, at
+     * last, to the one route in the product that puts cash on an invoice. */
+    for (const [label, amount] of [['a checkbox', true], ['a single-value array', [40]], ['an object', { amount: 40 }], ['nothing at all', null]]) {
+      const bad = await req('POST', `/api/invoices/${invId2}/payments`, { body: { amount, method: 'check' } })
+      chk(`${label} is not a payment amount`, String(bad.status), '^400$')
+    }
+    const beforeBad = (await req('GET', `/api/invoices/${invId2}`)).json
+    chk('…and none of them put a cent on the invoice', String(round2e(beforeBad?.amount_paid ?? 0)), '^0$')
+    // What a real HTML form posts is still a payment.
+    const asText = await req('POST', `/api/invoices/${invId2}/payments`, { body: { amount: '10.50', method: 'check' } })
+    chk('a numeric string from a form still records', String(asText.status), '^200$')
+    chk('…at the amount it says', String(round2e(asText.json?.amount_paid ?? 0)), '^10.5$')
+
     await req('POST', `/api/invoices/${invId2}/payments`, { body: { amount: 25, method: 'check' } })
     r = await req('POST', `/api/invoices/${invId2}/void`, { body: {} })
     chk('an invoice with payments against it refuses to be voided', `${r.status} ${r.text}`, '^409 .*invoice_has_payments')
