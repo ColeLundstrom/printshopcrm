@@ -5817,6 +5817,137 @@ section('the first screen after login does not build the whole sales board')
   })
 }
 
+/* ---------- the customer wrote the message, so the model may not answer it for them ----------
+ * Round 15 settled this for lib/ai.mjs's mergeIntake: "is the slot empty?" is the wrong question,
+ * because every field falls back to a default, and `evidence` answers the right one — "did the
+ * TEXT supply it?". Two paths never got the fix, and one of them is reachable by a stranger. */
+section('the receptionist only records what the visitor actually said')
+{
+  const { applyValidated } = await import('../lib/agent.mjs')
+
+  // The exact request that was measured: one unauthenticated POST to /api/embed/chat/message,
+  // no login and no API key, carrying a message with no number, no garment noun, no decoration
+  // word and no address. The model's reply supplied all four; every one was accepted on shape
+  // alone; the shop's books took EST-1001 for $4,937,000, a 'qualified' opportunity at the same
+  // value, and a contact at the address the model chose.
+  const STRANGER = 'Hi, I am looking for something for our club. Could you help me out today please?'
+  const INVENTED = { qty: 100000, product: 'hoodie', decoration: 'Embroidery', sizes: '24 S, 60 M', email: 'attacker@evil.test', phone: '555-867-5309' }
+  const got = applyValidated({}, INVENTED, STRANGER)
+  for (const [field, why] of [
+    ['qty', 'a quantity the message never states'],
+    ['product', 'a garment the message never names'],
+    ['decoration', 'a decoration the message never names'],
+    ['sizes', 'a size run the message never gives'],
+    ['email', 'an address the message never contains'],
+    ['phone', 'a number the message never contains'],
+  ]) {
+    await t(`the model may not supply ${why}`, () => {
+      assert.ok(!got[field], `applyValidated took ${field} = ${JSON.stringify(got[field])} from the model alone`)
+    })
+  }
+
+  // …and the guardrail is worth nothing if it also refuses the ordinary case.
+  await t('a fact the visitor did state is still recorded', () => {
+    const said = 'we would want 48 embroidered hoodies for the club, email sam@club.test or call 555-123-9876'
+    const ok = applyValidated({}, { qty: 48, product: 'hoodies', decoration: 'Embroidery', email: 'sam@club.test', phone: '555-123-9876' }, said)
+    assert.equal(ok.qty, 48)
+    assert.match(ok.product, /hoodie/i)
+    assert.equal(ok.decoration, 'Embroidery')
+    assert.equal(ok.email, 'sam@club.test')
+    assert.ok(ok.phone)
+  })
+  await t('…including a quantity written with a thousands separator', () => {
+    assert.equal(applyValidated({}, { qty: 1200 }, 'we want 1,200 tees please').qty, 1200)
+    assert.equal(applyValidated({}, { qty: 1200 }, 'we want 1200 tees please').qty, 1200)
+  })
+  await t('…and a count nowhere in the message is refused even when the message has other numbers', () => {
+    assert.ok(!applyValidated({}, { qty: 48 }, 'shirts for our 2026 conference, not sure how many yet').qty,
+      'the message names a year, not a quantity')
+    assert.ok(!applyValidated({}, { qty: 2500 }, 'we ordered 250 last time but this is a new run').qty,
+      '250 must not corroborate 2500')
+  })
+  await t('…and a size run the visitor really typed is parsed', () => {
+    const sz = applyValidated({}, { sizes: '24 S, 60 M, 80 L' }, 'we need 24 S, 60 M, 80 L tees')
+    assert.deepEqual(sz.sizes, { S: 24, M: 60, L: 80 })
+  })
+}
+
+section('a rush the message did not ask for does not leave the building unread')
+{
+  const { mergeIntake } = await import('../lib/ai.mjs')
+
+  // needs_review filtered on `ev[f]` — true only where the PARSER read the field — so the one
+  // case where the model is the SOLE author of a fact was structurally invisible to it. Measured
+  // on "300 tees, one colour front, autumn is fine" with a model reply of {rush:true,
+  // due_hint:'2026-09-01'}: the quote went from $2,845.00 to $4,255.00 (+49.6%) with "RUSH +50%."
+  // printed on the line the customer signs, the job's promise from ten working days to two — and
+  // Full Auto mailed it, because needs_review came back empty and its stand-down never engaged.
+  const base = parseIntakeHeuristic('Hi, our club would like 300 tees, one colour front. Autumn is fine.')
+  await t('the parser read no rush and no deadline out of that message', () => {
+    assert.equal(base.evidence.rush, false)
+    assert.equal(base.evidence.due_hint, false)
+  })
+  const m = mergeIntake(base, { rush: true, due_hint: '2099-09-01' })
+  await t('a rush the model added on its own is held for a human', () => {
+    assert.ok(m.needs_review.includes('rush'), `needs_review was ${JSON.stringify(m.needs_review)}`)
+  })
+  await t('…as is a deadline it invented', () => {
+    assert.ok(m.needs_review.includes('due_hint'), `needs_review was ${JSON.stringify(m.needs_review)}`)
+  })
+  await t('…and the review screen is given something to render', () => {
+    assert.match(m.ai_note, /added rush, due_hint on its own/)
+  })
+  await t('an agreeing parse still flows straight through', () => {
+    const clean = mergeIntake(base, { rush: false, due_hint: null })
+    assert.deepEqual(clean.needs_review, [])
+    assert.equal(clean.ai_note, '')
+  })
+}
+
+section('"no rush" is not a rush')
+{
+  // Unanchored substring match: /rush|asap|urgent|hurry|…/. "No rush at all" — one of the most
+  // ordinary courtesies in an inbound enquiry — read as asking for one. On 300 tees that is
+  // $4,255.00 against $2,845.00, with "RUSH +50%." on the line the customer signs and a 3-working
+  // -day promise on a job they said could wait until autumn. Round 15's one-way rush rule then
+  // made it unclearable: ev.rush comes from this same regex, so a model reading the sentence
+  // correctly and returning rush:false was refused.
+  for (const text of [
+    '300 tees one colour front, no rush at all, autumn is fine',
+    '300 tees one colour front, there is no hurry',
+    '300 tees, this is not urgent',
+    '300 tees, not in a hurry',
+    '300 tees, no big rush',
+    '300 tees, I do not need a rush on this',
+    "300 tees, we don't need these this week",
+    '300 tees, no need to rush',
+  ]) {
+    await t(`a declined rush is not a rush: ${JSON.stringify(text.slice(10))}`, () => {
+      assert.equal(parseIntakeHeuristic(text).rush, false)
+    })
+  }
+  for (const text of [
+    '300 tees, we need these rushed please',
+    '300 tees ASAP if you can',
+    '300 tees, this is urgent',
+    '300 tees, need them by friday',
+    '300 tees rush order',
+    '300 tees, no rush on the hoodies but the tees are urgent',
+  ]) {
+    await t(`a real rush is still a rush: ${JSON.stringify(text.slice(10))}`, () => {
+      assert.equal(parseIntakeHeuristic(text).rush, true)
+    })
+  }
+  await t('and declining a rush costs no more than not mentioning one', async () => {
+    const { priceIntake } = await import('../lib/quickquote.mjs')
+    const settings = { screen_fee: 25, default_markup: 2, tax_rate: 0 }
+    const declined = priceIntake(parseIntakeHeuristic('300 tees one colour front, no rush at all'), settings)
+    const silent = priceIntake(parseIntakeHeuristic('300 tees one colour front'), settings)
+    assert.equal(declined.totals.total, silent.totals.total,
+      `declining a rush was billed at ${declined.totals.total} against ${silent.totals.total}`)
+  })
+}
+
 section('the sidebar does not download the shop to draw six dots')
 await t('the chrome refresh asks for badges, not for six list endpoints', async () => {
   const { readFileSync } = await import('node:fs')
