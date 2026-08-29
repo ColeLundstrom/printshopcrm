@@ -161,7 +161,15 @@ app.use((req, res, next) => {
   res.setHeader('Content-Security-Policy', csp)
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
-  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()')
+  // `camera=()` is an EMPTY allowlist, which disables getUserMedia for this document — not just
+  // for embedded frames. So Floor Mode's barcode scanner (public/js/views/scan.js) has never
+  // worked on any install: getUserMedia rejects with `NotAllowedError: Permissions policy
+  // violation` before the browser shows a permission prompt, and the screen toasts an error
+  // naming a policy the shop cannot change from anywhere in the product. It only ever ran on
+  // Chromium, because scan.js gates the camera on BarcodeDetector — which is exactly where this
+  // header is enforced. manifest.json's start_url is /#/scan, so the installed tablet PWA opens
+  // straight onto the broken screen. `(self)` grants the app's own origin and nothing else.
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=(), payment=()')
   if (!embeddable) res.setHeader('X-Frame-Options', 'SAMEORIGIN')
   // Only assert HSTS on a request that actually arrived over TLS — sending it on plain http in
   // local dev would pin localhost to https and make the dev server unreachable.

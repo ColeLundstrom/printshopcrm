@@ -959,6 +959,31 @@ try {
       String((list.json?.purchase_orders || []).length), '^1$')
   }
 
+  /* ---------- the app's own security headers must not disable the app ----------
+   * `Permissions-Policy: camera=()` is an EMPTY allowlist, which disables getUserMedia for this
+   * document — not only for embedded frames. So Floor Mode's barcode scanner never worked on any
+   * install: getUserMedia rejects with `NotAllowedError: Permissions policy violation` BEFORE the
+   * browser shows a permission prompt, and the screen toasts an error naming a policy the shop
+   * cannot change from anywhere in the product. It only ever ran on Chromium, because scan.js
+   * gates the camera on BarcodeDetector — which is exactly where the header is enforced — and
+   * manifest.json's start_url is /#/scan, so the installed tablet PWA opens straight onto it. */
+  {
+    const hdr = (await fetch(`${BASE}/`, { headers: { Cookie: cookieHeader() } })).headers
+    const pp = String(hdr.get('permissions-policy') || '')
+    chk('the app sends a Permissions-Policy at all', pp, 'camera=')
+    chk('…and it does not disable the camera the product ships a screen for', String(/camera=\(\)/.test(pp)), '^false$')
+    chk('…it grants the app\'s own origin', pp, 'camera=\\(self\\)')
+    // The things the product does NOT use stay off, so this is a grant and not a blanket removal.
+    for (const feat of ['microphone', 'geolocation', 'payment']) {
+      chk(`…while ${feat} stays disabled`, pp, `${feat}=\\(\\)`)
+    }
+    const { readFileSync: rfs2 } = await import('node:fs')
+    chk('…and the screen that needs it is still shipped and still asks for it',
+      rfs2(join(ROOT, 'public/js/views/scan.js'), 'utf8'), 'navigator\\.mediaDevices\\.getUserMedia')
+    chk('…on the route an installed tablet opens on',
+      String(JSON.parse(rfs2(join(ROOT, 'public/manifest.json'), 'utf8')).start_url), '^/#/scan$')
+  }
+
   /* ---------- AGPL §13: the source link is served, on every page a user can reach ----------
    * §13 is a licence obligation, not a style choice: run a modified version over a network and its
    * users must be offered the corresponding source. sourceLinkHtml() renders it into index.html
