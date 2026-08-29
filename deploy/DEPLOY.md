@@ -119,7 +119,9 @@ docker run --rm -v printshopcrm-data:/data -v /tmp:/restore alpine sh -c '
   done
   cp -a /restore/uploads/. /data/uploads/ 2>/dev/null || true'
 docker compose start app
-curl -fsS http://127.0.0.1:3333/health          # every shop opened, or it names the ones that did not
+curl -fsS 'http://127.0.0.1:3333/health?strict=1'   # every shop opened, or it names the ones that did not
+# (plain /health is the container's liveness probe: it stays 200 and reports `degraded` when one
+#  shop is dark, so a single lost file cannot take every other shop out of the load balancer.)
 ```
 
 ---

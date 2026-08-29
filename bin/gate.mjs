@@ -3687,6 +3687,50 @@ await t('deleting an estimate takes its mockups with it, so a reused id cannot i
  * never binds and nothing is ever rate limited. fly.toml sizes the reference VM at 512 MB.
  * The e2e proves the truncation behaviourally; this is the key-COUNT ceiling, which no test can
  * reach at its real value without 50,000 requests. */
+/* ---------- liveness and the deploy gate are different questions (v20) ----------
+ * brokenTenants → /health 503 was built so a release that bricks one shop's database rolls back,
+ * and ship.sh polls exactly that. But Dockerfile's HEALTHCHECK, fly.toml's [[http_service.checks]]
+ * and render.yaml's healthCheckPath poll the SAME URL to decide whether the CONTAINER is dead — so
+ * one shop's lost file took every other shop on the box out of the load balancer. On Fly with
+ * min_machines_running = 1 that is a total outage for shops whose data is perfectly fine; on
+ * Render it is a restart loop into the same state, forever; and ship.sh's own rollback poll then
+ * refuses to ship the release that would have fixed it.
+ * The e2e proves the two answers. This pins WHO ASKS WHICH, which is the half a config edit can
+ * silently undo. */
+section('liveness and the deploy gate are different questions')
+await t('ship.sh asks the strict question and the platform probes ask the plain one', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(root, f), 'utf8')
+
+  // Only the lines that actually FETCH it — the file also mentions /health in prose.
+  const polls = read('deploy/ship.sh').split('\n')
+    .filter((l) => l.includes('curl') && l.includes('/health'))
+    .map((l) => (/\/health[^"\s\\]*/.exec(l) || [''])[0])
+  assert.ok(polls.length >= 2, 'ship.sh should still poll /health — both the loop and the diagnostic')
+  for (const u of polls) {
+    assert.ok(u.includes('strict=1'),
+      `ship.sh polls ${u} — the deploy gate must ask the strict question, or a release that bricks a shop ships green`)
+  }
+
+  // The platform probes must NOT. Answering 503 there de-routes every healthy shop on the box.
+  for (const f of ['Dockerfile', 'docker-compose.yml', 'deploy/fly.toml', 'deploy/render.yaml']) {
+    for (const u of [...read(f).matchAll(/\/health[^"'\s]*/g)].map((m) => m[0])) {
+      assert.ok(!u.includes('strict'),
+        `${f} probes ${u} — a liveness probe that fails on one dark shop takes every other shop out of the load balancer`)
+    }
+  }
+
+  // And the endpoint itself has to honour the split, both directions.
+  const src = read('server.mjs')
+  const h = src.slice(src.indexOf("app.get('/health'"), src.indexOf("app.get('/health'") + 3000)
+  assert.match(h, /req\.query\.strict/, '/health no longer distinguishes the two callers')
+  assert.match(h, /degraded: true/, 'a dark shop must still be reported on the plain answer, not hidden')
+  assert.match(h, /shops: broken\.slice/, '…and named on both')
+})
+
 section('the rate limiter\'s own memory is bounded')
 await t('neither the key nor the number of keys can be grown without limit by a caller', async () => {
   const { readFileSync } = await import('node:fs')

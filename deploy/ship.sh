@@ -115,15 +115,22 @@ rsync -a -e "$RSYNC_E" \
   # /health opens every tenant database, so an install with a lot of shops legitimately takes longer
   # than 20s to answer the first time. PSC_HEALTH_TRIES raises it rather than letting a slow boot
   # look like a bad release.
+  #
+  # ?strict=1 on purpose. Plain /health is the PLATFORM's liveness probe — Dockerfile's
+  # HEALTHCHECK, fly.toml's checks, render.yaml's healthCheckPath — and it stays 200 (degraded)
+  # when one shop's database is dark, because taking every healthy shop out of the load balancer
+  # over one lost file is a worse outage than the one being reported. The DEPLOY gate is the
+  # question this loop is asking, and it is stricter: a release that leaves any shop unable to open
+  # its database is a release that rolls back.
   HEALTHY=0
   for _ in \$(seq 1 $HEALTH_TRIES); do
     sleep 2
-    if curl -fsS --max-time 5 \"http://127.0.0.1:\$PORT/health\" >/dev/null 2>&1; then HEALTHY=1; break; fi
+    if curl -fsS --max-time 5 \"http://127.0.0.1:\$PORT/health?strict=1\" >/dev/null 2>&1; then HEALTHY=1; break; fi
   done
 
   if [ \"\$HEALTHY\" != '1' ]; then
-    echo \"RELEASE IS NOT ANSWERING /health ON PORT \$PORT — rolling back\"
-    curl -sS --max-time 5 \"http://127.0.0.1:\$PORT/health\" || true   # names the shops that are dark
+    echo \"RELEASE IS NOT ANSWERING /health?strict=1 ON PORT \$PORT — rolling back\"
+    curl -sS --max-time 5 \"http://127.0.0.1:\$PORT/health?strict=1\" || true   # names the shops that are dark
     echo
     if [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ]; then
       sudo ln -sfn \"\$PREV\" '$APP_ROOT/current'

@@ -959,7 +959,7 @@ app.use(litePlanGate)
  * this endpoint, so a health check that cannot fail is a rollback that never fires. Touch the
  * database: a locked, missing or closed handle is exactly the failure a restart needs to catch.
  */
-app.get('/health', (_req, res) => {
+app.get('/health', (req, res) => {
   // A WRITE probe, not `SELECT 1`. On a full disk reads keep working while every write fails, so
   // the old read-only check answered {"ok":true} 200 while the shop could not save anything —
   // and this is the signal deploy/ship.sh polls to decide whether to roll back a release.
@@ -974,11 +974,27 @@ app.get('/health', (_req, res) => {
   // end." forever — while this endpoint answered {"ok":true} throughout, and ship.sh polls
   // exactly this to decide whether to roll back. The deploy was declared successful with the
   // shops dark. Answer for the databases that actually hold shops.
+  //
+  // …but that answer is for the DEPLOY GATE, and it is not the same question the platform's
+  // liveness probe is asking. Dockerfile's HEALTHCHECK, fly.toml's [[http_service.checks]] and
+  // render.yaml's healthCheckPath all poll this same URL to decide whether the CONTAINER is dead.
+  // One shop's lost file is not a reason to take every other shop on the box out of the load
+  // balancer — on Fly, with min_machines_running = 1, that is a total outage for shops whose data
+  // is perfectly fine; on Render it is a restart loop into the same state, forever; and ship.sh's
+  // own rollback poll then refuses to ship the release that would have fixed it.
+  //
+  // So split the two questions. Plain /health answers for the PROCESS and reports the dark shops
+  // as `degraded` — visible, named, and still 200. /health?strict=1 answers for the SHOPS, and is
+  // what deploy/ship.sh polls. Nothing about openTenantDb's refusal changes: a shop whose database
+  // is missing still gets a 503 with the restore command on every one of its own requests, which
+  // is the half that protects its books.
   const broken = AUTH_ENABLED ? [...brokenTenants.keys()] : []
-  if (broken.length) {
+  if (broken.length && String(req.query.strict || '') === '1') {
     return res.status(503).json({ ok: false, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20) })
   }
-  res.json({ ok: true })
+  res.json(broken.length
+    ? { ok: true, degraded: true, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20) }
+    : { ok: true })
 })
 
 /**
@@ -7851,7 +7867,7 @@ server.listen(...(HOST ? [PORT, HOST] : [PORT]), () => {
       }
     }
     if (brokenTenants.size) {
-      console.error(`  ⚠ ${brokenTenants.size} shop(s) cannot open their database. /health is reporting 503 until they can.\n`)
+      console.error(`  ⚠ ${brokenTenants.size} shop(s) cannot open their database. /health reports degraded, and /health?strict=1 — which deploy/ship.sh polls — is 503 until they can.\n`)
     }
   }
 

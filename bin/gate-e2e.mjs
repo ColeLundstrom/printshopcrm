@@ -4169,7 +4169,7 @@ try {
       try { const res = await fetch(`http://127.0.0.1:${P2}${p}`); return { status: res.status, text: await res.text() } }
       catch { return { status: 0, text: '' } }
     }
-    const up = async (want) => { for (let i = 0; i < 120; i++) { const h = await hit('/health'); if (h.status === want) return h; await sleep(500) } return await hit('/health') }
+    const up = async (want, path = '/health') => { for (let i = 0; i < 120; i++) { const h = await hit(path); if (h.status === want) return h; await sleep(500) } return await hit(path) }
     let s2p = boot(); started.push(s2p)
     try {
       await up(200)
@@ -4178,6 +4178,13 @@ try {
         body: JSON.stringify({ shop_name: 'Alpha Ink', owner_name: 'A', owner_email: 'a@health.test', password: 'GatePass-123456' }),
       })
       chk('a second shop signs up on its own instance', String(res.status), '^200$')
+      // A second, perfectly healthy shop on the same box. Everything below is about whether ITS
+      // service survives the other one's lost database.
+      const res2 = await fetch(`http://127.0.0.1:${P2}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Beta Prints', owner_name: 'B', owner_email: 'b@health.test', password: 'GatePass-123456' }),
+      })
+      chk('…and so does a third, whose database is fine', String(res2.status), '^200$')
 
       s2p.kill(); await sleep(700)
       // Brick it exactly as a real data-dependent migration does.
@@ -4189,9 +4196,24 @@ try {
       d.close()
 
       s2p = boot(); started.push(s2p)
-      const h = await up(503)
-      chk('a shop whose database will not open makes /health fail', String(h.status), '^503$')
-      chk('…and /health names the shop, so a human knows which one', h.text, 'alpha-ink')
+      // ?strict=1 is the DEPLOY gate — what ship.sh polls to decide whether to roll back.
+      const h = await up(503, '/health?strict=1')
+      chk('a shop whose database will not open makes /health?strict=1 fail', String(h.status), '^503$')
+      chk('…and it names the shop, so a human knows which one', h.text, 'alpha-ink')
+      // …while the PLATFORM's liveness probe — Dockerfile HEALTHCHECK, fly.toml checks,
+      // render.yaml healthCheckPath — must stay up. Answering 503 there takes every OTHER shop on
+      // the box out of the load balancer over one lost file: on Fly with min_machines_running = 1
+      // that is a total outage, and on Render a restart loop into the same state, forever.
+      const live = await hit('/health')
+      chk('…but the container liveness probe stays 200, or one dark shop de-routes them all', String(live.status), '^200$')
+      chk('…saying degraded, and naming the shop, so it is not silently ignored', live.text, 'degraded')
+      chk('…and it still names which one', live.text, 'alpha-ink')
+      // The whole point: the healthy shop is still open for business.
+      const betaLogin = await fetch(`http://127.0.0.1:${P2}/api/auth/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'b@health.test', password: 'GatePass-123456' }),
+      })
+      chk('…and the shop whose database is fine can still sign in', String(betaLogin.status), '^200$')
     } finally {
       try { s2p.kill() } catch { /* already gone */ }
       try { rmSync(T2, { recursive: true, force: true }) } catch { /* best effort */ }
@@ -4639,10 +4661,13 @@ try {
       s11 = bootServer()
       started.push(s11)
       await waitUp()
-      const health = await fetch(`http://127.0.0.1:${P11}/health`)
+      const health = await fetch(`http://127.0.0.1:${P11}/health?strict=1`)
       const hbody = await health.text()
-      chk('a missing shop database makes /health fail, so a deploy rolls back', String(health.status), '^503$')
+      chk('a missing shop database makes /health?strict=1 fail, so a deploy rolls back', String(health.status), '^503$')
       chk('…and it names the shop that is broken', hbody, 'unavailable')
+      const liveness = await fetch(`http://127.0.0.1:${P11}/health`)
+      chk('…while the liveness probe stays 200 for the shops that are fine', String(liveness.status), '^200$')
+      chk('…and reports the loss rather than hiding it', await liveness.text(), 'degraded')
 
       // And the owner is told, rather than shown an empty shop that looks brand new.
       const me = await fetch(`http://127.0.0.1:${P11}/api/auth/me`, { headers: { Cookie: cookie } })
