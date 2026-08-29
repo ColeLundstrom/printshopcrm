@@ -5383,6 +5383,104 @@ await t('the receiving card offers it, and confirms first', async () => {
   assert.match(handler, /purchase-orders\/\$\{b\.dataset\.closepo\}\/close/, 'it must call the close route')
 })
 
+/* ---------- a receipt entered by mistake can be walked back from the screen (v18) ----------
+ *
+ * The receiving dialog pre-fills every line with the FULL outstanding count, so one click on
+ * "Receive" books the whole order as arrived. That is the easy mistake, and until now it was
+ * a permanent one — every exit was shut:
+ *
+ *   · once fully received, renderReceiving prints "✓ Fully received" and renders NO buttons,
+ *     so the dialog cannot be reopened at all
+ *   · POST /api/purchase-orders/:id/close 409s `po_fully_received` — "there is nothing
+ *     outstanding to close"
+ *   · re-submitting answers `already: true`, and there is no DELETE for a purchase order
+ *
+ * The correction has existed server-side the whole time: receivePurchaseOrder clamps with
+ * `Math.max(0, Math.min(ordered, received + add))`, so a NEGATIVE `add` walks qty_received back.
+ * Two lines of frontend made it unreachable — `min="0"` on the input and `.filter(r => r.qty > 0)`
+ * on the submit — so the shop was left holding a job it could neither receive correctly, close,
+ * nor delete. This is the exact shape this project calls failure: a state a human cannot fix.
+ */
+section('a purchase order received by mistake is fixable from the screen')
+{
+  const poFixture = async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+    const po = sup.createPurchaseOrder({ job_number: 'JOB-1' }, // no job row — this is the PO surface
+      { po_number: 'PSC-JOB-1', supplier: 'S&S Activewear', total_units: 300,
+        lines: [{ sku: 'G500-W-M', style: 'Gildan 5000', color: 'white', size: 'M', qty: 300, unit_cost: 3.2 }] },
+      { status: 'submitted' })
+    // The submit route stamps submitted_at when the distributor confirms; createPurchaseOrder
+    // does not, and that stamp is the only thing distinguishing "S&S took it" from "a human
+    // typed it into the portal" once the receiving status has overwritten both.
+    const { run } = await import('../lib/db.mjs')
+    run('UPDATE purchase_orders SET submitted_at = ?, order_id = ? WHERE id = ?', '2026-08-29 10:00:00', 'SS-9001', po.id)
+    return { sup, po }
+  }
+
+  await t('a negative receipt walks the count back — the server always allowed it', async () => {
+    const { sup, po } = await poFixture()
+    const full = sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: 300 }])
+    assert.equal(full.received, 300, 'precondition: one click booked all 300')
+    assert.equal(full.status, 'received')
+    const back = sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: -40 }])
+    assert.equal(back.received, 260, 'the correction must land')
+  })
+
+  await t('…and the order stops calling itself received once it is not', async () => {
+    // Walking the count back to zero left status = 'received' with nothing received, because the
+    // recompute fell through to `po.status` — the value read BEFORE the correction. The card then
+    // showed "✓ Fully received" over an empty order, and short-close 409'd on it all over again.
+    const { sup, po } = await poFixture()
+    sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: 300 }])
+    const some = sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: -40 }])
+    assert.equal(some.status, 'partial', '260 of 300 is partial, not received')
+    assert.equal(some.fully_received, false)
+    const none = sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: -260 }])
+    assert.equal(none.received, 0)
+    assert.equal(none.status, 'submitted', 'nothing received — it is an outstanding order again')
+  })
+
+  await t('…and it never walks back to a status that would let it re-order', async () => {
+    // 'draft' is NOT in poAlreadySent(), so resetting to it would let the idempotency guard wave a
+    // second, real, chargeable order through. A hand-placed order returns to placed_manually.
+    const { sup, po } = await poFixture()
+    const { run } = await import('../lib/db.mjs')
+    run("UPDATE purchase_orders SET status = 'placed_manually', submitted_at = NULL, order_id = NULL WHERE id = ?", po.id)
+    sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: 300 }])
+    const none = sup.receivePurchaseOrder(po.id, [{ line_id: po.lines[0].id, qty: -300 }])
+    assert.equal(none.status, 'placed_manually')
+    assert.equal(sup.poAlreadySent(none), true, 'a corrected PO must still count as already sent')
+  })
+
+  await t('the fully-received card still offers a way in', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+    assert.match(src, /✓ Fully received[\s\S]{0,300}?Correct receipt/,
+      'a fully-received order offers no control at all, so a mis-receipt is permanent')
+  })
+
+  await t('…and the dialog accepts the negative the server has always taken', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+    const i = src.indexOf('function openReceive')
+    assert.ok(i > 0, 'openReceive moved — re-point this test')
+    const fn = src.slice(i, i + 2600)
+    assert.doesNotMatch(fn, /type="number" min="0" max="\$\{l\.short\}"/, 'min="0" makes the correction untypeable')
+    assert.match(fn, /min="-\$\{l\.qty_received\}"/, 'the input must allow walking back what was received')
+    assert.match(fn, /\.filter\(\(r\) => r\.qty !== 0\)/, '.filter(r => r.qty > 0) drops every correction on the way out')
+  })
+}
+
 /* ==========================================================================================
    ROUND 11 — frontend / accessibility.  Paste this block into bin/gate.mjs, at the end,
    just before the final tally.  It uses only what the harness already uses: node:assert,

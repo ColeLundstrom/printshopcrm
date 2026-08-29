@@ -612,7 +612,13 @@ function renderReceiving(jobId, pos) {
       ${po.status === 'closed'
         ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Short-closed — ${po.short} never arrived</div>`
         : po.fully_received
-          ? '<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Fully received</div>'
+          // "✓ Fully received" used to be the whole branch, and it was a one-way door. The dialog
+          // pre-fills the full outstanding count, so one click books the lot — and then there was
+          // no button here to reopen it, short-close 409s `po_fully_received`, re-submit answers
+          // already:true, and there is no DELETE. Correcting it is what the server has always
+          // supported; this is the control that reaches it.
+          ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Fully received</div>
+             <button class="btn ghost sm" data-recv="${po.id}" style="margin-top:7px">Correct receipt</button>`
           // Short-close is the way out when the distributor cancels the balance. Without it the
           // only way to clear the job was to record blanks as received that never arrived.
           : `<button class="btn ghost sm" data-recv="${po.id}" style="margin-top:9px">Receive blanks</button>
@@ -643,12 +649,12 @@ function openReceive(jobId, po) {
     <td class="num">${l.qty_ordered}</td>
     <td class="num">${l.qty_received}</td>
     <td class="num" style="color:${l.short > 0 ? 'var(--amber)' : 'var(--txt-3)'}">${l.short}</td>
-    <td><input class="input" type="number" min="0" max="${l.short}" value="${l.short}" data-line="${l.id}" style="width:70px;text-align:right"></td>
+    <td><input class="input" type="number" min="-${l.qty_received}" max="${l.short}" value="${l.short}" data-line="${l.id}" style="width:70px;text-align:right"></td>
   </tr>`).join('')
   modal({
-    title: `Receive blanks — ${esc(po.po_number || '')}`,
+    title: po.fully_received ? `Correct receipt — ${esc(po.po_number || '')}` : `Receive blanks — ${esc(po.po_number || '')}`,
     wide: true,
-    body: `<p class="dim" style="font-size:12.5px;margin-bottom:10px">Enter how many of each size actually arrived. Defaults to the outstanding count; lower it when a box comes up short.</p>
+    body: `<p class="dim" style="font-size:12.5px;margin-bottom:10px">Enter how many of each size actually arrived. Defaults to the outstanding count; lower it when a box comes up short. <strong>To undo a receipt entered by mistake, enter a negative number</strong> — −40 takes 40 back off what is recorded as received.</p>
       <table class="tbl"><thead><tr><th>Blank</th><th>Size</th><th class="num">Ordered</th><th class="num">Received</th><th class="num">Short</th><th>Receiving now</th></tr></thead>
         <tbody>${rows}</tbody></table>
       <div id="recv-note" class="dim" style="font-size:12px;margin-top:10px"></div>`,
@@ -657,8 +663,10 @@ function openReceive(jobId, po) {
       $('#recv-save', bg).onclick = async () => {
         const receipts = [...bg.querySelectorAll('input[data-line]')]
           .map((i) => ({ line_id: Number(i.dataset.line), qty: Number(i.value) || 0 }))
-          .filter((r) => r.qty > 0)
-        if (!receipts.length) { $('#recv-note', bg).textContent = 'Enter at least one quantity.'; return }
+          // `> 0` dropped every correction on the way out, so a negative typed into the box above
+          // left as an empty receipts array and the shop got "Enter at least one quantity."
+          .filter((r) => r.qty !== 0)
+        if (!receipts.length) { $('#recv-note', bg).textContent = 'Enter at least one quantity, or a negative number to take back a receipt.'; return }
         try {
           const updated = await api.post(`/api/purchase-orders/${po.id}/receive`, { receipts })
           toast(updated.fully_received ? 'All blanks received' : `Received — ${updated.received}/${updated.ordered}${updated.short ? `, ${updated.short} still short` : ''}`)
