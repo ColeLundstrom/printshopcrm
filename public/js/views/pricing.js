@@ -121,6 +121,22 @@ function renderBook(b) {
   loadMatrix()
 }
 
+/**
+ * The matrix redraw after a save used to be an unconditional `setTimeout(() => loadMatrix(), 600)`.
+ * On a grid of up to 8 quantity bands × 14 colour counts, carrying straight on to the next cell
+ * after clicking Save is the natural motion — and 600 ms in, the grid was rebuilt from the server
+ * and that half-typed cell silently reverted. For a keyboard user it also destroyed focus on every
+ * save. The redraw only exists to repaint the pm-custom markers, so it can wait until the shop has
+ * stopped typing in the grid.
+ */
+function reloadMatrixUnlessTyping() {
+  setTimeout(() => {
+    const a = document.activeElement
+    if (a && a.closest?.('.pm-editable')) return
+    loadMatrix()
+  }, 600)
+}
+
 let bookBound = false
 let bookData = null
 function wireBook(b) {
@@ -143,8 +159,27 @@ function wireBook(b) {
     note.textContent = 'Saving…'
     try {
       await api.put('/api/pricebook', { services: { [name]: readCard(card) } })
-      note.innerHTML = '<span style="color:var(--accent)">Saved — your quotes use this now.</span>'
-      setTimeout(() => loadBook(), 700)
+      // Refresh THIS card, not the screen.
+      //
+      // This was `setTimeout(() => loadBook(), 700)`, and loadBook() does `#view`.innerHTML — so
+      // saving one service silently threw away every number the shop had typed into every OTHER
+      // service card, 700 ms later, while they were still typing. The price book is a stack of one
+      // card per service with six fields each, and going down the page retyping rates is exactly
+      // how a shop uses this screen: new base rate on Screen Print, new per-colour, a new minimum
+      // on Embroidery, then Save on the first card because it is the one you finished. Everything
+      // below it reverted, with a green "Saved" underneath.
+      //
+      // The reload only ever existed to refresh this card's own pill (stock → edited → yours) and
+      // reveal its "Reset to stock" button, both of which live in serviceCard(). So re-render the
+      // one card, keep its note, and leave the rest of the page — and the caret — alone.
+      const fresh = (await api.get('/api/pricebook')).services.find((sv) => sv.name === name)
+      if (fresh) {
+        card.outerHTML = serviceCard(fresh)
+        const again = $(`.pb-svc[data-svc="${CSS.escape(name)}"] .pb-note`, $('#view'))
+        if (again) again.innerHTML = '<span style="color:var(--accent)">Saved — your quotes use this now.</span>'
+      } else {
+        note.innerHTML = '<span style="color:var(--accent)">Saved — your quotes use this now.</span>'
+      }
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
   })
   onOnce($('#view'), '.pb-reset', async (e, el) => {
@@ -162,7 +197,7 @@ function wireBook(b) {
     try {
       const r = await api.put('/api/pricebook', { matrices: { [mxState.service]: collectMatrixCells() } })
       note.innerHTML = `<span style="color:var(--accent)">Saved. ${r.cells} custom cell(s) — your quotes use these now.</span>`
-      setTimeout(() => loadMatrix(), 600)
+      reloadMatrixUnlessTyping()
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
   })
   onOnce($('#view'), '#mx-file', async (_e, el) => {
@@ -175,7 +210,7 @@ function wireBook(b) {
       // rows the book does not have, and every break the stock list lacks reads as the calculator.
       await api.put('/api/pricebook', { matrices: { [mxState.service]: r.cells }, ...(r.bands ? { bands: r.bands } : {}) })
       note.innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price(s) from your sheet.</span>`
-      setTimeout(() => loadMatrix(), 600)
+      reloadMatrixUnlessTyping()
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
     el.value = ''
     // 'change', not onOnce's default 'click'. The input is display:none inside a <label class="btn">,

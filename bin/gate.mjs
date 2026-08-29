@@ -2327,6 +2327,23 @@ section('the app does not discard what the shop has typed')
   /** Source with comments removed — these rules are about what the code DOES. */
   const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 
+  await t('saving one price-book service does not throw away the other services (v20)', async () => {
+    const pb = code(await readFile('public/js/views/pricing.js'))
+    // The price book is a stack of one card per service with six number fields each, and going
+    // down the page retyping rates is exactly how a shop uses it. Saving the first card fired
+    // `setTimeout(() => loadBook(), 700)`, and loadBook() does `#view`.innerHTML — so every number
+    // typed into every OTHER card reverted 700 ms later, under a green "Saved".
+    const save = pb.slice(pb.indexOf("'.pb-save'"), pb.indexOf("'.pb-reset'"))
+    assert.ok(save.length > 40, 'the save handler should still be there')
+    assert.doesNotMatch(save, /loadBook\(\)/, 'saving one service must not repaint the whole screen over the others')
+    assert.match(save, /card\.outerHTML = serviceCard\(/, '…it refreshes the one card it saved')
+    // The matrix redraw is the same shape: a 600 ms rebuild landing on a shop still typing the
+    // next cell of an 8 × 14 grid, reverting it silently and destroying focus.
+    assert.doesNotMatch(pb, /setTimeout\(\(\) => loadMatrix\(\), 600\)/, 'the unguarded matrix redraw is back')
+    const guard = pb.slice(pb.indexOf('function reloadMatrixUnlessTyping'), pb.indexOf('let bookBound'))
+    assert.match(guard, /closest\?\.\('\.pm-editable'\)/, 'the redraw has to stand down while the grid is being typed in')
+  })
+
   await t('Settings is one form with one Save, and nothing on it silently repaints', async () => {
     const misc = code(await readFile('public/js/views/misc.js'))
     // Five controls on the settings page used to re-render it from the STORED values with no
