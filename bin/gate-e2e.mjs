@@ -2716,10 +2716,40 @@ try {
       // It must still say what the operator needs: the shop, and what happened to it.
       chk('…while still reporting the status it set', String(susp.json?.tenant?.status), '^suspended$')
       chk('…on the shop it set it on', String(susp.json?.tenant?.slug), '^real-shop$')
+      /* ---------- a suspended shop's owner is told what actually happened ----------
+       * authMember() returned null for a suspended tenant exactly as it did for a wrong password,
+       * so the login route took its `if (!r)` branch and answered "Wrong email or password" — and
+       * the line immediately after it, the one that explains suspension and says who to call, was
+       * unreachable dead code. The owner typed their correct password, was told it was wrong,
+       * tried again, and walked into the account backoff on top of it. No screen in the product
+       * could get them out of that. */
+      // A cookie-less login attempt, so the operator's own Control Room session is left intact.
+      const tryLogin = async (password) => {
+        const res = await fetch(`http://127.0.0.1:${P6}/api/auth/login`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'real@shop.test', password }),
+        })
+        const text = await res.text()
+        let json = null; try { json = JSON.parse(text) } catch { /* html is fine */ }
+        return { status: res.status, text, json }
+      }
+      const lockedOut = await tryLogin('GatePass-123456')
+      chk('a suspended shop\'s owner is not told their password is wrong', String(lockedOut.status), '^403$')
+      chk('…they are told the shop is suspended', lockedOut.text, 'suspended')
+      chk('…and that their password was fine, so they stop retrying', lockedOut.text, 'password is correct')
+      chk('…with a code the login screen can act on', String(lockedOut.json?.code || ''), '^tenant_suspended$')
+      // A WRONG password against the same suspended shop must stay indistinguishable from any
+      // other wrong password — this must not become an account-existence oracle.
+      const wrongToo = await tryLogin('NotThePassword-123')
+      chk('…while a wrong password on that shop is still just a wrong password', String(wrongToo.status), '^401$')
+      chk('…saying nothing about the account', wrongToo.text, '^(?![\\s\\S]*suspend)')
+
       // Reactivate is the same route and was the same leak.
       const react = await as6('POST', `/api/admin/shops/${target?.id}/status`, { status: 'active' })
       chk('Reactivate leaks nothing either', String(/psc_live_|password_hash/.test(JSON.stringify(react.json || {}))), '^false$')
       chk('…and the shop is active again', String(react.json?.tenant?.status), '^active$')
+      // …and the owner can get back in, which is the point of the whole exchange.
+      chk('…so its owner can sign in again', String((await tryLogin('GatePass-123456')).status), '^200$')
     } finally {
       try { s6.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T6, { recursive: true, force: true }) } catch { /* best effort */ }

@@ -1231,7 +1231,21 @@ app.post('/api/auth/login', rateLimit({ max: 12 }), wrap(async (req, res) => {
     recordLoginFail(b.email)
     return res.status(401).json({ error: 'Wrong email or password' })
   }
-  if (r.tenant.status === 'suspended') return res.status(403).json({ error: 'This account has been suspended. Please contact your provider.' })
+  // The password was RIGHT. Do not count it as a failure — the account backoff is for guessing,
+  // and a suspended owner retrying their own correct password used to walk straight into it on
+  // top of being told the password was wrong. Name the real reason and who can lift it.
+  if (r.blocked === 'member_disabled') {
+    return res.status(403).json({
+      error: 'Your access to this shop was turned off. Ask an owner to switch it back on in Settings → Staff & Logins.',
+      code: 'member_disabled',
+    })
+  }
+  if (r.blocked) {
+    return res.status(403).json({
+      error: `This shop's account is ${r.tenant.status}. Your password is correct — contact your provider to reopen it.`,
+      code: 'tenant_suspended',
+    })
+  }
   clearRateLimit(req) // a correct login shouldn't count against the window
   clearLoginFails(b.email)
   setSessionCookie(res, createSession(r.tenant.id, r.member.id), req)
