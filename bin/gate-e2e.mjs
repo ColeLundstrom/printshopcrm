@@ -698,6 +698,37 @@ try {
       JSON.stringify(full?.items || []), 'RUSH \\+\\d+%')
   }
 
+  /* ---------- …and so does "Read an order from an email", the biggest quoting surface ----------
+   * views/intake.js carried a THIRD pricing engine (`intakeQuote`) beside priceIntake and the
+   * manual quote screen. Same defect as the assistant's, one screen over and far more used: it
+   * wrote a bare "RUSH." onto the customer-visible line and charged the standard rate, used a
+   * hardcoded $3.20 blank instead of the live distributor cost, and ignored the shop's price book.
+   * Measured on 300 tees, 2 colour front, 3-day rush: $2,649.00 against a canonical $4,305.00.
+   * /api/ai/intake returns the priced lines now, and the screen has no opinion about money. */
+  {
+    const readIt = async (text) => (await req('POST', '/api/ai/intake', { body: { text } })).json
+    const sub = (p) => (p?.priced?.items || []).reduce((n, i) => {
+      const grid = Object.values(i.sizes || {}).reduce((a, b) => a + (Number(b) || 0), 0)
+      return n + (Number(i.unit_price) || 0) * (grid || Number(i.qty) || 0)
+    }, 0)
+    const stdP = await readIt('We need 300 Gildan 5000 tees in black, 2 color front.')
+    const rushP = await readIt('We need 300 Gildan 5000 tees in black, 2 color front. RUSH — need them in 3 days.')
+    chk('reading an email hands back priced lines, not just a parse', String((stdP?.priced?.items || []).length > 0), '^true$')
+    chk('…it read the rush', String(rushP?.rush), '^true$')
+    chk('…and charged for it', String(sub(rushP) > sub(stdP)), '^true$')
+    chk(`…at roughly the shop's own 3-day tier (${sub(stdP)} → ${sub(rushP)})`,
+      String(sub(rushP) > sub(stdP) * 1.2 && sub(rushP) < sub(stdP) * 1.6), '^true$')
+    chk('…and the customer line says what the surcharge is, not a bare "RUSH."',
+      JSON.stringify(rushP?.priced?.items || []), 'RUSH \\+\\d+%')
+    chk('…and it bills the setup the decoration actually has', JSON.stringify(rushP?.priced?.items || []), 'Screen setup')
+    // The screen must not be able to disagree with the server again.
+    const { readFileSync: rfs3 } = await import('node:fs')
+    const intakeSrc = rfs3(join(ROOT, 'public/js/views/intake.js'), 'utf8')
+    for (const engine of ['quoteScreenPrint', 'servicePerPiece', 'function intakeQuote']) {
+      chk(`…because the intake screen no longer carries ${engine}`, String(intakeSrc.includes(engine)), '^false$')
+    }
+  }
+
   /* ---------- changing your password keeps THIS device signed in ----------
    * setMemberPassword now signs out every session (so a compromised one dies), and the route
    * re-issues a fresh session for the current device. If the re-issue broke, a user would lock

@@ -3771,12 +3771,30 @@ app.get('/api/ai/status', async (_req, res) => {
   try { res.json(await aiStatus(true)) } catch (e) { res.json({ available: false, reason: e.message }) }
 })
 
-/** Paste an email, get a draft order. Works with or without a model — see lib/ai.mjs. */
+/**
+ * Paste an email, get a draft order. Works with or without a model — see lib/ai.mjs.
+ *
+ * It returns the PRICE as well as the parse, because the screen that consumes this used to work
+ * it out itself. views/intake.js carried a third pricing engine (`intakeQuote`) alongside
+ * priceIntake and the quote screen: it wrote a bare "RUSH." onto the customer-visible line and
+ * then charged the standard rate, and it ignored the shop's price book and its live blank cost.
+ * On a 300-piece 3-day rush that is $3,101.00 where the canonical price is $5,705.00 — $1,860 of
+ * dropped rush and $744 of engine divergence, on the biggest quoting surface in the product.
+ * v1.18.0 and v1.19.0 fixed exactly this on the automated paths and in the assistant. One
+ * expression, one answer, on every path.
+ */
 app.post('/api/ai/intake', async (req, res) => {
   try {
     const text = String(req.body?.text || '')
     if (text.trim().length < 8) return res.status(400).json({ error: 'Paste the customer message first' })
-    res.json(await parseIntake(text))
+    const order = await parseIntake(text)
+    // A message that never says how many is still worth reading — the shop fills the grid in on
+    // the estimate. Price it at a stated assumption rather than inventing a quantity silently, so
+    // the screen can say which number the figure in front of them belongs to.
+    const stated = sizeTotal(order.sizes) || Number(order.total_pieces) || 0
+    const assumed = stated > 0 ? 0 : 24
+    const priced = await priceIntakeLive(assumed ? { ...order, total_pieces: assumed } : order, getSettings())
+    res.json({ ...order, assumed_pieces: assumed || null, priced: priced ? { pieces: priced.pieces, items: priced.items, quote: priced.quote } : null })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 

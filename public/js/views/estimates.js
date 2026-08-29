@@ -313,7 +313,7 @@ export async function estimateEditor(id) {
   $('#add-disc').onclick = () => addLine(blankDiscount)
   $('#add-matrix').onclick = () => priceFromMatrix()
   $('#quote-calc').onclick = () => quoteModal(settings, (line) => { items.push(line); draw() })
-  $('#read-email').onclick = () => intakeModal(settings, (line, parsed) => {
+  $('#read-email').onclick = () => intakeModal((line, parsed) => {
     // First read replaces the empty starter row rather than sitting under it.
     if (items.length === 1 && !items[0].description && !items[0].unit_price) items = []
     items.push(line)
