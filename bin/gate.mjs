@@ -4731,6 +4731,63 @@ section('a document never hides money between its subtotal and its total')
  *
  * This is the worst possible first five minutes for a shop that has just switched, and it is the
  * one the comment was written to prevent. */
+
+/* ---------- the assistant answers with the same numbers the screens do (v18) ----------
+ *
+ * Two of the assistant's money answers disagree with every other surface in the product, and both
+ * have the correction already written elsewhere in the codebase:
+ *
+ *  · "Who is Acme Co" summed `amount_due - amount_paid` over ALL invoices with no status filter,
+ *    so a VOIDED invoice was reported as money owed. doOverdue() four functions up filters
+ *    `status NOT IN ('paid','void')`; the contact record, the contact list, A/R aging, the
+ *    statement and the dashboard all read the void as $0.
+ *
+ *  · "quotes not yet approved" summed `total`, which includes sales tax. server.mjs fixed exactly
+ *    this on the dashboard KPI it mirrors, with the comment still sitting beside it: "SUM(total)
+ *    counted sales tax as quoted revenue. What the shop is chasing is what it keeps."
+ *
+ * A number the shop reads out of the assistant and then acts on has to be the number on the
+ * screen. */
+section('the assistant does not invent money the screens do not show')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const asst = await import('../lib/assistant.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+
+  dbmod.run('INSERT INTO contacts (id, name, company) VALUES (1, ?, ?)', 'Acme Co', 'Acme')
+  // One live invoice and one the shop voided, same amount.
+  dbmod.run(`INSERT INTO invoices (id, contact_id, invoice_number, status, amount_due, amount_paid, due_date)
+             VALUES (1, 1, 'INV-1001', 'unpaid', 5542.40, 0, date('now','+7 day'))`)
+  dbmod.run(`INSERT INTO invoices (id, contact_id, invoice_number, status, amount_due, amount_paid, due_date)
+             VALUES (2, 1, 'INV-1002', 'void', 5542.40, 0, date('now','+7 day'))`)
+  // A quote with tax on it: $3,000 of work, $247.50 of sales tax.
+  dbmod.run(`INSERT INTO estimates (id, contact_id, estimate_number, status, subtotal, tax, total)
+             VALUES (1, 1, 'EST-1001', 'sent', 3000, 247.50, 3247.50)`)
+
+  await t('a voided invoice is not reported as money the customer owes', async () => {
+    const r = await asst.ask('who is Acme Co')
+    assert.ok(r?.reply, 'the assistant answered nothing')
+    // money0 rounds to whole dollars, so the live invoice reads $5,542 and both together $11,085.
+    assert.doesNotMatch(r.reply, /11,08[45]/, `the void is being counted as owed: ${r.reply}`)
+    assert.match(r.reply, /\$5,542 owed/, `it should still report the one LIVE invoice: ${r.reply}`)
+  })
+
+  await t('quotes not yet approved are counted without the sales tax', async () => {
+    const r = await asst.ask('how much revenue this month')
+    assert.ok(r?.reply, 'the assistant answered nothing')
+    assert.match(r.reply, /\$3,000\.00.{0,4} in quotes/, `counted tax as quoted revenue: ${r.reply}`)
+  })
+
+  await t('…and outstanding on invoices still excludes the void, as it always did', async () => {
+    const r = await asst.ask('how much revenue this month')
+    assert.match(r.reply, /\$5,542\.40.{0,20}outstanding/, r.reply)
+  })
+}
+
 section('imported history stays out of every timed automation, as the comment claims')
 {
   const { DatabaseSync } = await import('node:sqlite')
