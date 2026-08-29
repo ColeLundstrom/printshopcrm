@@ -1,4 +1,4 @@
-import { api, $, esc, setPage, on, toast, onOnce, fmtDate, relTime } from '../core.js'
+import { api, $, esc, setPage, on, toast, onOnce, fmtDate, relTime, announce } from '../core.js'
 
 /**
  * Floor Mode — scan a work ticket's barcode with the phone camera, see the job, tap once to
@@ -127,7 +127,7 @@ function renderJob(d, note) {
     : `<button class="scan-stage" data-advance="${esc(s.key)}" data-job="${d.id}">${esc(s.label)}</button>`).join('')
   host.innerHTML = `
     <div class="card scan-job-card">
-      ${note ? `<div class="scan-done">✓ ${esc(note)}</div>` : ''}
+      <div class="scan-done-wrap" role="status" aria-live="polite" aria-atomic="true">${note ? `<div class="scan-done">✓ ${esc(note)}</div>` : ''}</div>
       <div class="scan-job-head">
         <div>
           <div class="scan-num">${esc(d.job_number)} ${d.rush ? '<span class="pill red">RUSH</span>' : ''}</div>
@@ -141,6 +141,18 @@ function renderJob(d, note) {
       ${d.scans.length ? `<div class="scan-log">${d.scans.map((s) => `<div class="dim">${esc(s.to_stage.replace('_', ' '))} — ${esc(s.actor || '')} · ${esc(relTime(s.created_at))}</div>`).join('')}</div>` : ''}
     </div>`
   host.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  // Floor Mode is a phone page used one-handed on the shop floor, and every tap here stamps a
+  // labour timestamp the profitability report is built from, with no undo. It confirmed the scan
+  // by swapping this whole block's innerHTML — visible if you can see it, and completely silent
+  // otherwise. A press operator using VoiceOver tapped "Advance to Production" and heard nothing:
+  // no confirmation, no new stage, no error. The only safe thing to do is tap it again.
+  announce(note
+    ? `${note}. ${d.job_number}, ${d.title || ''}.`
+    : `${d.job_number}, ${d.title || ''}, ${d.contact_name}, ${d.pieces} pieces, currently ${d.stage.replace('_', ' ')}.`)
+  // …and the innerHTML above just destroyed the button that was pressed, so focus fell to <body>
+  // and the next tab started from the top of the page. Put it on the control that does the next
+  // thing — the same control the thumb is already over.
+  ;($('.scan-advance', host) || $('button.scan-stage', host))?.focus?.()
 }
 
 function stopCamera() {

@@ -2473,6 +2473,51 @@ await t('the only delivery path a shop has without SMTP is reachable from the ke
   assert.equal(node.attrs.tabindex, '0', 'it needs to be focusable')
   assert.equal(node.attrs.role, 'button', 'and to announce as the control it behaves like')
 })
+/* ---------- a repaint the shop did not ask for keeps the keyboard's place (v20) ----------
+ * The Job Board is the shared screen, and a busy floor produces a stream of moves from other
+ * people's tablets. Every realtime 'board' event re-runs boardView(), which is an
+ * `#view`.innerHTML — so a keyboard user tabbing across job cards, or sitting on the assignee
+ * select they had just used, was thrown back to the top of the document every time anyone anywhere
+ * in the shop dragged a card. The same happened on every filter chip click, which destroys the
+ * chip that was pressed. And the repaint was silent, so there was no reason given for it either. */
+await t('a board repaint puts the keyboard back where it was, and says why it moved', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const b = fs.readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  const view = b.slice(b.indexOf('export async function boardView()'), b.indexOf('async function jobForm'))
+  assert.ok(view.length > 200, 'boardView should still be there')
+  assert.match(view, /const a = document\.activeElement/, 'the repaint has to note what had focus BEFORE it destroys it')
+  assert.ok(view.indexOf('document.activeElement') < view.indexOf("$('#view').innerHTML"),
+    '…and note it before the innerHTML, not after — by then it is already on <body>')
+  assert.match(view, /back\.focus\?\.\(\)/, 'and hand focus back')
+  assert.match(view, /\.jcard\[data-id=/, 'a job card is identified by its data-id')
+  assert.match(view, /\[data-f="\$\{a\.dataset\.f\}"\]/, '…and a filter chip by its data-f')
+  const app = fs.readFileSync(join(root, 'public/js/app.js'), 'utf8')
+  assert.match(app, /runRouter\(\); announce\('The job board was updated\.'\)/,
+    'a screen that repaints itself under a screen-reader user has to say why')
+})
+
+/* ---------- Floor Mode confirms a scan out loud (v20) ----------
+ * Every tap on this page stamps a labour timestamp the profitability report is built from, with no
+ * undo. It confirmed by swapping innerHTML — visible if you can see it, and completely silent
+ * otherwise: no announce, no aria-live and no focus() anywhere in the file. A press operator using
+ * VoiceOver taps "Advance to Production" and hears nothing at all, so the safe move is to tap it
+ * again. The same innerHTML also destroys the button that was pressed, dropping focus on <body>. */
+await t('a scan says what it did, and leaves the thumb on the next control', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const sc = fs.readFileSync(join(root, 'public/js/views/scan.js'), 'utf8')
+  const rj = sc.slice(sc.indexOf('function renderJob('), sc.indexOf('function stopCamera('))
+  assert.ok(rj.length > 200, 'renderJob should still be there')
+  assert.match(rj, /class="scan-done-wrap" role="status" aria-live="polite"/, 'the confirmation was a silent div')
+  assert.match(rj, /announce\(note/, '…and the settled result has to be spoken, not only written')
+  assert.match(rj, /\.focus\?\.\(\)/, 'the innerHTML destroys the button that was pressed and put focus nowhere')
+  assert.match(rj, /'\.scan-advance', host/, '…and it belongs on the control that does the next thing')
+})
 await t('Floor Mode\'s stage buttons are a size a thumb can hit', async () => {
   const fs = await import('node:fs')
   const { join, dirname } = await import('node:path')

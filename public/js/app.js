@@ -1,4 +1,4 @@
-import { api, $, $$, esc, route, runRouter, initials, on, toast } from './core.js'
+import { api, $, $$, esc, route, runRouter, initials, on, toast, announce } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
@@ -478,7 +478,9 @@ function handleRealtime(m) {
     toast(`${m.data?.title || 'Update'}${m.data?.body ? ' — ' + m.data.body : ''}`)
     refreshChrome()
   } else if (m.type === 'board') {
-    if (path.startsWith('/board')) runRouter()   // someone (or the bot) moved a job
+    // someone (or the bot) moved a job. Say so: the repaint is silent, so a screen-reader user
+    // watching the board is given no reason for the columns having changed under them.
+    if (path.startsWith('/board')) { runRouter(); announce('The job board was updated.') }
     refreshChrome()
   } else if (m.type === 'conversation' || m.type === 'chat') {
     // The receptionist screen holds an unsaved form — knowledge base, greeting, persona, FAQ rows

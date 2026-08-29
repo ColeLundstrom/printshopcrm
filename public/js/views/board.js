@@ -9,6 +9,17 @@ const boardState = { filter: 'all', assignee: 'all' }
 
 export async function boardView() {
   setPage('Job Board', `<button class="btn" id="new-job">+ New Job</button>`)
+  // The Job Board is the shared screen. A realtime 'board' event re-runs this whole function
+  // (app.js handleRealtime), and so does every filter chip and the assignee select — and the
+  // render below is `#view`.innerHTML, which destroys whatever had focus. A keyboard user tabbing
+  // across job cards, or sitting on the assignee select they just used, was thrown back to the top
+  // of the document every time anyone anywhere in the shop moved a card.
+  // The identifiers to come back to are already in the markup: an id, a job's data-id, or a
+  // filter chip's data-f.
+  const a = document.activeElement
+  const keep = a && $('#view')?.contains(a)
+    ? (a.id ? `#${a.id}` : a.dataset?.id ? `.jcard[data-id="${a.dataset.id}"]` : a.dataset?.f ? `[data-f="${a.dataset.f}"]` : null)
+    : null
   if (!$('#board')) $('#view').innerHTML = '<div class="dim">Loading…</div>'
   const d = await api.get(`/api/board?filter=${boardState.filter}&assignee=${encodeURIComponent(boardState.assignee)}`)
 
@@ -38,6 +49,7 @@ export async function boardView() {
 
   on($('#bfilter'), '[data-f]', (_e, t) => { boardState.filter = t.dataset.f; boardView() })
   $('#bassign').onchange = (e) => { boardState.assignee = e.target.value; boardView() }
+  if (keep) { const back = $(keep); if (back) { back.focus?.(); back.scrollIntoView?.({ block: 'nearest' }) } }
 
   wireDnd()
   on($('#board'), '.jcard', (e, t) => {
