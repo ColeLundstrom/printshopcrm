@@ -3663,6 +3663,75 @@ await t('deleting an estimate takes its mockups with it, so a reused id cannot i
  * the new customer's invoice number, "Retry" pushes an invoice nobody asked to push — and worst,
  * enqueueQbo() skips an invoice that already has an open row, so the NEW invoice is never queued
  * at all. The money moves, QuickBooks never hears about it, and nothing anywhere says so. */
+/* ---------- the pipeline follows the quote it was opened from (v20) ----------
+ * Create, send and approve all called syncPipeline. Edit and delete never did.
+ *   - edit $8,000 -> $4,000 and the deal keeps $8,000. ONE /api/dashboard response then carries
+ *     open_estimates 4,670 beside pipeline.open_value 8,670, side by side on the login screen.
+ *   - opportunities.estimate_id is ON DELETE SET NULL, not CASCADE, so deleting the quote left the
+ *     deal behind with a null pointer: still 'quoted', still $8,000 of Open Pipeline and Weighted
+ *     Forecast, no longer findable by oppForEstimate — so it could never be re-valued, and a
+ *     re-created quote for that customer minted a SECOND deal beside it. */
+section('the pipeline follows the quote it was opened from')
+await t('editing a quote down re-prices the deal, and deleting it takes the deal with it', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const P = await import('../lib/pipeline.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Northgate High')")
+    dbm.run("INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total) VALUES (1,1,'EST-1','draft','[]',8000,0,8000)")
+    dbm.run("INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total) VALUES (2,1,'EST-2','draft','[]',670,0,670)")
+    P.syncFromEstimate(dbm.get('SELECT * FROM estimates WHERE id = 1'), 'created')
+    P.syncFromEstimate(dbm.get('SELECT * FROM estimates WHERE id = 2'), 'created')
+    // The dashboard's own KPI, beside the pipeline's, out of one payload. For a shop whose only
+    // deals came from estimates these two must never disagree — that is the whole invariant.
+    const kpi = () => dbm.get("SELECT COALESCE(SUM(COALESCE(subtotal, total)), 0) AS v FROM estimates WHERE status IN ('draft','sent')").v
+    assert.equal(kpi(), 8670, 'precondition')
+    assert.equal(P.pipelineStats().open_value, 8670, 'precondition')
+
+    // PUT /api/estimates/:id — the UPDATE, then the sync the three sibling routes always had.
+    dbm.run('UPDATE estimates SET subtotal=?, tax=?, total=? WHERE id=?', 4000, 0, 4000, 1)
+    P.syncFromEstimate(dbm.get('SELECT * FROM estimates WHERE id = 1'), 'updated')
+    assert.equal(kpi(), 4670)
+    assert.equal(P.pipelineStats().open_value, 4670, 'the deal kept the value the quote no longer has')
+    assert.equal(P.pipelineStats().weighted_value, 1401, 'and carried it into the weighted forecast')
+
+    // DELETE /api/estimates/:id — the route's own transaction, verbatim.
+    dbm.tx(() => {
+      dbm.run('DELETE FROM art_versions WHERE estimate_id = ?', 1)
+      dbm.run("DELETE FROM opportunities WHERE estimate_id = ? AND source = 'estimate'", 1)
+      dbm.run('DELETE FROM estimates WHERE id = ?', 1)
+    })
+    assert.equal(kpi(), 670)
+    assert.equal(P.pipelineStats().open_value, 670, 'a deleted quote left its value in Open Pipeline forever')
+    assert.equal(dbm.all("SELECT id FROM opportunities WHERE estimate_id IS NULL AND source = 'estimate'").length, 0,
+      'and left an orphan oppForEstimate could never find again')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('…and the schema holds the same rule for any other path that deletes a quote', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const P = await import('../lib/pipeline.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Northgate High')")
+    dbm.run("INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total) VALUES (1,1,'EST-1','draft','[]',8000,0,8000)")
+    P.syncFromEstimate(dbm.get('SELECT * FROM estimates WHERE id = 1'), 'created')
+    // A hand-typed deal the shop attached to the same customer is NOT the app's to bin.
+    dbm.run("INSERT INTO opportunities (contact_id, estimate_id, title, stage, value, source) VALUES (1, 1, 'Spring reorder', 'negotiation', 2500, 'manual')")
+    dbm.run('DELETE FROM estimates WHERE id = 1')   // no route, just the raw delete
+    const left = dbm.all('SELECT source, value FROM opportunities').map((o) => `${o.source}:${o.value}`)
+    assert.deepEqual(left, ['manual:2500'],
+      "the quote's own deal goes; a deal a person typed stays")
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('a QuickBooks push never survives its invoice')
 await t('deleting the customer takes the dead push row with the invoice', async () => {
   const { DatabaseSync } = await import('node:sqlite')

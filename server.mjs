@@ -2331,6 +2331,13 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
     b.contact_id ?? e.contact_id, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
     rushDaysIn(b.rush_days ?? e.rush_days), id)
+  // The three sibling routes (create, send, approve) all sync; this one never did, so a quote
+  // edited from $8,000 down to $4,000 left the deal in Open Pipeline at $8,000. One /api/dashboard
+  // response then carried both numbers — open_estimates 4,670 beside pipeline.open_value 8,670 —
+  // rendered side by side on the first screen after login. syncFromEstimate re-values
+  // unconditionally and only moves the stage on named events, so 'updated' re-prices without
+  // advancing anything.
+  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'updated')
   res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
 }))
 
@@ -2342,6 +2349,15 @@ app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
   // about to be handed to the next estimate.
   tx(() => {
     run('DELETE FROM art_versions WHERE estimate_id = ?', +req.params.id)
+    // …and with its deal. opportunities.estimate_id is ON DELETE SET NULL, not CASCADE, so the
+    // deal SURVIVED the quote with a null pointer: still 'quoted', still carrying the deleted
+    // quote's value in Open Pipeline and Weighted Forecast, and no longer findable by
+    // oppForEstimate — so it could never be re-valued, and a re-created quote for the same
+    // customer minted a SECOND deal beside it. Deleting an $8,000 draft left $8,000 of forecast
+    // the shop had to go and find on the board by hand.
+    // Only the deals this module opened. source is 'manual' from POST /api/opportunities and
+    // 'ai-receptionist' from the website agent; a deal a person typed is theirs, not ours to bin.
+    run("DELETE FROM opportunities WHERE estimate_id = ? AND source = 'estimate'", +req.params.id)
     run('DELETE FROM estimates WHERE id = ?', +req.params.id)
   })
   res.json({ ok: true })
