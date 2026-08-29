@@ -25,8 +25,24 @@ const PORT = Number(process.argv[2] || process.env.PSC_GATE_PORT) || 4390
 const BASE = `http://127.0.0.1:${PORT}`
 const TMP = mkdtempSync(join(tmpdir(), 'psc-e2e-'))
 
-let fails = 0
+let fails = 0, skips = 0
 const say = (mark, msg) => console.log(`  ${mark} ${msg}`)
+
+/**
+ * Windows runs the app; it does not run the Linux deployment.
+ *
+ * Two blocks below drive things that only exist on a POSIX box: deploy/backup.sh through bash with
+ * the sqlite3 and tar binaries beside it and a symlinked uploads directory, and a graceful SIGTERM
+ * drain. Windows has no SIGTERM — subprocess.kill('SIGTERM') is TerminateProcess, so the handler
+ * under test never runs and the socket closes 1006 instead of the 1001 the assertion is about.
+ * Running them there would report a Windows API as an app regression.
+ *
+ * Everything else in this file is pure Node and HTTP and runs on all three platforms, which is the
+ * reason this suite was rewritten off bash + curl + python3 in the first place. Skips are printed
+ * and counted, so a platform guard can never quietly grow to cover a real failure.
+ */
+const POSIX = process.platform !== 'win32'
+const skip = (why) => { skips++; say('○', `${why} — POSIX only, covered by the Linux and macOS jobs`) }
 
 const sizeSum = (g) => Object.values(g || {}).reduce((a, n) => a + (Number(n) || 0), 0)
 
@@ -2938,7 +2954,12 @@ try {
    * any screen. Google Drive was the only integration in the whole app with a way out; the
    * answer for the other nine was sqlite3, which is the definition of a state a human cannot fix. */
   {
-    await req('PUT', '/api/settings', { body: { slack_bot_token: 'xoxb-real-token', slack_signing_secret: 'signing-secret' } })
+    // Slack-shaped, because that is what the settings route stores, and listed in
+    // .github/secret-scan-allowlist.txt so the credential scan knows it is a fixture. The value
+    // this replaced called itself a real token, which is a poor thing to name a fixture and read,
+    // to the scanner and to anyone seeing the CI annotation on a public repo, as a live Slack
+    // token having been committed.
+    await req('PUT', '/api/settings', { body: { slack_bot_token: 'xoxb-0000-EXAMPLE-NOT-A-REAL-TOKEN', slack_signing_secret: 'signing-secret' } })
     let sset = (await req('GET', '/api/settings')).json?.settings || {}
     chk('a shop connects Slack', String(sset.slack_bot_token_set), '^true$')
 
@@ -3036,7 +3057,8 @@ try {
    *
    * This runs the real script, because both faults are in its exit status and neither shows up by
    * reading it. */
-  {
+  if (!POSIX) skip('deploy/backup.sh runs a real archive')
+  else {
     const { execFileSync } = await import('node:child_process')
     const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, rmSync } = await import('node:fs')
     const sh = (env, cwd) => {
@@ -5569,7 +5591,8 @@ try {
    * The assertion is TIMED, and the margin is deliberate: broken is 8s, fixed is tens of ms, and
    * 3s sits far from both so a loaded machine cannot flip it. Its own server, own database, own
    * port, so the main run is untouched. */
-  {
+  if (!POSIX) skip('a deploy drains instead of being killed')
+  else {
     const T3 = mkdtempSync(join(tmpdir(), 'psc-e2e-drain-'))
     const P3 = PORT + 8
     const s3 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
@@ -6577,6 +6600,7 @@ try {
 }
 
 console.log()
-console.log(fails > 0 ? `  E2E: ${fails} failure(s)` : '  E2E: all pass')
+const tail = skips ? ` (${skips} skipped)` : ''
+console.log(fails > 0 ? `  E2E: ${fails} failure(s)${tail}` : `  E2E: all pass${tail}`)
 cleanup()
 process.exit(fails > 0 ? 1 : 0)

@@ -1,0 +1,27 @@
+# Every text file in this repo is LF, in the working tree as well as in the object store.
+#
+# Git's default on Windows (core.autocrlf=true, which is what Git for Windows installs and what the
+# GitHub windows-latest runner checks out with) rewrites LF to CRLF on checkout. That is not
+# cosmetic here:
+#
+#   deploy/*.sh and deploy/*.service are read by /bin/sh and systemd on an Ubuntu box. A CRLF copy
+#   fails with "bad interpreter: /bin/bash^M" — and these are the scripts that cut a release, so
+#   the failure lands on a shop mid-deploy.
+#
+#   Dockerfile's RUN lines are handed to /bin/sh inside the image for the same reason.
+#
+#   bin/gate.mjs asserts against the text of the app's own source files, with regexes that anchor
+#   on \n and with fixed-width slices around a found offset. Under CRLF every line is one byte
+#   longer, so those windows silently shrink and the assertions fail on Windows against code that
+#   is perfectly correct. Two of them did exactly that.
+#
+# There is no Windows-only file in this tree that wants CRLF, so the rule is repo-wide.
+* text=auto eol=lf
+
+# Binaries git must never touch. `text=auto` already detects these, but stating them means a
+# corrupted checkout can never depend on that heuristic getting it right.
+*.png binary
+*.gz  binary
+*.ico binary
+*.woff  binary
+*.woff2 binary

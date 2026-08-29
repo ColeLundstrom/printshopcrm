@@ -8,12 +8,42 @@
  * every deploy without credentials.
  */
 import { strict as assert } from 'node:assert'
+import { pathToFileURL } from 'node:url'
 
-let passed = 0, failed = 0
+let passed = 0, failed = 0, skipped = 0
 const section = (name) => console.log(`\n  ${name}`)
 async function t(name, fn) {
   try { await fn(); passed++; console.log(`    ✓ ${name}`) }
   catch (e) { failed++; console.log(`    ✗ ${name}\n      ${e.message.split('\n')[0]}`) }
+}
+
+/**
+ * An absolute path as something `import()` will actually accept.
+ *
+ * Several cases below drive a child `node --input-type=module -e` because they need an env var
+ * (TZ, PSC_DB) set before the process makes its first Date or opens its first database. The
+ * specifier they embed has to be a file:// URL: on Windows an absolute path starts `D:\…` and the
+ * ESM loader rejects it outright — "Only URLs with a scheme in: file, data, and node", with the
+ * drive letter read as a protocol. Eleven cases failed that way on the Windows runner, none of
+ * them for a reason that had anything to do with what they were testing.
+ */
+const asSpecifier = (abs) => JSON.stringify(pathToFileURL(abs).href)
+
+/**
+ * Cases that drive the deployment shell scripts for real.
+ *
+ * deploy/release.sh and deploy/backup.sh are POSIX shell run by systemd on the Ubuntu box
+ * INSTALL.md targets, and the rehearsals below stand up a whole fake install to run them against:
+ * `ln -sfn` for the `current` symlink, PATH-shadowing stubs that are themselves shell scripts, cp,
+ * readlink, tar. None of that is meaningful on Windows, which is a platform this app RUNS on and
+ * is never deployed to this way. Skipping states that; it is reported, and it is not a pass.
+ *
+ * The Linux and macOS jobs run every one of these, so no case here is skipped everywhere.
+ */
+const POSIX = process.platform !== 'win32'
+async function tPosix(name, fn) {
+  if (!POSIX) { skipped++; console.log(`    ○ ${name}  (POSIX shell only — covered by the Linux and macOS jobs)`); return }
+  return t(name, fn)
 }
 
 /* ---------- intake parsing (lib/ai.mjs) ---------- */
@@ -2534,7 +2564,7 @@ for (const [tz, stored, want, why] of [
     const { fileURLToPath } = await import('node:url')
     const root = join(dirname(fileURLToPath(import.meta.url)), '..')
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
-      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      const m = await import(${asSpecifier(join(root, 'public/js/core.js'))})
       process.stdout.write(m.fmtDate(${JSON.stringify(stored)}))
     `], { env: { ...process.env, TZ: tz }, encoding: 'utf8' })
     assert.equal(out.trim(), want)
@@ -4108,7 +4138,7 @@ for (const tz of ['America/Los_Angeles', 'America/New_York', 'Europe/Berlin', 'A
     const { fileURLToPath } = await import('node:url')
     const root = join(dirname(fileURLToPath(import.meta.url)), '..')
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
-      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      const m = await import(${asSpecifier(join(root, 'public/js/core.js'))})
       const t = m.today()
       const day = (n) => { const d = new Date(\`\${t}T12:00:00\`); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
       // The predicate orders.js uses, evaluated the way orders.js evaluates it.
@@ -4153,7 +4183,7 @@ await t('fmtDate and relTime never disagree about which day a value falls on', a
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   // relTime is the one that was already right; fmtDate must land on the same instant.
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+    const m = await import(${asSpecifier(join(root, 'public/js/core.js'))})
     const stored = '2026-08-28 04:05:20'
     const asRelTime = new Date(stored.replace(' ', 'T') + 'Z')
     process.stdout.write(JSON.stringify({
@@ -4171,7 +4201,7 @@ await t('a date the app STORES is the shop\'s calendar day, not UTC\'s', async (
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   // 17:00 Pacific on the 27th is 00:00 UTC on the 28th: today() must still say the 27th.
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+    const m = await import(${asSpecifier(join(root, 'public/js/core.js'))})
     process.stdout.write(m.localDay(new Date('2026-08-28T00:30:00Z')))
   `], { env: { ...process.env, TZ: 'America/Los_Angeles' }, encoding: 'utf8' })
   assert.equal(out.trim(), '2026-08-27')
@@ -5690,7 +5720,7 @@ await t('a deploy does not delete the artwork a restore set aside', async () => 
   assert.ok(dirsOf('pre-v').size <= 5, `and snapshots written under the old prefix, kept ${dirsOf('pre-v').size}`)
 })
 
-await t('the pre-migration backup contains the shops, not an empty default handle', async () => {
+await tPosix('the pre-migration backup contains the shops, not an empty default handle', async () => {
   const r = await rehearseRelease({ healthy: true })
   assert.equal(r.code, 0, `a healthy release should succeed:\n${r.out}`)
   const names = r.captured.map((f) => f.name)
@@ -5702,7 +5732,7 @@ await t('the pre-migration backup contains the shops, not an empty default handl
   assert.match(r.out, /database\(s\) backed up/, 'and it must say what it captured')
 })
 
-await t('a release that will not answer /health is rolled back, not announced as live', async () => {
+await tPosix('a release that will not answer /health is rolled back, not announced as live', async () => {
   const r = await rehearseRelease({ healthy: false })
   assert.notEqual(r.code, 0, `a release nobody can reach must exit non-zero:\n${r.out}`)
   assert.doesNotMatch(r.out, /✓ v9\.9\.9 is live/, 'is-active is not proof that anything is being served')
@@ -5796,7 +5826,7 @@ await t('…and both deploy scripts ask it the same way', async () => {
  * BSD readlink exits 1 on the same input, which is why every local run and every gate run to date
  * was green. The `else` branch below it — "first release on this install" — was unreachable on
  * Linux for the same reason: PREVIOUS was never empty. */
-await t('a failed FIRST deploy does not leave `current` pointing at itself', async () => {
+await tPosix('a failed FIRST deploy does not leave `current` pointing at itself', async () => {
   const r = await rehearseRelease({ healthy: false, first: true, gnu: true })
   assert.notEqual(r.code, 0, `a release nobody can reach must exit non-zero:\n${r.out}`)
   assert.ok(r.linkExists, 'current should still be a symlink')
@@ -5807,7 +5837,7 @@ await t('a failed FIRST deploy does not leave `current` pointing at itself', asy
   assert.ok(!r.prevFile || !/\/current$/.test(r.prevFile), `.previous-release must not record a self-link, got ${r.prevFile}`)
 })
 
-await t('…and a healthy FIRST deploy does not hand out a self-referential rollback command', async () => {
+await tPosix('…and a healthy FIRST deploy does not hand out a self-referential rollback command', async () => {
   const r = await rehearseRelease({ healthy: true, first: true, gnu: true })
   assert.equal(r.code, 0, `a healthy first deploy must succeed:\n${r.out}`)
   assert.match(r.out, /nothing to roll back to yet/, `the first release has no way back, and must say so:\n${r.out}`)
@@ -5818,7 +5848,7 @@ await t('…and a healthy FIRST deploy does not hand out a self-referential roll
   }
 })
 
-await t('…while a deploy that DOES have a previous release still rolls back to it', async () => {
+await tPosix('…while a deploy that DOES have a previous release still rolls back to it', async () => {
   // The guard must not cost the case it exists to protect.
   const r = await rehearseRelease({ healthy: false, gnu: true })
   assert.match(r.current, /releases\/v0\.0\.1$/, `current must go back to the previous release, got ${r.current}`)
@@ -7595,7 +7625,7 @@ await t('the session minted after a reset is still alive a tick later', async ()
   const box = mkdtempSync(join(tmpdir(), 'psc-reset-'))
   try {
     const script = `
-      const tn = await import(${JSON.stringify(join(root, 'lib/tenants.mjs'))})
+      const tn = await import(${asSpecifier(join(root, 'lib/tenants.mjs'))})
       await tn.createTenant({ shop_name: 'Reset Co', owner_email: 'reset@gate.test', password: 'originalpass123' })
       const link = tn.createPasswordReset('reset@gate.test')
       const out = await tn.consumePasswordReset(link.token, 'brandnewpass456')
@@ -7857,7 +7887,10 @@ section('the board and the pipeline are usable without a mouse')
 
   await t('the stage list matches the server exactly', async () => {
     const { STAGE_KEYS } = await import('../lib/pipeline.mjs')
-    const m = pipe.match(/const STAGE_OPTIONS = \[([\s\S]*?)\]\n/)
+    // \r?\n: .gitattributes pins this tree to LF, but a clone made before it existed still has a
+    // CRLF working copy on Windows, and "STAGE_OPTIONS should be findable" is a uselessly
+    // misleading way to report a line ending.
+    const m = pipe.match(/const STAGE_OPTIONS = \[([\s\S]*?)\]\r?\n/)
     assert.ok(m, 'STAGE_OPTIONS should be findable')
     const keys = [...m[1].matchAll(/\['([a-z]+)',/g)].map((x) => x[1])
     assert.deepEqual(keys, STAGE_KEYS,
@@ -9676,14 +9709,16 @@ await t('a secret sent at creation is the secret deliveries are signed with', as
  * always created a previous release first. */
 section('the first release an install ever cuts is not reported as a failure')
 {
-  const r = await rehearseRelease({ healthy: true, first: true })
-  await t('a first deploy with no previous release exits 0', () => {
+  // The rehearsal itself runs before any of the three assertions, so the platform guard has to be
+  // out here rather than on each case — on Windows the setup dies at `ln -sfn`, not at an assert.
+  const r = POSIX ? await rehearseRelease({ healthy: true, first: true }) : null
+  await tPosix('a first deploy with no previous release exits 0', () => {
     assert.equal(r.code, 0, `exit ${r.code}, having printed:\n${r.out}`)
   })
-  await t('…and still says it is live', () => {
+  await tPosix('…and still says it is live', () => {
     assert.match(r.out, /is live and answering \/health/)
   })
-  await t('…and a deploy that DOES have a previous release still prints the way back', async () => {
+  await tPosix('…and a deploy that DOES have a previous release still prints the way back', async () => {
     const r2 = await rehearseRelease({ healthy: true })
     assert.equal(r2.code, 0)
     assert.match(r2.out, /roll back with:/)
@@ -10940,7 +10975,7 @@ section('a backup can actually be put back')
     } finally { rmSync(f.dir, { recursive: true, force: true }) }
   })
 
-  await t('a backup that could not go off-site says so instead of reporting success', async () => {
+  await tPosix('a backup that could not go off-site says so instead of reporting success', async () => {
     const { readFileSync, mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')
     const { execFileSync } = await import('node:child_process')
@@ -15894,5 +15929,7 @@ section('a screen may not delegate a shared #id on the app shell either')
 }
 
 /* ---------- summary ---------- */
-console.log(`\n  ${passed} passed, ${failed} failed\n`)
+// Skips are counted in the tally rather than left silent — a run that quietly covers less than the
+// last one is the thing a gate is supposed to make impossible to miss.
+console.log(`\n  ${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ''}\n`)
 process.exit(failed ? 1 : 0)

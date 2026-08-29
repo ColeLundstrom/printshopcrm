@@ -90,7 +90,14 @@ let bytes = 0
 for (const src of dbs) {
   // Flattened, so tenants/acme/printshop.db and tenants/bobs/printshop.db cannot collide, and the
   // path each came from is still readable in the filename.
-  const name = src.slice(ROOT.length + 1).replaceAll('/', '__')
+  //
+  // Both separators, not just '/'. join() emits '\' on Windows, so replaceAll('/', '__') matched
+  // nothing there: the "flattened" name came back as `tenants\acme\printshop.db`, dest resolved to
+  // a subdirectory of the snapshot that had never been created, and VACUUM INTO died on the second
+  // shop with "unable to open database file" — AFTER printing "✓ printshop.db quick_check ok" for
+  // the first. So the run looked like it was working right up until it wasn't, and a shop backing
+  // up from a Windows box got the default handle and none of its tenants.
+  const name = src.slice(ROOT.length + 1).replace(/[\\/]/g, '__')
   const dest = join(OUT, name)
   const db = new DatabaseSync(src, { readOnly: true })
   try { db.prepare('VACUUM INTO ?').run(dest) } finally { db.close() }

@@ -279,14 +279,50 @@ jobs:
 
       - name: No committed credentials
         run: |
-          # Fails the build if a real-looking key lands in the tree. Placeholders (psc_live_XXXX,
-          # whsec_test) are excluded on purpose — the docs and tests need them.
-          if grep -rInE '(sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' \
-               --exclude-dir=node_modules --exclude-dir=.git . ; then
-            echo "::error::A credential-shaped string is committed. Remove it and rotate the key."
+          set -euo pipefail
+          # Fails the build if a real-looking key lands in the tree.
+          #
+          # The docs and the e2e fixtures genuinely need a few credential-SHAPED strings — you
+          # cannot test that a shop can connect and then disconnect Slack without a Slack-shaped
+          # token. Those live in .github/secret-scan-allowlist.txt as exact literals. This step used
+          # to CLAIM placeholders were excluded while nothing excluded anything, so the first
+          # fixture that needed one failed the build and read, on a public repo, as a live Slack
+          # token having been committed.
+          #
+          # Exact literals rather than a "looks fake to me" heuristic on purpose: a real key can
+          # never match a line nobody wrote, so the scan keeps its full strength and admitting a
+          # placeholder stays a reviewed edit.
+          ALLOW=.github/secret-scan-allowlist.txt
+          PATTERN='(sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+
+          # -o so each hit is the matched token itself, and the allowlist compares against the
+          # secret rather than against whatever else shares its line.
+          grep -rInoE "$PATTERN" --exclude-dir=node_modules --exclude-dir=.git --exclude="$(basename "$ALLOW")" . \
+            > /tmp/hits.txt || true
+
+          : > /tmp/offenders.txt
+          while IFS= read -r hit; do
+            [ -n "$hit" ] || continue
+            token=${hit#*:}; token=${token#*:}          # strip path: and line:
+            grep -Fxq -- "$token" "$ALLOW" || echo "$hit" >> /tmp/offenders.txt
+          done < /tmp/hits.txt
+
+          if [ -s /tmp/offenders.txt ]; then
+            cat /tmp/offenders.txt
+            echo "::error::A credential-shaped string is committed that is not a listed placeholder. Remove it and rotate the key."
             exit 1
           fi
-          echo "No credentials found."
+
+          # A listed placeholder that no longer exists is a hole in the scan that nothing would ever
+          # close. Fail on it while the reason is still obvious, not months later.
+          stale=0
+          while IFS= read -r line; do
+            case "$line" in ''|\#*) continue ;; esac
+            grep -Fq -- "$line" /tmp/hits.txt || { echo "::error::$ALLOW lists '$line', which is no longer anywhere in the tree — delete that line."; stale=1; }
+          done < "$ALLOW"
+          [ "$stale" -eq 0 ] || exit 1
+
+          echo "No credentials found ($(grep -cve '^\s*$' -e '^\s*#' "$ALLOW" || true) allowlisted placeholder(s) accounted for)."
 
       - name: No committed database or .env
         run: |
