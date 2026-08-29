@@ -1898,6 +1898,37 @@ try {
     chk('…which really approves it', String(art?.status), '^approved$')
     chk('…and releases the job off art approval', String((await req('GET', `/api/jobs/${rjJ}`)).json?.stage), '^prepress$')
 
+    /* …once. /p/art/:id/decide has carried a decided-once guard since it was written — a proof
+     * link gets forwarded round a purchasing department and re-opened for weeks — and the STAFF
+     * twin never got it. Measured: approve, move the job on to Production, approve again, and the
+     * job is dragged back to prepress with its due date re-stamped a full turnaround out, a second
+     * APPROVED line on the customer's timeline, and art.approved re-fired — which is the
+     * automation engine and the webhook dispatcher both, so a shop running "proof approved ->
+     * email the customer" mails them again every time. */
+    await req('PATCH', `/api/jobs/${rjJ}/stage`, { body: { stage: 'production' } })
+    const replay = await req('POST', `/api/art/${rjArt.id}/decide`, { body: { decision: 'approved', by: 'phone' } })
+    chk('a proof already approved cannot be approved again', String(replay.status), '^409$')
+    chk('…with a code, and a sentence naming the way forward', String(replay.json?.code), '^already_decided$')
+    chk('…saying who decided it and when', replay.json?.error || '', 'Upload a new version')
+    chk('…and the job stays on the press', String((await req('GET', `/api/jobs/${rjJ}`)).json?.stage), '^production$')
+    const approvals = ((await req('GET', `/api/jobs/${rjJ}`)).json?.activities || [])
+      .filter((a) => /APPROVED/.test(a.description || '')).length
+    chk('…and the customer\'s timeline records the approval once', String(approvals), '^1$')
+
+    // The shop's own Approve button on an estimate is the same shape, and means "yes, it is
+    // approved" rather than "do it again" — so it answers cleanly instead of refusing.
+    const apC = (await req('POST', '/api/contacts', { body: { name: 'Approve Twice Co', email: 'approvetwice@e2e.test' } })).json
+    const apE = (await req('POST', '/api/estimates', { body: { contact_id: apC.id, items: [
+      { description: 'Gildan 5000 Tee — White', unit_price: 9, sizes: { M: 20 } },
+    ] } })).json
+    chk('an estimate can be marked approved', String((await req('POST', `/api/estimates/${apE.id}/approve`)).status), '^200$')
+    const stamped = (await req('GET', `/api/estimates/${apE.id}`)).json?.approved_at
+    const again2 = await req('POST', `/api/estimates/${apE.id}/approve`)
+    chk('…a second press answers cleanly', String(again2.status), '^200$')
+    chk('…and says it did nothing rather than doing it again', String(again2.json?.already), '^true$')
+    chk('…leaving the approval stamped when it really happened',
+      String((await req('GET', `/api/estimates/${apE.id}`)).json?.approved_at), `^${stamped}$`)
+
     // A mockup on an ESTIMATE has no job behind it, and this route dereferenced one regardless.
     r = await req('POST', '/api/estimates', { body: { contact_id: rjC, items: [{ description: '24 tees', sizes: { M: 24 }, unit_price: 12 } ] } })
     const mkEst = r.json?.id

@@ -2316,6 +2316,14 @@ app.post('/api/estimates/:id/approve', wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  // Approve once, same as the customer-facing /p/estimate/:id/approve. A second press of the
+  // shop's own Approve button means "yes, it is approved" rather than "do it again", so this
+  // answers 200 with `already` instead of refusing — but it must not re-stamp approved_at, write
+  // a second APPROVED line on the timeline, or re-fire estimate.approved, which is the automation
+  // engine and the webhook dispatcher both.
+  if (e.status === 'approved' || e.status === 'invoiced') {
+    return res.json({ ok: true, already: true, estimate: estimateView(e) })
+  }
   run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
   logActivity('estimate', `Estimate ${e.estimate_number} approved`, { contact_id: e.contact_id })
   fireAuto('estimate.approved', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })
@@ -3362,8 +3370,21 @@ app.delete('/api/jobs/:jobId/art/:id', requireRole('manager'), wrap((req, res) =
 app.post('/api/art/:id/decide', wrap((req, res) => {
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Art version not found' })
+  // Decide once. /p/art/:id/decide has carried this guard since it was written, for exactly this
+  // reason, and the staff twin never got it. Measured: a proof approved, the job moved on to
+  // Production, then the same POST again — the job was dragged back to prepress, the due date
+  // re-stamped a full turnaround out, a second "APPROVED" line written on the customer's timeline
+  // and art.approved re-fired, which is both the automation engine AND the webhook dispatcher. A
+  // shop with the "proof approved -> email the customer" rule mails them again every time.
+  if (a.status === 'approved' || a.status === 'rejected') {
+    return res.status(409).json({
+      error: `Proof v${a.version} was already ${a.status} by ${a.decided_by || 'the customer'}${a.decided_at ? ` on ${String(a.decided_at).slice(0, 10)}` : ''}. Upload a new version to change what the shop prints.`,
+      code: 'already_decided',
+      art: a,
+    })
+  }
   const approved = req.body?.decision === 'approved'
-  decideArt(a, approved, req.body?.notes || '', req.body?.by || 'staff')
+  decideArt(a, approved, str(req.body?.notes, ''), str(req.body?.by, 'staff'))
   res.json({ ok: true })
 }))
 
