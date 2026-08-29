@@ -1734,10 +1734,14 @@ app.get('/api/dashboard', wrap((_req, res) => {
     // taken. created_at is stored as 'YYYY-MM-DD HH:MM:SS', which orders identically to the date
     // alone, so comparing the text directly gives the same answer and seeks.
     `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE p.created_at >= ?`, monthStart).v)
+  // MAX(…, 0) per invoice, so this agrees with the A/R aging report, which filters `> 0.005`.
+  // Netting a negative balance against every OTHER customer's meant the dashboard and the report
+  // could be hundreds of dollars apart with nothing on either screen to explain it — and
+  // "Outstanding" means money customers owe the shop, which a credit balance is the opposite of.
   const outstanding = round2(get(
-    `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void')`).v)
+    `SELECT COALESCE(SUM(MAX(amount_due - amount_paid, 0)), 0) AS v FROM invoices WHERE status NOT IN ('paid','void')`).v)
   const overdue = round2(get(
-    `SELECT COALESCE(SUM(amount_due - amount_paid), 0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today).v)
+    `SELECT COALESCE(SUM(MAX(amount_due - amount_paid, 0)), 0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today).v)
   // SUM(total) counted sales tax as quoted revenue. What the shop is chasing is what it keeps.
   const open_estimates = round2(get(
     `SELECT COALESCE(SUM(COALESCE(subtotal, total)), 0) AS v FROM estimates WHERE status IN ('draft','sent')`).v)
@@ -1967,6 +1971,7 @@ app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     c.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate,
     `Reorder — same as ${last.estimate_number}`, Math.max(0, Number(last.rush_days) || 0), now()).lastInsertRowid)
@@ -2308,6 +2313,31 @@ const representableLines = (items) => {
 }
 const NOT_REPRESENTABLE = { error: 'Those line items do not add up to an amount we can store — check the quantities and prices.', code: 'invalid_total' }
 
+/**
+ * …and the same question asked of the SIGN.
+ *
+ * A Discount is a first-class line in the estimate editor, entered as a negative unit_price, and
+ * nothing anywhere floored the result. Typing -1200 for -120 on a 100-piece order produced
+ * `{ subtotal: -250, tax: -25.19, total: -275.19 }`, stored a 201, and converted to an invoice
+ * with amount_due = -275.19, status 'unpaid'. The two receivables readers then disagree about it
+ * BY CONSTRUCTION: the dashboard's Outstanding KPI sums `amount_due - amount_paid` with no sign
+ * filter, so the negative is SUBTRACTED from every other customer's balance, while the A/R aging
+ * report filters `> 0.005` and cannot show it at all. Two screens $275.19 apart with nothing on
+ * either to explain the gap.
+ *
+ * lib/db.mjs compounds it: the moment any payment activity touches the row, `paid >= amount_due`
+ * fires with paid = 0 against a negative amount_due, stamps paid_at and emits invoice.paid.
+ *
+ * A document in this product is a demand for money. A discount may take a total to zero; it may
+ * not invert it. Money owed BACK to a customer is a different instrument, and a negative invoice
+ * is not it. The v1 API refuses a negative unit_price outright, so it never reaches this.
+ */
+const nonNegativeTotals = (t) => t.subtotal >= -0.005 && t.total >= -0.005
+const NEGATIVE_TOTAL = {
+  error: 'The discount is larger than the order, so this comes to a negative total. Reduce the discount, or void the invoice you are crediting instead.',
+  code: 'negative_total',
+}
+
 app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'quote')
@@ -2327,6 +2357,7 @@ app.post('/api/estimates', wrap((req, res) => {
   const rate = taxRateFor(contactId, b.tax_rate, { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
   const num = nextEstimateNumber()
   // The rush tier the quote CHARGED for. estimates.rush_days is what jobScheduleFromEstimate reads
   // at convert, and this route — the one the estimate editor and every integration write through —
@@ -2371,6 +2402,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
   // `?? e.rush_days`, so an edit that does not mention the rush cannot silently clear one — the
   // same rule every other column on this route already follows.
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
@@ -2567,6 +2599,7 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null)
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
+  if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
   const num = nextEstimateNumber()
   // rush_days travels with the copy: the lines being duplicated carry the rush per-piece the
   // customer was billed, so the job this converts to has to be produced on that tier too.

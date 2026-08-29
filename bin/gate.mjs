@@ -3983,6 +3983,69 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
  * board's own header report different open pipeline out of the same table. Measured: one $8,400
  * receptionist deal beside one $670 quote read as $670 on the Dashboard and $9,070 on the board,
  * with the $8,400 card visible nowhere. */
+/* ---------- a document is a demand for money, never the other way round (v20) ----------
+ * A Discount is a first-class line in the estimate editor, entered as a negative unit_price, and
+ * nothing anywhere floored the result. Typing -1200 for -120 stored a negative estimate, which
+ * converted to an invoice with a negative amount_due — and the two receivables readers then
+ * disagree BY CONSTRUCTION: the dashboard's Outstanding KPI sums the balances with no sign filter,
+ * so the negative is SUBTRACTED from every other customer's, while the A/R aging report filters
+ * `> 0.005` and cannot show it at all. */
+section('a document is a demand for money, never the other way round')
+await t('a mistyped discount is refused rather than stored as a negative quote', async () => {
+  const { computeTotals } = await import('../public/js/shared/pricing.js')
+  // 100 tees at $8.75, three screens at $25 non-taxable, and a discount typed as -1200 for -120.
+  const t2 = computeTotals([
+    { description: 'Tee', sizes: { M: 100 }, unit_price: 8.75, taxable: true },
+    { description: 'Screen setup', qty: 3, unit_price: 25, taxable: false },
+    { description: 'Discount', qty: 1, unit_price: -1200, taxable: true },
+  ], 7.75, {})
+  assert.deepEqual([t2.subtotal, t2.tax, t2.total], [-250, -25.19, -275.19], 'the arithmetic this is about')
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const m = /const nonNegativeTotals = (\(t\) => [^\n]+)/.exec(src)
+  assert.ok(m, 'nothing floors a document total at zero')
+  // eslint-disable-next-line no-new-func — read the shipped predicate, not a copy of it.
+  const guard = new Function(`return ${m[1]}`)()
+  assert.equal(guard(t2), false, 'a negative total has to be refused')
+  assert.equal(guard({ subtotal: 0, tax: 0, total: 0 }), true, 'a $0 quote — a comp, a sample — is legitimate')
+  assert.equal(guard({ subtotal: 875, tax: 67.81, total: 942.81 }), true, 'and an ordinary one obviously is')
+  // Every door the app's own screens post through. (The v1 API refuses a negative unit_price
+  // outright at server.mjs, so a discount can never reach it.)
+  assert.equal((src.match(/if \(!nonNegativeTotals\(t\)\) return res\.status\(400\)\.json\(NEGATIVE_TOTAL\)/g) || []).length, 4,
+    'create, edit, duplicate and reorder all write estimate totals — all four need the guard')
+})
+await t('…and the two receivables screens cannot report different money', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'A')")
+    dbm.run("INSERT INTO invoices (contact_id, invoice_number, status, amount_due, amount_paid) VALUES (1,'INV-1',   'unpaid', 1000, 0)")
+    dbm.run("INSERT INTO invoices (contact_id, invoice_number, status, amount_due, amount_paid) VALUES (1,'INV-2',   'unpaid', -275.19, 0)")
+    // Run the SHIPPED SQL, read out of server.mjs, against both readers — a hand-copied query
+    // here would pass whatever the app actually does.
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(join(join(dirname(fileURLToPath(import.meta.url)), '..'), 'server.mjs'), 'utf8')
+    const kpiSql = /const outstanding = round2\(get\(\s*`([^`]+)`/.exec(src)
+    assert.ok(kpiSql, 'the Outstanding KPI query should still be readable')
+    const agingSql = /const open = all\(`(SELECT \* FROM invoices[^`]+)`/.exec(src)
+    assert.ok(agingSql, "the A/R aging report's own query should still be readable")
+    const kpi = dbm.get(kpiSql[1]).v
+    const aging = dbm.all(agingSql[1].replace(/contact_id = \?/, 'contact_id = 1').replace(/ORDER BY[\s\S]*$/, ''))
+      .reduce((n, r) => n + (r.amount_due - r.amount_paid), 0)
+    assert.equal(kpi, aging, 'Outstanding on the dashboard and the A/R aging report read the same invoices')
+    assert.equal(kpi, 1000, '…and "Outstanding" means money customers owe the shop, not netted against a credit')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('every deal is in a column the shop can drag it out of')
 await t('the Dashboard and the Pipeline board cannot disagree about open value', async () => {
   const { DatabaseSync } = await import('node:sqlite')
