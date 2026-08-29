@@ -4715,6 +4715,68 @@ section('a document never hides money between its subtotal and its total')
  * died on step 2, and never sent the email on step 4. The only trace was one console line.
  * Meanwhile 'error' was checked by the dedupe latch and had a red pill waiting for it in the UI,
  * and NOTHING in the codebase ever wrote it. */
+
+/* ---------- a migration does not email the customer base of the tool they just left ----------
+ *
+ * lib/automations.mjs says, three lines above the scan loop:
+ *
+ *   "Imported history is excluded from every timed scan (`imported_at IS NULL`). Migrating a shop
+ *    means loading years of quotes and invoices from the tool they just left — without this, the
+ *    first tick after an import emails their entire customer base about 2024 paperwork."
+ *
+ * Two of the four scans carried the predicate. `job.due_soon` and `job.at_risk` did not — and the
+ * CSV importer writes jobs.imported_at, so the column exists and is populated on exactly these
+ * rows. A shop that imports its open work on a Monday has real customer email going out on the
+ * first tick, about jobs the new system has never touched, over a due date it inherited.
+ *
+ * This is the worst possible first five minutes for a shop that has just switched, and it is the
+ * one the comment was written to prevent. */
+section('imported history stays out of every timed automation, as the comment claims')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  auto.initAutomations(mem)
+
+  dbmod.run('INSERT INTO contacts (id, name, email) VALUES (1, ?, ?)', 'Migrated Customer', 'old@customer.test')
+  // Two jobs due tomorrow, identical but for where they came from.
+  dbmod.run(`INSERT INTO jobs (id, contact_id, job_number, title, status, stage, due_date, approval_gated, imported_at)
+             VALUES (1, 1, 'JOB-9001', 'From the old system', 'active', 'new', date('now', '+1 day'), 1, '2026-08-01 00:00:00')`)
+  dbmod.run(`INSERT INTO jobs (id, contact_id, job_number, title, status, stage, due_date, approval_gated, imported_at)
+             VALUES (2, 1, 'JOB-9002', 'Booked here', 'active', 'new', date('now', '+1 day'), 1, NULL)`)
+  for (const [id, trigger] of [[11, 'job.due_soon'], [12, 'job.at_risk']]) {
+    dbmod.run('INSERT INTO automations (id, name, enabled, trigger, actions) VALUES (?,?,1,?,?)',
+      id, `Chase ${trigger}`, trigger, JSON.stringify([{ key: 'contact.tag', config: { tag: `chased-${id}` } }]))
+  }
+
+  const fired = auto.tick({}) || []
+  await t('a job the shop actually booked is still chased', () => {
+    assert.ok(fired.some((f) => String(f).includes('JOB-9002')), `nothing fired for the real job: ${JSON.stringify(fired)}`)
+  })
+  await t('…and an imported job is not', () => {
+    assert.ok(!fired.some((f) => String(f).includes('JOB-9001')),
+      `a migration emailed the old system's customers: ${JSON.stringify(fired)}`)
+  })
+  await t('every timed scan carries the predicate the comment promises', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib/automations.mjs'), 'utf8')
+    // The four scans inside tick()'s loop. Each opens a branch and runs one query; the predicate
+    // has to be inside that branch, not merely somewhere in the file.
+    for (const trigger of ['estimate.stale', 'invoice.overdue', 'art.waiting', 'job.due_soon', 'job.at_risk']) {
+      const i = src.indexOf(`if (a.trigger === '${trigger}') {`)
+      assert.ok(i > 0, `the ${trigger} scan moved — re-point this test`)
+      const branch = src.slice(i, src.indexOf('runAutomation', i))
+      assert.match(branch, /imported_at IS NULL/, `${trigger} scans imported history`)
+    }
+  })
+}
+
 section('an automation that fails halfway is not logged as a success')
 {
   const { DatabaseSync } = await import('node:sqlite')
