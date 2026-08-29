@@ -630,6 +630,7 @@ body.dragging { cursor: grabbing; user-select: none; }
   background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 .ap-review-h { font-size: var(--fs-xl); font-weight: 800; letter-spacing: -.5px; margin: var(--sp-5) 0 var(--sp-6); color: var(--txt); }
 .ap-review-note { max-width: 420px; margin: 0 auto var(--sp-6); font-size: var(--fs-xs); color: var(--txt-2); line-height: 1.6; }
+.ap-review-note.ap-held { color: var(--txt-1); font-weight: 600; }
 
 /* the autonomy dial */
 .ap-dial { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }

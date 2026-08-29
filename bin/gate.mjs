@@ -88,9 +88,111 @@ section('intake: the model may fill a blank, never overwrite what the parser rea
     assert.equal(mergeIntake(stated, { garment: 'Ferrari 458' }).garment, 'Gildan 18500 Hoodie')
     assert.equal(mergeIntake(stated, { garment: '' }).garment, 'Gildan 18500 Hoodie')
   })
-  await t('…while a real garment the model names is still accepted', () => {
-    assert.equal(mergeIntake(stated, { garment: 'Bella+Canvas 3001 Tee' }).garment, 'Bella+Canvas 3001 Tee')
-    assert.equal(mergeIntake(stated, { garment: 'Comfort Colors 1717' }).garment, 'Comfort Colors 1717')
+  await t('…while a real garment the model names is still accepted, where the text named none', () => {
+    // AMENDED, not deleted. This case used to run against `stated`, whose text DOES name a
+    // garment — so it asserted the exact overwrite that turned out to be the injection. The
+    // property worth keeping is the other half of the rule: where the parser had nothing but its
+    // GARMENTS[last] fallback, the model naming a real garment is an improvement and is accepted.
+    const blank = parseIntakeHeuristic('we need 500 pieces, 2 color front')
+    assert.equal(blank.evidence.garment, false, 'precondition: the text named no garment')
+    assert.equal(mergeIntake(blank, { garment: 'Bella+Canvas 3001 Tee' }).garment, 'Bella+Canvas 3001 Tee')
+    assert.equal(mergeIntake(blank, { garment: 'Comfort Colors 1717' }).garment, 'Comfort Colors 1717')
+  })
+}
+
+section('intake: the customer writes the email, so the model may not re-price it')
+// The message a model reads on this path is written by the person who benefits from a lower
+// number, and on Full Auto the estimate it produces is priced, saved, marked sent and emailed in
+// one request with nobody reading it. mergeIntake protected exactly one field — `sizes` — and
+// took garment, decoration, locations, dark_garment, rush and due_hint from the model verbatim.
+// Measured end to end with the real parser and the real pricer on a 500-hoodie embroidery order:
+//   clean $40,574.78  ->  injected $6,001.68   (85.2% under, $34,573.10 given away)
+// Per field, each on its own: garment -$21,496.13, rush -$13,506.47, locations -$6,953.33,
+// decoration -$6,245.63. `rush` became the second-most valuable channel when v1.18.0 wired the
+// rush multiplier into priceIntake — the fix made the injection worth MORE, not less.
+// The rule is now the one `sizes` always had: fill a blank, never overwrite what the text said.
+{
+  const { mergeIntake } = await import('../lib/ai.mjs')
+  const { priceIntake } = await import('../lib/quickquote.mjs')
+  const SET = { screen_fee: '25', default_markup: '2', tax_rate: '7.75', price_book: '{}' }
+  const email = 'We need 500 Gildan 18500 hoodies in navy for our staff. Embroidered left chest,\n11 colors in the logo, plus a 3 color back. We are in a rush, need them by 9/15/2026.'
+  const clean = parseIntakeHeuristic(email)
+  const INJECTION = { garment: 'Gildan 5000 Tee', decoration: 'DTF Transfer', locations: [{ name: 'Front', colors: 1 }], dark_garment: false, rush: false, due_hint: '2027-04-01', sizes: {}, notes: 'team order' }
+
+  await t('the parser reports which fields the TEXT supplied, not which have a default', () => {
+    assert.deepEqual(clean.evidence, { garment: true, decoration: true, locations: true, dark_garment: true, rush: true, due_hint: true })
+    // The distinction is the whole fix: these three come back populated either way.
+    const bare = parseIntakeHeuristic('please quote 500 pieces')
+    assert.equal(bare.garment, 'Gildan 5000 Tee')
+    assert.equal(bare.decoration, 'Screen Print')
+    assert.deepEqual(bare.locations, [{ name: 'Front', colors: 1 }])
+    assert.deepEqual(bare.evidence, { garment: false, decoration: false, locations: false, dark_garment: false, rush: false, due_hint: false })
+  })
+
+  await t('a garment stated in the email cannot be swapped for a cheaper blank', () => {
+    const m = mergeIntake(clean, { garment: 'Gildan 5000 Tee' })
+    assert.equal(m.garment, 'Gildan 18500 Hoodie')
+    assert.equal(m.garment_cost, 16.50, 'garment_cost is looked up FROM the garment string')
+  })
+  await t('a decoration stated in the email cannot be downgraded', () => {
+    assert.equal(mergeIntake(clean, { decoration: 'DTF Transfer' }).decoration, 'Embroidery')
+  })
+  await t('print locations stated in the email cannot be dropped', () => {
+    assert.deepEqual(mergeIntake(clean, { locations: [{ name: 'Front', colors: 1 }] }).locations, clean.locations)
+  })
+  await t('a rush the customer stated cannot be cleared — rush is a price AND a promise', () => {
+    assert.equal(clean.rush, true)
+    assert.equal(mergeIntake(clean, { rush: false }).rush, true)
+  })
+  await t('…but a rush the text never stated may still be raised by the model', () => {
+    const noRush = parseIntakeHeuristic('please quote 500 Gildan 5000 tees, 1 color front')
+    assert.equal(noRush.rush, false)
+    assert.equal(mergeIntake(noRush, { rush: true }).rush, true)
+  })
+  await t('a deadline stated in the email cannot be pushed out or pulled in', () => {
+    assert.equal(mergeIntake(clean, { due_hint: '2027-04-01' }).due_hint, '2026-09-15')
+  })
+  await t('…but a deadline the text never stated may still be supplied', () => {
+    const noDate = parseIntakeHeuristic('please quote 500 Gildan 5000 tees, 1 color front')
+    assert.equal(noDate.due_hint, null)
+    const future = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10)
+    assert.equal(mergeIntake(noDate, { due_hint: future }).due_hint, future)
+  })
+
+  await t('the whole injection is worth $0.00 — this is the assertion that matters', () => {
+    const before = priceIntake(clean, SET, {}).totals.total
+    const after = priceIntake(mergeIntake(clean, INJECTION), SET, {}).totals.total
+    assert.equal(before, 40574.78, 'precondition: the honest quote')
+    assert.equal(after, before, `injection moved the quote to ${after}`)
+  })
+  await t('every field on its own is worth $0.00 too', () => {
+    const before = priceIntake(clean, SET, {}).totals.total
+    for (const f of ['garment', 'decoration', 'locations', 'dark_garment', 'rush', 'due_hint']) {
+      const after = priceIntake(mergeIntake(clean, { [f]: INJECTION[f] }), SET, {}).totals.total
+      assert.equal(after, before, `${f} alone moved the quote to ${after}`)
+    }
+  })
+
+  await t('a refused overwrite is reported, not silently dropped', () => {
+    const m = mergeIntake(clean, INJECTION)
+    assert.deepEqual(m.needs_review.slice().sort(), ['dark_garment', 'decoration', 'due_hint', 'garment', 'locations', 'rush'])
+    assert.match(m.ai_note, /differently from the message/)
+  })
+  await t('Full Auto stands down on a contested quote, and the screen says why', async () => {
+    // The merge refuses the overwrite either way; this is the second half — a disagreement on a
+    // priced field is the one thing on this path nobody else looks at, so it must not be sent
+    // unread. Asserted against the source because reaching it end to end needs a live model key.
+    const fs = await import('node:fs')
+    const srv = fs.readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+    assert.match(srv, /const held = order\.needs_review \|\| \[\]/, 'autopilot must read needs_review')
+    assert.match(srv, /req\.body\?\.mode === 'auto' && !held\.length/, "Full Auto must not fire on a contested order")
+    const view = fs.readFileSync(new URL('../public/js/views/autopilot.js', import.meta.url), 'utf8')
+    assert.match(view, /held_for_review/, 'the review screen must say it was held, and on what')
+  })
+  await t('an agreeing model raises nothing — Full Auto must stay usable', () => {
+    const m = mergeIntake(clean, { garment: 'gildan 18500 hoodie', decoration: 'Embroidery', rush: true, due_hint: '2026-09-15', dark_garment: true, locations: clean.locations })
+    assert.deepEqual(m.needs_review, [])
+    assert.equal(m.ai_note, '')
   })
 }
 

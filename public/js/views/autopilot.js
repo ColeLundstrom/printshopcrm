@@ -173,12 +173,14 @@ async function run() {
 function reviewReveal(r, mockUrl) {
   $('#ap-stage').innerHTML = `<div class="ap-reveal">
     <div class="ap-mockup"><img src="${mockUrl}" alt="mockup"></div>
-    <div class="ap-review-h">Draft ready for your call</div>
+    <div class="ap-review-h">${r.held_for_review?.length ? 'Held for your call' : 'Draft ready for your call'}</div>
+    ${r.ai_note ? `<p class="ap-review-note ap-held">${esc(r.ai_note)}</p>` : ''}
     <div class="ap-stats">
       <div><span>${money(r.estimate.total)}</span><em>quoted (not sent)</em></div>
       <div><span>${r.job.job_number}</span><em>job drafted</em></div>
     </div>
     <p class="ap-review-note">Nothing has gone to the customer and nothing's been charged. Edit anything, then send — or leave it as a draft.</p>
+    ${r.held_for_review?.length ? `<p class="ap-review-note">Full auto was on, so this would have been sent unread. It stopped here because the assistant and the email disagree on <strong>${esc(r.held_for_review.join(', '))}</strong>.</p>` : ''}
     <div class="ap-links">
       <button class="btn" id="ap-commit">Send it to the customer →</button>
       <a class="btn ghost" href="#/estimates/${r.estimate.id}/edit">Edit the estimate</a>

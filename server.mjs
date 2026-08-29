@@ -3680,7 +3680,12 @@ app.post('/api/autopilot', async (req, res) => {
 
     // Autonomy dial: 'review' (default, conservative) stops here with an editable draft;
     // 'auto' fires the irreversible customer-facing steps (send, approve, charge) too.
-    const mode = req.body?.mode === 'auto' ? 'auto' : 'review'
+    // Full Auto also stands down when the model read the customer's message differently from the
+    // deterministic parser. mergeIntake refuses the overwrite either way, but a disagreement on a
+    // priced field is the one thing on this path that nobody else is going to look at — and the
+    // message being parsed was written by the person who benefits from getting it wrong.
+    const held = order.needs_review || []
+    const mode = (req.body?.mode === 'auto' && !held.length) ? 'auto' : 'review'
     let committed = null
     if (mode === 'auto') {
       committed = commitAutopilot(estId, contact, { steps, jobId })
@@ -3688,6 +3693,7 @@ app.post('/api/autopilot', async (req, res) => {
 
     res.json({
       order, steps, isNew, mode, committed: !!committed,
+      held_for_review: held, ai_note: order.ai_note || '',
       contact, estimate: get('SELECT * FROM estimates WHERE id = ?', estId),
       invoice: committed?.invoice || null, job: get('SELECT * FROM jobs WHERE id = ?', jobId),
       art_hint: order, // the client uses this to synthesize/extract the artwork + mockup
