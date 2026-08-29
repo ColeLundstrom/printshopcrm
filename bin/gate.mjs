@@ -2719,7 +2719,7 @@ await t('INSTALL.md clears public/uploads before symlinking it', async () => {
 //
 // This runs the actual script against a fake install with every external command stubbed, because
 // asserting on the text of a deploy script is not the same as watching it deploy.
-const rehearseRelease = async ({ healthy, first = false, gnu = false }) => {
+const rehearseRelease = async ({ healthy, first = false, gnu = false, seedBackups = false }) => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, chmodSync, existsSync, readlinkSync, readFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
@@ -2741,6 +2741,29 @@ const rehearseRelease = async ({ healthy, first = false, gnu = false }) => {
       d.close()
     }
     writeFileSync(join(APP_ROOT, '.env'), 'PSC_SECRET=x\nPORT=39777\n')
+    // An install with a history: six old deploy snapshots (so the keep-five prune has work to do)
+    // and one restore safety copy, which is where bin/restore.mjs MOVED the shop's previous
+    // artwork. That directory is the only copy of those files.
+    if (seedBackups) {
+      // `ls -1dt` sorts by mtime, so the ages are the whole point: the restore safety copy is the
+      // OLDEST thing in here — a shop restores once and then deploys for weeks — which is exactly
+      // why keep-the-five-newest reached it.
+      const { utimesSync } = await import('node:fs')
+      const age = (p, daysAgo) => utimesSync(p, new Date(Date.now() - daysAgo * 864e5), new Date(Date.now() - daysAgo * 864e5))
+      const safety = join(DATA_ROOT, 'backups', 'pre-restore-20260102030405')
+      mkdirSync(join(safety, 'uploads-previous'), { recursive: true })
+      writeFileSync(join(safety, 'uploads-previous', 'proof-abc123.png'), 'ART')
+      writeFileSync(join(safety, 'control.db'), 'x')
+      age(safety, 60)
+      for (let i = 1; i <= 6; i++) {
+        for (const name of [`predeploy-v1.0.${i}-2026010${i}000000`, `pre-v0.9.${i}-2025010${i}000000`]) {
+          const d = join(DATA_ROOT, 'backups', name)
+          mkdirSync(d, { recursive: true })
+          writeFileSync(join(d, 'control.db'), 'x')
+          age(d, 7 - i)   // all newer than the safety copy
+        }
+      }
+    }
     // A release is already live, so the rollback below has somewhere to go back to — EXCEPT when
     // rehearsing the very first deploy, which is the case this harness always skipped past.
     if (!first) execFileSync('ln', ['-sfn', join(APP_ROOT, 'releases', 'v0.0.1'), join(APP_ROOT, 'current')])
@@ -2800,6 +2823,24 @@ exec /usr/bin/readlink "$@"`)
     return { out, code, captured, current, DATA_ROOT, linkExists, readable, prevFile }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
+
+await t('a deploy does not delete the artwork a restore set aside', async () => {
+  // release.sh pruned `$DATA_ROOT/backups/pre-*` to the five newest. bin/restore.mjs writes its
+  // safety copy to `$DATA_ROOT/backups/pre-restore-<stamp>` in that same directory — and puts the
+  // shop's live artwork inside it with renameSync, a MOVE, so after a restore that directory holds
+  // the only copy of every proof, mockup and logo the shop had. `pre-*` matched both. Five ordinary
+  // deploys later the safety copy was rm -rf'd: exit 0, nothing printed, and restore.mjs's own
+  // closing line still saying "this is undoable" and "delete it when the shop looks right".
+  const r = await rehearseRelease({ healthy: true, seedBackups: true })
+  assert.equal(r.code, 0, `a healthy release should succeed:\n${r.out}`)
+  const names = r.captured.map((f) => f.name)
+  assert.ok(names.some((n) => n.endsWith('/pre-restore-20260102030405/uploads-previous/proof-abc123.png')),
+    `the restore's safety copy of the artwork must survive a deploy. Backups dir held: ${names.join(', ')}`)
+  // …while the prune still does its job on the snapshots this script owns, old prefix and new.
+  const dirsOf = (pfx) => new Set(names.filter((n) => n.includes(`/backups/${pfx}`)).map((n) => n.split('/')[2]))
+  assert.ok(dirsOf('predeploy-').size <= 5, `keep-five must still prune deploy snapshots, kept ${dirsOf('predeploy-').size}`)
+  assert.ok(dirsOf('pre-v').size <= 5, `and snapshots written under the old prefix, kept ${dirsOf('pre-v').size}`)
+})
 
 await t('the pre-migration backup contains the shops, not an empty default handle', async () => {
   const r = await rehearseRelease({ healthy: true })

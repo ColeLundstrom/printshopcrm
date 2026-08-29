@@ -88,7 +88,7 @@ else
     echo "  Or, if you have your own backup and accept the risk:  PSC_SKIP_BACKUP=1 $0 $TAG" >&2
     exit 1
   }
-  BAK_DIR="$DATA_ROOT/backups/pre-$TAG-$(date +%Y%m%d%H%M%S)"
+  BAK_DIR="$DATA_ROOT/backups/predeploy-$TAG-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$BAK_DIR"
   BAK_N=0
   while IFS= read -r DBF; do
@@ -113,8 +113,29 @@ else
   # warning that a stale -wal is worse than none.
   echo "  put one back with:  sudo systemctl stop $SERVICE && node $APP_ROOT/current/bin/restore.mjs '$BAK_DIR' --data-root '$DATA_ROOT' && sudo systemctl start $SERVICE"
   echo "  (it prints the plan and changes nothing until you add --yes)"
-  # Keep the five most recent snapshots; the rest are just disk, and backup.sh re-archives them.
-  ls -1dt "$DATA_ROOT/backups/pre-"* 2>/dev/null | tail -n +6 | while IFS= read -r OLD; do rm -rf "$OLD"; done
+  # Keep the five most recent DEPLOY snapshots; the rest are just disk, and backup.sh re-archives
+  # them.
+  #
+  # The prefix is `predeploy-` and the prune is anchored to it, because bin/restore.mjs writes its
+  # safety copy into this same directory as `pre-restore-<stamp>` — and that copy holds the ONLY
+  # copy of the shop's previous artwork, because restore MOVES the live uploads there rather than
+  # copying them. The old `pre-*` glob matched both, so five ordinary deploys silently rm -rf'd the
+  # one thing a restore leaves behind to undo itself: proofs, mockups and logos, gone, exit 0,
+  # nothing printed. `pre-v` prunes snapshots written under the old prefix, and cannot match
+  # `pre-restore-`. The uploads-previous check below is the belt to that braces: nothing in here
+  # that is holding somebody's art library gets deleted by this script, whatever it is called.
+  for PFX in predeploy- pre-v; do
+    # `set -euo pipefail` is on and a prefix that matches nothing makes `ls` exit 1, which would
+    # abort the deploy on an install that has never used the legacy prefix. `|| true` on the head
+    # of the pipeline, not the tail, so a real failure in the loop body still surfaces.
+    { ls -1dt "$DATA_ROOT/backups/$PFX"* 2>/dev/null || true; } | tail -n +6 | while IFS= read -r OLD; do
+      if [ -e "$OLD/uploads-previous" ]; then
+        echo "  keeping $OLD — it holds the only copy of artwork a restore set aside"
+      else
+        rm -rf "$OLD"
+      fi
+    done
+  done
 fi
 
 # --- flip ---------------------------------------------------------------------------------------
