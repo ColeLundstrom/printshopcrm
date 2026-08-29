@@ -37,6 +37,19 @@ async function drawList() {
 }
 
 async function drawThread(id) {
+  // What the shop has typed but not sent, captured before the repaint that would destroy it.
+  //
+  // app.js repaints this whole screen on every `conversation` and `chat` realtime event. The line
+  // immediately above that one already guards the receptionist screen, for exactly this reason and
+  // in almost these words — and this screen, where the unsaved thing is a customer reply, was left
+  // unconditional. An inbound email or SMS landing mid-sentence wiped the reply, including an AI
+  // draft that had just been generated and billed.
+  //
+  // Preserved rather than skipped: skipping the repaint would keep the draft but hide the message
+  // that just arrived, which is the other half of the same job. The customer's new message appears
+  // AND the half-written answer survives. After a successful send the caller has already cleared
+  // the box, so what is restored is the empty string, which is correct.
+  const draft = $('#ct-text')?.value ?? ''
   const d = await api.get(`/api/conversations/${id}`)
   const c = d.contact
   $('#convo-thread').innerHTML = `
@@ -67,6 +80,7 @@ async function drawThread(id) {
       <div class="row" style="margin-top:7px"><div class="sp"></div><button class="btn" id="ct-send">Send</button></div>
     </div>`
 
+  if (draft) $('#ct-text').value = draft
   const body = $('#ct-body'); body.scrollTop = body.scrollHeight
   let channel = 'email'
   on($('#ct-channel'), '[data-ch]', (_e, t) => { channel = t.dataset.ch; $$('#ct-channel button').forEach((b) => b.classList.toggle('on', b.dataset.ch === channel)) })

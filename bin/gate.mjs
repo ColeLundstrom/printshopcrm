@@ -5367,6 +5367,59 @@ section('a backup taken while the shop is working still restores')
   })
 }
 
+
+/* ---------- three screens that threw away the shop's work (v18) ----------
+ *
+ * (1) An inbound customer email or SMS wiped the reply being typed. app.js repaints the whole
+ *     screen on every `conversation` and `chat` realtime event; the line immediately above the
+ *     /conversations branch already guards the receptionist screen — in almost these words, for
+ *     exactly this reason — and this one, where the unsaved thing is a customer reply, was left
+ *     unconditional. An AI draft that had just been generated and billed went with it.
+ *     Preserved rather than skipped: the customer's new message must still appear.
+ *
+ * (2) "Upload price sheet" was bound with onOnce(), whose event defaults to 'click'. The input is
+ *     display:none inside a <label class="btn">, so clicking the label fires a synthetic click on
+ *     the input, which bubbles — the handler runs with no file yet and returns, the picker opens,
+ *     the shop picks a sheet, `change` fires, and nothing is listening. The import never ran.
+ *
+ * (3) After importing the wrong sheet, "Reset to stock" is not on the screen. It gates on
+ *     `s.edited`, which resolveBook sets from `saved.services[name]` alone — an import writes only
+ *     `saved.matrices`, so a shop that has just overwritten its whole grid is told it is on the
+ *     stock book and offered nothing to undo with. DELETE /api/pricebook/:name has cleared BOTH the
+ *     service and its matrix since it was written; the one control that calls it was hidden. */
+section('three screens that threw away the shop’s work')
+{
+  const readView = async (f) => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    return readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', f), 'utf8')
+  }
+
+  await t('an inbound message does not wipe the reply being typed', async () => {
+    const src = await readView('public/js/views/conversations.js')
+    const i = src.indexOf('async function drawThread')
+    assert.ok(i > 0, 'drawThread moved — re-point this test')
+    const fn = src.slice(i, i + 3200)
+    assert.match(fn, /const draft = \$\('#ct-text'\)\?\.value/, 'the draft is not captured before the repaint')
+    assert.match(fn, /if \(draft\) \$\('#ct-text'\)\.value = draft/, 'the draft is captured and then never put back')
+  })
+
+  await t('…and the receptionist screen it was modelled on is still guarded', async () => {
+    const app = await readView('public/js/app.js')
+    assert.match(app, /__pscAgentDirty/, 'the guard this one copies has gone')
+  })
+
+  await t('the price-sheet import listens for the file, not for the click', async () => {
+    const src = await readView('public/js/views/pricing.js')
+    const i = src.indexOf("'#mx-file'")
+    assert.ok(i > 0, 'the price-sheet input moved — re-point this test')
+    // onOnce(root, sel, fn, evt = 'click'), and a display:none input inside a <label> gets a
+    // synthetic click with no file on it. The handler has to be bound to 'change'.
+    assert.match(src.slice(i, i + 1800), /\},\s*'change'\)/, "#mx-file is still bound on click, so the import never runs")
+  })
+}
+
 /* ---------- the short-close the delete refusal names is on a screen (v10) ---------- */
 section('short-closing a part-filled order is reachable without a shell')
 await t('the receiving card offers it, and confirms first', async () => {

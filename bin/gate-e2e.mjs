@@ -4927,6 +4927,62 @@ try {
     }
   }
 
+
+  /* ---------- importing the wrong price sheet is undoable from the screen ----------
+   *
+   * The Price Book's "Reset to stock" button — the only control in the product that undoes a price
+   * import — gates on `s.edited`. resolveBook sets that from `saved.services[name]` alone, and an
+   * import writes only `saved.matrices`. So a shop that has just overwritten its entire Screen
+   * Print grid with the wrong CSV is told it is on the stock book, shown a "stock" pill, and
+   * offered nothing at all to undo with. Meanwhile every quote it writes uses the imported cells,
+   * because a per-cell override beats the formula by design.
+   *
+   * DELETE /api/pricebook/:name has deleted BOTH the service overrides and the matrix since it was
+   * written — its own comment explains why. The recovery worked; the button that calls it was
+   * hidden. A service the shop has overridden in ANY way is edited. */
+  {
+    const T16 = mkdtempSync(join(tmpdir(), 'psc-e2e-book-'))
+    const P16 = PORT + 21
+    const s16 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P16), PSC_DB: join(T16, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P16}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s16)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P16}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P16}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Book Ink', owner_name: 'B', owner_email: 'b@book.test', password: 'GatePass-123456' }),
+      })
+      const ck = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const J = (method, path, body) => fetch(`http://127.0.0.1:${P16}${path}`, {
+        method, headers: { 'Content-Type': 'application/json', Cookie: ck },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }))
+      const screenPrint = async () => (await J('GET', '/api/pricebook')).json.services.find((s) => s.name === 'Screen Print')
+
+      chk('a new shop is on the stock book', String((await screenPrint())?.edited), '^false$')
+
+      // Exactly what the importer PUTs: matrices only, no `services` key.
+      await J('PUT', '/api/pricebook', { matrices: { 'Screen Print': { '24|1': 99, '24|2': 111, '24|3': 122 } } })
+      const after = await screenPrint()
+      chk('a shop that has imported a sheet is not still "stock"', String(after?.edited), '^true$')
+
+      // …and the button that appears really does put it back.
+      const del = await J('DELETE', '/api/pricebook/Screen%20Print')
+      chk('resetting the service is accepted', String(del.status), '^200$')
+      const reset = await screenPrint()
+      chk('…and the shop is back on the stock book', String(reset?.edited), '^false$')
+    } finally {
+      try { s16.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T16, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

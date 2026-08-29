@@ -175,7 +175,11 @@ function wireBook(b) {
       setTimeout(() => loadMatrix(), 600)
     } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
     el.value = ''
-  })
+    // 'change', not onOnce's default 'click'. The input is display:none inside a <label class="btn">,
+    // so clicking the label fires a synthetic click on the input that BUBBLES — this handler ran
+    // with no file yet and returned, the picker opened, the shop chose a sheet, and nothing was
+    // listening for it. The one import path in the price book never ran at all.
+  }, 'change')
   onOnce($('#view'), '#pb-add', async () => {
     const name = $('#pb-new-name').value.trim()
     if (!name) return toast('Give the service a name')
