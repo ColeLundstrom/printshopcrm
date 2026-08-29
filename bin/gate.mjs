@@ -5728,6 +5728,65 @@ section('the packing slip lists every garment in the box')
   })
 }
 
+/* ---------- the invoice's BALANCE DUE is on the paper (v20) ----------
+ * The break decision for the totals block was one fixed guess — `if (y > PAGE_H - 200)` — taken
+ * BEFORE the rows existed, with no check inside the loop. The block is not a fixed 200: it grows
+ * by one 14pt row per RECORDED PAYMENT, and an invoice with payments against it is the normal case
+ * for any shop that takes a deposit. Rendered at HEAD: ten lines and two payments put BALANCE DUE
+ * at page-y 682, drawn through the TERMS heading at 674 with its own rule struck across it; with a
+ * NOTES line and eight payments the rows ran through NOTES, the note text, TERMS and the terms
+ * text, and BALANCE DUE landed inside the footer on top of "Page 1 of 1"; with twelve payments the
+ * renderer emitted four text operations BELOW THE BOTTOM EDGE OF THE PAPER — 'Payment', its
+ * figure, 'BALANCE DUE' and its figure — still on one page, still "Page 1 of 1".
+ * This is the document the customer pays from. Same shape as the pick-ticket and packing-slip
+ * overflows below, on the one document family that had not been checked. */
+section('the invoice\'s BALANCE DUE is on the paper')
+{
+  const pdf = await import('../lib/pdf.mjs')
+  const SETTINGS = {
+    shop_name: 'Gate Ink', shop_phone: '555-0100', tax_rate: 8.25,
+    invoice_terms: 'Net 15. Late payments accrue 1.5% monthly. Overruns and underruns of up to 3% are standard and billed as produced.',
+  }
+  const textYs = (buf) => [...String(buf).matchAll(/1 0 0 1 [\d.-]+ (-?[\d.]+) Tm/g)].map((m) => Number(m[1]))
+  // A garment line with a detail line AND a size line is 36pt tall, which is what a real invoice
+  // looks like. Ten of them land the item table just ABOVE the old fixed `y > PAGE_H - 200`
+  // threshold — so the guard did not fire and the whole totals block ran off the sheet. Twelve
+  // lines happened to trip the old guard and were fine, which is exactly why a fixed guess taken
+  // before the rows exist is not a page-break rule.
+  const items = Array.from({ length: 10 }, (_, i) => ({ description: `Gildan 5000 Tee — Navy — line ${i + 1}`, detail: 'Front 2 colour, back 1 colour', qty: 24, unit_price: 8.75, sizes: { S: 6, M: 6, L: 6, XL: 6 } }))
+  const inv = { invoice_number: 'INV-2001', subtotal: 2100, tax: 173.25, amount_due: 2273.25, amount_paid: 0, tax_rate: 8.25, due_date: '2026-09-15', notes: 'Please note the revised in-hand date agreed on the phone.' }
+  const contact = { name: 'Northgate High', email: 'ap@northgate.test' }
+  const pays = (n) => Array.from({ length: n }, (_, i) => ({ method: i % 2 ? 'card' : 'check', amount: 100, created_at: '2026-08-0' + ((i % 9) + 1) })) 
+
+  // Swept across BOTH axes, because the failure is a boundary between them: 10 lines + 12 payments
+  // overflowed while 12 lines + 12 payments did not, since the longer table happened to trip the
+  // old guard. A rule that only holds at one length is not a rule.
+  for (const lines of [3, 8, 10, 12, 14]) {
+    for (const n of [0, 2, 8, 12]) {
+      await t(`${lines} lines and ${n} recorded payment${n === 1 ? '' : 's'}: every row on a real page`, () => {
+        const buf = pdf.renderDocument('INVOICE', { doc: { ...inv, amount_paid: n * 100 }, contact, settings: SETTINGS, items: items.slice(0, lines), payments: pays(n) })
+        const ys = textYs(buf)
+        const off = ys.filter((y) => y < 30)
+        assert.equal(off.length, 0, `${off.length} of ${ys.length} text ops render at or below the bottom edge (lowest ${Math.min(...ys)})`)
+        assert.match(String(buf), /\(BALANCE DUE\) Tj/, 'the line naming what is owed never reached the page')
+      })
+    }
+  }
+  await t('…and the figure beside it is the one the customer owes', () => {
+    const buf = pdf.renderDocument('INVOICE', { doc: { ...inv, amount_paid: 1200 }, contact, settings: SETTINGS, items, payments: pays(12) })
+    assert.match(String(buf), /\(\$1,073\.25\) Tj/, 'the balance figure never reached the page')
+  })
+  await t('…without collapsing the terms block it used to be drawn on top of', () => {
+    const buf = pdf.renderDocument('INVOICE', { doc: { ...inv, amount_paid: 200 }, contact, settings: SETTINGS, items, payments: pays(2) })
+    assert.match(String(buf), /\(TERMS\) Tj/, 'TERMS must still print')
+    assert.match(String(buf), /\(NOTES\) Tj/, 'and so must NOTES')
+  })
+  await t('…and an ordinary unpaid invoice is still exactly one page', () => {
+    const buf = pdf.renderDocument('INVOICE', { doc: inv, contact, settings: SETTINGS, items: items.slice(0, 3), payments: [] })
+    assert.equal(Number(String(buf).match(/\/Count (\d+)/)?.[1] || 0), 1, 'a three-line unpaid invoice must not grow a second page')
+  })
+}
+
 section('the pick ticket cannot render a garment off the bottom of the sheet')
 {
   const pdf = await import('../lib/pdf.mjs')
