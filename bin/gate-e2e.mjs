@@ -2872,6 +2872,89 @@ try {
       String(Math.abs(round2e(Number(r.json?.subtotal) + Number(r.json?.tax)) - round2e(r.json?.amount_due)) < 0.005), '^true$')
   }
 
+  /* ---------- a shop leaving with five years of history does not take the box with it ----------
+   * /api/export/:table.csv called all(), which materialised the whole table, and then handed the
+   * array to a toCsv() that built the entire file as one more string on top of it. Measured on a
+   * shop with real volume: payments.csv blocked the event loop for 891 ms and took RSS from 79 MB
+   * to 398 MB to produce a 13 MB file — on the 512 MB box INSTALL.md documents, shared with every
+   * other shop, and node:sqlite is synchronous so that block is fleet-wide. The whole-shop JSON
+   * export next door was converted to a cursor in v1.7.0 for exactly this reason; this half, the
+   * one a shop reaches for first, was left behind.
+   *
+   * Two things are asserted, because either alone is weak. Content-Length is present if and only
+   * if the body was built before it was sent, so its ABSENCE is proof the file was never held
+   * whole. And the first byte must arrive early in the download, which is what "row by row"
+   * actually means — before the fix the first byte arrived at 178 ms of a 182 ms transfer.
+   * Its own server and its own database, so the main run is not carrying 60k rows around. */
+  {
+    const T7 = mkdtempSync(join(tmpdir(), 'psc-e2e-csv-'))
+    const P7 = PORT + 13
+    const csvSrv = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P7), PSC_DB: join(T7, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P7}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(csvSrv)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P7}/health`)).status === 200) break } catch { /* not up yet */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P7}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Leaving Ink', owner_name: 'L', owner_email: 'l@leaving.test', password: 'GatePass-123456' }),
+      })
+      chk('a shop with history exists to export', String(su.status), '^200$')
+      const cookie = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean))
+        .map((c) => String(c).split(';')[0]).join('; ')
+
+      // Five years of timeline, written straight into the shop's own database — the same shape the
+      // app writes, just more of it than a gate run could generate through the API.
+      const ROWS = 60000
+      const d = new DatabaseSync(join(T7, 'tenants', 'leaving-ink', 'printshop.db'))
+      d.exec('PRAGMA busy_timeout = 5000')
+      d.exec('BEGIN')
+      const ins = d.prepare('INSERT INTO activities (type, description, created_at) VALUES (?,?,?)')
+      for (let i = 0; i < ROWS; i++) {
+        ins.run('note', `Activity ${i} — a customer note of the length a real one runs to, which is what makes the file big.`, '2026-01-01 00:00:00')
+      }
+      d.exec('COMMIT')
+      d.close()
+
+      const t0 = Date.now()
+      let ttfb = null, bytes = 0, status = 0, len, te, tail = '', head = ''
+      await new Promise((resolve, reject) => {
+        const rq = rawHttp(`http://127.0.0.1:${P7}/api/export/activities.csv`, { headers: { Cookie: cookie } }, (res) => {
+          status = res.statusCode; len = res.headers['content-length']; te = res.headers['transfer-encoding']
+          res.on('data', (c) => {
+            if (ttfb === null) ttfb = Date.now() - t0
+            bytes += c.length
+            if (head.length < 200) head += c.toString('latin1').slice(0, 200)
+            tail = (tail + c.toString('latin1')).slice(-200)
+          })
+          res.on('end', resolve)
+        })
+        rq.on('error', reject)
+        rq.end()
+      })
+      const total = Date.now() - t0
+      chk('the CSV export answers', String(status), '^200$')
+      chk('…and never built the whole file before sending a byte of it', String(len ?? 'none'), '^none$')
+      chk('…it is streamed', String(te), '^chunked$')
+      chk(`…so the first byte arrives early in the download (${ttfb}ms of ${total}ms)`,
+        String(ttfb < Math.max(25, total * 0.5)), '^true$')
+      chk('…and the file is still the whole file', String(bytes > 8_000_000), '^true$')
+      chk('…ending on a real row, not a truncation', String(/\n\d+,,,note,/.test(tail)), '^true$')
+      // Correctness, not just plumbing: the header is still the table's own columns, in order,
+      // and it is still the FIRST thing in the file.
+      chk('…starting with the header row the shop\'s spreadsheet needs',
+        head.split('\n')[0], '^id,contact_id,job_id,type,description,created_at$')
+    } finally {
+      try { csvSrv.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T7, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /* ---------- the app can bind the address INSTALL.md says it binds ----------
    * INSTALL.md has described the reference deployment as "nginx terminating SSL, the app on
    * 127.0.0.1:3870" since it was written, and there was no way to do it: server.listen(PORT) binds

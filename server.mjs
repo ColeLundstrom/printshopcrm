@@ -5290,42 +5290,72 @@ const csvCell = (v) => {
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
-const toCsv = (rows) => {
-  if (!rows.length) return ''
-  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))]
-  return [cols.join(','), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(','))].join('\n')
-}
-
+/**
+ * Each export is a CURSOR, not an array.
+ *
+ * These were `all(...)`, and the route then handed the whole array to a toCsv() that built the
+ * entire file as one more string on top of it. Measured on a shop with five years of history:
+ * payments.csv blocked the event loop for 891 ms and took RSS from 79 MB to 398 MB to produce a
+ * 13 MB file — on the 512 MB box INSTALL.md documents, with every other shop on that box sharing
+ * it, and node:sqlite is synchronous so the blocking is fleet-wide. The whole-shop JSON export
+ * next door was converted to a cursor for exactly this reason in v1.7.0; this half was left
+ * behind, and it is the half a shop reaches for first.
+ *
+ * line_items also did a contact lookup per estimate — an N+1 — which the JOIN removes.
+ */
 const EXPORTS = {
-  contacts: () => all('SELECT * FROM contacts ORDER BY id'),
-  estimates: () => all('SELECT * FROM estimates ORDER BY id'),
-  invoices: () => all('SELECT * FROM invoices ORDER BY id'),
-  payments: () => all('SELECT * FROM payments ORDER BY id'),
-  jobs: () => all('SELECT * FROM jobs ORDER BY id'),
-  activities: () => all('SELECT * FROM activities ORDER BY id'),
-  art_versions: () => all('SELECT * FROM art_versions ORDER BY id'),
+  contacts: () => iterate('SELECT * FROM contacts ORDER BY id'),
+  estimates: () => iterate('SELECT * FROM estimates ORDER BY id'),
+  invoices: () => iterate('SELECT * FROM invoices ORDER BY id'),
+  payments: () => iterate('SELECT * FROM payments ORDER BY id'),
+  jobs: () => iterate('SELECT * FROM jobs ORDER BY id'),
+  activities: () => iterate('SELECT * FROM activities ORDER BY id'),
+  art_versions: () => iterate('SELECT * FROM art_versions ORDER BY id'),
   // The one everyone else drops: every line of every document, flattened, with sizes.
-  line_items: () => all('SELECT * FROM estimates ORDER BY id').flatMap((e) => {
-    const c = get('SELECT name, company FROM contacts WHERE id = ?', e.contact_id)
-    return parse(e.items, []).map((it, i) => ({
-      estimate_number: e.estimate_number, status: e.status, created_at: e.created_at,
-      customer: c?.name || '', company: c?.company || '',
-      line: i + 1, description: it.description || '', detail: it.detail || '',
-      decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
-      qty: lineQty(it), unit_price: it.unit_price ?? 0,
-      taxable: it.taxable === false ? 'no' : 'yes',
-      amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
-    }))
-  }),
+  line_items: function* () {
+    for (const e of iterate('SELECT e.*, c.name AS customer, c.company FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id')) {
+      for (const [i, it] of parse(e.items, []).entries()) {
+        yield {
+          estimate_number: e.estimate_number, status: e.status, created_at: e.created_at,
+          customer: e.customer || '', company: e.company || '',
+          line: i + 1, description: it.description || '', detail: it.detail || '',
+          decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
+          qty: lineQty(it), unit_price: it.unit_price ?? 0,
+          taxable: it.taxable === false ? 'no' : 'yes',
+          amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
+        }
+      }
+    }
+  },
 }
 
-app.get('/api/export/:table.csv', requireRole('manager'), wrap((req, res) => {
+app.get('/api/export/:table.csv', requireRole('manager'), wrap(async (req, res) => {
   // hasOwn, not a bare lookup: EXPORTS.constructor / __proto__ / toString are inherited and would
   // otherwise be "found" and called, 500ing on junk instead of returning a clean 404.
   const fn = Object.hasOwn(EXPORTS, req.params.table) ? EXPORTS[req.params.table] : null
   if (!fn) return res.status(404).json({ error: `Nothing to export called "${req.params.table}"` })
   res.type('text/csv').setHeader('Content-Disposition', `attachment; filename="printshopcrm-${req.params.table}.csv"`)
-  res.send(toCsv(fn()))
+  // Same backpressure contract as the JSON export: yield to the event loop when the socket is
+  // full, so the copy does not simply move from the heap into the socket's user-space queue.
+  const write = async (chunk) => { if (!res.write(chunk)) await drainOnce(res) }
+  // Every row of a `SELECT *` has the same keys, and line_items yields a fixed shape, so the
+  // first row's keys are the header — the old code took the union of all of them, which is the
+  // same answer and required holding all of them. An empty table sends an empty body, as before.
+  let cols = null
+  try {
+    for (const row of fn()) {
+      if (!cols) { cols = Object.keys(row); await write(cols.join(',')) }
+      await write(`\n${cols.map((c) => csvCell(row[c])).join(',')}`)
+    }
+  } catch (e) {
+    // The attachment header went out with the first row, so this cannot become a 500 — the
+    // browser is already saving a file. Say so IN the file: a silently truncated export that
+    // looks complete is how a shop discovers three months later that its records stop in May.
+    try { res.write(`\n"EXPORT FAILED — this file is incomplete: ${String(e && e.message || e).slice(0, 200).replace(/"/g, "'")}"`) } catch { /* socket already gone */ }
+    console.error(`export/${req.params.table}.csv failed after headers:`, e && e.message)
+  } finally {
+    res.end()
+  }
 }))
 
 /** Everything, as one JSON file. No support ticket, no fee, no waiting. */
