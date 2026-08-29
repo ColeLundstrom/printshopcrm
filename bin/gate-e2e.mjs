@@ -2759,6 +2759,41 @@ try {
     const swapped = await fetch(`${BASE}/uploads/${uart.filename}?t=${tok}&s=neighbour-ink`)
     chk('a customer token cannot be replayed against the wrong shop', String(swapped.status), '^404$')
 
+    /* …and a shop cannot simply CLAIM another shop's file as its own logo.
+     * /uploads/:file proves ownership two ways: the file is in this shop's art_versions, or it
+     * IS this shop's logo. shop_logo lives in SETTING_DEFAULTS, so it was in SETTINGS_WRITABLE,
+     * so any manager could PUT it — which made ownership self-asserted and walked straight back
+     * through the access control above. Proven before the fix on this instance: 404, then one
+     * PUT, then 200 with the bytes. It escalated to anonymous too, because the claiming shop's
+     * own /p/ page renders its logo and the server therefore MINTS a valid fileToken for another
+     * shop's file under the claimer's slug — a permanent public URL for someone else's property,
+     * still serving after the owner deleted it. */
+    const claim = await fetch(`${BASE}/api/settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: bCookie },
+      body: JSON.stringify({ shop_logo: uart.filename }),
+    })
+    chk('the shop next door may send the claim', String(claim.status), '^200$')
+    const bSettings = await (await fetch(`${BASE}/api/settings`, { headers: { Cookie: bCookie } })).json()
+    chk('…but the claim is refused, not stored', String(bSettings?.settings?.shop_logo ?? 'MISSING'), '^$')
+    const claimed = await fetch(`${BASE}/uploads/${uart.filename}`, { headers: { Cookie: bCookie } })
+    const claimedBody = await claimed.text()
+    chk('…so it still cannot read the file it named', String(claimed.status), '^404$')
+    chk('…and still gets no bytes', String(/UNRELEASED-LOGO/.test(claimedBody)), '^false$')
+    // The claim must not reach the anonymous surface either: the shop's own public page is where
+    // the server would mint a token for whatever it believes its logo to be.
+    const bPub = await fetch(`${BASE}/api/embed/config`, { headers: { Cookie: bCookie } })
+    chk('…and its own public config carries no claim on that file',
+      String((await bPub.text()).includes(uart.filename)), '^false$')
+
+    // The real logo route still works — this must cost the product nothing.
+    const lf = new FormData()
+    lf.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"><!--NEIGHBOUR-LOGO--></svg>'], { type: 'image/svg+xml' }), 'logo.svg')
+    const lup = await fetch(`${BASE}/api/settings/logo`, { method: 'POST', headers: { Cookie: bCookie }, body: lf })
+    const lj = await lup.json().catch(() => ({}))
+    chk('a shop can still upload its own logo', String(lup.status), '^200$')
+    chk('…and read it back', String((await fetch(`${BASE}/uploads/${lj.shop_logo}`, { headers: { Cookie: bCookie } })).status), '^200$')
+
     // Deleting the proof takes the artwork off the internet, not just off the page. Before this
     // there was no revocation at all: the URL in the customer's inbox worked forever.
     await req('DELETE', `/api/jobs/${uj.id}/art/${uart.id}`)
