@@ -7373,6 +7373,37 @@ app.get(['/index.html', '/auth.html'], (req, res) => {
   res.set('Cache-Control', 'no-cache').type('html').send(req.path === '/auth.html' ? authHtml() : shellHtml())
 })
 
+/**
+ * Nothing under public/ that has its own handler may be reachable through the static mount, in
+ * ANY spelling.
+ *
+ * `case sensitive routing` is on (deliberately — it is what stops `/API/contacts` matching a
+ * route and bypassing auth), but express.static resolves through the FILESYSTEM, and APFS and
+ * NTFS are case-insensitive. So `/UPLOADS/f.svg` misses the `/uploads/:file` ownership guard
+ * above entirely and is served straight off disk: another shop's customer artwork, 200, full
+ * bytes, with no session at all. Reproduced anonymously on macOS against a two-shop instance
+ * where the canonical `/uploads/f.svg` correctly 404s.
+ *
+ * Three things go wrong in that one response, not one: the tenant check never runs; the header
+ * block loses `Cache-Control: private` for `public, max-age=86400`, so a shared proxy caches one
+ * shop's art and hands it to the next caller; and the sandbox CSP below is matched on a
+ * case-sensitive path regex too, so the response inherits the app's own
+ * `script-src 'self' 'unsafe-inline'` — an uploaded SVG (an allowed ART_MIME) then executes as
+ * script on the app's own origin.
+ *
+ * `/Index.html` and `/Auth.html` are the same bug with a licence attached: they answer off disk
+ * with the literal `__SOURCE_LINK__` still in the body, so an anonymous caller gets a fully
+ * working copy of the app with no offer of the Corresponding Source. AGPL §13 is not optional and
+ * shellHtml()/authHtml() are the only two places that placeholder is ever replaced.
+ *
+ * Same family as the seven spellings closed in 4c65f35 (`//uploads`, `/./`, `%2f`, …); case is
+ * the eighth. Refuse rather than rewrite, exactly as that guard does: the canonical spellings are
+ * answered by their own handlers ABOVE this line and never reach it, so only the shadow spellings
+ * die here.
+ */
+const SHADOWED_BY_A_ROUTE = /^\/(uploads(\/|$)|index\.html$|auth\.html$)/i
+app.use((req, res, next) => (SHADOWED_BY_A_ROUTE.test(req.path) ? res.status(404).end() : next()))
+
 app.use(express.static(PUBLIC, {
   index: false,
   setHeaders: (res, p) => {

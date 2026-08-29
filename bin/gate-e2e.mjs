@@ -1115,6 +1115,12 @@ try {
     // load /css and /js by absolute path, so they were a fully working copy of the app handed to
     // an anonymous caller with no offer of the Corresponding Source, shipping the literal
     // placeholder where the §13 link belongs. Every path a user can type has to be on this list.
+    // …and the SAME case hole reaches the licence. `/Index.html` and `/Auth.html` never match the
+    // case-sensitive route that renders them, so on a case-insensitive filesystem they answered
+    // off disk with the literal __SOURCE_LINK__ still in the body — a fully working copy of the
+    // app handed to an anonymous caller with no offer of the Corresponding Source. Second time
+    // this exact page has shipped without the §13 link; the first assertion only covered one
+    // spelling. A shadow spelling may render the shell or refuse — it may never serve the raw file.
     for (const [path, what] of [['/', 'the app'], ['/index.html', 'the app by its file name'], ['/auth.html', 'the auth page by its file name'], ['/login', 'the login page'], ['/signup', 'the signup page'], ['/reset', 'the reset page']]) {
       const page = await req('GET', path, { cookies: false })
       chk(`${what} serves the AGPL source link`, page.text, 'class="source-link"')
@@ -1123,6 +1129,11 @@ try {
     }
     // The customer-facing /p/ pages are served by their own renderer, so they are not asserted here
     // — §13 applies to users interacting with the software remotely, which is the app itself.
+    for (const [path, what] of [['/Index.html', 'a shadow spelling of the app'], ['/Auth.html', 'a shadow spelling of the auth page'], ['/INDEX.HTML', 'a shouted spelling of the app']]) {
+      const page = await req('GET', path, { cookies: false })
+      chk(`${what} never ships the raw template`, String(page.text.includes('__SOURCE_LINK__')), '^false$')
+      chk(`…so it either carries the §13 link or refuses`, String(page.status === 404 || /class="source-link"/.test(page.text)), '^true$')
+    }
     const shell = await req('GET', '/', { cookies: false })
     chk('the link names the licence, so it is recognisable as the §13 offer', shell.text, 'AGPL-3\\.0')
 
@@ -4471,6 +4482,16 @@ try {
         // `/uploads/:file` — but express.static decodes, and would serve the file.
         `/uploads%2f${probe}`,
         `/api/../uploads/${probe}`,
+        // The eighth spelling: CASE. `case sensitive routing` is on (it is what stops
+        // /API/contacts matching a route), but express.static resolves through the FILESYSTEM and
+        // APFS/NTFS are case-insensitive — so on macOS and Windows these missed the ownership
+        // guard entirely and answered 200 with the bytes, no session, `Cache-Control: public`,
+        // and none of the sandbox CSP (its path regex is case-sensitive too, so an uploaded SVG
+        // ran as script on the app's own origin). On Linux they 404 either way, so the case is
+        // safe to assert everywhere and is the only one that ever fires on the ubuntu CI job.
+        `/UPLOADS/${probe}`,
+        `/Uploads/${probe}`,
+        `/uploadS/${probe}`,
       ]) {
         const r = await rawGet(spelling)
         chk(`…and so does ${spelling}`, String(r.status), '^40[04]$')

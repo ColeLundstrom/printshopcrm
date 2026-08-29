@@ -3671,6 +3671,43 @@ await t('deleting an estimate takes its mockups with it, so a reused id cannot i
  *     deal behind with a null pointer: still 'quoted', still $8,000 of Open Pipeline and Weighted
  *     Forecast, no longer findable by oppForEstimate — so it could never be re-valued, and a
  *     re-created quote for that customer minted a SECOND deal beside it. */
+/* ---------- a shadow spelling never reaches the static mount (v20) ----------
+ * The e2e proves this by fetching /UPLOADS/probe, which only 200s on a case-INsensitive
+ * filesystem — so on the ubuntu CI job that assertion passes whether the guard is there or not,
+ * and deleting the guard would go green on Linux and ship a cross-tenant artwork leak plus an
+ * AGPL §13 breach to every macOS and Windows self-hoster. This is the platform-independent half:
+ * the guard exists, it refuses, and it sits AFTER the handlers that answer the canonical
+ * spellings and BEFORE the static mount. Order is the whole fix. */
+section('a shadow spelling never reaches the static mount')
+await t('the guard exists, refuses, and sits between the handlers and express.static', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const guard = src.indexOf('const SHADOWED_BY_A_ROUTE')
+  assert.ok(guard > 0, 'the shadow-spelling guard is gone — /UPLOADS/f serves another shop\'s art off disk')
+  const rendered = src.indexOf("app.get(['/index.html', '/auth.html']")
+  const owned = src.indexOf("app.get('/uploads/:file'")
+  const stat = src.indexOf('app.use(express.static(PUBLIC')
+  assert.ok(owned > 0 && rendered > 0 && stat > 0, 'the three landmarks should still be there')
+  assert.ok(guard > rendered && guard > owned, 'the guard must come AFTER the handlers, or it 404s the real pages')
+  assert.ok(guard < stat, 'and BEFORE the static mount, or it never runs')
+  // The regex has to be case-insensitive — that IS the bug — and cover both families.
+  const re = /const SHADOWED_BY_A_ROUTE = (\/.*\/[a-z]*)/.exec(src)
+  assert.ok(re, 'the guard must be a literal regex the gate can read')
+  assert.ok(re[1].endsWith('i'), 'a case-SENSITIVE guard is the bug it was written to fix')
+  // eslint-disable-next-line no-new-func — the gate reads the shipped literal rather than a copy.
+  const rx = new Function(`return ${re[1]}`)()
+  for (const p of ['/UPLOADS/f.png', '/Uploads/f.png', '/uploadS/f.png', '/uploads/f.png', '/Index.html', '/AUTH.HTML', '/auth.html']) {
+    assert.ok(rx.test(p), `${p} must be recognised as shadowing a handler`)
+  }
+  // …and it must not swallow the rest of public/, which has no handler and must still be served.
+  for (const p of ['/css/app.css', '/js/core.js', '/docs-api.html', '/manifest.json', '/embed/gangsheet.js', '/icon.svg', '/sw.js']) {
+    assert.ok(!rx.test(p), `${p} has no handler above the static mount — refusing it takes the app down`)
+  }
+})
+
 section('the pipeline follows the quote it was opened from')
 await t('editing a quote down re-prices the deal, and deleting it takes the deal with it', async () => {
   const { DatabaseSync } = await import('node:sqlite')
