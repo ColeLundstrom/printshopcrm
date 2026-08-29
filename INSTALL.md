@@ -77,37 +77,55 @@ sudo apt-get install -y nodejs
 node --version      # expect v22.13.0 or newer
 ```
 
-### 2. Get the code
+### 2. Make the account the service runs as
+
+`deploy/printshopcrm.service` ships `User=printshopcrm`, and nothing creates that account for you.
+Do this before anything else, because the two directories below have to belong to it — systemd
+refuses a unit whose `User=` does not exist (`status=217/USER`), and `Restart=always` then retries
+it forever.
+
+```bash
+sudo useradd --system --home-dir /var/lib/printshopcrm --shell /usr/sbin/nologin printshopcrm
+```
+
+If you'd rather run it as some other account, that is fine — use that name everywhere below and in
+the unit file's `User=`/`Group=`. What must not happen is the app running as one account while its
+database and uploads belong to another: you get `PrintShopCRM could not create its data directory`
+or `attempt to write a readonly database`, on a service that otherwise looks like it started.
+
+### 3. Get the code
 
 ```bash
 sudo mkdir -p /opt/printshopcrm
-sudo chown "$USER" /opt/printshopcrm
-git clone https://github.com/ColeLundstrom/printshopcrm.git /opt/printshopcrm
+sudo chown -R printshopcrm:printshopcrm /opt/printshopcrm
+sudo -u printshopcrm git clone https://github.com/ColeLundstrom/printshopcrm.git /opt/printshopcrm
 cd /opt/printshopcrm
-npm ci --omit=dev
+sudo -u printshopcrm npm ci --omit=dev
 # The service runs `current`, never the checkout directly. Point it at the checkout now and a
 # hand-managed install behaves exactly as it always has; deploy/release.sh then re-points it at
 # releases/<tag>/ on every deploy, and rolling back is repointing it at the previous one. Without
 # this symlink the unit has nothing to run — and if you point the unit at the checkout instead,
 # release.sh will flip `current` on every deploy while the service keeps serving the original
 # clone, forever, with /health and verify-sync.sh both reporting success.
-ln -sfn /opt/printshopcrm /opt/printshopcrm/current
+sudo -u printshopcrm ln -sfn /opt/printshopcrm /opt/printshopcrm/current
 ```
 
-### 3. Put your data outside the app directory
+### 4. Put your data outside the app directory
 
 This matters more than it looks. Two things must live where an upgrade cannot touch them: the
 **database** and the **uploads directory**.
 
 ```bash
 sudo mkdir -p /var/lib/printshopcrm/uploads
-sudo chown -R "$USER" /var/lib/printshopcrm
+# The account in the unit file's User=, not your login. This is the single most common cause of a
+# service that starts and then cannot write.
+sudo chown -R printshopcrm:printshopcrm /var/lib/printshopcrm
 # public/uploads ships as a real directory (it holds a tracked .gitkeep), and `ln -sfn` pointed at
 # an existing directory creates the link INSIDE it — you get public/uploads/uploads, exit status 0,
 # and no warning. Artwork then writes to the app directory, the backup archives an empty
 # /var/lib/printshopcrm/uploads, and both look fine until an upgrade deletes the originals.
-rm -rf /opt/printshopcrm/public/uploads
-ln -sfn /var/lib/printshopcrm/uploads /opt/printshopcrm/public/uploads
+sudo rm -rf /opt/printshopcrm/public/uploads
+sudo -u printshopcrm ln -sfn /var/lib/printshopcrm/uploads /opt/printshopcrm/public/uploads
 # Verify: this must print the symlink, not a directory.
 ls -ld /opt/printshopcrm/public/uploads
 ```
@@ -121,10 +139,10 @@ a symlink to persistent storage on day one avoids the whole class of problem.
 it keeps releases in `releases/<tag>/`, symlinks uploads and `.env` into each one, runs the test
 suite before flipping `current`, and rolls back automatically if the service fails to start.
 
-### 4. Configure
+### 5. Configure
 
 ```bash
-cp .env.example .env
+sudo -u printshopcrm cp .env.example .env
 node -e "console.log('PSC_SECRET=' + require('crypto').randomBytes(32).toString('hex'))"
 ```
 
@@ -157,13 +175,13 @@ incoming `Host` header to build customer links, and a proxy can spoof that.
 
 `.env.example` documents every other variable.
 
-### 5. Run it as a service
+### 6. Run it as a service
 
 A ready unit file is in [`deploy/printshopcrm.service`](deploy/printshopcrm.service):
 
 ```bash
 sudo cp deploy/printshopcrm.service /etc/systemd/system/
-sudo nano /etc/systemd/system/printshopcrm.service     # set User= and the paths
+sudo nano /etc/systemd/system/printshopcrm.service     # only if you changed the paths or the account
 sudo systemctl daemon-reload
 sudo systemctl enable --now printshopcrm
 systemctl status printshopcrm
@@ -175,7 +193,7 @@ Logs:
 journalctl -u printshopcrm -f
 ```
 
-### 6. nginx and SSL
+### 7. nginx and SSL
 
 Copy both config files — [`deploy/nginx.conf`](deploy/nginx.conf) and
 [`deploy/upgrade-map.conf`](deploy/upgrade-map.conf) — and replace `shop.example.com` with your
@@ -204,7 +222,7 @@ Point your domain's A record at the server before running certbot, or validation
 The supplied config already proxies WebSocket upgrades, which the app uses for live board updates.
 Without those two `proxy_set_header` lines the board silently stops updating in real time.
 
-### 7. Firewall
+### 8. Firewall
 
 ```bash
 sudo ufw allow 22,80,443/tcp
@@ -213,7 +231,7 @@ sudo ufw enable
 
 The app port (3870) must **not** be open — nginx reaches it over loopback.
 
-### 8. First login
+### 9. First login
 
 Visit `https://shop.example.com`. With `PSC_AUTH=1` you'll get a signup screen; the first account
 you create is the shop owner. Then go to **Settings** and set your shop name, address, tax rate,

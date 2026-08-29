@@ -2262,6 +2262,56 @@ for (const [tz, stored, want, why] of [
  * domain in Settings and could see it there listed as connected. Measured with two SMTP catchers:
  * the shop's own server received nothing. lib/suppliers.mjs:178 already makes this argument for
  * distributor accounts, where env-first would price a shop's jobs off somebody else's rate card. */
+/* ---------- the documented production install can actually complete ----------
+ * deploy/printshopcrm.service has always shipped `User=printshopcrm`, and NOTHING in the repo ever
+ * created that account — no useradd, no adduser, no DynamicUser, anywhere. On a stock Ubuntu box
+ * INSTALL.md's `systemctl enable --now printshopcrm` therefore fails with
+ * "Failed to determine user credentials: No such process" / status=217/USER, and Restart=always
+ * retries it forever. The second half compounded it: the two chown lines handed /opt/printshopcrm
+ * and /var/lib/printshopcrm to "$USER", the INTERACTIVE account — so even an operator who worked
+ * the account out for themselves got "could not create its data directory" or "attempt to write a
+ * readonly database". The rule was stated only in Troubleshooting, after the failure. */
+section('the install the docs describe can be followed to the end')
+await t('the account the unit runs as is one the docs tell you to create', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const unit = readFileSync(join(root, 'deploy/printshopcrm.service'), 'utf8')
+  const install = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+
+  const user = (unit.match(/^User=(\S+)/m) || [])[1]
+  assert.ok(user, 'the unit must name the account it runs as')
+  if (user === 'root' || user.startsWith('%')) return   // nothing to create
+
+  const made = install.indexOf(`useradd`)
+  assert.ok(made > 0 && install.slice(made, made + 200).includes(user),
+    `INSTALL.md never creates ${user}, so systemctl enable --now fails 217/USER on a fresh box`)
+  const enabled = install.indexOf('systemctl enable --now printshopcrm')
+  assert.ok(enabled > made, 'the account has to be created BEFORE the unit is enabled')
+
+  // …and the directories the service writes to have to belong to it, not to whoever ran the
+  // install. Both of these were `chown "$USER"`.
+  for (const dir of ['/opt/printshopcrm', '/var/lib/printshopcrm']) {
+    const chowns = [...install.matchAll(new RegExp(`^\\s*sudo chown[^\\n]*${dir}\\b`, 'gm'))].map((m) => m[0])
+    assert.ok(chowns.length, `INSTALL.md must say who owns ${dir}`)
+    for (const line of chowns) {
+      assert.ok(line.includes(user), `${dir} is chowned to ${JSON.stringify(line.trim())}, not to ${user}`)
+      assert.ok(!line.includes('$USER'), `${dir} must not be handed to the interactive account`)
+    }
+  }
+  // The unit file is the thing an operator reads when the service will not start.
+  assert.ok(unit.includes('useradd'), 'the unit should name the command that creates its own account')
+})
+await t('…and its numbered steps are numbered once each', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const install = readFileSync(join(join(dirname(fileURLToPath(import.meta.url)), '..'), 'INSTALL.md'), 'utf8')
+  const nums = [...install.matchAll(/^### (\d+)\. /gm)].map((m) => Number(m[1]))
+  assert.deepEqual(nums, nums.map((_, i) => i + 1), `production install steps run ${nums.join(',')}`)
+})
+
 section('the shop\'s own mail credentials are the shop\'s own')
 {
   const { smtpCreds, twilioCreds } = await import('../lib/notify.mjs')

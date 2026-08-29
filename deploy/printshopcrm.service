@@ -1,7 +1,13 @@
 # PrintShopCRM systemd unit
 #
+# The account below is NOT created for you. Make it first, or systemd refuses the unit with
+# status=217/USER and Restart=always retries it forever:
+#
+#   sudo useradd --system --home-dir /var/lib/printshopcrm --shell /usr/sbin/nologin printshopcrm
+#   sudo chown -R printshopcrm:printshopcrm /opt/printshopcrm /var/lib/printshopcrm
+#
 #   sudo cp deploy/printshopcrm.service /etc/systemd/system/
-#   sudo nano /etc/systemd/system/printshopcrm.service    # set User/Group and check the paths
+#   sudo nano /etc/systemd/system/printshopcrm.service    # only if you changed the paths or account
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now printshopcrm
 #
@@ -24,7 +30,7 @@ Group=printshopcrm
 # `current`, not the app root. deploy/release.sh keeps each release in releases/<tag>/ and flips
 # this symlink; a unit pointed at the app root itself keeps running the original checkout, so every
 # deploy ships NOTHING while /health, verify-sync.sh and the rollback all report success. INSTALL.md
-# step 2 creates it pointing at the checkout, so a hand-managed install works exactly as before.
+# step 3 creates it pointing at the checkout, so a hand-managed install works exactly as before.
 WorkingDirectory=/opt/printshopcrm/current
 EnvironmentFile=/opt/printshopcrm/.env
 ExecStart=/usr/bin/node --no-warnings server.mjs
