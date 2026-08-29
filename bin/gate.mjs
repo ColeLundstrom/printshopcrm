@@ -3983,6 +3983,62 @@ await t('a style has to sit on its own, not inside a longer run', async () => {
   assert.equal(styleMatches('port & company pc61 navy', 'PC61'), true)
 })
 
+/* The garment colour on a purchase order was read out of the INK.
+ *
+ * `colorFrom` walked a hard-coded PO_COLORS array and returned the first entry that appeared
+ * ANYWHERE in the garment text — array order, not text order — and the estimate writes the
+ * imprint on the same line as the blank. So the ink spec won, and a shop ordered the wrong
+ * colour of shirt with no warning at all, because a colour *was* found:
+ *
+ *   "Gildan 5000 Tee — White — 3/0 Front (black, red, navy ink)"  ordered BLACK
+ *   "Gildan 5000 Tee — Navy (white ink)"                          ordered WHITE
+ *   "Comfort Colors 1717 — Sand — 1/0 left chest (black ink)"     ordered BLACK
+ *   "Gildan 18500 Hoodie — Red — front (white/black ink)"          ordered BLACK
+ *
+ * Four of those five are a whole run of blanks in the wrong colour, discovered on press day.
+ * Two rules fix it and both are about where the colour lives, not which colours exist:
+ * parentheses are an ink spec and never the blank, and the garment's colour sits in the
+ * "Style — Colour" segment the estimate writes, so scan that first. Within the scope the
+ * EARLIEST colour in the text wins, not the earliest in the array. */
+section('the purchase order orders the shirt colour, not the ink colour')
+{
+  const poColor = async (text) => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+    return sup.buildPurchaseOrder({ job_number: 'JOB-1' }, { S: 50, M: 80 }, text, {}).color
+  }
+  for (const [text, want] of [
+    ['Gildan 5000 Tee — White — 3/0 Front (black, red, navy ink)', 'white'],
+    ['Gildan 5000 Tee — Navy (white ink)', 'navy'],
+    ['Comfort Colors 1717 — Sand — 1/0 left chest (black ink)', 'sand'],
+    ['Gildan 18500 Hoodie — Red — front (white/black ink)', 'red'],
+    ['Gildan 5000 — Black', 'black'],                       // unchanged
+    ['200 Gildan 5000 in Black (white ink)', 'black'],      // no dash: whole string, ink still ignored
+  ]) {
+    await t(`${JSON.stringify(text)} → ${want}`, async () => {
+      assert.equal(await poColor(text), want)
+    })
+  }
+  await t('a colour ahead of the dash is still found when the segment has none', async () => {
+    // Don't trade a wrong order for a missing one: if the colour segment names no colour,
+    // fall back to the whole string rather than warning on a garment that did say Black.
+    assert.equal(await poColor('Black Gildan 5000 — 3/0 front'), 'black')
+  })
+  await t('…and a garment with no colour at all still warns', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const sup = await import('../lib/suppliers.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+    const po = sup.buildPurchaseOrder({ job_number: 'J' }, { S: 10 }, 'Gildan 5000 Tee', {})
+    assert.equal(po.color, null)
+    assert.match(po.warnings.join(' '), /No garment color detected/)
+  })
+}
+
 section('the estimate editor escapes what arrives as an object key')
 // public/js/views/estimates.js escapes every string field it knows about — description, detail,
 // qty, unit_price — and rendered three object-derived ones raw: the size-grid KEYS, the size-grid
