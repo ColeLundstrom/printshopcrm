@@ -4826,6 +4826,25 @@ section('a self-hoster on SMTP port 465 gets implicit TLS')
 }
 
 
+/* Youth XL sorted below adult 4XL on every pick list.
+ *
+ * SIZES is the canonical run and it carries YXS, YS, YM and YL — and not YXL. sizeKeys puts
+ * anything it does not recognise after everything it does, so a youth run of YS/YM/YL/YXL printed
+ * the biggest youth size last, beneath 4XL, on the pick ticket, the packing slip and the estimate.
+ * A picker reading top to bottom pulls it out of the adult rack. */
+section('youth XL sorts with the youth sizes')
+{
+  const { sizeKeys, SIZES } = await import('../public/js/shared/pricing.js')
+  await t('YXL is in the canonical run', () => {
+    assert.ok(SIZES.includes('YXL'), 'YXL is not a size this app can order in order')
+  })
+  await t('…between YL and adult XS, where a picker looks for it', () => {
+    const order = sizeKeys({ YS: 6, YM: 8, YL: 8, YXL: 6, S: 20, M: 40, '4XL': 4 })
+    assert.deepEqual(order, ['YS', 'YM', 'YL', 'YXL', 'S', 'M', '4XL'])
+  })
+}
+
+
 section('the packing slip lists every garment in the box')
 {
   const pdf = await import('../lib/pdf.mjs')

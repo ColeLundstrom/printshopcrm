@@ -122,7 +122,7 @@ curl -X POST https://shop.example.com/api/v1/estimates \
 | Field | |
 |---|---|
 | `description` | Optional, truncated to 200 characters. |
-| `sizes` | Object of size → whole count, e.g. `{"M":24,"2XL":6}`. At least one must be > 0. Unknown size keys are rejected — allowed: `YXS YS YM YL XS S M L XL 2XL 3XL 4XL 5XL 6XL LT XLT 2XLT 3XLT 4XLT OSFA`. |
+| `sizes` | Object of size → whole count, e.g. `{"M":24,"2XL":6}`. At least one must be > 0. Unknown size keys are rejected — allowed: `YXS YS YM YL YXL XS S M L XL 2XL 3XL 4XL 5XL 6XL LT XLT 2XLT 3XLT 4XLT OSFA`. |
 | `quantity` / `qty` | Use *instead of* `sizes` when sizes don't matter. Must be > 0. Recorded as an `M` count. |
 | `unit_price` | **Required.** Price per piece, in dollars. Pass `0` explicitly for a no-charge line — omitting the field is a `400`, not a free line. |
 | `decoration` | Optional label, e.g. `"Screen print"`, `"Embroidery"`. |

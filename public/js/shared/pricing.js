@@ -9,7 +9,11 @@
 // API refused them, and the pick ticket printed a total that counted sizes it had not printed a row
 // for. COMMON_SIZES still decides what the editor shows by default, so the long tail stays out of
 // the way; these only become reachable through "Add size", an import, or the API.
-export const SIZES = ['YXS', 'YS', 'YM', 'YL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', 'LT', 'XLT', '2XLT', '3XLT', '4XLT', 'OSFA']
+// YXL sits with the youth sizes and not at the end. It was missing, and sizeKeys puts anything it
+// does not recognise after everything it does — so a youth run of YS/YM/YL/YXL printed its biggest
+// youth size LAST, beneath adult 4XL, on the pick ticket, the packing slip and the estimate. A
+// picker reading top to bottom pulls it out of the adult rack.
+export const SIZES = ['YXS', 'YS', 'YM', 'YL', 'YXL', 'XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', 'LT', 'XLT', '2XLT', '3XLT', '4XLT', 'OSFA']
 
 /**
  * What a size grid key may look like. Digits then letters, nothing else — '6XL', 'LT', '2XLT',
