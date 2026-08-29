@@ -4784,6 +4784,48 @@ section('a document never hides money between its subtotal and its total')
  *
  * A shipping document that omits part of the shipment is worse than no document: the customer
  * signs for what is listed. */
+
+/* ---------- three small things a real shop actually hits (v18) ---------- */
+
+/* A self-hoster who sets SMTP_PORT=465 sends nothing.
+ *
+ * Both branches of smtpCreds() derive implicit TLS from the port, and the operator branch derives
+ * it from the WRONG port: `Number(s?.smtp_port) === 465` reads the SHOP's setting while the port it
+ * actually connects on came from `process.env.SMTP_PORT`. So the documented env config for the
+ * commonest implicit-TLS port yields secure:false, nodemailer opens a plaintext socket against a
+ * TLS-only listener, and every send burns the connection timeout and fails. The shop branch three
+ * lines up gets this right on its own port. */
+section('a self-hoster on SMTP port 465 gets implicit TLS')
+{
+  const notify = await import('../lib/notify.mjs')
+  const withEnv = (env, fn) => {
+    const saved = {}
+    for (const [k, v] of Object.entries(env)) { saved[k] = process.env[k]; if (v === undefined) delete process.env[k]; else process.env[k] = v }
+    try { return fn() } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
+  }
+  const base = { SMTP_HOST: 'mail.example.com', SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_SECURE: undefined, SMTP_FROM: 'a@b.test' }
+
+  await t('SMTP_PORT=465 with no SMTP_SECURE is still implicit TLS', () => {
+    const c = withEnv({ ...base, SMTP_PORT: '465' }, () => notify.smtpCreds({}))
+    assert.equal(c.port, 465)
+    assert.equal(c.secure, true, 'a plaintext socket against a TLS-only listener sends nothing')
+  })
+  await t('…and 587 still uses STARTTLS, as it must', () => {
+    const c = withEnv({ ...base, SMTP_PORT: '587' }, () => notify.smtpCreds({}))
+    assert.equal(c.secure, false)
+  })
+  await t('…and an explicit SMTP_SECURE=true still wins on any port', () => {
+    const c = withEnv({ ...base, SMTP_PORT: '2525', SMTP_SECURE: 'true' }, () => notify.smtpCreds({}))
+    assert.equal(c.secure, true)
+  })
+  await t('…and the shop\'s own 465 was already right, and stays right', () => {
+    const c = withEnv({ ...base, SMTP_HOST: undefined, SMTP_USER: undefined, SMTP_PASS: undefined, SMTP_PORT: undefined },
+      () => notify.smtpCreds({ smtp_host: 'own.example.com', smtp_user: 'u', smtp_pass: 'p', smtp_port: '465' }))
+    assert.equal(c.secure, true)
+  })
+}
+
+
 section('the packing slip lists every garment in the box')
 {
   const pdf = await import('../lib/pdf.mjs')
