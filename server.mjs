@@ -504,8 +504,13 @@ const shareKey = (kind, id) => {
   if (!t) return ''
   try { return String(get(`SELECT share_key FROM ${t} WHERE id = ?`, Number(id))?.share_key || '') } catch { return '' }
 }
-const token = (kind, id, slug = curSlug()) => {
-  const k = shareKey(kind, id)
+// `key` lets a caller that ALREADY holds the row hand its share_key straight in. A list route
+// selecting `a.*` has it in memory and was re-SELECTing it once per row: /api/art issued 39,906
+// hidden single-row lookups for a column it had already fetched, 214ms of pure redundancy inside
+// a 700ms synchronous block that stops every tenant on the box. Omit it and the lookup happens
+// exactly as before; the token is byte-identical either way.
+const token = (kind, id, slug = curSlug(), key) => {
+  const k = key === undefined ? shareKey(kind, id) : String(key ?? '')
   return crypto.createHmac('sha256', SECRET).update(`${kind}:${id}:${slug}${k ? `:${k}` : ''}`).digest('hex').slice(0, 16)
 }
 const checkToken = (kind, id, k, slug = curSlug()) => {
@@ -514,9 +519,9 @@ const checkToken = (kind, id, k, slug = curSlug()) => {
   return want.length === got.length && crypto.timingSafeEqual(want, got)
 }
 // Build a customer-facing share URL, carrying the shop slug when multi-tenant is on.
-const shareUrl = (kind, id) => {
+const shareUrl = (kind, id, key) => {
   const s = curSlug()
-  return `/p/${kind}/${id}?k=${token(kind, id)}${s ? `&s=${s}` : ''}`
+  return `/p/${kind}/${id}?k=${token(kind, id, s, key)}${s ? `&s=${s}` : ''}`
 }
 /**
  * A capability token for ONE uploaded file, bound to ONE shop.
@@ -3095,7 +3100,7 @@ app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
 app.get('/api/art', wrap((_req, res) => {
   res.json(all(`SELECT a.*, j.job_number, j.title AS job_title, j.due_date, c.name AS contact_name
     FROM art_versions a JOIN jobs j ON j.id = a.job_id LEFT JOIN contacts c ON c.id = j.contact_id
-    ORDER BY a.created_at DESC, a.id DESC`).map((a) => ({ ...a, share_url: shareUrl('art', a.id) })))
+    ORDER BY a.created_at DESC, a.id DESC`).map((a) => ({ ...a, share_url: shareUrl('art', a.id, a.share_key) })))
 }))
 
 // Art must actually be art: allowed types only, and the magic bytes must match — a text file or

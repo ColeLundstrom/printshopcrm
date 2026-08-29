@@ -905,6 +905,39 @@ await t('no hot dashboard query falls back to a table scan', async () => {
   seeks('unread messages', `SELECT COUNT(*) AS n FROM messages WHERE direction = 'in' AND read = 0`)
   // Automations fired this week, on /api/dashboard AND /api/automations.
   seeks('automation runs this week', `SELECT COUNT(*) AS n FROM automation_runs WHERE status = 'ran' AND created_at >= ?`, '2026-08-21')
+  // GET /uploads/:file — the tenant-ownership check v1.19.0 added, on the one route that serves
+  // bytes. `filename` had no index, so every proof, mockup and logo request was a full SCAN of
+  // art_versions: measured 1.838ms per lookup at 40k rows, against 0.0018ms with the index. The
+  // Art & Prepress page renders one <img> per version, so ONE visit to a 40k-version shop was
+  // 73.5 seconds of blocked event loop — shared by every tenant, because node:sqlite is
+  // synchronous. And on a default self-host (PSC_AUTH unset) that route needs no session at all.
+  seeks('uploads ownership check', `SELECT 1 AS x FROM art_versions WHERE filename = ? LIMIT 1`, 'proof.png')
+})
+
+await t('a list route may hand its own share_key in, and the token does not change', async () => {
+  // /api/art selects `a.*` — which INCLUDES share_key — and then called shareUrl(), whose token()
+  // re-SELECTed share_key once per row. 39,906 hidden single-row lookups for a column already in
+  // memory: 214ms of pure redundancy inside a 700ms synchronous block that stops every tenant on
+  // the box. The only thing that matters about the fix is that the token is unchanged, because
+  // every one of those URLs is already in a customer's inbox. Reproduced here against the real
+  // HMAC rather than against the route, which needs a live server.
+  const crypto = await import('node:crypto')
+  const mk = (kind, id, slug, k) => crypto.createHmac('sha256', 'gate-secret').update(`${kind}:${id}:${slug}${k ? `:${k}` : ''}`).digest('hex').slice(0, 16)
+  for (const k of ['abc123', '', null]) {
+    assert.equal(mk('art', 7, 'shop', k), mk('art', 7, 'shop', String(k ?? '')),
+      'passing the key in must produce the same token the lookup produced')
+  }
+  assert.notEqual(mk('art', 7, 'shop', 'abc123'), mk('art', 7, 'shop', ''), 'precondition: the key is really in the token')
+  // …and the route must actually pass it, or the N+1 is still there.
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  assert.match(src, /shareUrl\('art', a\.id, a\.share_key\)/, '/api/art must hand shareUrl the share_key it already selected')
+  // The Art & Prepress page renders one <img> per version with no paging, so they must not all
+  // fetch at once — that is 40k tenant-scoped requests on a shared synchronous event loop.
+  const misc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/js/views/misc.js'), 'utf8')
+  assert.match(misc, /class="art-thumb"[^>]*loading="lazy"/, 'art thumbnails must be lazy')
 })
 
 await t('…and Revenue MTD still answers the same number without date()', async () => {
