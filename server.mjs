@@ -15,7 +15,7 @@ import { renderDocument, packingSlip, pickTicket, customerStatement } from './li
 import { db, tenantStore } from './lib/db.mjs'
 import {
   createTenant, authMember, createSession, getSession, getSessionTenant, deleteSession,
-  openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, saveOnboarding, tenantPublic,
+  openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, tenantOpen, saveOnboarding, tenantPublic,
   billingState, setSubscription, getTenantById, getTenantByStripeCustomer,
   getPlatformConfig, setPlatformConfig, isAdminEmail,
   listMembers, addMember, updateMember, deleteMember, getMemberById, ROLES, ROLE_RANK,
@@ -317,7 +317,7 @@ function readChallenge(raw) {
  */
 function slackRun(req, res, fn) {
   const tenant = getTenantByEmbedKey(String(req.params.key || ''))
-  if (!tenant) return res.status(404).send('unknown shop')
+  if (!tenantOpen(tenant)) return res.status(404).send('unknown shop')
   return withTenant(tenant.slug, async () => {
     const s = getSettings()
     const secret = String(s.slack_signing_secret || '').trim()
@@ -6055,17 +6055,18 @@ app.delete('/api/members/:id', wrap((req, res) => {
  * These run on the SHOP's website, with no login. The shop's iframe carries its embed key
  * (?shop=KEY); we resolve it to that shop and run the request inside their isolated database,
  * so the order, the customer, and the Stripe account are all the right shop's. */
-const embedTenantSlug = (req) => {
+const embedTenant = (req) => {
   const key = req.query.shop || (req.body && req.body.shop) || req.query.s
-  const t = key ? getTenantByEmbedKey(String(key)) : null
-  return t ? t.slug : null
+  return key ? getTenantByEmbedKey(String(key)) : null
 }
 async function embedRun(req, res, fn) {
   try {
     if (!AUTH_ENABLED) return await fn()          // single-tenant dev → default db
-    const slug = embedTenantSlug(req)
-    if (!slug) return res.status(404).json({ error: 'Unknown shop' })
-    return await withTenant(slug, fn)
+    // A suspended shop is closed to its customers too, not only to its own staff. 404, not 403:
+    // the answer must not tell a scraper which shops exist or what state they are in.
+    const t = embedTenant(req)
+    if (!tenantOpen(t)) return res.status(404).json({ error: 'Unknown shop' })
+    return await withTenant(t.slug, fn)
   } catch (e) { console.error('embed:', e); if (!res.headersSent) res.status(500).json({ error: 'Something went wrong.' }) }
 }
 
@@ -6445,7 +6446,9 @@ const pPage = (fn) => (req, res) => {
   const go = () => { try { return fn(req, res) } catch (e) { console.error('p-page:', e); if (!res.headersSent) res.status(500).send('Error') } }
   if (!AUTH_ENABLED || !req.query.s) return go()   // authed staff are already in tenant context via the gate
   const t = getTenantBySlug(String(req.query.s))
-  if (!t) return res.status(404).send('Unknown shop')
+  // Same rule as the embed routes: a suspended shop's public documents close with it. A pay button
+  // on one of them would route money into an account the operator has just cut off.
+  if (!tenantOpen(t)) return res.status(404).send('Unknown shop')
   return withTenant(t.slug, go)
 }
 

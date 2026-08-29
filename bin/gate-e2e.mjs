@@ -3150,6 +3150,8 @@ try {
       chk('a shop mints a live API key', String(liveKey.startsWith('psc_live_')), '^true$')
       chk('…which its own UI will only ever show a preview of again',
         String((await as6('GET', '/api/developers')).json?.api_key ?? 'absent'), '^absent$')
+      const shopEmbedKey = String((await as6('GET', '/api/auth/me')).json?.embed_key || '')
+      chk('…and knows its own embed key, which its website carries', String(!!shopEmbedKey), '^true$')
 
       // The operator gets their own shop the way the product tells them to — the signup form
       // refuses this address, which is what the three assertions above are about.
@@ -3201,8 +3203,43 @@ try {
       chk('…while a wrong password on that shop is still just a wrong password', String(wrongToo.status), '^401$')
       chk('…saying nothing about the account', wrongToo.text, '^(?![\\s\\S]*suspend)')
 
+      /* ---------- …and so is everything the shop's own website points at ----------
+       * getSession() and getTenantByApiKey() both filter status='active', so the owner's login
+       * and the REST API close on suspension. getTenantByEmbedKey() and getTenantBySlug() filtered
+       * nothing, and neither embedRun() nor pPage() checked — so a suspended shop kept answering
+       * its customers as itself through the AI receptionist on the shop's own key, kept opening
+       * Stripe checkouts on the shop's account, and kept writing numbered estimates into a
+       * database no human could now open to read them. Measured before the fix on a suspended
+       * shop: owner login 401, and an anonymous POST /api/embed/gangsheet/order returned EST-1002.
+       * Suspension is the operator's only lever against non-payment AND against a shop using the
+       * platform to defraud; half-working in this direction is the worst of both. */
+      const pub = (path, body) => (body === undefined
+        ? fetch(`http://127.0.0.1:${P6}${path}`).then(async (r) => ({ status: r.status, text: await r.text() }))
+        : fetch(`http://127.0.0.1:${P6}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          .then(async (r) => ({ status: r.status, text: await r.text() })))
+      const PUBLIC_SURFACES = [
+        ['the shop\'s embedded builder config', `/api/embed/config?shop=${shopEmbedKey}`, undefined],
+        ['the AI receptionist on the shop\'s own website', `/api/embed/chat/start?shop=${shopEmbedKey}`, {}],
+        ['the public gang-sheet order form', `/api/embed/gangsheet/order?shop=${shopEmbedKey}`, { items: [{ w: 10, h: 10, qty: 2 }], name: 'Stranger', email: 'stranger@evil.test' }],
+      ]
+      for (const [what, path, body] of PUBLIC_SURFACES) {
+        chk(`a suspended shop closes ${what}`, String((await pub(path, body)).status), '^404$')
+      }
+      // /p/ resolves the shop BEFORE it checks the link token, so a bad token on a live shop is
+      // 403 and on a suspended one is 404 — which is exactly the difference being asserted.
+      chk('…and its customer-facing document pages',
+        String((await pub('/p/estimate/1?k=nope&s=real-shop')).status), '^404$')
+      chk('…and no order reached its books', String((await pub(`/api/embed/gangsheet/order?shop=${shopEmbedKey}`,
+        { items: [{ w: 10, h: 10, qty: 2 }], name: 'Stranger', email: 'stranger@evil.test' })).text.includes('EST-')), '^false$')
+
       // Reactivate is the same route and was the same leak.
       const react = await as6('POST', `/api/admin/shops/${target?.id}/status`, { status: 'active' })
+      // The gate has to open again, or suspension is a one-way door and the operator has no undo.
+      for (const [what, path, body] of PUBLIC_SURFACES) {
+        chk(`reactivating reopens ${what}`, String((await pub(path, body)).status), '^200$')
+      }
+      chk('…and its document pages answer on their own terms again',
+        String((await pub('/p/estimate/1?k=nope&s=real-shop')).status), '^403$')
       chk('Reactivate leaks nothing either', String(/psc_live_|password_hash/.test(JSON.stringify(react.json || {}))), '^false$')
       chk('…and the shop is active again', String(react.json?.tenant?.status), '^active$')
       // …and the owner can get back in, which is the point of the whole exchange.
