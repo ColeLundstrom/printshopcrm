@@ -2434,12 +2434,27 @@ app.get('/api/orders', wrap((_req, res) => {
            (SELECT status FROM art_versions a WHERE a.estimate_id = e.id ORDER BY version DESC LIMIT 1) AS mockup_status
     FROM estimates e
     LEFT JOIN contacts c ON c.id = e.contact_id
-    LEFT JOIN invoices i ON i.estimate_id = e.id
+    -- Exactly ONE invoice per estimate, and the live one. This was
+    -- "LEFT JOIN invoices i ON i.estimate_id = e.id", which is wrong twice:
+    --
+    --  · a VOIDED invoice still joined, so amount_due - amount_paid came back as a live balance.
+    --    The card read "$5,542.40 due", in red and overdue once the date passed, while the invoice
+    --    screen, the contact record, A/R aging, the statement and the dashboard all read $0. The
+    --    void dialog's own copy promises it stops counting.
+    --  · void-and-re-issue leaves two invoice rows on one estimate, and a LEFT JOIN fans out. One
+    --    order became TWO cards — $11,084.80 of apparent work and receivable from a $5,542.40
+    --    order, on the screen the shop uses to see what it is owed.
+    --
+    -- "x.status = 'void'" sorts 0 before 1, so a live invoice always wins; a fully-voided order
+    -- keeps its newest void so the card can say so instead of quietly reading "paid".
+    LEFT JOIN invoices i ON i.id = (
+      SELECT x.id FROM invoices x WHERE x.estimate_id = e.id
+      ORDER BY (x.status = 'void'), x.id DESC LIMIT 1)
     ORDER BY COALESCE(e.stage_moved_at, e.created_at) DESC`)
   const cards = rows.map((r) => ({
     ...r,
     stage: ORDER_STAGE_KEYS.includes(r.board_stage) ? r.board_stage : 'quote',
-    balance: r.invoice_id ? round2(r.amount_due - r.amount_paid) : null,
+    balance: r.invoice_id && r.invoice_status !== 'void' ? round2(r.amount_due - r.amount_paid) : null,
   }))
   res.json({
     stages: ORDER_STAGES,

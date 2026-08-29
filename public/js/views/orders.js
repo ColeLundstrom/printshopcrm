@@ -30,7 +30,8 @@ export async function ordersView() {
       </div>
       <div class="jc-who">${esc(c.contact_name || '—')}${c.company ? ` · ${esc(c.company)}` : ''}</div>
       <div class="jc-tags">
-        ${c.balance > 0 ? `<span class="tag ${late ? 'red' : ''}">${late ? '⚠ overdue · ' : ''}${money(c.balance)} due</span>`
+        ${c.invoice_status === 'void' ? '<span class="tag">invoice voided</span>'
+          : c.balance > 0 ? `<span class="tag ${late ? 'red' : ''}">${late ? '⚠ overdue · ' : ''}${money(c.balance)} due</span>`
           : c.invoice_id ? '<span class="tag green">paid</span>' : '<span class="tag">not invoiced</span>'}
         ${c.mockup_status === 'approved' ? '<span class="tag green">art ok</span>' : ''}
         ${c.mockup_status === 'sent' ? '<span class="tag amber">art out</span>' : ''}
@@ -138,7 +139,7 @@ function openCard(c, rerender) {
   if (!c) return
   modal({
     title: `${c.estimate_number}${c.invoice_number ? ` · ${c.invoice_number}` : ''}`,
-    body: `<div class="dim" style="font-size:13px;margin-bottom:14px">${esc(c.contact_name || '')}${c.company ? ` · ${esc(c.company)}` : ''} — ${money(c.total)}${c.balance > 0 ? ` · ${money(c.balance)} still due` : c.invoice_id ? ' · paid in full' : ''}</div>
+    body: `<div class="dim" style="font-size:13px;margin-bottom:14px">${esc(c.contact_name || '')}${c.company ? ` · ${esc(c.company)}` : ''} — ${money(c.total)}${c.invoice_status === 'void' ? ' · invoice voided' : c.balance > 0 ? ` · ${money(c.balance)} still due` : c.invoice_id ? ' · paid in full' : ''}</div>
       <div class="grid2">
         <div class="field"><label>Carrier</label>
           <input class="input" name="carrier" list="ob-carriers" value="${esc(c.carrier || '')}" placeholder="UPS">

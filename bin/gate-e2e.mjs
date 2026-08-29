@@ -4769,6 +4769,85 @@ try {
     }
   }
 
+
+  /* ---------- a voided invoice is not money the shop is owed, on any screen ----------
+   *
+   * GET /api/orders joins `LEFT JOIN invoices i ON i.estimate_id = e.id` with no status filter and
+   * no uniqueness, which is wrong twice over:
+   *
+   *  · a VOIDED invoice still joins, so `amount_due - amount_paid` came back as a live balance.
+   *    The card read "$5,542.40 due" — in red and overdue once the date passed — while the invoice
+   *    screen, the contact record, A/R aging, the statement and the dashboard all read $0. The
+   *    void dialog's own copy promises it stops counting.
+   *  · void-and-re-issue leaves two invoice rows on one estimate, and a LEFT JOIN fans out. One
+   *    order became TWO cards: $11,084.80 of apparent work and receivable from a $5,542.40 order.
+   *
+   * The join now picks exactly one invoice — the newest LIVE one, falling back to the newest void
+   * so a fully-voided order still says so rather than quietly reading "paid". */
+  {
+    const T14 = mkdtempSync(join(tmpdir(), 'psc-e2e-void-'))
+    const P14 = PORT + 19
+    const s14 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P14), PSC_DB: join(T14, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P14}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s14)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P14}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P14}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Void Ink', owner_name: 'V', owner_email: 'v@void.test', password: 'GatePass-123456' }),
+      })
+      const ck = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const J = (method, path, body) => fetch(`http://127.0.0.1:${P14}${path}`, {
+        method, headers: { 'Content-Type': 'application/json', Cookie: ck },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }))
+      const board = async () => {
+        const b = (await J('GET', '/api/orders')).json
+        return b.columns.flatMap((col) => col.cards)
+      }
+
+      const cust = (await J('POST', '/api/contacts', { name: 'Acme Co', email: 'ap@acme.test' })).json
+      const est = (await J('POST', '/api/estimates', { contact_id: cust.id, items: [
+        { description: 'Gildan 5000 Tee — Black', decoration: 'Screen Print', unit_price: 11, sizes: { M: 250, L: 250 } },
+      ] })).json
+      await J('POST', `/api/estimates/${est.id}/approve`, {})
+      const conv = (await J('POST', `/api/estimates/${est.id}/convert`, {})).json
+      let cards = await board()
+      chk('an invoiced order is one card with a real balance', String(cards.length), '^1$')
+      chk('…and the balance is what is owed', String(cards[0].balance > 0), '^true$')
+
+      await J('POST', `/api/invoices/${conv.invoice_id}/void`, { reason: 'wrong customer' })
+      const inv = (await J('GET', `/api/invoices/${conv.invoice_id}`)).json
+      chk('the invoice is voided', String(inv?.status), '^void$')
+      cards = await board()
+      chk('…the board still shows exactly one card', String(cards.length), '^1$')
+      chk('…and it is not still asking for the money', String(cards[0].balance || 0), '^0$')
+      chk('…while still saying the invoice was voided, not that it was paid', String(cards[0].invoice_status), '^void$')
+
+      // Re-issue: the estimate is converted again, so a second invoice row exists on it.
+      await J('POST', `/api/estimates/${est.id}/convert`, {})
+      cards = await board()
+      chk('re-issuing does not put the same order on the board twice', String(cards.length), '^1$')
+      chk('…and the live invoice is the one that shows', String(cards[0].invoice_status), '^(unpaid|partial|paid)$')
+      chk('…with the balance counted exactly once', String(cards.reduce((a, c) => a + (c.balance || 0), 0) <= 5500), '^true$')
+
+      // …and the board does not call a voided invoice "paid", which is what a null balance would
+      // otherwise render as.
+      const { readFileSync: rfsVoid } = await import('node:fs')
+      const ui = rfsVoid(join(ROOT, 'public/js/views/orders.js'), 'utf8')
+      chk('the card says an invoice was voided rather than showing it as paid', ui, "invoice_status === 'void'")
+    } finally {
+      try { s14.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T14, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++
