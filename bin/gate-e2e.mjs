@@ -4688,6 +4688,87 @@ try {
     }
   }
 
+
+  /* ---------- the job is produced the way the quote was priced ----------
+   *
+   * Convert reads the garment from `items.find(i => i.sizes)` — the line that actually has a size
+   * grid — and on the very next argument reads the decoration from `items[0]`. Those are not the
+   * same line, and on two ordinary quotes they are never the same line:
+   *
+   *  · a quote that opens with a setup or digitizing fee (fee lines carry no decoration), or
+   *  · any line priced off the shop's own matrix, because estimates.js deliberately blanks
+   *    `decoration` there — "a line priced off the shop's own sheet says what it is in the matrix
+   *    headings; leaving 'Screen Print' on a mug line lies."
+   *
+   * Either way `items[0]?.decoration` is empty and the `|| 'Screen Print'` fires. Measured: 144
+   * Port Authority C112 caps, quoted as Embroidery, land on the board as Screen Print — the pick
+   * ticket prints DECORATION / Screen Print, the work ticket never says Embroidery, and Floor
+   * Mode's scan card says Screen Print. The shop hoops nothing and screens 144 caps.
+   *
+   * The decoration now comes from the same line the garment does, and falls back to the matrix the
+   * shop priced it off — matrix names ARE the decoration vocabulary ('Embroidery', 'DTF Transfer',
+   * 'Screen Print' are STOCK_SERVICES keys) — before it ever defaults. */
+  {
+    const T13 = mkdtempSync(join(tmpdir(), 'psc-e2e-deco-'))
+    const P13 = PORT + 18
+    const s13 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P13), PSC_DB: join(T13, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P13}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s13)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P13}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P13}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Hoop Ink', owner_name: 'H', owner_email: 'h@hoop.test', password: 'GatePass-123456' }),
+      })
+      const ck = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const J = (method, path, body) => fetch(`http://127.0.0.1:${P13}${path}`, {
+        method, headers: { 'Content-Type': 'application/json', Cookie: ck },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }))
+
+      const cust = (await J('POST', '/api/contacts', { name: 'Cap Co', email: 'caps@co.test' })).json
+      const convertAndRead = async (items) => {
+        const est = (await J('POST', '/api/estimates', { contact_id: cust.id, items })).json
+        await J('POST', `/api/estimates/${est.id}/approve`, {})
+        const conv = (await J('POST', `/api/estimates/${est.id}/convert`, {})).json
+        return (await J('GET', `/api/jobs/${conv.job_id}`)).json
+      }
+
+      // The real shape: a digitizing fee first (that is how the quote reads to the customer),
+      // then the garments.
+      const capJob = await convertAndRead([
+        { description: 'Digitizing — left chest logo', qty: 1, unit_price: 25, taxable: false },
+        { description: 'Port Authority C112 Cap — Navy', decoration: 'Embroidery', unit_price: 12.44,
+          sizes: { OSFA: 144 } },
+      ])
+      chk('a quote that opens with a digitizing fee still produces embroidery', String(capJob?.decoration), '^Embroidery$')
+      chk('…and the garment is still the garment line, not the fee', String(capJob?.garment), 'C112')
+
+      // Priced off the shop's own matrix: decoration is deliberately blank, the matrix names it.
+      const matrixJob = await convertAndRead([
+        { description: 'Screen setup', qty: 2, unit_price: 25, taxable: false },
+        { description: 'Bella+Canvas 3001 — Black', decoration: '', unit_price: 9.4,
+          matrix: { name: 'DTF Transfer', row: '25', col: '2' }, sizes: { M: 100, L: 100 } },
+      ])
+      chk('a line priced off the shop\'s matrix is produced as that service', String(matrixJob?.decoration), '^DTF Transfer$')
+
+      // And the ordinary case is untouched.
+      const plainJob = await convertAndRead([
+        { description: 'Gildan 5000 Tee — Black', decoration: 'Screen Print', unit_price: 11, sizes: { M: 50, L: 50 } },
+      ])
+      chk('…and a plain screen-print quote is still screen print', String(plainJob?.decoration), '^Screen Print$')
+    } finally {
+      try { s13.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T13, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++

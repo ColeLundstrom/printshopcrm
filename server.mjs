@@ -2662,8 +2662,21 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
     }
     const jobNum = nextJobNumber()
     const garmentText = (items.find((i) => i.sizes)?.description || items[0]?.description || '').split('—')[0].trim()
+    // The decoration comes from the SAME line the garment does. It used to come from items[0],
+    // which on two ordinary quotes is never that line: a quote that opens with a setup or
+    // digitizing fee (fee lines carry no decoration), and any line priced off the shop's own
+    // matrix, where estimates.js deliberately blanks `decoration` because "a line priced off the
+    // shop's own sheet says what it is in the matrix headings". Either way items[0].decoration was
+    // empty and the `|| 'Screen Print'` fired — 144 embroidered caps reached the board, the pick
+    // ticket, the work ticket and Floor Mode as Screen Print, and the shop screens them.
+    //
+    // The matrix name is the fallback before the default, because matrix names ARE the decoration
+    // vocabulary: 'Screen Print', 'Embroidery', 'DTF Transfer' are STOCK_SERVICES keys.
+    const decoLine = items.find((i) => i.sizes && (i.decoration || i.matrix?.name))
+      || items.find((i) => i.decoration || i.matrix?.name)
+    const decoration = decoLine?.decoration || decoLine?.matrix?.name || 'Screen Print'
     const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, rush, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      e.contact_id, id, invId, jobNum, title, 'active', 'new', items[0]?.decoration || 'Screen Print', garmentText || null,
+      e.contact_id, id, invId, jobNum, title, 'active', 'new', decoration, garmentText || null,
       JSON.stringify(sizes), JSON.stringify(lines), sizeSummary(sizes) || `${qty} pcs`,
       sched.due_date, sched.turnaround_days, sched.rush, e.notes || '', now(), now()).lastInsertRowid)
     return { invId, jobId, invNum, jobNum }
