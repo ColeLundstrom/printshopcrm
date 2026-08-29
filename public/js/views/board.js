@@ -358,8 +358,16 @@ export async function jobDetailView(id) {
                 <div class="dim" style="font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.original_name || '')}</div>
                 ${a.notes ? `<div class="muted" style="font-size:11.5px;margin-top:5px;font-style:italic">"${esc(a.notes)}"</div>` : ''}
                 <div class="wrap-row" style="margin-top:8px">
-                  ${a.status === 'draft' ? `<button class="btn sm" data-send="${a.id}">Send for approval</button>` : ''}
-                  ${a.status === 'sent' ? `<a class="btn ghost sm" href="${esc(a.share_url)}" target="_blank">Proof link</a>` : ''}
+                  ${/* A rejected proof was a dead end. The customer clicks "Request changes", and
+                        the action row collapsed to Open + Delete: Send was gated on 'draft' and the
+                        proof link on 'sent'. Uploading a corrected v2 is the normal path and works
+                        — but if the customer rings back to say v1 is fine after all, or the
+                        rejection was a mis-click on their phone, there was nothing on any screen
+                        that could put it back in front of them. The server has always allowed both;
+                        only these two conditions stopped it. */''}
+                  ${a.status === 'draft' || a.status === 'rejected' ? `<button class="btn sm" data-send="${a.id}">${a.status === 'rejected' ? 'Send it again' : 'Send for approval'}</button>` : ''}
+                  ${a.status !== 'draft' ? `<a class="btn ghost sm" href="${esc(a.share_url)}" target="_blank">Proof link</a>` : ''}
+                  ${a.status === 'sent' || a.status === 'rejected' ? `<button class="btn ghost sm" data-decide="${a.id}" data-v="${a.version}">Approved by phone</button>` : ''}
                   <a class="btn ghost sm" href="/uploads/${esc(a.filename)}" target="_blank">Open</a>
                   <button class="btn ghost sm" data-delart="${a.id}" data-v="${a.version}" data-st="${a.status}">Delete</button>
                 </div>
@@ -484,6 +492,19 @@ export async function jobDetailView(id) {
       jobDetailView(id)
     } catch (e) { toast(e.message, true); t.disabled = false }
   })
+  /* The other way out of a rejection: the customer approved by phone or by replying to the email
+   * rather than clicking the button on the proof page, which is how a good half of approvals
+   * actually happen. Without it, an approval that came in any other way had nowhere to be
+   * recorded and the job sat in art_approval forever. The route has always existed. */
+  on($('#art-list'), '[data-decide]', (_e, t) => confirmModal(`Record approval of v${t.dataset.v}?`,
+    'Use this when the customer approved by phone or email instead of clicking Approve on the proof page. The job releases to prepress and the approval is logged against you.',
+    async () => {
+      try {
+        await api.post(`/api/art/${t.dataset.decide}/decide`, { decision: 'approved', by: 'recorded by the shop' })
+        toast('Approval recorded')
+        jobDetailView(id)
+      } catch (e) { toast(e.message, true) }
+    }, 'Record approval'))
   // Taking a proof back off the job. Until this existed there was no way to remove artwork
   // uploaded to the wrong job — the proof page and the raw file both kept serving it to anyone
   // holding the emailed link, and the only route that deleted art refused job art by construction.

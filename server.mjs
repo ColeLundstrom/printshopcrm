@@ -3141,7 +3141,11 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
 app.post('/api/art/:id/send', wrap((req, res) => {
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Art version not found' })
-  const j = get('SELECT * FROM jobs WHERE id = ?', a.job_id)
+  // Everything below assumes a job row. An estimate-attached mockup (lite, and the mockup route
+  // on the quote screen in pro) has job_id NULL, so `j.contact_id` threw and this answered a bare
+  // 500 — on the button that sends the proof.
+  const j = a.job_id ? get('SELECT * FROM jobs WHERE id = ?', a.job_id) : null
+  if (!j) return res.status(409).json({ error: 'This proof is attached to an estimate, not a job — send it from the estimate.', code: 'no_job' })
   const c = get('SELECT * FROM contacts WHERE id = ?', j.contact_id)
   const s = getSettings()
   run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)

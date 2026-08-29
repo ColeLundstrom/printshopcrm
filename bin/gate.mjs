@@ -1122,6 +1122,25 @@ await t('a 60-invoice statement paginates and buckets land where the calendar sa
  * fixed; the screen went on ticking "Send & approve", "Collect the deposit" and "Onto the floor"
  * green and printing "$3,240 quoted & approved / $0.00 deposit collected" over a database holding
  * a sent estimate, approved_at NULL, no invoice, no payment and a job still at stage 'new'. */
+/* The routes were always open; two template conditions on the art card closed them. A customer
+ * who asked for changes and then rang back to say "actually v1 is fine" left the shop with a job
+ * stuck in art_approval and no button anywhere that could move it. */
+section('a rejected proof has a way back')
+await t('the art card offers a re-send and a recorded approval on a rejected proof', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  const i = src.indexOf('data-delart=')
+  assert.ok(i > 0, 'the art card action row should still be there')
+  const row = src.slice(src.lastIndexOf('wrap-row', i), i)
+  assert.match(row, /a\.status === 'draft' \|\| a\.status === 'rejected'/,
+    'Send must be reachable on a rejected proof, not only a draft')
+  assert.match(row, /data-decide=/, 'and an approval that arrived by phone must have somewhere to be recorded')
+  assert.match(src, /decision: 'approved'/, 'with a handler behind it')
+})
+
 section('the Autopilot finish screen reports what actually happened')
 await t('it does not claim an approval, a deposit or a job on the floor unless they exist', async () => {
   const { readFileSync } = await import('node:fs')

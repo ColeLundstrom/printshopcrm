@@ -1700,6 +1700,58 @@ try {
     chk('…and cancelling really removes it', String(!!(a.json?.pending || []).find((p) => p.label === 'Drip Survivor')), '^false$')
   }
 
+  /* ---------- a rejected proof is not the end of the job ----------
+   * The customer clicks "Request changes" on the proof page. Back in the app the art card's
+   * action row collapsed to Open + Delete: Send was gated on status 'draft' and the proof link on
+   * 'sent'. Uploading a corrected v2 is the normal path and works — but if the customer rings
+   * back to say v1 was fine after all, or the rejection was a mis-click on their phone, there was
+   * nothing on any screen that could put it back in front of them, and nowhere to record an
+   * approval that arrived by phone or by email reply, which is how a good half of them arrive.
+   * The routes have always allowed both; two template conditions stopped it. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Changed Their Mind Co', email: 'mindchange@e2e.test' } })
+    const rjC = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: rjC, title: 'Reject and reconsider', decoration: 'Screen Print' } })
+    const rjJ = r.json?.id
+    const rjF = new FormData()
+    rjF.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'proof-v1.svg')
+    const rjUp = await fetch(`${BASE}/api/jobs/${rjJ}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: rjF })
+    const rjArt = await rjUp.json().catch(() => ({}))
+    const rjLink = String((await req('POST', `/api/art/${rjArt.id}/send`)).json?.share_url || '')
+
+    // The customer asks for changes.
+    await fetch(`${BASE}${rjLink.replace('?', '/decide?')}`, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'decision=rejected&notes=make the logo bigger',
+    })
+    let art = ((await req('GET', `/api/jobs/${rjJ}`)).json?.art || [])[0]
+    chk('the customer can ask for changes', String(art?.status), '^rejected$')
+
+    // …and then rings back. Both doors have to be open.
+    chk('a rejected proof can be put back in front of the customer',
+      String((await req('POST', `/api/art/${rjArt.id}/send`)).status), '^200$')
+    chk('…and an approval that came by phone can be recorded',
+      String((await req('POST', `/api/art/${rjArt.id}/decide`, { body: { decision: 'approved', by: 'phone' } })).status), '^200$')
+    art = ((await req('GET', `/api/jobs/${rjJ}`)).json?.art || [])[0]
+    chk('…which really approves it', String(art?.status), '^approved$')
+    chk('…and releases the job off art approval', String((await req('GET', `/api/jobs/${rjJ}`)).json?.stage), '^prepress$')
+
+    // A mockup on an ESTIMATE has no job behind it, and this route dereferenced one regardless.
+    r = await req('POST', '/api/estimates', { body: { contact_id: rjC, items: [{ description: '24 tees', sizes: { M: 24 }, unit_price: 12 } ] } })
+    const mkEst = r.json?.id
+    const mkF = new FormData()
+    mkF.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'mockup.svg')
+    const mkUp = await fetch(`${BASE}/api/estimates/${mkEst}/mockups`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: mkF })
+    const mk = await mkUp.json().catch(() => ({}))
+    if (mk?.id) {
+      const out = await req('POST', `/api/art/${mk.id}/send`)
+      chk('sending an estimate mockup down the job route is refused, not a 500', String(out.status), '^409$')
+    } else {
+      say('·', 'no estimate mockup route on this edition — the no-job branch was not exercised')
+    }
+  }
+
   /* ---------- a stale customer dropdown does not answer "Something went wrong on our end" ----------
    * `if (!b.contact_id)` is a truthiness check, and contact_id is a real foreign key on estimates,
    * jobs and opportunities — so an id that no longer resolves raised FOREIGN KEY constraint
