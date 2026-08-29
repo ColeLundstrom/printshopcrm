@@ -67,6 +67,7 @@ export async function automationsView() {
               <div class="au-name">${esc(a.name)}</div>
               <div class="au-flow">
                 <span class="au-when">${esc(trigLabel(a.trigger))}${a.params?.days ? ` · ${esc(String(a.params.days))}d` : ''}${a.params?.stage ? ` · ${esc(String(a.params.stage).replace('_', ' '))}` : ''}</span>
+                ${a.needs_setup ? '<span class="au-if" title="This rule names no stage, so it cannot run. Open it and choose one.">needs setup</span>' : ''}
                 ${(a.conditions || []).length ? `<span class="au-if">if ${a.conditions.map((c) => `${esc(String(c.key).replace('_', ' '))} ${esc(String(c.value))}`).join(' & ')}</span>` : ''}
                 <span class="au-arrow">→</span>
                 ${(a.actions || []).map((x) => x.key === 'wait'
@@ -187,6 +188,11 @@ function autoForm(a) {
     onMount: (root) => {
       const drawTrigger = () => {
         const t = cfg.triggers.find((x) => x.key === state.trigger)
+        // Render what is STORED, not what the browser happens to select first. The stage dropdown
+        // showed 'new' on an untouched rule while state.params went to the server empty — and a
+        // stage rule with no stage used to match every stage change, so one job crossing the
+        // board mailed the customer once per column, on every job in the shop.
+        if (t?.param && state.params[t.param.key] == null) state.params[t.param.key] = t.param.default
         $('#ab-trigger', root).innerHTML = `
           <select class="input" id="a-trig">${cfg.triggers.map((x) => `<option value="${x.key}" ${x.key === state.trigger ? 'selected' : ''}>${esc(x.label)}${x.timed ? ' (timed)' : ''}</option>`).join('')}</select>
           ${t?.param ? `<div class="row" style="margin-top:7px;gap:7px">

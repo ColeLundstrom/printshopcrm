@@ -28,7 +28,7 @@ import {
   PLANS, createSubscriptionCheckout, createBillingPortal, verifyWebhook, webhookSecret,
   billingLive, setPlatformCredentials, LITE_PLAN_ORDER, PLAN_ORDER, litePlanAllows, isFreePlan,
 } from './lib/billing.mjs'
-import { initAutomations, seedAutomations, listAutomations, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
+import { initAutomations, seedAutomations, listAutomations, needsSetup, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
 import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS, parseSizeRun } from './lib/ai.mjs'
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
@@ -3225,7 +3225,10 @@ app.post('/api/invoices/:id/nudge', wrap((req, res) => {
 
 app.get('/api/automations', wrap((_req, res) => {
   res.json({
-    automations: listAutomations(),
+    // params comes back parsed, and a rule that names no stage is flagged rather than left to
+    // look identical to a working one on the list. It cannot fire (see needsSetup) — but a rule
+    // that quietly does nothing is only better than one that mails everybody if you can SEE it.
+    automations: listAutomations().map((a) => ({ ...a, params: parse(a.params, {}), needs_setup: needsSetup(a) })),
     triggers: TRIGGERS, actions: ACTIONS, conditions: CONDITIONS,
     runs: all(`SELECT * FROM automation_runs ORDER BY id DESC LIMIT 60`),
     stats: {
@@ -3306,10 +3309,27 @@ const sanitizeAutoParams = (p) => {
   return out
 }
 
+/**
+ * A trigger that selects on a parameter is not finished until it has one.
+ *
+ * "Job reaches a stage" with no stage was stored happily and then matched EVERY stage change —
+ * one job crossing the board mailed the customer once per column, on every job in the shop. The
+ * builder made that the default shape: its dropdown showed whatever the browser selected first
+ * while `params` went up empty. Refuse the shape here as well as seeding the dropdown, so no
+ * client — the UI, a script, an integration — can store a rule that means "everything".
+ */
+const missingTriggerParam = (trigger, params) => {
+  const t = TRIGGERS.find((x) => x.key === trigger)
+  if (!t?.param || t.timed) return null   // a timed threshold has a documented default; see needsSetup()
+  return String(params?.[t.param.key] ?? '').trim() ? null : t.param
+}
+
 app.post('/api/automations', requireRole('manager'), wrap((req, res) => {
   const b = req.body || {}
   if (!b.name?.trim()) return res.status(400).json({ error: 'Give the automation a name' })
   if (!TRIGGERS.some((t) => t.key === b.trigger)) return res.status(400).json({ error: 'Pick a trigger' })
+  const missing = missingTriggerParam(b.trigger, b.params)
+  if (missing) return res.status(400).json({ error: `Choose which ${String(missing.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
   if (!Array.isArray(b.actions) || !b.actions.length) return res.status(400).json({ error: 'Add at least one action' })
   const id = Number(run('INSERT INTO automations (name, enabled, trigger, params, conditions, actions, created_at) VALUES (?,?,?,?,?,?,?)',
     b.name.trim(), b.enabled === false ? 0 : 1, b.trigger, JSON.stringify(sanitizeAutoParams(b.params)),
@@ -3321,6 +3341,8 @@ app.put('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
   const a = get('SELECT * FROM automations WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Automation not found' })
   const b = req.body || {}
+  const missingOnSave = missingTriggerParam(b.trigger ?? a.trigger, b.params ?? parse(a.params, {}))
+  if (missingOnSave) return res.status(400).json({ error: `Choose which ${String(missingOnSave.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
   run('UPDATE automations SET name=?, enabled=?, trigger=?, params=?, conditions=?, actions=? WHERE id=?',
     b.name ?? a.name, b.enabled === undefined ? a.enabled : (b.enabled ? 1 : 0), b.trigger ?? a.trigger,
     JSON.stringify(sanitizeAutoParams(b.params ?? parse(a.params, {}))), JSON.stringify(b.conditions ?? parse(a.conditions, [])),

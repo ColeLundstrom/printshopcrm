@@ -1638,6 +1638,58 @@ try {
     chk('…and cancelling really removes it', String(!!(a.json?.pending || []).find((p) => p.label === 'Drip Survivor')), '^false$')
   }
 
+  /* ---------- a rule that names no stage does not mail the customer at every stage ----------
+   * fire() skipped its stage filter when `params.stage` was falsy, on the reading that "no stage
+   * set" means "unfiltered". It does not: a rule that names no stage is a rule nobody finished
+   * writing, and treating it as "matches everything" turns ONE job crossing the board into six
+   * customer emails, on every job in the shop. The builder made that the default shape — its
+   * stage dropdown showed whatever the browser selected first while `params` went up empty, so
+   * the owner read "new" off the screen and saved a rule that fired on all seven columns. */
+  {
+    const bad = await req('POST', '/api/automations', {
+      body: { name: 'Stage rule with no stage', trigger: 'job.stage', params: {},
+        actions: [{ key: 'email.customer', config: { subject: 'Update', body: 'Your order moved.' } }] },
+    })
+    chk('a stage rule with no stage cannot be saved', String(bad.status), '^400$')
+    chk('…and says what is missing', String(bad.json?.code || ''), '^missing_param$')
+
+    // A rule stored before that refusal existed — every install has some — must not fire either,
+    // and the shop has to be able to SEE that it is the broken one.
+    const good = await req('POST', '/api/automations', {
+      body: { name: 'Ship notice', trigger: 'job.stage', params: { stage: 'shipping' },
+        actions: [{ key: 'email.customer', config: { subject: 'Shipped', body: 'On its way.' } }] },
+    })
+    const legacyId = good.json?.id
+    chk('a rule that names its stage saves', String(good.status), '^200$')
+    shopDb('gate-shop', (db) => db.prepare("UPDATE automations SET params = '{}' WHERE id = ?").run(legacyId))
+
+    const listed = ((await req('GET', '/api/automations')).json?.automations || []).find((x) => x.id === legacyId)
+    chk('…and a stored rule with no stage is flagged for the shop to fix', String(listed?.needs_setup), '^true$')
+
+    const runsBefore = ((await req('GET', '/api/automations')).json?.runs || []).length
+    r = await req('POST', '/api/contacts', { body: { name: 'Stage Spam Target', email: 'stagespam@e2e.test' } })
+    const ssC = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: ssC, title: 'Board crossing', decoration: 'Screen Print' } })
+    const ssJ = r.json?.id
+    for (const stage of ['art_approval', 'prepress', 'production', 'qc']) {
+      await req('PATCH', `/api/jobs/${ssJ}/stage`, { body: { stage } })
+    }
+    const runsAfter = ((await req('GET', '/api/automations')).json?.runs || [])
+    const spam = runsAfter.filter((x) => x.automation_id === legacyId).length
+    chk('one job crossing four columns does not mail the customer four times', String(spam), '^0$')
+    chk('…and nothing else started running either', String(runsAfter.length <= runsBefore + 1), '^true$')
+
+    // The way out is the screen it was written on: give it a stage and it works again.
+    r = await req('PUT', `/api/automations/${legacyId}`, { body: { params: { stage: 'shipping' } } })
+    chk('choosing a stage fixes the rule from the UI', String(r.status), '^200$')
+    const fixed = ((await req('GET', '/api/automations')).json?.automations || []).find((x) => x.id === legacyId)
+    chk('…and it stops being flagged', String(fixed?.needs_setup), '^false$')
+    await req('PATCH', `/api/jobs/${ssJ}/stage`, { body: { stage: 'shipping' } })
+    const fired = ((await req('GET', '/api/automations')).json?.runs || []).filter((x) => x.automation_id === legacyId).length
+    chk('…and now fires on exactly the stage it names', String(fired), '^1$')
+    await req('DELETE', `/api/automations/${legacyId}`)
+  }
+
   /* ---------- a backup that archived nothing must not report success ----------
    * With count=0 and failed=0 this script printed "backup ok — 0 database(s)" and exited 0. So a
    * typo'd DATA_ROOT, a moved PSC_DB or an unmounted volume produced a green cron line every night

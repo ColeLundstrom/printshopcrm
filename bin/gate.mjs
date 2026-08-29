@@ -1109,6 +1109,25 @@ await t('a 60-invoice statement paginates and buckets land where the calendar sa
  * because that is what the customer is going to pay and it is the number on the quote in front of
  * them. So $2,931.45 was rewritten to $2,726.00 at the next restart, and again at the one after
  * they retyped it, forever, from no screen and with nothing on the record to say why. */
+/* The builder rendered the stage dropdown from the browser's default selection while
+ * `state.params` went to the server empty — so the owner read "new" off the screen and saved a
+ * rule that fired on every column. The server refusal (proved in gate-e2e) makes the shape
+ * unstorable; this keeps the SCREEN honest, so the common path never has to hit that refusal. */
+section('the automation builder saves the trigger it is showing')
+await t('an untouched trigger parameter is seeded from its default, not left empty', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/automations.js'), 'utf8')
+  const i = src.indexOf('const drawTrigger = () => {')
+  assert.ok(i > 0, 'drawTrigger should still be there')
+  const head = src.slice(i, src.indexOf('innerHTML', i))
+  assert.match(head, /state\.params\[t\.param\.key\] == null/,
+    'the builder must seed the parameter it is about to display, or the screen and the saved rule disagree')
+  assert.match(src, /needs_setup/, 'and a rule that names no stage has to be visible on the list')
+})
+
 section('a migration that rewrites data runs once, ever')
 await t('the restatement still fixes a value that was never touched by a person', async () => {
   const { DatabaseSync } = await import('node:sqlite')
