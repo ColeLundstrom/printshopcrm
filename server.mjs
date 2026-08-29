@@ -2352,6 +2352,10 @@ app.post('/api/estimates/:id/send', wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
+  // No address, no send — and therefore no `sent` status and no "emailed to customer" on the
+  // timeline. The four other customer-mail routes have refused this all along; this one flipped
+  // the quote to `sent` for a contact it could not reach.
+  if (requireCustomerEmail(c, res, 'estimate')) return
   const s = getSettings()
   // Re-sending emails a copy. It must not REVERSE the customer's decision. This UPDATE was
   // unconditional, so "resend the estimate" on an already-approved, already-invoiced, part-paid
@@ -3383,6 +3387,13 @@ app.post('/api/art/:id/send', wrap((req, res) => {
   const j = a.job_id ? get('SELECT * FROM jobs WHERE id = ?', a.job_id) : null
   if (!j) return res.status(409).json({ error: 'This proof is attached to an estimate, not a job — send it from the estimate.', code: 'no_job' })
   const c = get('SELECT * FROM contacts WHERE id = ?', j.contact_id)
+  // This is the send that also MOVES something, and it was the one send with no address check.
+  // For a walk-in with a phone number and no email it stamped the proof `sent`, walked the job
+  // new → art_approval, wrote "Proof v1 sent to customer" on the timeline and answered {ok:true},
+  // while the Outbox row carried `to_email: ''`. art_approval is an approval-gated stage, so the
+  // job then waited forever on a customer nobody had written to — a dead end reached by pressing
+  // the button the screen offers. Its four siblings have called this guard all along.
+  if (requireCustomerEmail(c, res, 'proof')) return
   const s = getSettings()
   run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
   run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress')`, now(), j.id)

@@ -4602,6 +4602,92 @@ try {
     }
   }
 
+
+  /* ---------- a send that could not happen is not recorded as one ----------
+   *
+   * Six routes in this file mail a customer. Four of them call requireCustomerEmail() and refuse
+   * with a named 400 when the contact has no address. Two did not, and they are the two that also
+   * MOVE something:
+   *
+   *  · POST /api/art/:id/send stamped the proof `sent`, walked the job new → art_approval, wrote
+   *    "Proof v1 sent to customer" on the timeline and answered {ok:true}. board.js toasts the
+   *    flat string "Proof emailed to customer". The Outbox row carried to_email: ''. Nothing left
+   *    the building — and art_approval is an approval-gated stage, so the job now waits on a
+   *    customer who was never asked. That is a dead end reached by pressing the button the screen
+   *    offers, which is the exact shape this project measures itself by.
+   *
+   *  · POST /api/estimates/:id/send flipped the quote to `sent` and wrote "Estimate EST-1001
+   *    emailed to customer" for a contact with no address.
+   *
+   * The guard already existed, with the message already written. These two just never called it. */
+  {
+    const T12 = mkdtempSync(join(tmpdir(), 'psc-e2e-nomail-'))
+    const P12 = PORT + 17
+    const s12 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P12), PSC_DB: join(T12, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P12}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s12)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P12}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P12}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Silent Ink', owner_name: 'S', owner_email: 's@silent.test', password: 'GatePass-123456' }),
+      })
+      const ck = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const J = (method, path, body) => fetch(`http://127.0.0.1:${P12}${path}`, {
+        method, headers: { 'Content-Type': 'application/json', Cookie: ck },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }))
+
+      // A walk-in with a phone number and no email — an ordinary customer, not an edge case.
+      const walkIn = (await J('POST', '/api/contacts', { name: 'Walk In Wanda', phone: '555-0100' })).json
+      chk('a customer with no email address exists', String(!!walkIn?.id), '^true$')
+
+      const est = (await J('POST', '/api/estimates', {
+        contact_id: walkIn.id, items: [{ description: 'Gildan 5000 Tee — Black', qty: 48, unit_price: 12, sizes: { M: 24, L: 24 } }],
+      })).json
+      const sent = await J('POST', `/api/estimates/${est.id}/send`, {})
+      chk('sending an estimate to a customer with no email is refused', String(sent.status), '^400$')
+      chk('…by name, so the shop knows what to fix', JSON.stringify(sent.json), 'no_email')
+      const after = (await J('GET', `/api/estimates/${est.id}`)).json
+      chk('…and the quote is not left claiming it was sent', String(after?.status), '^(draft|new)$')
+
+      // The proof path — the one that also parks the job in an approval-gated stage.
+      const job = (await J('POST', '/api/jobs', { contact_id: walkIn.id, title: 'Wanda tees', garment: 'Gildan 5000 Tee — Black', sizes: { M: 24, L: 24 } })).json
+      const form = new FormData()
+      // Real PNG magic — validArtFile() sniffs the first bytes, and a JS string would UTF-8 it.
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72, 68, 82])
+      form.append('file', new Blob([png], { type: 'image/png' }), 'proof.png')
+      const up = await fetch(`http://127.0.0.1:${P12}/api/jobs/${job.id}/art`, { method: 'POST', headers: { Cookie: ck }, body: form })
+      const art = await up.json().catch(() => null)
+      chk('a proof is uploaded to the job', String(up.status), '^200$')
+
+      const ps = await J('POST', `/api/art/${art.id}/send`, {})
+      chk('sending a proof to a customer with no email is refused', String(ps.status), '^400$')
+      chk('…by name', JSON.stringify(ps.json), 'no_email')
+      const jobAfter = (await J('GET', `/api/jobs/${job.id}`)).json
+      chk('…and the job is not parked waiting on a customer nobody wrote to', String(jobAfter?.stage), '^(new|prepress)$')
+
+      // And the refusal is escapable from the same screen, which is the half that makes it a fix
+      // rather than a new dead end: add the address the message asked for, and the send works.
+      await J('PUT', `/api/contacts/${walkIn.id}`, { name: 'Walk In Wanda', phone: '555-0100', email: 'wanda@customer.test' })
+      const retry = await J('POST', `/api/art/${art.id}/send`, {})
+      chk('…and adding the email address the message asked for makes it send', String(retry.status), '^200$')
+      const jobSent = (await J('GET', `/api/jobs/${job.id}`)).json
+      chk('…and only THEN does the job move to art approval', String(jobSent?.stage), '^art_approval$')
+      const estRetry = await J('POST', `/api/estimates/${est.id}/send`, {})
+      chk('…the same for the estimate', String(estRetry.status), '^200$')
+    } finally {
+      try { s12.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T12, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++
