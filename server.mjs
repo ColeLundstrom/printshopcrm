@@ -4017,7 +4017,12 @@ app.post('/api/agent/draft', requireRole('staff'), wrap(async (req, res) => {
 }))
 
 /** Owner-side live preview of the bot — runs the real engine against a throwaway session. */
-app.post('/api/agent/preview', async (req, res) => {
+/**
+ * The owner testing their own bot from Settings. Manager-gated like PUT /api/agent/config next
+ * door — the session it mints is stamped 'preview', which captureLead() treats as shop-originated,
+ * so who can mint one is part of the guard rather than a convenience.
+ */
+app.post('/api/agent/preview', requireRole('manager'), async (req, res) => {
   try {
     const b = req.body || {}
     let s = b.session ? sessionByPublicId(b.session) : null
@@ -6449,7 +6454,17 @@ app.post('/api/embed/chat/start', embedLimit(12, 'Too many chats from this conne
 /** A visitor sent a message. Runs the engine, notifies the shop's staff on captured leads. */
 app.post('/api/embed/chat/message', embedLimit(60, 'You are sending messages very quickly — give it a moment.'), (req, res) => embedRun(req, res, async () => {
   const s = sessionByPublicId(String(req.body?.session || ''))
-  if (!s) return res.status(404).json({ error: 'Session expired' })
+  // …and the session has to be one THIS route opened. /start was hardened to stamp 'web' rather
+  // than take the channel from the request body, because captureLead() reads it as proof the shop
+  // originated the conversation — but the check was only ever on the way in. POST /api/agent/preview
+  // mints a session stamped 'preview' and hands its public_id straight back in the response body,
+  // which is a value the owner's own Settings screen puts in a browser every time they test their
+  // bot. Replayed here with NO cookie at all it arrived pre-trusted: measured on a scratch install,
+  // a stranger holding only the shop's published embed key overwrote a real customer's blank phone
+  // with their own number, burned EST-1002 onto that customer's file, and opened a 'qualified'
+  // opportunity with none of the UNVERIFIED marking the same conversation gets on a 'web' session.
+  // Same attack the comment on /start describes, through the second door.
+  if (!s || s.channel !== 'web') return res.status(404).json({ error: 'Session expired' })
   const cfg = getBotConfig()
   // /start refuses to open a session when the bot is off; this route never checked, so every
   // widget already on a visitor's screen kept being answered by a receptionist the shop had

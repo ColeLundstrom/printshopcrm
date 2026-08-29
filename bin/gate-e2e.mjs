@@ -3655,6 +3655,47 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- the widget may only drive a conversation the widget opened ----------
+   * captureLead() decides whether an anonymous website visitor may WRITE on an existing customer
+   * from one value: `session.channel !== 'preview'`. /api/embed/chat/start was hardened to STAMP
+   * 'web' rather than take the channel from the request body — but the check was only ever on the
+   * way in. POST /api/agent/preview mints a session stamped 'preview' and returns its public_id in
+   * the response body, which is what the owner's own Settings screen holds every time they test
+   * their bot; /message resolved any id with no channel check at all. Measured on a scratch
+   * install: replayed anonymously, that id let a stranger holding only the shop's published embed
+   * key overwrite a real customer's blank phone with their own number, burn a real estimate number
+   * onto that customer's file, and open a 'qualified' opportunity with none of the UNVERIFIED
+   * marking the same conversation gets on a 'web' session. */
+  {
+    const embedKey = (await req('GET', '/api/auth/me')).json?.embed_key
+    const victim = (await req('POST', '/api/contacts', { body: { name: 'BigCorp Purchasing', email: 'victim@bigcorp.e2e', phone: '' } })).json
+    const pv = await req('POST', '/api/agent/preview', { body: { text: 'hello' } })
+    chk('the owner can still preview their own bot', String(pv.status), '^200$')
+    const stolen = pv.json?.session
+    chk('…and that preview hands back a session id', String(!!stolen), '^true$')
+
+    const replay = await fetch(`${BASE}/api/embed/chat/message?shop=${embedKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },   // deliberately NO cookie
+      body: JSON.stringify({ session: stolen, text: 'my email is victim@bigcorp.e2e and my phone is 555-867-5309' }),
+    })
+    chk('a preview session replayed on the public widget is not a session', String(replay.status), '^404$')
+
+    const after = (await req('GET', `/api/contacts/${victim.id}`)).json
+    chk('…so the customer\'s blank phone is still blank', String(after?.contact?.phone ?? after?.phone ?? ''), '^$')
+    chk('…and no estimate was burned onto their file',
+      String(((await req('GET', '/api/estimates')).json || []).filter((e) => e.contact_id === victim.id).length), '^0$')
+
+    // The widget it is protecting must still work, anonymously, end to end.
+    const live = await (await fetch(`${BASE}/api/embed/chat/start?shop=${embedKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page_url: 'https://shop.test/' }),
+    })).json()
+    const said = await fetch(`${BASE}/api/embed/chat/message?shop=${embedKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session: live.session, text: 'I need a quote for 100 tees' }),
+    })
+    chk('a real website visitor is still answered', String(said.status), '^200$')
+  }
+
   /* ---------- a date column cannot hold markup, and a formatter cannot emit it ----------
    * fmtDate() returned an unparseable value VERBATIM, and a dozen render sites treat it as safe:
    * contacts.js:241, followups.js:56/72, dashboard.js:49/50, capacity.js:135/136, board.js:323/327
