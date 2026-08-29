@@ -1423,6 +1423,31 @@ try {
     chk('an oversize body to an anonymous route is refused, not buffered', String(r.status), '^413$')
   }
 
+  /* ---------- …and the half that gets under the cap (v20) ----------
+   * The body cap above stops a 3 MB password. It does nothing about a 900 KB EMAIL, which is
+   * comfortably under 1 MB and is the one field the limiter RETAINS: rateLimit() puts
+   * `${bucket}:${ip}:${email}` in a module-level Map for a full 15 minutes, and recordLoginFail()
+   * puts the same string in a second one. Measured on a two-shop instance: 400 such POSTs took the
+   * process from 81 MB to 516 MB of RSS in under four seconds — and all 400 answered 401, because
+   * a fresh email is a fresh bucket, so `max: 12` never bound and nothing was ever rate limited.
+   * deploy/fly.toml sizes the reference VM at 512 MB.
+   *
+   * A real address cannot exceed 254 octets (RFC 5321), so the key is truncated there — which is
+   * observable from outside precisely because two addresses that agree for 254 characters now
+   * SHARE a bucket, where before they were 13 free guesses each. */
+  {
+    const stem = `flood${'z'.repeat(240)}`   // 245 chars, identical across all 13 attempts
+    let last = null
+    for (let i = 0; i < 13; i++) {
+      last = await req('POST', '/api/auth/login', { cookies: false, body: { email: `${stem}${'q'.repeat(40)}${i}@e2e.test`, password: 'x' } })
+    }
+    chk('a rotating email that only differs past 254 characters shares one bucket', String(last.status), '^429$')
+    // …and an ordinary address is untouched by the truncation: 254 octets is longer than any real
+    // one, so this must still be an honest 401 rather than someone else's spent budget.
+    const ordinary = await req('POST', '/api/auth/login', { cookies: false, body: { email: 'someone@a-real-shop.test', password: 'x' } })
+    chk('…while an ordinary address still gets its own', String(ordinary.status), '^401$')
+  }
+
   /* ---------- a failed start must LOOK like a failure ----------
    * This shipped broken: a fatal bind failure was logged by the uncaughtException handler, which
    * left no work on the event loop, so Node exited — with status 0. Docker, Fly, Render and any

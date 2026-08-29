@@ -992,6 +992,26 @@ app.get('/health', (_req, res) => {
  */
 const rlHits = new Map()
 setInterval(() => { const now = Date.now(); for (const [k, v] of rlHits) if (now - v.first > v.win) rlHits.delete(k) }, 60_000).unref?.()
+/**
+ * The key is built from the caller's own request body, and it is RETAINED for the full 15-minute
+ * window. Nothing bounded either half of that.
+ *
+ * Measured on a two-shop instance: 400 POSTs to /api/auth/login carrying a 900 KB `email` (under
+ * the 1 MB JSON cap, so accepted) took the process from 81 MB to 516 MB of RSS in under four
+ * seconds — and every one of the 400 answered 401, because a fresh email is a fresh bucket, so
+ * `max: 12` never binds and nothing is ever rate limited. authMember() returns null before it
+ * reaches scrypt, so the attacker is not CPU-bound either. deploy/fly.toml sizes the reference VM
+ * at 512 MB: one anonymous host OOM-kills every shop on the box in about four seconds.
+ *
+ * Two bounds, because either alone is insufficient. RFC 5321 caps a real address at 254 octets,
+ * so truncating costs nothing any legitimate caller can notice — but 254 bytes × unbounded keys
+ * still grows without limit, so the map also refuses to admit a NEW key past a ceiling far above
+ * any real install (50k distinct IP+email pairs inside one 15-minute window). Refusing is the
+ * right direction to fail: it is a 429 that drains itself on the next prune, where the alternative
+ * is a process death that takes every other shop with it.
+ */
+const RL_EMAIL_MAX = 254
+const RL_MAX_KEYS = 50_000
 // req.ip (with `trust proxy: 1`) is the real client as seen past exactly one proxy hop (nginx) —
 // a client-supplied X-Forwarded-For can't spoof it. Reading the raw header's first entry could.
 const clientIp = (req) => req.ip || req.socket?.remoteAddress || 'unknown'
@@ -1015,9 +1035,13 @@ function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = n
     // Every rateLimit() in this file is route-level middleware, so req.route is always set by the
     // time this runs; baseUrl keeps two identically-named routes under different mounts apart.
     const bucket = `${req.baseUrl || ''}${req.route?.path || req.path.replace(/\/+$/, '')}`
-    const key = keyFn ? `${bucket}:${keyFn(req)}` : `${bucket}:${clientIp(req)}:${String(req.body?.email || '').toLowerCase()}`
+    const key = keyFn ? `${bucket}:${keyFn(req)}` : `${bucket}:${clientIp(req)}:${String(req.body?.email || '').toLowerCase().slice(0, RL_EMAIL_MAX)}`
     const now = Date.now()
     let e = rlHits.get(key)
+    if (!e && rlHits.size >= RL_MAX_KEYS) {
+      // Past the ceiling and this key is new: something is minting buckets. Do not grow.
+      return res.status(429).json({ error: 'Too many attempts. Try again shortly.', code: 'rate_limited' })
+    }
     if (!e || now - e.first > windowMs) { e = { first: now, count: 0, win: windowMs }; rlHits.set(key, e) }
     e.count++
     if (e.count > max) {
@@ -1092,7 +1116,9 @@ const loginFails = new Map()
 const FAIL_GRACE = 4          // honest typos shouldn't cost anything
 const FAIL_CAP_MS = 15 * 60_000
 setInterval(() => { const t = Date.now(); for (const [k, v] of loginFails) if (t - v.last > FAIL_CAP_MS) loginFails.delete(k) }, 60_000).unref?.()
-const acctKey = (email) => String(email || '').trim().toLowerCase()
+// Same bound as the rate-limit key, and for the same reason: this is the caller's own string and
+// it is held for 15 minutes. A real address cannot exceed 254 octets (RFC 5321).
+const acctKey = (email) => String(email || '').trim().toLowerCase().slice(0, RL_EMAIL_MAX)
 
 /** How much longer this account must wait, in seconds (0 = go ahead). */
 function loginBackoff(email) {
@@ -1103,6 +1129,9 @@ function loginBackoff(email) {
 function recordLoginFail(email) {
   const k = acctKey(email)
   if (!k) return
+  // recordLoginFail runs on every 401, including an email that matches no account at all, so this
+  // map is as caller-driven as rlHits is. Same ceiling, same reasoning.
+  if (!loginFails.has(k) && loginFails.size >= RL_MAX_KEYS) return
   const e = loginFails.get(k) || { count: 0, until: 0, last: 0 }
   e.count++
   e.last = Date.now()

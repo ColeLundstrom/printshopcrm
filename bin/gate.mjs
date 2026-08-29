@@ -3678,6 +3678,41 @@ await t('deleting an estimate takes its mockups with it, so a reused id cannot i
  * AGPL §13 breach to every macOS and Windows self-hoster. This is the platform-independent half:
  * the guard exists, it refuses, and it sits AFTER the handlers that answer the canonical
  * spellings and BEFORE the static mount. Order is the whole fix. */
+/* ---------- the rate limiter's own memory is bounded (v20) ----------
+ * rateLimit() builds its key from the caller's request body and retains it for 15 minutes, and
+ * recordLoginFail() retains a second copy. Neither the length of the string nor the NUMBER of
+ * keys was bounded, on a route that needs no session. Measured: 400 logins carrying a 900 KB
+ * `email` (under the 1 MB JSON cap, so accepted) took the process from 81 MB to 516 MB of RSS in
+ * under four seconds, and every one answered 401 — a fresh email is a fresh bucket, so `max: 12`
+ * never binds and nothing is ever rate limited. fly.toml sizes the reference VM at 512 MB.
+ * The e2e proves the truncation behaviourally; this is the key-COUNT ceiling, which no test can
+ * reach at its real value without 50,000 requests. */
+section('the rate limiter\'s own memory is bounded')
+await t('neither the key nor the number of keys can be grown without limit by a caller', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const cap = /const RL_EMAIL_MAX = (\d+)/.exec(src)
+  assert.ok(cap, 'the key has to have a length bound')
+  assert.ok(Number(cap[1]) >= 254 && Number(cap[1]) <= 320,
+    'RFC 5321 caps a real address at 254 octets — shorter truncates a legitimate one, longer is just slack')
+  // Both retainers, not one. The limiter key and the account-backoff key are separate maps.
+  const keyLine = src.split('\n').find((l) => l.includes('const key = keyFn ?'))
+  assert.ok(keyLine && /slice\(0, RL_EMAIL_MAX\)/.test(keyLine), 'the rate-limit key still holds the whole submitted email')
+  const acct = src.split('\n').find((l) => l.startsWith('const acctKey ='))
+  assert.ok(acct && /slice\(0, RL_EMAIL_MAX\)/.test(acct), 'acctKey still holds the whole submitted email')
+  // …and a bounded key length is not enough on its own: unbounded KEYS are the same leak slower.
+  const keys = /const RL_MAX_KEYS = ([\d_]+)/.exec(src)
+  assert.ok(keys, 'the number of live buckets has to have a ceiling too')
+  const n = Number(keys[1].replace(/_/g, ''))
+  assert.ok(n >= 10_000, 'a ceiling below ten thousand could bind on a real install')
+  assert.ok(n <= 200_000, 'a ceiling this high is not a ceiling')
+  assert.match(src, /if \(!e && rlHits\.size >= RL_MAX_KEYS\)/, 'rlHits must refuse a NEW key past the ceiling')
+  assert.match(src, /if \(!loginFails\.has\(k\) && loginFails\.size >= RL_MAX_KEYS\) return/, 'loginFails must too')
+})
+
 section('a shadow spelling never reaches the static mount')
 await t('the guard exists, refuses, and sits between the handlers and express.static', async () => {
   const { readFileSync } = await import('node:fs')
