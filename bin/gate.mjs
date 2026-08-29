@@ -2395,7 +2395,13 @@ await t('no glyph-only button is left for a screen reader to guess at', async ()
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const files = fs.readdirSync(join(root, 'public/js/views')).map((n) => `public/js/views/${n}`)
     .concat(['public/js/keys.js', 'public/js/core.js', 'public/js/app.js'])
-  const GLYPH = /<button(?![^>]*aria-label)[^>]*>\s*(?:&times;|×|✕|↑|↓)\s*<\/button>/
+  // The rule caught the five glyphs that were in the file when it was written. Two more had been
+  // added since and were announced as "plus, button": the estimate size grid renders one PER LINE
+  // ITEM, so a five-line quote reads out as five identical "plus" controls with no clue which line
+  // each belongs to, and the gang-sheet duplicate is the same. Widen it so the eighth is caught
+  // when it is written rather than in a later audit — a minus, an ellipsis and a dash are the next
+  // obvious ones, and none of them names anything either.
+  const GLYPH = /<button(?![^>]*aria-label)[^>]*>\s*(?:&times;|×|✕|↑|↓|＋|\+|−|–|—|⋯|…)\s*<\/button>/
   for (const f of files) {
     const src = fs.readFileSync(join(root, f), 'utf8')
     assert.doesNotMatch(src, GLYPH, `${f} has a glyph-only button with no aria-label — a screen reader calls it "times"`)

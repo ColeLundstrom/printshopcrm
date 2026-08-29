@@ -132,7 +132,7 @@ export async function estimateEditor(id) {
         <span>${esc(s)}${up[s] ? `<em>+$${esc(up[s])}</em>` : ''}</span>
         <input type="number" min="0" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0">
       </label>`).join('')}
-      <button class="sz-more" data-more="${i}" title="Add another size">+</button>
+      <button class="sz-more" data-more="${i}" title="Add another size" aria-label="Add another size to line ${i + 1}">+</button>
       <div class="sz-sum">${lineQty(it)} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}</div>
     </div>` : ''}`
   }
