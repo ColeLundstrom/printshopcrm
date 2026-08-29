@@ -4518,17 +4518,32 @@ app.put('/api/pricebook', requireRole('manager'), wrap((req, res) => {
 }))
 
 /** Drop a service's overrides (built-in reverts to stock; a custom service is removed entirely). */
-app.delete('/api/pricebook/:name', requireRole('manager'), wrap((req, res) => {
+/**
+ * Remove a service (and its matrix) — by `?name=`, or by the path for callers that already use it.
+ *
+ * The name is free text on "+ Add service", and "Front/Back" is an ordinary thing to call a
+ * two-location print. In the path that becomes %2F, which the path-canonicalisation guard at the
+ * top of this file refuses — and it has to: express.static decodes, so an encoded slash is how
+ * `/uploads%2fF` would otherwise reach the file the /uploads ownership guard protects. Tightening
+ * that guard left the shop holding a service it could neither reset nor delete, which is the exact
+ * dead end this project measures itself by. The query string has no such problem: a slash there is
+ * just a character. The path form stays for every name that does not contain one.
+ */
+const deletePricebookService = wrap((req, res) => {
+  const name = String(req.query.name ?? req.params.name ?? '')
+  if (!name) return res.status(400).json({ error: 'Name the service to remove.', code: 'no_name' })
   let saved = {}
   try { saved = JSON.parse(getSettings().price_book || '{}') } catch { saved = {} }
-  if (saved.services) delete saved.services[req.params.name]
+  if (saved.services) delete saved.services[name]
   // …and its matrix. Deleting only the service left the matrix behind, and a matrix keyed to a
   // service that no longer exists is not listed by GET /api/pricebook — so the bytes stayed in
   // settings.price_book forever with nothing in the UI able to name them, let alone remove them.
-  if (saved.matrices) delete saved.matrices[req.params.name]
+  if (saved.matrices) delete saved.matrices[name]
   setSetting('price_book', JSON.stringify(saved))
   res.json({ ok: true })
-}))
+})
+app.delete('/api/pricebook', requireRole('manager'), deletePricebookService)
+app.delete('/api/pricebook/:name', requireRole('manager'), deletePricebookService)
 
 /* ================= CUSTOM PRICE MATRICES =================
  * The shop's own price sheets, in any shape. Unlike /api/pricebook — which drives a calculator

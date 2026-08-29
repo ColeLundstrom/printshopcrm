@@ -149,7 +149,10 @@ function wireBook(b) {
   })
   onOnce($('#view'), '.pb-reset', async (e, el) => {
     const name = el.closest('.pb-svc').dataset.svc
-    await api.del(`/api/pricebook/${encodeURIComponent(name)}`)
+    // ?name=, not the path: a service the shop called "Front/Back" encodes to %2F, which the
+    // path-canonicalisation guard refuses — so in the path this button 404'd on exactly the names
+    // a shop is most likely to invent, and left the service unremovable.
+    await api.del(`/api/pricebook?name=${encodeURIComponent(name)}`)
     toast(`${name} reset`); loadBook()
   })
   onOnce($('#view'), '#mx-svc', (_e, el) => loadMatrix(el.value), 'change')

@@ -4465,6 +4465,12 @@ try {
         `/uploads/%2e/${probe}`,
         `/uploads/../uploads/${probe}`,
         `/uploads/%2e%2e/uploads/${probe}`,
+        // The encoded slash is why the guard refuses %2f, and why the price-book delete had to
+        // move its service name to the query string rather than the guard being loosened:
+        // path-to-regexp matches the RAW path, so `/uploads%2fF` is one segment and never reaches
+        // `/uploads/:file` — but express.static decodes, and would serve the file.
+        `/uploads%2f${probe}`,
+        `/api/../uploads/${probe}`,
       ]) {
         const r = await rawGet(spelling)
         chk(`…and so does ${spelling}`, String(r.status), '^40[04]$')
@@ -5002,6 +5008,26 @@ try {
       chk('resetting the service is accepted', String(del.status), '^200$')
       const reset = await screenPrint()
       chk('…and the shop is back on the stock book', String(reset?.edited), '^false$')
+
+      /* A service the shop named with a slash in it — "Front/Back" is an ordinary thing to call a
+       * two-location print — must still be removable. The name is free text on "+ Add service",
+       * and the only control that removes one puts it in the PATH, so the UI sends %2F. The
+       * path-canonicalisation guard added this round refuses an encoded slash, and rightly: express
+       * .static decodes, so `/uploads%2fF` would otherwise reach the file the /uploads guard
+       * protects. The route takes the name off the query string instead, where a slash is just a
+       * character, so the guard stays tight and the shop is not left with a service it can neither
+       * edit nor delete. */
+      await J('PUT', '/api/pricebook', { services: { 'Front/Back': { axis: 'flat', base: 5 } } })
+      const named = (await J('GET', '/api/pricebook')).json.services.map((x) => x.name)
+      chk('a shop can name a service with a slash in it', String(named.includes('Front/Back')), '^true$')
+      const delSlash = await J('DELETE', `/api/pricebook?name=${encodeURIComponent('Front/Back')}`)
+      chk('…and can delete it again', String(delSlash.status), '^200$')
+      const after2 = (await J('GET', '/api/pricebook')).json.services.map((x) => x.name)
+      chk('…and it is really gone', String(after2.includes('Front/Back')), '^false$')
+
+      const { readFileSync: rfsPb } = await import('node:fs')
+      const pbUi = rfsPb(join(ROOT, 'public/js/views/pricing.js'), 'utf8')
+      chk('the screen uses the spelling that survives the guard', pbUi, 'api\\.del\\(`/api/pricebook\\?name=')
     } finally {
       try { s16.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T16, { recursive: true, force: true }) } catch { /* best effort */ }
