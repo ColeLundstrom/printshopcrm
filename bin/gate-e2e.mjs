@@ -737,6 +737,53 @@ try {
       JSON.stringify(full?.items || []), 'RUSH \\+\\d+%')
   }
 
+  /* ---------- …and the rush the customer PAID for reaches the floor ----------
+   * Every automated path was taught to CHARGE the shop's published rush tier in v1.18.0/v1.19.0.
+   * Not one was taught to PRODUCE a rush. `estimates` had nowhere to record the tier the price was
+   * built from, and convert bound neither `rush` nor `turnaround_days`, so the column defaults
+   * landed — 0 and 10 — on a job whose customer had just paid +50% for three days. Measured: a
+   * 300-piece order billed $4,280.00 against a $2,870.00 standard price came out promised
+   * 2026-09-02, projected 2026-09-11 the moment the job existed, and rewritten to 2026-09-14 at
+   * proof approval. Eight working days past the date the customer bought. And nothing on the floor
+   * knew: no badge on the board card, no banner on the work ticket, no pill in Floor Mode, and the
+   * board's Rush filter — the view a manager opens to ask what goes out first — permanently empty. */
+  {
+    const rushText = 'We need 300 Gildan 5000 tees in black, 1 color front. RUSH please. fastlane@e2e.test'
+    const ap = (await req('POST', '/api/autopilot', { body: { text: rushText } })).json
+    chk('a rush quote is priced as a rush', String(Number(ap?.estimate?.total) > 0), '^true$')
+    chk('…and the estimate records the tier it was priced on', String(ap?.estimate?.rush_days > 0), '^true$')
+    chk('…and the job it writes is flagged rush', String(ap?.job?.rush), '^1$')
+    chk('…on the turnaround it was billed for, not the 10-day default',
+      String(Number(ap?.job?.turnaround_days) <= 3 && Number(ap?.job?.turnaround_days) >= 1), '^true$')
+
+    // The shop's OWN main path: a quote a human sends, the customer approves, someone converts.
+    const dup = (await req('POST', `/api/estimates/${ap.estimate.id}/duplicate`, { body: {} })).json
+    const conv = (await req('POST', `/api/estimates/${dup.id}/convert`, { body: {} })).json
+    const cj = (await req('GET', `/api/jobs/${conv.job_id}`)).json
+    const job = cj?.job || cj
+    chk('converting a rush quote makes a rush job', String(job?.rush), '^1$')
+    chk('…scheduled on the tier that was billed', String(job?.turnaround_days), '^3$')
+    chk('…so the schedule does not announce a slip the moment it is created',
+      String(cj?.schedule?.slip ?? job?.schedule?.slip ?? 0), '^0$')
+
+    // The three surfaces the floor actually looks at.
+    const board = (await req('GET', '/api/board?filter=rush')).json
+    const shown = (board?.columns || []).reduce((n, c) => n + (c.jobs?.length || 0), 0)
+    chk('the board\'s Rush filter is not empty', String(shown > 0), '^true$')
+    chk('…and its counter agrees', String(Number(board?.counts?.rush) > 0), '^true$')
+    // GET /api/jobs/:id is where the tokenized staff work-ticket link comes from.
+    const tkUrl = String(cj?.ticket_url || '').replace(/^https?:\/\/[^/]+/, '')
+    chk('the job hands out a work-ticket link', String(!!tkUrl), '^true$')
+    const ticket = await fetch(`${BASE}${tkUrl}`, { headers: { Cookie: cookieHeader() } })
+    const tkHtml = await ticket.text()
+    chk('the work ticket the press operator holds says RUSH', String(/class="rush"/.test(tkHtml)), '^true$')
+
+    // …and an ordinary job is still an ordinary job, or the flag means nothing.
+    const std = (await req('POST', '/api/autopilot', { body: { text: 'Please quote 300 Gildan 5000 tees in black, 1 color front. fastlane@e2e.test' } })).json
+    chk('a standard quote is not flagged rush', String(std?.job?.rush), '^0$')
+    chk('…and keeps the standard turnaround', String(std?.job?.turnaround_days), '^10$')
+  }
+
   /* ---------- …and so does "Read an order from an email", the biggest quoting surface ----------
    * views/intake.js carried a THIRD pricing engine (`intakeQuote`) beside priceIntake and the
    * manual quote screen. Same defect as the assistant's, one screen over and far more used: it

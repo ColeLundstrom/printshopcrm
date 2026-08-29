@@ -1795,9 +1795,9 @@ app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
-  const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     c.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate,
-    `Reorder — same as ${last.estimate_number}`, now()).lastInsertRowid)
+    `Reorder — same as ${last.estimate_number}`, Math.max(0, Number(last.rush_days) || 0), now()).lastInsertRowid)
   logActivity('estimate', `Reorder drafted from ${last.estimate_number} for ${c.name}`, { contact_id: c.id })
   res.status(201).json({ ok: true, estimate_id: id, from: last.estimate_number })
 }))
@@ -2342,10 +2342,12 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
-  const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  // rush_days travels with the copy: the lines being duplicated carry the rush per-piece the
+  // customer was billed, so the job this converts to has to be produced on that tier too.
+  const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, rush_days, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total,
-    src.notes || '', rate, src.quote_meta || '{}', now()).lastInsertRowid)
+    src.notes || '', rate, src.quote_meta || '{}', Math.max(0, Number(src.rush_days) || 0), now()).lastInsertRowid)
   logActivity('estimate', `${num} created from ${src.estimate_number}`, { contact_id: contactId })
   res.json({ ok: true, id, estimate_number: num })
 }))
@@ -2424,6 +2426,38 @@ app.delete('/api/mockups/:id', requireRole('manager'), wrap((req, res) => {
   res.json({ ok: true })
 }))
 
+/**
+ * What the JOB should say about time, derived from the estimate that priced it.
+ *
+ * Exported shape, and its own function, because the defect was that nothing derived it at all:
+ * convert bound neither `rush` nor `turnaround_days`, so the column defaults landed — 0 and 10 —
+ * on a job whose customer had just paid the shop's 3-day tier. On a 300-piece order billed
+ * $4,280.00 against a $2,870.00 standard price, the job was promised 2026-09-02, projected
+ * 2026-09-11 the instant it was created, and rewritten by applyArtApproval to 2026-09-14 when the
+ * proof came back: eight working days past the date the customer bought. Nothing on the floor
+ * knew — no RUSH badge on the board card, no banner on the work ticket, no pill in Floor Mode,
+ * and `GET /api/board?filter=rush`, the view a manager opens to ask what has to go out first,
+ * returned seven empty columns on every shop whose rush work is quoted through any automated path.
+ * capacity.mjs's rush tiebreak could never fire either, so on a tied due date the premium job was
+ * scheduled second.
+ *
+ * A date a human typed on the convert dialog IS the turnaround they mean, whether it is a rush or
+ * not — that also fixes the ordinary case of a customer who stated an in-hands date.
+ */
+function jobScheduleFromEstimate(e, body) {
+  const rushDays = Math.max(0, Number(e?.rush_days) || 0)
+  const picked = String(body?.due_date || '').trim()
+  const hasPicked = /^\d{4}-\d{2}-\d{2}$/.test(picked)
+  const today = todayIso()
+  const days = rushDays || 10
+  const due_date = hasPicked ? picked : addBusinessDays(today, days)
+  return {
+    due_date,
+    turnaround_days: hasPicked ? Math.max(1, businessDaysBetween(today, due_date)) : days,
+    rush: rushDays > 0 ? 1 : 0,
+  }
+}
+
 /** Approved estimate -> invoice + production job, in one move. */
 app.post('/api/estimates/:id/convert', wrap((req, res) => {
   const id = +req.params.id
@@ -2456,10 +2490,11 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
       id, e.contact_id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
     const jobNum = nextJobNumber()
     const garmentText = (items.find((i) => i.sizes)?.description || items[0]?.description || '').split('—')[0].trim()
-    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    const sched = jobScheduleFromEstimate(e, req.body)
+    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, rush, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       e.contact_id, id, invId, jobNum, title, 'active', 'new', items[0]?.decoration || 'Screen Print', garmentText || null,
       JSON.stringify(sizes), JSON.stringify(lines), sizeSummary(sizes) || `${qty} pcs`,
-      req.body?.due_date || new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10), e.notes || '', now(), now()).lastInsertRowid)
+      sched.due_date, sched.turnaround_days, sched.rush, e.notes || '', now(), now()).lastInsertRowid)
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
     return { invId, jobId, invNum, jobNum }
   })
@@ -3671,8 +3706,9 @@ app.post('/api/autopilot', async (req, res) => {
     const items = freezeUpcharges(priced.items)
     const t = priced.totals
     const estNum = nextEstimateNumber()
-    const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      contact.id, estNum, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, priced.taxRate, order.notes || '', now()).lastInsertRowid)
+    const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      contact.id, estNum, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, priced.taxRate, order.notes || '',
+      priced.rushDays || 0, now()).lastInsertRowid)
     logActivity('estimate', `Estimate ${estNum} written by Autopilot — ${money(t.total)}`, { contact_id: contact.id })
     syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'created')
     mark('estimate', 'Wrote the estimate', `${estNum} · ${money(t.total)}`, { estimate_id: estId, total: t.total, blank: priced.quote?.blank || null })
@@ -3695,7 +3731,7 @@ app.post('/api/autopilot', async (req, res) => {
     const turnaroundDays = order.due_hint
       ? Math.max(1, businessDaysBetween(new Date().toISOString().slice(0, 10), dueDate))
       : (order.rush ? 3 : 10)
-    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, approval_gated, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, approval_gated, rush, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       contact.id, estId, jobNum, `${pieces} ${order.garment}`, 'active', 'new', order.decoration, order.garment,
       JSON.stringify(grid), JSON.stringify(garmentLines(items)), sizeSummary(grid),
       // 16 placeholders need 16 arguments. This bound only 15, and node:sqlite pads the tail with
@@ -3709,6 +3745,7 @@ app.post('/api/autopilot', async (req, res) => {
       dueDate,                                          // due_date
       turnaroundDays,                                   // turnaround_days
       0,                                                // approval_gated
+      priced.rushDays > 0 ? 1 : 0,                      // rush — the tier the customer was billed
       order.notes || '', now(), now()).lastInsertRowid)
 
     // Autonomy dial: 'review' (default, conservative) stops here with an editable draft;
