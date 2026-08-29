@@ -320,7 +320,15 @@ export async function estimateEditor(id) {
   $('#add-fee').onclick = () => addLine(blankFee)
   $('#add-disc').onclick = () => addLine(blankDiscount)
   $('#add-matrix').onclick = () => priceFromMatrix()
-  $('#quote-calc').onclick = () => quoteModal(settings, (line) => { items.push(line); draw() })
+  // The rush tier belongs to the DOCUMENT, not to a line: it is what the floor is promised, and
+  // estimates.rush_days is what jobScheduleFromEstimate reads at convert. The calculator charges
+  // for it per piece; this is where the days it charged for stop being thrown away.
+  let rushDays = Math.max(0, Number(est.rush_days) || 0)
+  $('#quote-calc').onclick = () => quoteModal(settings, (line) => {
+    if (line.rush_days) rushDays = Math.max(rushDays, Number(line.rush_days) || 0)
+    delete line.rush_days
+    items.push(line); draw()
+  })
   $('#read-email').onclick = () => intakeModal((line, parsed) => {
     // First read replaces the empty starter row rather than sitting under it.
     if (items.length === 1 && !items[0].description && !items[0].unit_price) items = []
@@ -339,6 +347,7 @@ export async function estimateEditor(id) {
       // The server refuses to tax an exempt buyer unless told the shop meant it. Typing a rate
       // ON an exempt customer is the shop saying so; carrying the default is not.
       tax_exempt_override: buyerIsExempt() && +$('#tax').value > 0,
+      rush_days: rushDays,
     }
     if (!payload.contact_id) return toast('Choose a customer for this estimate first', true)
     if (!payload.items.length) return toast('Add at least one line item', true)

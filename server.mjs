@@ -2060,6 +2060,8 @@ app.post('/api/contacts/:id/note', wrap((req, res) => {
 /* ================= ESTIMATES ================= */
 
 const estimateView = (e) => ({ ...e, items: parse(e.items, []) })
+/** A rush tier in working days: a small whole number, or none. */
+const rushDaysIn = (v) => Math.max(0, Math.min(30, Math.trunc(Number(v) || 0)))
 
 app.get('/api/estimates', wrap((req, res) => {
   const status = req.query.status
@@ -2222,8 +2224,14 @@ app.post('/api/estimates', wrap((req, res) => {
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
-  const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    contactId, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', now())
+  // The rush tier the quote CHARGED for. estimates.rush_days is what jobScheduleFromEstimate reads
+  // at convert, and this route — the one the estimate editor and every integration write through —
+  // did not read it, so a quote priced at +50% for a 3-day turnaround was produced on the 10-day
+  // default: $5,175.00 billed against a $3,450.00 standard price, job due ten working days out, no
+  // RUSH badge on the board, and ?filter=rush empty. Round 15 taught the automated paths to carry
+  // it; this is the one a person types into. Clamped like every other write.
+  const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    contactId, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now())
   const id = Number(r.lastInsertRowid)
   logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
@@ -2259,8 +2267,11 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
-  run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=? WHERE id=?',
-    b.contact_id ?? e.contact_id, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes, id)
+  // `?? e.rush_days`, so an edit that does not mention the rush cannot silently clear one — the
+  // same rule every other column on this route already follows.
+  run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
+    b.contact_id ?? e.contact_id, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
+    rushDaysIn(b.rush_days ?? e.rush_days), id)
   res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
 }))
 

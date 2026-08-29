@@ -20,6 +20,10 @@ export function quoteModal(settings, onUse) {
     qty: 100,
     screenFee: Number(settings.screen_fee) || 25,
     rushMult: 1,
+    // The tier's DAYS, not just its price multiplier. The calculator charged the rush and the
+    // number of days it was charging for was thrown away on the way out of the <select>, so the
+    // job it produced was scheduled standard.
+    rushDays: 0,
     darkGarment: false,
     press: settings.press_type || 'auto',
     locations: [{ name: 'Front', colors: 2 }],
@@ -78,7 +82,7 @@ export function quoteModal(settings, onUse) {
         </div>
 
         <div class="field"><label>Turnaround</label><select class="input" id="q-rush">
-          ${RUSH_TIERS.map((t) => `<option value="${t.mult}">${t.label}${t.mult > 1 ? ` (+${Math.round((t.mult - 1) * 100)}%)` : ''}</option>`).join('')}
+          ${RUSH_TIERS.map((t) => `<option value="${t.mult}:${t.days}">${t.label}${t.mult > 1 ? ` (+${Math.round((t.mult - 1) * 100)}%)` : ''}</option>`).join('')}
         </select></div>
       </div>
 
@@ -224,7 +228,9 @@ export function quoteModal(settings, onUse) {
         state.markup = +$('#q-markup', bg).value || 1
         state.qty = Math.max(1, +$('#q-qty', bg).value || 1)
         state.screenFee = +$('#q-screen', bg).value || 0
-        state.rushMult = +$('#q-rush', bg).value || 1
+        const [rMult, rDays] = String($('#q-rush', bg).value || '1:0').split(':')
+        state.rushMult = +rMult || 1
+        state.rushDays = Math.max(0, Number(rDays) || 0)
         state.press = $('#q-press', bg).value
         state.darkGarment = $('#q-dark', bg).checked
         state.widthIn = +$('#q-w', bg).value || 0
@@ -267,6 +273,7 @@ export function quoteModal(settings, onUse) {
             sizes: { S: 0, M: state.qty, L: 0, XL: 0 },
             unit_price: q.perPiece,
             garment_cost: state.garmentCost,
+            rush_days: state.rushMult > 1 ? state.rushDays : 0,
             taxable: true,
           })
           if (q.fee > 0) onUse({ description: q.svc.feeLabel || 'Setup', detail: 'One-time charge', qty: 1, unit_price: q.fee, taxable: false })
@@ -283,6 +290,7 @@ export function quoteModal(settings, onUse) {
           sizes: { S: 0, M: state.qty, L: 0, XL: 0 },
           unit_price: q.perPiece,
           garment_cost: state.garmentCost,
+          rush_days: q.rushApplied ? state.rushDays : 0,
           taxable: true,
         })
         if (q.screens > 0) {

@@ -3655,6 +3655,41 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- a rush the estimate editor charged for is a rush the floor produces ----------
+   * The Price Calculator inside the estimate editor offers RUSH_TIERS — 7 day +25% up to next day
+   * +100% — and its <select> carried `value="${t.mult}"` only: the tier's DAYS were discarded on
+   * the way out of the control. POST and PUT /api/estimates then never read rush_days at all, so
+   * the estimate had nowhere to keep it. Reproduced: a 300-piece quote priced at the +50% 3-day
+   * tier stored $5,175.00 against a $3,450.00 standard price, with rush_days 0 — and converting it
+   * produced rush=0, turnaround_days=10, due ten working days out, no RUSH badge on the board and
+   * ?filter=rush empty. Round 15 taught every automated path to carry the tier; this is the one a
+   * person types into. */
+  {
+    const rc = (await req('POST', '/api/contacts', { body: { name: 'Rush Editor Co', email: 'rusheditor@e2e.test' } })).json
+    const re2 = await req('POST', '/api/estimates', { body: { contact_id: rc.id, rush_days: 3, items: [
+      { description: 'Gildan 5000 Tee — Red — 2/0 Front', detail: 'RUSH +50%', sizes: { M: 150, L: 150 }, unit_price: 17.25 },
+    ] } })
+    chk('a quote written at a rush tier records the tier', String(re2.json?.rush_days), '^3$')
+
+    // Editing the quote without mentioning the rush must not quietly clear it.
+    const edited = await req('PUT', `/api/estimates/${re2.json.id}`, { body: { notes: 'Customer confirmed by phone' } })
+    chk('…and a note-only edit leaves it alone', String(edited.json?.rush_days), '^3$')
+
+    const rconv = (await req('POST', `/api/estimates/${re2.json.id}/convert`)).json
+    const rjob = (await req('GET', `/api/jobs/${rconv.job_id}`)).json
+    chk('…the job it converts to is a rush job', String(rjob?.rush), '^1$')
+    chk('…scheduled on the turnaround the customer paid for', String(rjob?.turnaround_days), '^3$')
+    const board = (await req('GET', '/api/board?filter=rush')).json
+    chk('…and the rush filter on the board finds it',
+      String(((board?.columns || []).flatMap((c) => c.jobs || [])).some((j) => j.id === rconv.job_id)), '^true$')
+
+    // And the calculator has to actually hand the days over, or the route above never sees them.
+    const quoteSrc = (await req('GET', '/js/views/quote.js')).text
+    chk('the calculator carries the tier\'s days, not only its multiplier', quoteSrc, 'value="\\$\\{t\\.mult\\}:\\$\\{t\\.days\\}"')
+    chk('…and puts them on the line it hands the editor', quoteSrc, 'rush_days:')
+    chk('…which puts them on the document', (await req('GET', '/js/views/estimates.js')).text, 'rush_days: rushDays')
+  }
+
   /* ---------- one order is one card on the board, however the quote was written ----------
    * Autopilot and the Slack quick-quote both open a production job the moment they write the
    * estimate, and both deliberately stop at a SENT estimate with no invoice ("Autopilot's job ends
