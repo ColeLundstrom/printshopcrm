@@ -5729,6 +5729,21 @@ section('the first screen after login does not build the whole sales board')
       `Deal ${i}`, stage, value, i)
   }
 
+  // opportunities shipped with no index at all. oppForEstimate() is on the write path of every
+  // quote — create, send, approve, convert, quick-quote — and full-scanned a table the app appends
+  // to for every estimate the shop ever writes (1.18 ms per call at 29,910 rows, growing forever).
+  for (const [what, sql] of [
+    ['the opportunity behind a quote is found by index', 'SELECT * FROM opportunities WHERE estimate_id = 1'],
+    ['…and the one behind a customer is too', 'SELECT * FROM opportunities WHERE contact_id = 1'],
+    ['…and the dashboard KPI never touches the table', 'SELECT stage, COUNT(*) AS n, COALESCE(SUM(value), 0) AS v FROM opportunities GROUP BY stage'],
+  ]) {
+    await t(what, () => {
+      const plan = mem.prepare('EXPLAIN QUERY PLAN ' + sql).all().map((r) => String(r.detail || '')).join(' | ')
+      assert.match(plan, /USING (COVERING )?INDEX/, `plan was: ${plan}`)
+      assert.doesNotMatch(plan, /SCAN opportunities(?! USING)/, `plan was: ${plan}`)
+    })
+  }
+
   await t('the five KPIs are the same five numbers the board computes', () => {
     assert.deepEqual(pipe.pipelineStats(), pipe.pipelineBoard().stats)
   })
