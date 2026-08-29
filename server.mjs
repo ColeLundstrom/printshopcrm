@@ -1641,7 +1641,7 @@ app.get('/api/dashboard', wrap((_req, res) => {
     activity: all(`SELECT a.*, c.name AS contact_name FROM activities a LEFT JOIN contacts c ON c.id=a.contact_id
       ORDER BY a.created_at DESC, a.id DESC LIMIT 12`),
     // Roll the other pillars up onto the home screen so it reflects the whole shop.
-    pipeline: pipeline.pipelineBoard().stats,
+    pipeline: pipeline.pipelineStats(),
     inbox: {
       unread: get(`SELECT COUNT(*) AS c FROM messages WHERE direction='in' AND read=0`).c,
       threads: all(`SELECT c.id, c.name, m.body, m.created_at FROM messages m JOIN contacts c ON c.id=m.contact_id

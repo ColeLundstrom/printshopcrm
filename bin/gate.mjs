@@ -5709,6 +5709,55 @@ await t('the PSC_PUBLIC_URL warning names the links that really are Host-derived
   assert.match(src, /const origin = trustedOrigin\(req, r\.tenant\)/, 'the reset route must still use the learned origin')
 })
 
+section('the first screen after login does not build the whole sales board')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  const pipe = await import('../lib/pipeline.mjs')
+
+  dbmod.run(`INSERT INTO contacts (id, name) VALUES (1, 'Pipeline Co')`)
+  // Every stage represented, a NULL value, a zero, and enough rows that a per-row fold and a
+  // GROUP BY have somewhere to disagree.
+  const stages = pipe.STAGE_KEYS
+  for (let i = 1; i <= 600; i++) {
+    const stage = stages[i % stages.length]
+    const value = i % 37 === 0 ? null : (i % 53 === 0 ? 0 : Math.round((i * 137.77) * 100) / 100)
+    dbmod.run(`INSERT INTO opportunities (contact_id, title, stage, value, sort_order) VALUES (1,?,?,?,?)`,
+      `Deal ${i}`, stage, value, i)
+  }
+
+  await t('the five KPIs are the same five numbers the board computes', () => {
+    assert.deepEqual(pipe.pipelineStats(), pipe.pipelineBoard().stats)
+  })
+
+  await t('a shop with no opportunities at all reports the same nothing', () => {
+    const empty = new DatabaseSync(':memory:')
+    dbmod.setDefaultDb(empty); dbmod.initDb(empty)
+    try { assert.deepEqual(pipe.pipelineStats(), pipe.pipelineBoard().stats) }
+    finally { dbmod.setDefaultDb(mem) }
+  })
+
+  // The whole point: pipelineBoard() materialises every opportunity the shop has ever had, joins
+  // contacts onto each, and builds nine arrays out of the result — 154.5 ms of blocked event loop
+  // and 34.7 MB of heap on 29,910 rows, for five scalars, on the landing screen. node:sqlite is
+  // synchronous, so every other tenant on the box waits through it.
+  await t('…and reads six rows to do it, not one per deal', () => {
+    const realPrepare = mem.prepare.bind(mem)
+    let rows = 0
+    mem.prepare = (sql) => {
+      const st = realPrepare(sql)
+      const realAll = st.all.bind(st)
+      st.all = (...a) => { const r = realAll(...a); rows += r.length; return r }
+      return st
+    }
+    try { pipe.pipelineStats() } finally { mem.prepare = realPrepare }
+    assert.ok(rows <= pipe.STAGES.length, `pipelineStats read ${rows} rows for 600 deals`)
+  })
+}
+
 section('the sidebar does not download the shop to draw six dots')
 await t('the chrome refresh asks for badges, not for six list endpoints', async () => {
   const { readFileSync } = await import('node:fs')
