@@ -303,6 +303,9 @@ export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {
 // and has to Tab back through the whole sidebar to get where they were, and a screen reader
 // announces nothing at all — the dialog simply stops existing mid-sentence.
 let modalReturnFocus = null
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+const focusable = (root) => [...$$(FOCUSABLE, root)].filter((n) => n.offsetParent !== null || n === document.activeElement)
+let modalSeq = 0
 
 /**
  * Copy text, and never claim to have done it when it did not happen.
@@ -350,9 +353,10 @@ export function modal({ title, body, footer = '', wide = false, onMount }) {
   const opener = document.activeElement
   const outer = closeModal()
   modalReturnFocus = (opener && opener !== document.body && document.contains(opener)) ? opener : outer
+  const titleId = `modal-t-${++modalSeq}`
   const bg = el(`<div class="modal-bg">
-    <div class="modal ${wide ? 'wide' : ''}">
-      <div class="modal-h"><h3>${esc(title)}</h3><button class="x" data-close>&times;</button></div>
+    <div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="${titleId}">
+      <div class="modal-h"><h3 id="${titleId}">${esc(title)}</h3><button class="x" data-close aria-label="Close">&times;</button></div>
       <div class="modal-b"></div>
       ${footer ? `<div class="modal-f">${footer}</div>` : ''}
     </div></div>`)
@@ -361,8 +365,23 @@ export function modal({ title, body, footer = '', wide = false, onMount }) {
   bg.addEventListener('mousedown', (e) => { if (e.target === bg) closeModal() })
   on(bg, '[data-close]', closeModal)
   document.addEventListener('keydown', escClose)
+  // Tab must not walk out of an open dialog. Without this, Tab from a confirmModal — whose body is
+  // a paragraph, so the focus line below found nothing to focus and focus STAYED on the trigger
+  // behind the overlay — went straight into the sidebar, and Enter re-fired the button that opened
+  // the dialog. Escape and focus-restore were already right; this is the half that was missing.
+  bg.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return
+    const f = focusable(bg)
+    if (!f.length) return
+    const first = f[0], last = f[f.length - 1]
+    if (e.shiftKey && (document.activeElement === first || !bg.contains(document.activeElement))) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && (document.activeElement === last || !bg.contains(document.activeElement))) { e.preventDefault(); first.focus() }
+  })
   onMount?.(bg)
-  $('.modal-b input, .modal-b select, .modal-b textarea', bg)?.focus()
+  // Land inside the dialog, always. A dialog with no form control (every confirmModal) used to
+  // leave focus on the control behind the overlay.
+  const start = $('.modal-b input, .modal-b select, .modal-b textarea', bg) || focusable(bg)[0]
+  start?.focus()
   return bg
 }
 

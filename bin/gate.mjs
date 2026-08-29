@@ -423,6 +423,37 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
   if (prevAuth !== undefined) process.env.PSC_AUTH = prevAuth
 }
 
+/* ---------- an open dialog holds the keyboard ----------
+ * confirmModal is how the product asks "are you sure" before deleting a customer, a quote, a job
+ * or a proof. It trapped nothing: `modal()` focused the first input in `.modal-b`, and a confirm's
+ * body is a `<p>`, so focus STAYED on the trigger behind the overlay. Tab walked into the sidebar,
+ * and Enter re-fired the button that opened the dialog — on a destructive action, with the dialog
+ * still on screen. There was no role="dialog", no aria-modal, and the close button's only
+ * accessible name was the times character. Escape and focus-restore were already correct. */
+section('a modal is a dialog, and the keyboard cannot leave it')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const core = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/js/core.js'), 'utf8')
+
+  await t('it announces itself as a dialog, with a name', () => {
+    assert.match(core, /role="dialog"/, 'a screen reader has no other way to know the page is blocked')
+    assert.match(core, /aria-modal="true"/)
+    assert.match(core, /aria-labelledby="\$\{titleId\}"/, 'the dialog must be named by its own heading')
+    assert.match(core, /class="x" data-close aria-label="Close"/, 'the × needs a name that is not "times"')
+  })
+  await t('Tab is trapped inside it', () => {
+    assert.match(core, /e\.key !== 'Tab'/, 'modal() must handle Tab')
+    assert.match(core, /e\.shiftKey && \(document\.activeElement === first/, 'and wrap backwards as well as forwards')
+  })
+  await t('…and focus lands inside it even when there is nothing to type in', () => {
+    // The exact confirmModal case: body is a <p>, so the input query finds nothing.
+    assert.match(core, /\$\('\.modal-b input, \.modal-b select, \.modal-b textarea', bg\) \|\| focusable\(bg\)\[0\]/,
+      'a dialog with no form control must still take focus off the trigger behind it')
+  })
+}
+
 /* ---------- a button that says it copied must have copied ----------
  * `navigator.clipboard?.writeText(x); toast('Link copied')` — no await, no catch, and an optional
  * chain that evaluates to `undefined` and toasts success anyway. `navigator.clipboard` does not
