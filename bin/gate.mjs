@@ -4748,6 +4748,77 @@ section('a document never hides money between its subtotal and its total')
  *
  * A number the shop reads out of the assistant and then acts on has to be the number on the
  * screen. */
+
+/* ---------- the pick ticket fits on the paper it is printed on (v18) ----------
+ *
+ * pickTicketPage() writes 30pt per size row onto a 792pt sheet and ends with `build([p])` — one
+ * page, no pagination, unlike renderDocument() and customerStatement() in the same file, which
+ * both call newPage() when they run out of room.
+ *
+ * On a real 506-piece, 4-style school order (tees, hoodies, ladies tees, caps) 21 of the 76 text
+ * operations render at PDF y = 2 down to −316 — that is at and below the bottom edge of the sheet.
+ * The entire fourth garment and the grand TOTAL are invisible, and the PICKED BY rule overprints
+ * whatever garment name was still on the page. The warehouse picks 254 of 506 with nothing on the
+ * paper to say a page is missing.
+ *
+ * It breaks far earlier than that: two garments at eight sizes already loses the TOTAL.
+ *
+ * The assertion reads the generated PDF's own text-positioning operators. Page space runs from
+ * y = 0 at the bottom, so anything at or below the footer band never reached the paper. */
+section('the pick ticket cannot render a garment off the bottom of the sheet')
+{
+  const pdf = await import('../lib/pdf.mjs')
+  const SETTINGS = { shop_name: 'Gate Ink', shop_tagline: 'test', shop_phone: '555-0100' }
+  // Every Tm operator's y — PDF user space, origin bottom-left.
+  const textYs = (buf) => [...String(buf).matchAll(/1 0 0 1 [\d.-]+ (-?[\d.]+) Tm/g)].map((m) => Number(m[1]))
+  const pageCount = (buf) => Number(String(buf).match(/\/Count (\d+)/)?.[1] || 0)
+
+  const school = [
+    { description: 'Gildan 5000 Tee — Navy', sizes: { YS: 12, YM: 18, YL: 18, S: 24, M: 40, L: 40, XL: 24, '2XL': 12 } },
+    { description: 'Gildan 18500 Hoodie — Navy', sizes: { YS: 8, YM: 12, YL: 12, S: 18, M: 30, L: 30, XL: 18, '2XL': 10 } },
+    { description: 'Bella+Canvas 6400 Ladies Tee — Navy', sizes: { S: 20, M: 30, L: 30, XL: 16, '2XL': 8 } },
+    { description: 'Port & Company PC61 — Navy', sizes: { S: 14, M: 20, L: 20, XL: 12, '2XL': 8 } },
+  ]
+  const total = school.reduce((s, b) => s + Object.values(b.sizes).reduce((a, n) => a + n, 0), 0)
+
+  await t('a 4-style school order prints every row on a real page', () => {
+    const buf = pdf.pickTicket({ job: { job_number: 'JOB-1042', decoration: 'Screen Print', due_date: '2026-09-10' }, settings: SETTINGS, lines: school })
+    const ys = textYs(buf)
+    const off = ys.filter((y) => y < 30)
+    assert.equal(off.length, 0, `${off.length} of ${ys.length} text ops render at or below the bottom edge (lowest ${Math.min(...ys)})`)
+  })
+
+  await t('…on more than one page, because it does not fit on one', () => {
+    const buf = pdf.pickTicket({ job: { job_number: 'JOB-1042' }, settings: SETTINGS, lines: school })
+    assert.ok(pageCount(buf) > 1, 'a 506-piece four-style order was still forced onto a single page')
+  })
+
+  await t('…and the grand total, which the picker checks against, is on the paper', () => {
+    const buf = pdf.pickTicket({ job: { job_number: 'JOB-1042' }, settings: SETTINGS, lines: school })
+    assert.match(String(buf), new RegExp(`\\(${total}\\) Tj`), `TOTAL ${total} never reached the page`)
+  })
+
+  await t('two garments at eight sizes still keeps its total — the earliest real break', () => {
+    const two = school.slice(0, 2)
+    const t2 = two.reduce((s, b) => s + Object.values(b.sizes).reduce((a, n) => a + n, 0), 0)
+    const buf = pdf.pickTicket({ job: { job_number: 'JOB-1043' }, settings: SETTINGS, lines: two })
+    assert.equal(textYs(buf).filter((y) => y < 30).length, 0, 'rows ran off the sheet')
+    assert.match(String(buf), new RegExp(`\\(${t2}\\) Tj`), `TOTAL ${t2} never reached the page`)
+  })
+
+  await t('…and an ordinary one-garment ticket is still exactly one page', () => {
+    const buf = pdf.pickTicket({ job: { job_number: 'JOB-1044' }, settings: SETTINGS, lines: [{ description: 'Gildan 5000 Tee — Black', sizes: { S: 24, M: 48, L: 48, XL: 24 } }] })
+    assert.equal(pageCount(buf), 1)
+    assert.equal(textYs(buf).filter((y) => y < 30).length, 0)
+  })
+
+  await t('…and a ticket with no sizes at all still prints its one honest line', () => {
+    const buf = pdf.pickTicket({ job: { job_number: 'JOB-1045' }, settings: SETTINGS, lines: [] })
+    assert.match(String(buf), /No sizes on file/)
+    assert.equal(pageCount(buf), 1)
+  })
+}
+
 section('the assistant does not invent money the screens do not show')
 {
   const { DatabaseSync } = await import('node:sqlite')
