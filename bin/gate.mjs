@@ -4015,6 +4015,64 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
  * subsequent customer proof into their Drive, shares it, and deletes the local copy.
  * The state also never expires and is cleared only on SUCCESS, so one manager who starts a connect
  * and closes the tab leaves a permanently valid nonce in a payload every staff member can read. */
+/* ---------- a website visitor cannot write over the shop's biggest deal (v20) ----------
+ * chat_sessions.state carries the session's opportunity rowid as JSON, and captureLead() re-read
+ * it and blind-UPDATEd `WHERE id = ?` on every later turn. opportunities.id is a reused rowid and
+ * DELETE /api/opportunities/:id has no guard, so:
+ *   1. a visitor chats on the public widget; captureLead opens deal 57 and stores it in the state;
+ *   2. the manager tidies the pipeline and deletes 57 — exactly the junk-bot-lead row this path
+ *      produces;
+ *   3. the shop writes its next real quote, and syncFromEstimate lands it on rowid 57;
+ *   4. the visitor's widget session is still live, they type one more message, and the $18,400
+ *      school-district deal is retitled, revalued to $1,240, and has a stranger's transcript,
+ *      email and phone in its notes. Nothing logs it and no screen shows the old value, while Open
+ *      Pipeline and the Weighted Forecast both move.
+ * Same shape as automation_pending.ctx and art_versions.estimate_id, on the one table nobody had
+ * covered — and reached by an ANONYMOUS caller, which is why it gets a write-site check too. */
+section('a website visitor cannot write over the shop\'s biggest deal')
+await t('deleting a deal clears the chat session that was pointing at it', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db); ag.initAgent(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Website Visitor')")
+    dbm.run("INSERT INTO opportunities (id, contact_id, title, stage, value, source) VALUES (57, 1, 'Junk lead', 'lead', 0, 'ai-receptionist')")
+    dbm.run("INSERT INTO chat_sessions (id, public_id, contact_id, state) VALUES (1, 'pub-1', 1, ?)", JSON.stringify({ _oppId: 57, name: 'Stranger', qty: 300 }))
+    // A row whose state is somehow not JSON must not make deleting a deal throw — a malformed chat
+    // row cannot be allowed to make a pipeline card undeletable.
+    dbm.run("INSERT INTO chat_sessions (id, public_id, contact_id, state) VALUES (2, 'pub-2', 1, 'not json')")
+    dbm.run('DELETE FROM opportunities WHERE id = 57')
+    const st = JSON.parse(dbm.get('SELECT state FROM chat_sessions WHERE id = 1').state)
+    assert.equal(st._oppId, undefined, "the session still points at a rowid the next quote will be handed")
+    assert.equal(st.name, 'Stranger', '…and the rest of the session is untouched')
+    assert.equal(dbm.get('SELECT state FROM chat_sessions WHERE id = 2').state, 'not json', 'a malformed row survives the delete')
+    // The estimate half of the same state, same rule.
+    dbm.run("INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total) VALUES (9, 1, 'EST-9', 'draft', '[]', 100, 0, 100)")
+    dbm.run("UPDATE chat_sessions SET state = ? WHERE id = 1", JSON.stringify({ _estId: 9 }))
+    dbm.run('DELETE FROM estimates WHERE id = 9')
+    assert.equal(JSON.parse(dbm.get('SELECT state FROM chat_sessions WHERE id = 1').state)._estId, undefined,
+      'a deleted quote leaves the session pointing at the next quote number')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('…and the visitor\'s own turn refuses to write on a deal that is not theirs', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'lib/agent.mjs'), 'utf8')
+  const cap = src.slice(src.indexOf('// One opportunity per session.'), src.indexOf('// Draft an estimate once'))
+  assert.ok(cap.length > 100, 'captureLead should still be there')
+  assert.doesNotMatch(cap, /UPDATE opportunities SET title=\?, value=\?, notes=\?, updated_at=\? WHERE id=\?'/,
+    'a bare WHERE id = ? is driven straight off a value an anonymous visitor controls')
+  assert.match(cap, /WHERE id=\? AND contact_id=\? AND source=\?/, 'scope the write to a deal this session actually opened')
+  assert.match(cap, /if \(!hit\.changes\) \{ oppId = null; state\._oppId = null \}/,
+    'and when it matches nothing of ours, open a fresh deal rather than writing on a stranger\'s')
+})
+
 section('a nonce is not an identity')
 await t('the OAuth state is never handed to a client', async () => {
   const { DatabaseSync } = await import('node:sqlite')
