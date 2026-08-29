@@ -4845,6 +4845,29 @@ section('youth XL sorts with the youth sizes')
 }
 
 
+/* A malformed receipts array answered a bare 500 on the receiving screen.
+ *
+ * `receipts: [null]` — a row the UI failed to build, or any caller posting a sparse array — hit
+ * `Number(r.line_id)` on null and threw, so the shop saw "Something went wrong on our end." on the
+ * one screen that books goods in. Skip what is not a receipt; book what is. */
+section('receiving survives a row that is not a receipt')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  const po = sup.createPurchaseOrder({ job_number: 'JOB-1' },
+    { po_number: 'PSC-1', supplier: 'S&S', total_units: 12,
+      lines: [{ sku: 'G500-B-M', style: 'Gildan 5000', color: 'black', size: 'M', qty: 12, unit_cost: 3.2 }] },
+    { status: 'submitted' })
+
+  await t('a null row does not take the request down', () => {
+    const out = sup.receivePurchaseOrder(po.id, [null, { line_id: po.lines[0].id, qty: 6 }, 'nonsense', 7])
+    assert.equal(out.received, 6, 'the real receipt still has to land')
+  })
+}
+
 section('the packing slip lists every garment in the box')
 {
   const pdf = await import('../lib/pdf.mjs')
