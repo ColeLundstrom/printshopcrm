@@ -3655,6 +3655,50 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- one order is one card on the board, however the quote was written ----------
+   * Autopilot and the Slack quick-quote both open a production job the moment they write the
+   * estimate, and both deliberately stop at a SENT estimate with no invoice ("Autopilot's job ends
+   * at a sent estimate and a visible 'waiting on them'"). Convert's only duplicate guard is
+   * `SELECT * FROM invoices WHERE estimate_id = ?` — so it never saw them, and opened a SECOND job
+   * for the same order the moment the customer said yes.
+   *
+   * Measured: one 120-piece Autopilot order became JOB-1003 and JOB-1004, both 120 pieces. 240
+   * pieces on the board, the press time booked twice in Capacity so every promise derived from the
+   * backlog is wrong, two pick tickets and two work tickets so the floor can run it twice, and two
+   * purchase orders — PSC-JOB-1003 and PSC-JOB-1004 are different idempotency keys, so both
+   * submit: 240 blanks at $768 against a job needing $384 of them. */
+  {
+    const ao = await req('POST', '/api/autopilot', { body: {
+      text: 'We need 120 Gildan 5000 tees, 2 color front, navy. Sizes: 20 S, 40 M, 40 L, 20 XL. Dup Co, dup@e2e.test',
+    } })
+    const dupEst = ao.json?.estimate?.id ?? ao.json?.estimate_id
+    chk('autopilot writes a quote', String(dupEst ?? ''), '^\\d+$')
+    const jobsFor = async () => ((await req('GET', '/api/board')).json?.columns || [])
+      .flatMap((c) => c.jobs || []).filter((j) => j.estimate_id === dupEst)
+    const opened = await jobsFor()
+    chk('…and opens the production job with it', String(opened.length), '^1$')
+    chk('…with no invoice behind it yet', String(opened[0]?.invoice_id ?? 'null'), '^null$')
+
+    const conv = await req('POST', `/api/estimates/${dupEst}/convert`)
+    chk('the customer approves and the shop converts', String(conv.status), '^200$')
+    const after = await jobsFor()
+    chk('one order is still one job', String(after.length), '^1$')
+    chk('…the one Autopilot already put on the board', String(after[0]?.id), `^${opened[0]?.id}$`)
+    chk('…now bound to the invoice that bills it', String(after[0]?.invoice_id), `^${conv.json?.invoice_id}$`)
+    chk('…and convert says it linked rather than created', String(conv.json?.job_reused), '^true$')
+    chk('…and its work ticket is not printable twice',
+      String((await jobsFor()).map((j) => j.job_number).join(',')), `^${after[0]?.job_number}$`)
+
+    // An ordinary quote with no job behind it must still get one.
+    const pc = (await req('POST', '/api/contacts', { body: { name: 'Plain Co', email: 'plain@e2e.test' } })).json
+    const pe = (await req('POST', '/api/estimates', { body: { contact_id: pc.id, items: [
+      { description: 'Gildan 5000 Tee — Red', unit_price: 9.5, sizes: { M: 40 } },
+    ] } })).json
+    const pconv = await req('POST', `/api/estimates/${pe.id}/convert`)
+    chk('a quote with no job behind it still opens one', String(pconv.json?.job_id ?? ''), '^\\d+$')
+    chk('…and says so', String(pconv.json?.job_reused), '^false$')
+  }
+
   /* ---------- the slip in the box agrees with the ticket the order was picked from ----------
    * Every other floor document reads jobLines(j) — the pick ticket, the work ticket and the
    * purchase order all do. The packing slip built its items straight off the ESTIMATE. The

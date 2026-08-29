@@ -2552,22 +2552,42 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   // Invoice + job + estimate-status, atomically. Before this was three unguarded writes: a crash
   // after the invoice insert left a billable invoice with no production job and an estimate stuck
   // at draft, and the 409 guard above then blocked every retry — an unrecoverable wedge.
+  // Autopilot and the Slack quick-quote both open a production job the moment they write the
+  // estimate, and they deliberately stop at a SENT estimate with no invoice. Convert's only
+  // duplicate guard is `SELECT * FROM invoices WHERE estimate_id = ?`, so it never saw them and
+  // opened a SECOND job for the same order. Measured: one 120-piece Autopilot order became
+  // JOB-1003 and JOB-1004, both 120 pieces, 240 on the board, the press time booked twice in
+  // Capacity, two pick tickets, two work tickets, and two purchase orders — PSC-JOB-1003 and
+  // PSC-JOB-1004, which are different idempotency keys, so BOTH submit: 240 blanks bought at $768
+  // against a job needing $384 of them.
+  //
+  // Deliberately narrow: only a job that is still active and carries NO invoice, which is exactly
+  // the Autopilot/quick-quote shape. A job left behind by a voided-and-reissued invoice has an
+  // invoice_id and is a separate question. Adoption binds the invoice and refreshes the schedule
+  // — which is what converting decides — and does not overwrite the size split, because a shop may
+  // have corrected it on the job while waiting for the customer, and that is the newer truth.
+  const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL AND status = 'active' ORDER BY id LIMIT 1", id)
   const { invId, jobId, invNum, jobNum } = tx(() => {
     const invNum = nextInvoiceNumber()
     const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, created_at) VALUES (?,?,?,?,?,?,?,?)',
       id, e.contact_id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
+    const sched = jobScheduleFromEstimate(e, req.body)
+    run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
+    if (prior) {
+      run('UPDATE jobs SET invoice_id=?, due_date=?, turnaround_days=?, rush=?, updated_at=? WHERE id=?',
+        invId, sched.due_date, sched.turnaround_days, sched.rush, now(), prior.id)
+      return { invId, jobId: prior.id, invNum, jobNum: prior.job_number }
+    }
     const jobNum = nextJobNumber()
     const garmentText = (items.find((i) => i.sizes)?.description || items[0]?.description || '').split('—')[0].trim()
-    const sched = jobScheduleFromEstimate(e, req.body)
     const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, rush, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       e.contact_id, id, invId, jobNum, title, 'active', 'new', items[0]?.decoration || 'Screen Print', garmentText || null,
       JSON.stringify(sizes), JSON.stringify(lines), sizeSummary(sizes) || `${qty} pcs`,
       sched.due_date, sched.turnaround_days, sched.rush, e.notes || '', now(), now()).lastInsertRowid)
-    run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
     return { invId, jobId, invNum, jobNum }
   })
-  logActivity('invoice', `Estimate ${e.estimate_number} converted — invoice ${invNum}, job ${jobNum}`, { contact_id: e.contact_id, job_id: jobId })
-  res.json({ ok: true, invoice_id: invId, job_id: jobId, invoice_number: invNum, job_number: jobNum })
+  logActivity('invoice', `Estimate ${e.estimate_number} converted — invoice ${invNum}, ${prior ? `linked to the job already on the board, ${jobNum}` : `job ${jobNum}`}`, { contact_id: e.contact_id, job_id: jobId })
+  res.json({ ok: true, invoice_id: invId, job_id: jobId, invoice_number: invNum, job_number: jobNum, job_reused: !!prior })
 }))
 
 app.get('/api/estimates/:id/pdf', wrap((req, res) => {

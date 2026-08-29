@@ -554,7 +554,11 @@ function convertModal(e) {
         try {
           const r = await api.post(`/api/estimates/${e.id}/convert`, formData(bg))
           closeModal()
-          toast(lite ? `Created ${r.invoice_number}` : `Created ${r.invoice_number} and ${r.job_number}`)
+          // Autopilot and the Slack quick-quote open the job when they write the quote, so convert
+          // adopts it rather than opening a second card for one order. Say which happened.
+          toast(lite ? `Created ${r.invoice_number}`
+            : r.job_reused ? `Created ${r.invoice_number} — linked to ${r.job_number}, already on the board`
+              : `Created ${r.invoice_number} and ${r.job_number}`)
           go(lite ? `/invoices/${r.invoice_id}` : `/jobs/${r.job_id}`)
         } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = lite ? 'Create Invoice' : 'Create Invoice + Job' }
       }
