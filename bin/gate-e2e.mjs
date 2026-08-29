@@ -558,6 +558,45 @@ try {
     chk('a numeric string from a form still records', String(asText.status), '^200$')
     chk('…at the amount it says', String(round2e(asText.json?.amount_paid ?? 0)), '^10.5$')
 
+    /* ---------- the same cheque, recorded twice, is money the shop does not have ----------
+     * The only guard here was the over-payment check, which catches a doubled FULL payment
+     * because the second exceeds the remaining balance — and catches nothing else. Two $500 posts
+     * against a $1,000 invoice both returned 200 and the invoice came back amount_paid $1,000,
+     * status "paid": `invoice.paid` fired, a QuickBooks push queued, the customer was never
+     * chased for the $500 they still owed, and Revenue MTD showed income nobody received. The
+     * dialog's in-flight guard is per-TAB, so two people at two desks with the same cheque, or a
+     * re-click after a response that never arrived, walk straight past it. */
+    {
+      const dc = (await req('POST', '/api/contacts', { body: { name: 'Duplicate Co', email: 'dupe@e2e.test' } })).json
+      const de = (await req('POST', '/api/estimates', { body: { contact_id: dc.id, items: [{ description: 'Tees', qty: 1, unit_price: 1000 }] } })).json
+      const invIdOf = (c) => c.json?.invoice?.id ?? c.json?.invoice_id ?? c.json?.id
+      const dInv = invIdOf(await req('POST', `/api/estimates/${de.id}/convert`))
+      const cheque = { amount: 500, method: 'check', note: 'cheque 1043' }
+      const first = await req('POST', `/api/invoices/${dInv}/payments`, { body: cheque })
+      chk('a part payment records', String(first.status), '^200$')
+      const second = await req('POST', `/api/invoices/${dInv}/payments`, { body: cheque })
+      chk('…and the very same cheque again is refused', String(second.status), '^409$')
+      chk('…with a code the dialog can act on', String(second.json?.code), '^duplicate_payment$')
+      chk('…naming the money it matched', String(second.json?.error || ''), '\\$500\\.00')
+      const mid = (await req('GET', `/api/invoices/${dInv}`)).json
+      chk('…and the invoice still owes the other half', String(round2e(mid?.amount_paid ?? 0)), '^500$')
+      chk('…so it is not marked paid', String(mid?.status), '^(unpaid|partial|overdue)$')
+      // It has to be a question, not a wall: two genuine $50 cash payments in a row are ordinary.
+      const forced = await req('POST', `/api/invoices/${dInv}/payments`, { body: { ...cheque, confirm: true } })
+      chk('…while a human who says it really is a second payment is believed', String(forced.status), '^200$')
+      chk('…and it lands', String(round2e(forced.json?.amount_paid ?? 0)), '^1000$')
+      // A DIFFERENT payment on the same invoice is never a duplicate.
+      const other = (await req('POST', '/api/estimates', { body: { contact_id: dc.id, items: [{ description: 'Tees', qty: 1, unit_price: 300 }] } })).json
+      const oInv = invIdOf(await req('POST', `/api/estimates/${other.id}/convert`))
+      await req('POST', `/api/invoices/${oInv}/payments`, { body: { amount: 100, method: 'cash', note: 'first' } })
+      const diff = await req('POST', `/api/invoices/${oInv}/payments`, { body: { amount: 100, method: 'cash', note: 'second' } })
+      chk('a payment that differs by its note is not a duplicate', String(diff.status), '^200$')
+      // …and the dialog must be able to send the confirmation, or the refusal is a dead end.
+      const { readFileSync: rfs4 } = await import('node:fs')
+      chk('…and the Record Payment dialog can answer the question',
+        rfs4(join(ROOT, 'public/js/views/invoices.js'), 'utf8'), 'duplicate_payment')
+    }
+
     await req('POST', `/api/invoices/${invId2}/payments`, { body: { amount: 25, method: 'check' } })
     r = await req('POST', `/api/invoices/${invId2}/void`, { body: {} })
     chk('an invoice with payments against it refuses to be voided', `${r.status} ${r.text}`, '^409 .*invoice_has_payments')

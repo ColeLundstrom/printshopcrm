@@ -2619,12 +2619,43 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
   // Clamp to the balance so the accepted-within-tolerance cent can't push amount_paid past
   // amount_due into a negative balance (matches what recordStripePayment already does).
   const recorded = Math.min(amount, bal)
+  const method = req.body?.method || 'other'
+  const note = req.body?.note || ''
+  /**
+   * The same cheque, recorded twice, is money the shop does not have.
+   *
+   * The only guard here was the over-payment check, which catches a doubled FULL payment because
+   * the second one exceeds the remaining balance — and catches nothing else. Two $500 posts
+   * against a $1,000 invoice both return 200, and the invoice comes back amount_paid $1,000,
+   * status "paid". `invoice.paid` fires, a QuickBooks push queues, the customer is never chased
+   * for the $500 they still owe, and Revenue MTD shows income that does not exist.
+   *
+   * It is not a rare race. The dialog's in-flight guard is per-tab, so two people at two desks
+   * with the same cheque, one person on a phone and a laptop, or a re-click after a response that
+   * never arrived, all walk straight past it. Recording the same amount, method and note against
+   * one invoice inside two minutes is a duplicate until a human says otherwise — so this is a
+   * question, not a wall: the answer names the payment it matched and how to say "yes, really".
+   */
+  if (req.body?.confirm !== true) {
+    const since = new Date(Date.now() - 120_000).toISOString().replace('T', ' ').slice(0, 19)
+    const dup = get(`SELECT id, amount, created_at FROM payments
+      WHERE invoice_id = ? AND amount = ? AND COALESCE(method, '') = ? AND COALESCE(note, '') = ? AND created_at >= ?
+      ORDER BY id DESC LIMIT 1`, id, recorded, method, note, since)
+    if (dup) {
+      return res.status(409).json({
+        error: `${money(recorded)} by ${method}${note ? ` — "${note}"` : ''} was already recorded on ${inv.invoice_number} moments ago. Record it again only if it really is a second payment.`,
+        code: 'duplicate_payment',
+        duplicate_of: dup.id,
+        recorded_at: dup.created_at,
+      })
+    }
+  }
   run('INSERT INTO payments (invoice_id, amount, method, note, created_at) VALUES (?,?,?,?,?)',
-    id, recorded, req.body?.method || 'other', req.body?.note || '', now())
+    id, recorded, method, note, now())
   const updated = syncInvoiceStatus(id)
   // Money in — walk the order card forward (never backward; see advanceOrder).
   advanceOrder(inv.estimate_id, 'paid')
-  logActivity('payment', `Payment ${money(recorded)} on ${inv.invoice_number} (${req.body?.method || 'other'})`, { contact_id: inv.contact_id })
+  logActivity('payment', `Payment ${money(recorded)} on ${inv.invoice_number} (${method})`, { contact_id: inv.contact_id })
   if (updated.status === 'paid' && inv.status !== 'paid') {
     fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
   }
