@@ -1,4 +1,4 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData , onOnce} from '../core.js'
+import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText } from '../core.js'
 
 /* ---------- art queue ---------- */
 
@@ -536,10 +536,7 @@ export async function settingsView() {
   // The gang-sheet embed card only exists in the pro edition — guard so lite's settings don't crash.
   if ($('#embed-snippet')) {
     $('#embed-snippet').value = snippet
-    $('#copy-embed').onclick = async () => {
-      try { await navigator.clipboard.writeText(snippet) } catch { $('#embed-snippet').select(); document.execCommand('copy') }
-      toast('Embed snippet copied')
-    }
+    $('#copy-embed').onclick = () => copyText(snippet, 'Embed snippet copied')
   }
 
   // Lite (Print Shop Control): Stripe Connect onboarding. The button kicks off (or resumes) Express
@@ -722,11 +719,7 @@ export async function settingsView() {
       if (d.has_secret) $('#slack-secret').placeholder = '•••••••• saved — leave blank to keep'
     } catch (e) { pill.textContent = 'unavailable'; note.textContent = e.message }
   })()
-  if ($('#slack-copy')) $('#slack-copy').onclick = async () => {
-    const box = $('#slack-manifest')
-    try { await navigator.clipboard.writeText(box.value); toast('Manifest copied — paste it into Slack') }
-    catch { box.select(); toast('Press ⌘C to copy the manifest') } // clipboard API needs a secure context
-  }
+  if ($('#slack-copy')) $('#slack-copy').onclick = () => copyText($('#slack-manifest').value, 'Manifest copied — paste it into Slack')
   if ($('#slack-test')) $('#slack-test').onclick = async () => {
     const note = $('#slack-note')
     note.innerHTML = '<span class="dim">Testing…</span>'

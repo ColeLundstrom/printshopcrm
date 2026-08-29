@@ -1,4 +1,4 @@
-import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal } from '../core.js'
+import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText } from '../core.js'
 
 /* The AI Receptionist — configure the bot, preview it live, and work the leads it captures. */
 
@@ -179,11 +179,7 @@ function bindConfig() {
     } catch (e) { toast(e.message, true); $('#save-note').textContent = '' }
     $('#save').disabled = false
   }
-  const copy = async () => {
-    const code = $('#embed-code').value
-    try { await navigator.clipboard.writeText(code) } catch { $('#embed-code').select(); document.execCommand('copy') }
-    toast('Embed code copied')
-  }
+  const copy = () => copyText($('#embed-code').value, 'Embed code copied')
   $('#copy-embed').onclick = copy
   $('#copy-embed2').onclick = copy
 }

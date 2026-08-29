@@ -478,11 +478,17 @@ section('the share buttons do not claim to have copied when they have not')
     assert.match(core, /Copy this link/, 'and, failing that, it must SHOW the text so a human can copy it')
   })
 
-  await t('no screen fires a copy and toasts success without waiting for it', () => {
-    // The exact broken shape: an optional-chained writeText whose result is never awaited.
-    for (const f of ['public/js/views/estimates.js', 'public/js/views/invoices.js', 'public/js/views/misc.js', 'public/js/views/agent.js']) {
-      assert.doesNotMatch(read(f), /navigator\.clipboard\?\.writeText/,
-        `${f} calls writeText on an optional chain — on http that is undefined, and the toast still fires`)
+  await t('no screen fires a copy and toasts success without waiting for it', async () => {
+    // The rule was written against the exact broken shape — an OPTIONAL-CHAINED writeText — so
+    // three sites that spelled it `navigator.clipboard.writeText` inside a try/catch survived it,
+    // toasting success outside both branches and discarding execCommand's return value. On the
+    // http://192.168.x.x deploy INSTALL.md documents, `navigator.clipboard` is undefined, the
+    // TypeError lands in the catch, and the button still says "copied". No screen may reach for
+    // the clipboard directly; copyText() is the one place that knows how to fail honestly.
+    const fs = await import('node:fs')
+    for (const n of fs.readdirSync(join(root, 'public/js/views'))) {
+      assert.doesNotMatch(read(`public/js/views/${n}`), /navigator\.clipboard/,
+        `public/js/views/${n} reaches for the clipboard directly — it must go through copyText()`)
     }
   })
 
@@ -2233,6 +2239,44 @@ for (const [tz, stored, want, why] of [
     assert.equal(out.trim(), want)
   })
 }
+/* ---------- Floor Mode is the one screen that never adopted the date helpers ----------
+ * The scan log under every job printed `String(s.created_at).slice(5, 16)` — a raw chop of the
+ * UTC text lib/db.mjs stores. Measured on a scratch install: a scan taken at 03:59 PDT rendered as
+ * "08-29 10:59" on the tablet, seven hours out. The same card, two lines above, prints the correct
+ * server-computed "N min measured in production" — so it contradicted itself, and those timestamps
+ * are the labor actuals the shop's own profitability report is built on. The due date beside it
+ * was printed as a bare ISO string for the same reason. core.js has compensated for this since
+ * 629f4dc; scan.js just never imported it. */
+section('the shop floor is told the time the shop is actually in')
+for (const tz of ['America/Los_Angeles', 'Asia/Tokyo', 'UTC']) {
+  await t(`${tz}: a scan a minute ago reads as a minute ago, not as a UTC clock time`, async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      // The shape lib/db.mjs writes: CURRENT_TIMESTAMP, UTC, no T and no Z.
+      const stored = new Date(Date.now() - 120000).toISOString().slice(0, 19).replace('T', ' ')
+      process.stdout.write(JSON.stringify([m.relTime(stored), stored.slice(5, 16)]))
+    `], { env: { ...process.env, TZ: tz }, encoding: 'utf8' })
+    const [rel, raw] = JSON.parse(out)
+    assert.match(rel, /^[12]m ago$/, `relTime said ${JSON.stringify(rel)}`)
+    assert.notEqual(rel, raw, 'the raw slice is what the floor was being shown')
+  })
+}
+await t('…and Floor Mode really goes through the helpers', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/scan.js'), 'utf8')
+  assert.doesNotMatch(src, /created_at\)\.slice\(/,
+    'slicing a stored UTC timestamp into a clock time shows the wrong hour everywhere but UTC')
+  assert.match(src, /relTime\(s\.created_at\)/, 'the scan log must go through relTime')
+  assert.match(src, /fmtDate\(d\.due_date\)/, 'and the due date through fmtDate')
+})
+
 /* ---------- the Orders board can show which orders are late ----------
  * Two defects on one line, hiding each other.
  *

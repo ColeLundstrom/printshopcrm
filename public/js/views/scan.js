@@ -1,4 +1,4 @@
-import { api, $, esc, setPage, on, toast , onOnce} from '../core.js'
+import { api, $, esc, setPage, on, toast, onOnce, fmtDate, relTime } from '../core.js'
 
 /**
  * Floor Mode — scan a work ticket's barcode with the phone camera, see the job, tap once to
@@ -132,13 +132,13 @@ function renderJob(d, note) {
         <div>
           <div class="scan-num">${esc(d.job_number)} ${d.rush ? '<span class="pill red">RUSH</span>' : ''}</div>
           <h2>${esc(d.title || '')}</h2>
-          <div class="dim">${esc(d.contact_name)} · ${d.pieces} pcs${d.decoration ? ` · ${esc(d.decoration)}` : ''}${d.due_date ? ` · due ${esc(d.due_date)}` : ''}</div>
+          <div class="dim">${esc(d.contact_name)} · ${d.pieces} pcs${d.decoration ? ` · ${esc(d.decoration)}` : ''}${d.due_date ? ` · due ${esc(fmtDate(d.due_date))}` : ''}</div>
         </div>
       </div>
       ${d.next_stage ? `<button class="btn primary scan-advance" data-advance="${esc(d.next_stage.key)}" data-job="${d.id}">Advance to ${esc(d.next_stage.label)} →</button>` : '<div class="scan-done">✓ Complete</div>'}
       <div class="scan-stages">${stageBtns}</div>
       ${mins > 0 ? `<div class="dim" style="margin-top:10px">⏱ ${mins} min measured in production${d.stage === 'production' ? ' so far' : ''}</div>` : ''}
-      ${d.scans.length ? `<div class="scan-log">${d.scans.map((s) => `<div class="dim">${esc(s.to_stage.replace('_', ' '))} — ${esc(s.actor || '')} · ${esc(String(s.created_at).slice(5, 16))}</div>`).join('')}</div>` : ''}
+      ${d.scans.length ? `<div class="scan-log">${d.scans.map((s) => `<div class="dim">${esc(s.to_stage.replace('_', ' '))} — ${esc(s.actor || '')} · ${esc(relTime(s.created_at))}</div>`).join('')}</div>` : ''}
     </div>`
   host.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
