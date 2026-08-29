@@ -4765,6 +4765,71 @@ section('a document never hides money between its subtotal and its total')
  *
  * The assertion reads the generated PDF's own text-positioning operators. Page space runs from
  * y = 0 at the bottom, so anything at or below the footer band never reached the paper. */
+
+/* ---------- the packing slip lists the whole shipment (v18) ----------
+ *
+ * `if (y > PAGE_H - 150) break // single page by design; overflow is rare on a slip`
+ *
+ * It is not rare — a school, a team store or a corporate order is routinely seven or eight styles
+ * — and "single page by design" means the slip silently stops listing at six garment blocks. Two
+ * things then go wrong on the document the CUSTOMER SIGNS "RECEIVED BY":
+ *
+ *  · the missing styles appear nowhere, with no "continued" and no other clue, and
+ *  · `grand` only ever counted the blocks that were drawn, so TOTAL UNITS understates the box —
+ *    and once y crosses the same threshold the `if (y < PAGE_H - 150)` gate drops TOTAL UNITS
+ *    altogether, so from the sixth block on the slip has no check figure at all.
+ *
+ * Separately, the grid's columns are a fixed 46pt with no width check, so a full youth+adult run
+ * pushes the TOTAL column clean off the right edge of a 612pt sheet.
+ *
+ * A shipping document that omits part of the shipment is worse than no document: the customer
+ * signs for what is listed. */
+section('the packing slip lists every garment in the box')
+{
+  const pdf = await import('../lib/pdf.mjs')
+  const SETTINGS = { shop_name: 'Gate Ink', shop_tagline: 'test', shop_phone: '555-0100' }
+  const textYs = (buf) => [...String(buf).matchAll(/1 0 0 1 [\d.-]+ (-?[\d.]+) Tm/g)].map((m) => Number(m[1]))
+  const textXs = (buf) => [...String(buf).matchAll(/1 0 0 1 ([\d.-]+) -?[\d.]+ Tm/g)].map((m) => Number(m[1]))
+
+  const seven = Array.from({ length: 7 }, (_, i) => ({
+    description: `Style ${i + 1} — Navy`,
+    sizes: { S: 10, M: 20, L: 20, XL: 10 },
+  }))
+  const total = 7 * 60
+
+  await t('a seven-style order does not stop listing at six', () => {
+    const buf = pdf.packingSlip({ job: { job_number: 'JOB-1050' }, contact: { name: 'School' }, settings: SETTINGS, items: seven })
+    assert.match(String(buf), /\(Style 7 - Navy\) Tj|\(Style 7 — Navy\) Tj/, 'the seventh style is nowhere on the slip')
+  })
+
+  await t('…and TOTAL UNITS is the whole box, not just what fitted', () => {
+    const buf = pdf.packingSlip({ job: { job_number: 'JOB-1050' }, contact: { name: 'School' }, settings: SETTINGS, items: seven })
+    assert.match(String(buf), /\(TOTAL UNITS\) Tj/, 'the check figure was dropped entirely')
+    assert.match(String(buf), new RegExp(`\\(${total}\\) Tj`), `TOTAL UNITS is not the ${total} actually shipped`)
+  })
+
+  await t('…and nothing renders off the bottom of the sheet', () => {
+    const buf = pdf.packingSlip({ job: { job_number: 'JOB-1050' }, contact: { name: 'School' }, settings: SETTINGS, items: seven })
+    const ys = textYs(buf)
+    assert.equal(ys.filter((y) => y < 30).length, 0, `lowest text op at y=${Math.min(...ys)}`)
+  })
+
+  await t('a full youth-and-adult run keeps its TOTAL column on the paper', () => {
+    const wide = [{ description: 'Gildan 5000 Tee — Navy',
+      sizes: { YXS: 4, YS: 6, YM: 8, YL: 8, XS: 6, S: 20, M: 40, L: 40, XL: 24, '2XL': 12, '3XL': 6, '4XL': 4 } }]
+    const buf = pdf.packingSlip({ job: { job_number: 'JOB-1051' }, contact: { name: 'Team' }, settings: SETTINGS, items: wide })
+    const xs = textXs(buf)
+    assert.equal(xs.filter((x) => x > 612 - 54).length, 0, `${xs.filter((x) => x > 558).length} text ops sit past the right margin (furthest ${Math.max(...xs)})`)
+  })
+
+  await t('…and an ordinary two-style slip is still one page', () => {
+    const buf = pdf.packingSlip({ job: { job_number: 'JOB-1052' }, contact: { name: 'Acme' }, settings: SETTINGS,
+      items: seven.slice(0, 2) })
+    assert.equal(Number(String(buf).match(/\/Count (\d+)/)?.[1] || 0), 1)
+    assert.match(String(buf), /\(120\) Tj/)
+  })
+}
+
 section('the pick ticket cannot render a garment off the bottom of the sheet')
 {
   const pdf = await import('../lib/pdf.mjs')
