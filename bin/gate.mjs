@@ -423,6 +423,46 @@ await t('duplicate (style,color,size) lines are summed to one', () => {
   if (prevAuth !== undefined) process.env.PSC_AUTH = prevAuth
 }
 
+/* ---------- a button that says it copied must have copied ----------
+ * `navigator.clipboard?.writeText(x); toast('Link copied')` — no await, no catch, and an optional
+ * chain that evaluates to `undefined` and toasts success anyway. `navigator.clipboard` does not
+ * exist outside a secure context, and INSTALL.md documents `http://192.168.x.x` as a supported
+ * private-network deploy, so on that install the estimate share button and the mockup approval
+ * link said "Link copied" and copied nothing, every time. It is not a cosmetic lie: with no SMTP
+ * connected the app TELLS the shop to copy the link and send it themselves, so this is the only
+ * delivery path the customer has. */
+section('the share buttons do not claim to have copied when they have not')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(root, f), 'utf8')
+
+  await t('core.js offers one copy helper, and it awaits and falls back', () => {
+    const core = read('public/js/core.js')
+    assert.match(core, /export async function copyText/, 'the helper must be async — the API returns a promise')
+    assert.match(core, /await navigator\.clipboard\.writeText/, 'and it must await it, or the toast races the copy')
+    assert.match(core, /execCommand\('copy'\)/, 'with a fallback for a page served over http')
+    assert.match(core, /Copy this link/, 'and, failing that, it must SHOW the text so a human can copy it')
+  })
+
+  await t('no screen fires a copy and toasts success without waiting for it', () => {
+    // The exact broken shape: an optional-chained writeText whose result is never awaited.
+    for (const f of ['public/js/views/estimates.js', 'public/js/views/invoices.js', 'public/js/views/misc.js', 'public/js/views/agent.js']) {
+      assert.doesNotMatch(read(f), /navigator\.clipboard\?\.writeText/,
+        `${f} calls writeText on an optional chain — on http that is undefined, and the toast still fires`)
+    }
+  })
+
+  await t('…and the two links a shop actually hands a customer go through it', () => {
+    const est = read('public/js/views/estimates.js')
+    assert.match(est, /copyText\(location\.origin \+ e\.share_url/, 'the estimate share button')
+    assert.match(est, /copyText\(location\.origin \+ t\.dataset\.url/, 'the mockup approval link')
+    assert.match(read('public/js/views/invoices.js'), /copyText\(url/, 'the pay link')
+  })
+}
+
 /* ---------- `npm run reset` must not delete somebody's shop ----------
  * package.json's `reset` was the ONE script that did not pass --env-file-if-exists=.env. So
  * bin/reset.mjs resolved PSC_DB from a bare environment and deleted ./data/printshop.db — usually

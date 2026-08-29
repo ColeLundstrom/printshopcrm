@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay } from '../core.js'
+import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
@@ -467,7 +467,7 @@ export async function estimateDetailView(id) {
     </div>
   </div>`
 
-  $('#share').onclick = () => { navigator.clipboard?.writeText(location.origin + e.share_url); toast('Link copied') }
+  $('#share').onclick = () => copyText(location.origin + e.share_url, 'Link copied')
 
   // Mockups. Bound to the card this render created, not #view, so revisiting can't stack handlers.
   if (mockups) {
@@ -495,9 +495,7 @@ export async function estimateDetailView(id) {
           estimateDetailView(id)
         } catch (ex) { toast(ex.message, true); t.disabled = false; t.textContent = 'Send for approval' }
       })
-      on(list, '[data-mkcopy]', (_ev, t) => {
-        navigator.clipboard?.writeText(location.origin + t.dataset.url); toast('Approval link copied')
-      })
+      on(list, '[data-mkcopy]', (_ev, t) => copyText(location.origin + t.dataset.url, 'Approval link copied'))
       on(list, '[data-mkdel]', (_ev, t) => confirmModal('Delete this mockup?', 'The customer will no longer be able to open its approval link.', async () => {
         try { await api.del(`/api/mockups/${t.dataset.mkdel}`); toast('Deleted'); estimateDetailView(id) }
         catch (ex) { toast(ex.message, true) }

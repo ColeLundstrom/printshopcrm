@@ -304,6 +304,46 @@ export function undoable(msg, { commit, undo, label = 'Undo', delay = 6000 } = {
 // announces nothing at all — the dialog simply stops existing mid-sentence.
 let modalReturnFocus = null
 
+/**
+ * Copy text, and never claim to have done it when it did not happen.
+ *
+ * `navigator.clipboard?.writeText(x); toast('Link copied')` was the pattern on the estimate share
+ * button and the mockup approval link: no await, no catch, and an optional chain that evaluates to
+ * `undefined` and toasts success anyway. `navigator.clipboard` does not exist outside a secure
+ * context, and INSTALL.md documents `http://192.168.x.x` as a supported private-network deploy —
+ * so on that install the button said "Link copied" and copied nothing, every time.
+ *
+ * It matters more than a copy button usually does: with no SMTP connected the app TELLS the shop
+ * to copy the link and send it themselves, which makes this the only delivery path the customer
+ * has. Falls back to execCommand, and if even that fails, puts the text on screen selected so a
+ * human can copy it by hand. The one thing it will not do is lie.
+ */
+export async function copyText(text, okMsg = 'Copied') {
+  const s = String(text ?? '')
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(s); toast(okMsg); return true }
+  } catch { /* fall through — a denied permission is not a reason to say nothing happened */ }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = s
+    ta.setAttribute('readonly', '')
+    ta.style.cssText = 'position:fixed;top:-1000px;left:0;opacity:0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    ta.remove()
+    if (ok) { toast(okMsg); return true }
+  } catch { /* fall through to showing it */ }
+  modal({
+    title: 'Copy this link',
+    body: `<p class="dim" style="font-size:12.5px;margin-bottom:10px">This browser will not let the page copy for you — it needs an https address. Select the link and copy it.</p>
+      <textarea class="input" id="copy-fallback" rows="3" readonly style="font-size:12px"></textarea>`,
+    footer: '<button class="btn" data-close>Done</button>',
+    onMount: (bg) => { const t = $('#copy-fallback', bg); t.value = s; t.focus(); t.select() },
+  })
+  return false
+}
+
 export function modal({ title, body, footer = '', wide = false, onMount }) {
   // Captured BEFORE closeModal(), so a dialog opened FROM a dialog still returns to the control
   // that started the whole thing rather than to a node that is about to be detached.

@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 
 let filter = 'all'
@@ -235,7 +235,7 @@ export async function invoiceDetailView(id) {
   })
   $('#copylink')?.addEventListener('click', async () => {
     const url = location.origin + i.pay_link
-    try { await navigator.clipboard.writeText(url); toast('Pay link copied') } catch { toast(url) }
+    await copyText(url, 'Pay link copied')
   })
   // Scoped to the payments card, not #view: #view survives navigation, so a delegation left here
   // caught [data-del] clicks from other screens and read their index as a payment id.
