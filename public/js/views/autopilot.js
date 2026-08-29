@@ -28,10 +28,15 @@ const STEPS = [
   { key: 'estimate', ico: '▤', title: 'Draft the estimate', phase: 1 },
   { key: 'art', ico: '◈', title: 'Pull the artwork', phase: 1 },
   { key: 'mockup', ico: '▧', title: 'Build the mockup', phase: 1 },
-  // Phase 2 — the irreversible, customer-facing steps. In Review mode these wait for a human.
-  { key: 'approved', ico: '✓', title: 'Send & approve', phase: 2 },
-  { key: 'paid', ico: '▣', title: 'Collect the deposit', phase: 2 },
-  { key: 'production', ico: '▦', title: 'Onto the floor', phase: 2 },
+  // Phase 2 — the one irreversible, customer-facing step. In Review mode it waits for a human.
+  //
+  // This used to be three: "Send & approve", "Collect the deposit", "Onto the floor" — and the
+  // screen ticked all three green. Autopilot stopped marking the estimate approved, raising the
+  // invoice and pushing the job to prepress in v1.10.0, because doing any of that fabricated a
+  // customer's consent. The server was fixed; the screen went on saying it had happened. The
+  // shop was shown "$3,240 quoted & approved" and "$0.00 deposit collected" over a database
+  // holding a sent estimate, approved_at NULL, no invoice, no payment, and a job still at 'new'.
+  { key: 'sent', ico: '✓', title: 'Send to the customer', phase: 2 },
 ]
 
 let uploadedArt = null
@@ -154,8 +159,8 @@ async function run() {
       return reviewReveal(r, mockUrl) // stop here — the human decides
     }
 
-    // Full auto — the server already fired phase 2; narrate it.
-    for (const k of ['approved', 'paid', 'production']) { activate(k); await sleep(400); complete(k, detailOf(k)) }
+    // Full auto — the server already fired phase 2; narrate exactly what it says it did.
+    activate('sent'); await sleep(400); complete('sent', detailOf('sent'))
     await sleep(300)
     doneReveal(r, mockUrl)
   } catch (e) {
@@ -175,7 +180,7 @@ function reviewReveal(r, mockUrl) {
     </div>
     <p class="ap-review-note">Nothing has gone to the customer and nothing's been charged. Edit anything, then send — or leave it as a draft.</p>
     <div class="ap-links">
-      <button class="btn" id="ap-commit">Send &amp; collect deposit →</button>
+      <button class="btn" id="ap-commit">Send it to the customer →</button>
       <a class="btn ghost" href="#/estimates/${r.estimate.id}/edit">Edit the estimate</a>
       <a class="btn ghost" href="#/jobs/${r.job.id}">Open the job</a>
       <button class="btn ghost" id="ap-again">Run another</button>
@@ -188,19 +193,31 @@ function reviewReveal(r, mockUrl) {
     try {
       const c = await api.post('/api/autopilot/commit', { estimate_id: r.estimate.id })
       doneReveal({ ...r, estimate: c.estimate, invoice: c.invoice, job: c.job || r.job }, mockUrl)
-    } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Send & collect deposit →' }
+    } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Send it to the customer →' }
   }
 }
 
+/**
+ * What actually happened, read off the record rather than assumed.
+ *
+ * This screen used to report "quoted & approved", "$0.00 deposit collected" and "on the floor"
+ * over a database holding a sent estimate with approved_at NULL, zero invoices, zero payments and
+ * a job still at stage 'new' — because the server stopped doing those three things in v1.10.0
+ * (they fabricated a consent the customer had never given) and the screen was never told. The
+ * shop believed money had been collected on an order the customer had not yet answered.
+ *
+ * Every figure below is now conditional on the row it describes existing.
+ */
 function doneReveal(r, mockUrl) {
-  const paid = r.invoice ? r.invoice.amount_paid : 0
+  const approved = r.estimate?.status === 'approved'
+  const paid = Number(r.invoice?.amount_paid) || 0
   $('#ap-stage').innerHTML = `<div class="ap-reveal">
     <div class="ap-mockup"><img src="${mockUrl}" alt="mockup"></div>
-    <div class="ap-done-h">Done. The shop just prints.</div>
+    <div class="ap-done-h">${approved ? 'Approved. The shop just prints.' : 'Sent. Waiting on the customer.'}</div>
     <div class="ap-stats">
-      <div><span>${money(r.estimate.total)}</span><em>quoted &amp; approved</em></div>
-      <div><span>${money(paid)}</span><em>deposit collected</em></div>
-      <div><span>${r.job.job_number}</span><em>on the floor</em></div>
+      <div><span>${money(r.estimate.total)}</span><em>quoted &amp; ${approved ? 'approved' : 'sent'}</em></div>
+      ${r.invoice ? `<div><span>${money(paid)}</span><em>${paid > 0 ? 'collected' : 'invoiced, unpaid'}</em></div>` : ''}
+      <div><span>${r.job.job_number}</span><em>${approved ? 'on the floor' : 'drafted, not started'}</em></div>
     </div>
     <div class="ap-links">
       <a class="btn" href="#/jobs/${r.job.id}">Open the job →</a>
@@ -208,7 +225,8 @@ function doneReveal(r, mockUrl) {
       <a class="btn ghost" href="#/conversations/${r.contact.id}">Conversation</a>
       <button class="btn ghost" id="ap-again">Run another</button>
     </div>
-    <p class="ap-foot">Every step was real — customer <strong>${esc(r.contact.name)}</strong>, estimate <strong>${esc(r.estimate.estimate_number)}</strong>${r.invoice ? `, invoice <strong>${esc(r.invoice.invoice_number)}</strong>` : ''}, and job <strong>${esc(r.job.job_number)}</strong> now exist. Wire a real inbox + Stripe and nobody clicks a thing.</p>
+    <p class="ap-foot">Customer <strong>${esc(r.contact.name)}</strong>, estimate <strong>${esc(r.estimate.estimate_number)}</strong>${r.invoice ? `, invoice <strong>${esc(r.invoice.invoice_number)}</strong>` : ''} and job <strong>${esc(r.job.job_number)}</strong> now exist.
+      ${approved ? '' : 'Nothing is approved and nothing has been charged — that happens when the customer clicks Approve on the link they were just sent.'}</p>
   </div>`
   $('#ap-again').onclick = autopilotView
 }

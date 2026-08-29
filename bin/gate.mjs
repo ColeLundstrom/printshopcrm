@@ -1117,6 +1117,36 @@ await t('a 60-invoice statement paginates and buckets land where the calendar sa
  * a secret field renders blank, blanking it is a deliberate no-op, and there was no route that
  * removed one. A shop whose Slack admin or bookkeeper just left could not take that connection
  * out of the app from any screen. This keeps the next integration from shipping without an exit. */
+/* Autopilot stopped marking the estimate approved, raising the invoice and taking the deposit in
+ * v1.10.0 — doing any of that fabricated a consent the customer had never given. The SERVER was
+ * fixed; the screen went on ticking "Send & approve", "Collect the deposit" and "Onto the floor"
+ * green and printing "$3,240 quoted & approved / $0.00 deposit collected" over a database holding
+ * a sent estimate, approved_at NULL, no invoice, no payment and a job still at stage 'new'. */
+section('the Autopilot finish screen reports what actually happened')
+await t('it does not claim an approval, a deposit or a job on the floor unless they exist', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/autopilot.js'), 'utf8')
+  const i = src.indexOf('function doneReveal(')
+  assert.ok(i > 0, 'the finish screen should still be there')
+  const reveal = src.slice(i, src.indexOf('\n}', i))
+  assert.ok(!/quoted &amp; approved<\/em>/.test(reveal),
+    'the total must not be labelled approved unconditionally — the server no longer approves anything')
+  assert.match(reveal, /r\.estimate\?\.status === 'approved'/, 'the label has to be read off the estimate')
+  assert.match(reveal, /r\.invoice \?/, 'and a deposit figure must only appear when an invoice exists')
+  // The steps the screen narrates must be steps the server actually marks.
+  const server = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const commit = server.slice(server.indexOf('function commitAutopilot('), server.indexOf('app.post(\'/api/autopilot/commit\''))
+  const marked = new Set([...commit.matchAll(/mark\('([a-z_]+)'/g)].map((m) => m[1]))
+  const phase2 = [...src.matchAll(/\{ key: '([a-z_]+)'[^}]*phase: 2/g)].map((m) => m[1])
+  assert.ok(phase2.length > 0, 'there should still be a phase-2 step')
+  for (const k of phase2) {
+    assert.ok(marked.has(k), `the screen narrates a "${k}" step the server never marks — that is how it came to tick three green boxes for work nobody did`)
+  }
+})
+
 section('every stored credential has a way out')
 await t('every secret setting belongs to an integration that can be disconnected', async () => {
   const { readFileSync } = await import('node:fs')
