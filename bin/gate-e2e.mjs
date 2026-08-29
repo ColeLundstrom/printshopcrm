@@ -3559,6 +3559,36 @@ try {
     }
   }
 
+  /* ---------- the accountant's SUM over the export is the number on the document ----------
+   * csvCell quotes any cell starting with = + - @ to neutralise spreadsheet formula injection —
+   * contact names come from public lead and gang-sheet forms, so that guard is real. But a leading
+   * apostrophe forces Excel and Sheets to treat the cell as TEXT, and money is the one column
+   * where a negative is ordinary: a discount, a credit, a refund, an imported adjustment. Every
+   * one of them was silently skipped by a SUM over the column — always overstating, never
+   * flagged, in the file a shop hands to its accountant. */
+  {
+    const nc = (await req('POST', '/api/contacts', { body: { name: 'Credit Co', email: 'credit@e2e.test' } })).json
+    await req('POST', '/api/estimates', { body: { contact_id: nc.id, items: [
+      { description: 'Tees', qty: 1, unit_price: 400 },
+      { description: 'Goodwill discount', qty: 1, unit_price: -100, taxable: false },
+    ] } })
+    const li = (await req('GET', '/api/export/line_items.csv')).text
+    const amounts = li.split('\n').filter((l) => l.includes('Goodwill discount')).join('')
+    chk('a credit line exports', String(!!amounts), '^true$')
+    chk('…as a number the spreadsheet will add up', amounts, '(^|,)-100(\\.0+)?(,|$)')
+    chk('…not as text', String(amounts.includes("'-100")), '^false$')
+
+    // The guard it must not break: an attacker-supplied name is still forced to a literal string.
+    const ec = (await req('POST', '/api/contacts', { body: { name: "=cmd|' /C calc'!A0", email: 'evil-csv@e2e.test' } })).json
+    chk('a formula in a customer name is accepted as data', String(ec?.id > 0), '^true$')
+    const cc = (await req('GET', '/api/export/contacts.csv')).text
+    chk('…and exported quoted, so no spreadsheet runs it', cc, "'=cmd")
+    // `-2+3+cmd|…` starts with a minus and is NOT a number — it must stay quoted too.
+    await req('POST', '/api/contacts', { body: { name: "-2+3+cmd|' /C calc'!A0", email: 'evil-csv2@e2e.test' } })
+    const cc2 = (await req('GET', '/api/export/contacts.csv')).text
+    chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
+  }
+
   /* ---------- a shop leaving with five years of history does not take the box with it ----------
    * /api/export/:table.csv called all(), which materialised the whole table, and then handed the
    * array to a toCsv() that built the entire file as one more string on top of it. Measured on a

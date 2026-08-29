@@ -5507,12 +5507,21 @@ app.post('/api/qbo/queue/:id/dismiss', requireRole('manager'), wrap((req, res) =
  * drop line items, customers who stay only because leaving means losing their history.
  * This exists so switching away from us is never the reason to stay.
  */
+// A plain negative number. NOT a formula, and the exception that makes the guard below usable:
+// a leading apostrophe forces Excel and Sheets to treat the cell as TEXT, so every credit,
+// discount, refund and negative adjustment was silently skipped by the bookkeeper's SUM. On a
+// $300.00 document whose lines are 400.00 and -100.00, the column added up to $400.00 — always
+// overstating, never flagged, in the file a shop hands to its accountant.
+const CSV_NUMBER = /^-\d+(\.\d+)?([eE][-+]?\d+)?$/
 const csvCell = (v) => {
   let s = v === null || v === undefined ? '' : String(v)
   // Neutralize CSV/spreadsheet formula injection: a cell starting with = + - @ (or tab/CR) is
   // treated as a formula by Excel/Sheets. Attacker-controlled fields (contact names from public
   // lead/gang-sheet forms) reach these exports, so prefix a quote to force it to a literal string.
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  // `-7.75` is the one shape that is unambiguously a number rather than a formula, and it is the
+  // shape money actually takes here — round2 writes plain decimals. Everything else that starts
+  // with a formula character, including `-2+3+cmd|…`, still gets quoted.
+  if (/^[=+\-@\t\r]/.test(s) && !CSV_NUMBER.test(s)) s = `'${s}`
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 /**
