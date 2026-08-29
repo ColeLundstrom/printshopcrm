@@ -3655,6 +3655,44 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- a date column cannot hold markup, and a formatter cannot emit it ----------
+   * fmtDate() returned an unparseable value VERBATIM, and a dozen render sites treat it as safe:
+   * contacts.js:241, followups.js:56/72, dashboard.js:49/50, capacity.js:135/136, board.js:323/327
+   * all interpolate it into innerHTML with no esc(). jobs.due_date was free text on POST and PUT
+   * /api/jobs — the identical field on invoices has been format-checked since it was written — so
+   * the lowest role in the product could plant `<img src=x onerror=…>` on a job and have it run as
+   * the owner the moment a manager opened that customer's page, the dashboard or Follow-ups. The
+   * cookie is HttpOnly, which makes it worse rather than better: the payload runs same-origin and
+   * uses the victim's session directly. Both halves are closed — the sink escapes, and the column
+   * can no longer hold the value at all. */
+  {
+    const XPAY = '<img src=x onerror=alert(1)>'
+    const xc = (await req('POST', '/api/contacts', { body: { name: 'Payload Co', email: 'payload@e2e.test' } })).json
+    const bad = await req('POST', '/api/jobs', { body: { contact_id: xc.id, title: 'Payload job', due_date: XPAY } })
+    chk('a job due date that is not a date is refused', String(bad.status), '^400$')
+    chk('…with a code the screen can act on', String(bad.json?.code), '^bad_due_date$')
+
+    const xj = (await req('POST', '/api/jobs', { body: { contact_id: xc.id, title: 'Payload job' } })).json
+    chk('…and the same on the edit path',
+      String((await req('PUT', `/api/jobs/${xj.id}`, { body: { due_date: XPAY } })).status), '^400$')
+
+    // The five screens the payload was measured coming back out of.
+    for (const path of [`/api/contacts/${xc.id}`, '/api/dashboard', '/api/followups', '/api/capacity', `/api/jobs/${xj.id}`]) {
+      chk(`${path} carries no markup out of a date column`,
+        String((await req('GET', path)).text.includes('<img src=x')), '^false$')
+    }
+
+    // The guard is worthless if it also breaks the ordinary edit.
+    chk('a real due date still saves',
+      String((await req('PUT', `/api/jobs/${xj.id}`, { body: { due_date: '2026-12-24' } })).json?.due_date), '^2026-12-24$')
+    chk('…and can still be cleared',
+      String((await req('PUT', `/api/jobs/${xj.id}`, { body: { due_date: '' } })).json?.due_date ?? 'null'), '^null$')
+    chk('…and a body that does not mention it leaves it alone',
+      String((await req('PUT', `/api/jobs/${xj.id}`, { body: { due_date: '2026-11-05' } })).json?.due_date), '^2026-11-05$')
+    chk('…really alone',
+      String((await req('PUT', `/api/jobs/${xj.id}`, { body: { notes: 'no date in this body' } })).json?.due_date), '^2026-11-05$')
+  }
+
   /* ---------- the sidebar's six dots cost six integers, not six list endpoints ----------
    * refreshChrome() runs at the end of EVERY navigate() and on every realtime notify/board/
    * conversation event — and one drag on the job board broadcasts to every tab open on the floor.

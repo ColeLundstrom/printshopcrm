@@ -2247,6 +2247,29 @@ for (const [tz, stored, want, why] of [
  * are the labor actuals the shop's own profitability report is built on. The due date beside it
  * was printed as a bare ISO string for the same reason. core.js has compensated for this since
  * 629f4dc; scan.js just never imported it. */
+/* ---------- a formatter may not emit markup ----------
+ * fmtDate() ended `if (isNaN(dt)) return String(d)` — it handed an unparseable value straight
+ * back — and a dozen render sites treat fmtDate() as safe and omit esc(): contacts.js:241,
+ * followups.js:56/72, dashboard.js:49/50, capacity.js:135/136, board.js:323/327. jobs.due_date
+ * was free text on POST and PUT /api/jobs, so a `staff` account could plant a payload that ran as
+ * the owner on five ordinary screens. relTime() falls through to fmtDate, so it inherited it. */
+section('a date formatter cannot become a script tag')
+await t('an unparseable date comes back escaped, not verbatim', async () => {
+  const core = await import('../public/js/core.js')
+  for (const payload of ['<img src=x onerror=alert(1)>', '"><script>alert(1)</script>', "' onmouseover='x"]) {
+    for (const fn of ['fmtDate', 'relTime']) {
+      const out = core[fn](payload)
+      assert.ok(!/[<>]/.test(out), `${fn}(${JSON.stringify(payload)}) returned ${JSON.stringify(out)}`)
+      assert.notEqual(out, payload)
+    }
+  }
+})
+await t('…while real dates are unchanged', async () => {
+  const core = await import('../public/js/core.js')
+  assert.equal(core.fmtDate('2026-08-28'), 'Aug 28')
+  assert.match(core.relTime(new Date(Date.now() - 60000).toISOString().slice(0, 19).replace('T', ' ')), /m ago$/)
+})
+
 section('the shop floor is told the time the shop is actually in')
 for (const tz of ['America/Los_Angeles', 'Asia/Tokyo', 'UTC']) {
   await t(`${tz}: a scan a minute ago reads as a minute ago, not as a UTC clock time`, async () => {

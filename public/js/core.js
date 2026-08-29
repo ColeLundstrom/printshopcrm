@@ -86,7 +86,15 @@ export function fmtDate(d) {
     // A bare date is a calendar day, not an instant — anchor it at local noon so no timezone
     // shift can slide it onto the day either side.
     : new Date(`${s}T12:00:00`)
-  if (isNaN(dt)) return String(d)
+  // An unparseable value is not a date, and this returned it VERBATIM into a dozen innerHTML
+  // sites that treat fmtDate() as safe — contacts.js:241, followups.js:56/72, dashboard.js:49/50,
+  // capacity.js:135/136, board.js:323/327. jobs.due_date was free text on POST and PUT /api/jobs
+  // (the identical field on invoices has been format-checked since server.mjs:2600), so this was
+  // stored XSS on the app's own origin, plantable by the LOWEST role and fired by a manager
+  // simply opening the customer's page. A formatter must not be able to emit markup; it has
+  // nothing useful to say about a non-date anyway. relTime() falls through to here, so it is
+  // covered by the same line.
+  if (isNaN(dt)) return esc(String(d))
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: dt.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })
 }
 

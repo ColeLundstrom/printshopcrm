@@ -462,6 +462,15 @@ const MAX_PIECES = 1_000_000
 // crash the route. Coerce anything that isn't a usable scalar to a safe string before it is bound.
 const str = (v, fallback = '') =>
   v == null ? fallback : typeof v === 'string' ? v : (typeof v === 'number' || typeof v === 'boolean') ? String(v) : fallback
+// A due date is a calendar day. `jobs` was the one write path in the product that never said so —
+// PUT /api/invoices/:id has checked the identical field since it was written — so it was the free
+// text column an attacker reached for: a `staff` account POSTed `<img src=x onerror=…>` into it
+// and the payload came back out of GET /api/contacts/:id, /api/dashboard and /api/followups, into
+// five screens that render fmtDate() unescaped. The formatter no longer emits markup either; this
+// closes the source so the value cannot exist in the column at all. Refuse rather than silently
+// drop, because a date the shop typed and the app quietly discarded is worse than an error.
+const badDate = (v) => v !== undefined && v !== null && String(v).trim() !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(String(v).trim())
+const BAD_DATE = { error: 'Due date must be a calendar date, as YYYY-MM-DD', code: 'bad_due_date' }
 /**
  * Resolve the customer a document is being raised for, or answer why not.
  *
@@ -2893,6 +2902,7 @@ app.post('/api/jobs', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'book a job')
   if (contactId == null) return
+  if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
   const num = nextJobNumber()
   const grid = gridFromQuantities(b.quantities)
   // `garment` is what costFor() reads to pick the SKU the purchase order spends money on. A job
@@ -2902,7 +2912,7 @@ app.post('/api/jobs', wrap((req, res) => {
   const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     contactId, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
     STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', str(b.garment).trim() || null, b.quantities || '',
-    grid || '{}', b.due_date || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
+    grid || '{}', String(b.due_date || '').trim() || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
   logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: contactId, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
@@ -2912,6 +2922,7 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const b = req.body || {}
+  if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
   // The one door out of a closed ring. A two-garment job that has been invoiced and part-paid had
   // NO way to have its sizes corrected — the customer adds four hoodies and the shop is stuck:
   //   PUT /api/jobs/:id      → 409 below, "edit the split per garment on the estimate"
@@ -3013,7 +3024,7 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   // field out of seven. An omitted field still means "leave it alone"; a malformed one now falls
   // back to what was already stored rather than taking the route down.
   run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
-    str(b.title, j.title), str(b.decoration, j.decoration), nextGarment, nextQuantities, nextSizes, nextLines, str(b.due_date, j.due_date),
+    str(b.title, j.title), str(b.decoration, j.decoration), nextGarment, nextQuantities, nextSizes, nextLines, b.due_date === undefined ? j.due_date : (String(b.due_date ?? '').trim() || null),
     // `??` on every other field, and `b.rush ? 1 : 0` on this one — so any partial update cleared
     // it. PUT /api/jobs/:id {notes:"..."} took a job off RUSH: it dropped down the board's sort,
     // lost its badge on the work ticket and on Today, and stopped being counted by the Rush filter.
