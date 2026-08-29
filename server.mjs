@@ -2547,7 +2547,10 @@ app.post('/api/invoices/:id/request-payment', wrap((req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
-  if (!c?.email) return res.status(400).json({ error: 'No email on file for this customer' })
+  // A voided invoice is a cancelled demand. POST /payments and both public pay routes were taught
+  // that in v1.11.0; this one was missed, so the app would build a live pay link for a cancelled
+  // document and email a real customer a real demand for money the shop had already withdrawn.
+  if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'payment link')) return
   const s = getSettings()
   const balance = round2(inv.amount_due - inv.amount_paid)
   const origin = publicOrigin(req)
@@ -2628,16 +2631,45 @@ app.delete('/api/payments/:id', requireRole('manager'), wrap((req, res) => {
   res.json(out)
 }))
 
+/**
+ * A message the shop is told went out must be a message that could go out.
+ *
+ * queueEmail writes an email_log row with `to_email = contact?.email ?? ''` and only actually
+ * sends `if (deliver && to)`. Three routes called it and then answered {ok:true} with a timeline
+ * entry asserting delivery — "Invoice INV-1007 emailed to customer", "Payment reminder sent" —
+ * for a customer with no email address at all. The shop believed it had chased the money. This is
+ * the dunning path; the two siblings on the same screen already refused, which is how the
+ * inconsistency was found.
+ */
+const requireCustomerEmail = (c, res, what) => {
+  if (c?.email) return false
+  res.status(400).json({
+    error: `${c?.name || 'This customer'} has no email address on file, so the ${what} could not be sent. Add one on their record and try again.`,
+    code: 'no_email',
+  })
+  return true
+}
+/** A voided invoice is a cancelled demand. Nothing may chase money on it. */
+const refuseVoided = (inv, res) => {
+  if (inv.status !== 'void') return false
+  res.status(409).json({
+    error: `${inv.invoice_number} was voided — raise a new invoice before asking the customer to pay it.`,
+    code: 'invoice_void',
+  })
+  return true
+}
+
 app.post('/api/invoices/:id/send', wrap((req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
+  if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'invoice')) return
   const s = getSettings()
   queueEmail({ contact: c, kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
     template: s.email_template_invoice,
     vars: { contact_name: c?.name || '', invoice_number: inv.invoice_number, total: money(inv.amount_due), due_date: inv.due_date } })
-  logActivity('invoice', `Invoice ${inv.invoice_number} emailed to ${c?.email || 'customer'}`, { contact_id: inv.contact_id })
-  res.json({ ok: true })
+  logActivity('invoice', `Invoice ${inv.invoice_number} emailed to ${c.email}`, { contact_id: inv.contact_id })
+  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
 }))
 
 app.get('/api/invoices/:id/pdf', wrap((req, res) => {
@@ -3213,12 +3245,13 @@ app.post('/api/estimates/:id/nudge', wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
+  if (requireCustomerEmail(c, res, 'follow-up')) return
   const s = getSettings()
   queueEmail({ contact: c, kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
     template: s.email_template_nudge,
     vars: { estimate_number: e.estimate_number, total: money(e.total) } })
-  logActivity('estimate', `Follow-up sent on ${e.estimate_number} (${money(e.total)})`, { contact_id: e.contact_id })
-  res.json({ ok: true })
+  logActivity('estimate', `Follow-up sent on ${e.estimate_number} (${money(e.total)}) to ${c.email}`, { contact_id: e.contact_id })
+  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
 }))
 
 /** Nudge an overdue invoice. */
@@ -3226,12 +3259,13 @@ app.post('/api/invoices/:id/nudge', wrap((req, res) => {
   const i = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', i.contact_id)
+  if (refuseVoided(i, res) || requireCustomerEmail(c, res, 'reminder')) return
   const s = getSettings()
   queueEmail({ contact: c, kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
     vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date } })
-  logActivity('invoice', `Payment reminder sent on ${i.invoice_number}`, { contact_id: i.contact_id })
-  res.json({ ok: true })
+  logActivity('invoice', `Payment reminder sent on ${i.invoice_number} to ${c.email}`, { contact_id: i.contact_id })
+  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
 }))
 
 /* ================= AUTOMATIONS ================= */

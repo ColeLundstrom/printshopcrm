@@ -1700,6 +1700,58 @@ try {
     chk('…and cancelling really removes it', String(!!(a.json?.pending || []).find((p) => p.label === 'Drip Survivor')), '^false$')
   }
 
+  /* ---------- the app does not say it emailed a customer who has no email address ----------
+   * queueEmail writes an email_log row with `to_email = contact?.email ?? ''` and only actually
+   * sends `if (deliver && to)`. Three routes called it and then answered {ok:true} with a timeline
+   * entry asserting delivery — "Invoice INV-1007 emailed to customer", "Payment reminder sent" —
+   * for a customer with no email address at all. The shop believed it had chased the money and
+   * moved on. This is the dunning path. Its two siblings on the same screen already refused,
+   * which is how the inconsistency was found.
+   *
+   * And a VOIDED invoice must not chase anything: request-payment built a live pay link and
+   * mailed a real demand for money the shop had already withdrawn. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Phone Only Signs' } })
+    const noMailC = r.json?.id
+    chk('a customer can exist with no email — plenty do', String(!!noMailC), '^true$')
+    r = await req('POST', '/api/estimates', { body: { contact_id: noMailC, items: [{ description: '48 tees', sizes: { M: 48 }, unit_price: 11 }] } })
+    const nmEst = r.json?.id
+    r = await req('POST', `/api/estimates/${nmEst}/convert`, { body: { due_date: '2026-03-01' } })
+    const nmInv = r.json?.invoice_id
+
+    const outboxLen = async () => ((await req('GET', '/api/outbox')).json || []).length
+    const before = await outboxLen()
+    for (const [what, path] of [
+      ['emailing the invoice', `/api/invoices/${nmInv}/send`],
+      ['chasing it when it goes past due', `/api/invoices/${nmInv}/nudge`],
+      ['following up the quote', `/api/estimates/${nmEst}/nudge`],
+      ['sending a payment link', `/api/invoices/${nmInv}/request-payment`],
+    ]) {
+      const out = await req('POST', path)
+      chk(`${what} is refused when there is no address to send to`, String(out.status), '^400$')
+      chk('…with a code the screen can act on', String(out.json?.code || ''), '^no_email$')
+    }
+    chk('…and nothing was written to the Outbox claiming otherwise', String(await outboxLen()), `^${before}$`)
+
+    // Give them an address and every one of those works, which is the other half of the promise.
+    await req('PUT', `/api/contacts/${noMailC}`, { body: { name: 'Phone Only Signs', email: 'phoneonly@e2e.test' } })
+    r = await req('POST', `/api/invoices/${nmInv}/send`)
+    chk('once they have an address the invoice really does go', String(r.status), '^200$')
+    chk('…and the app says who it went to', String(r.json?.emailed_to), '^phoneonly@e2e\\.test$')
+
+    // Void it. Nothing may chase money on a cancelled demand.
+    r = await req('POST', `/api/invoices/${nmInv}/void`, { body: { reason: 'raised in error' } })
+    chk('the invoice is voided', String(r.status), '^200$')
+    for (const [what, path] of [
+      ['a pay link', `/api/invoices/${nmInv}/request-payment`],
+      ['the invoice itself', `/api/invoices/${nmInv}/send`],
+      ['a past-due reminder', `/api/invoices/${nmInv}/nudge`],
+    ]) {
+      const out = await req('POST', path)
+      chk(`a voided invoice does not email the customer ${what}`, `${out.status} ${out.json?.code || ''}`, '^409 invoice_void$')
+    }
+  }
+
   /* ---------- a credential a shop wants gone can be removed from a screen ----------
    * Every stored secret was write-only. The settings form renders a secret blank — the browser
    * never sees the value — so an empty submission has to mean "unchanged", and applySettingsPatch

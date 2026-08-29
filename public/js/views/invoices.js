@@ -62,10 +62,15 @@ export async function invoiceDetailView(id) {
   const reconciles = i.subtotal != null
     && Math.abs(Math.round((Number(i.subtotal) + (Number(i.tax) || 0)) * 100) / 100 - (Number(i.amount_due) || 0)) <= 0.005
 
+  // A voided invoice is a cancelled demand. `bal > 0` is true of one — the balance is still on the
+  // row, it just is not owed — so this screen went on offering Request Payment and Email Invoice,
+  // and the server built a live pay link and mailed the customer a demand for money the shop had
+  // already withdrawn. The list's own balance expression got this right; the detail screen's did not.
+  const chaseable = bal > 0 && i.status !== 'void'
   setPage(i.invoice_number, `
-    ${bal > 0 ? `<button class="btn" id="reqpay">Request Payment</button>` : ''}
-    ${bal > 0 ? `<button class="btn ghost" id="pay">Record Payment</button>` : ''}
-    <button class="btn ghost" id="send">Email Invoice</button>
+    ${chaseable ? `<button class="btn" id="reqpay">Request Payment</button>` : ''}
+    ${chaseable ? `<button class="btn ghost" id="pay">Record Payment</button>` : ''}
+    ${i.status === 'void' ? '' : '<button class="btn ghost" id="send">Email Invoice</button>'}
     <a class="btn ghost" href="/api/invoices/${id}/pdf" target="_blank">PDF</a>
     ${i.status === 'void' ? '' : `<button class="btn ghost" id="void">Void</button>`}`,
     `<a href="#/invoices">Invoices</a> /`)
@@ -183,7 +188,16 @@ export async function invoiceDetailView(id) {
       }
     },
   }))
-  $('#send').onclick = async () => { await api.post(`/api/invoices/${id}/send`); toast('Invoice emailed. Check the Outbox') }
+  // Optional now: the button is not rendered on a voided invoice. And it reports what the server
+  // says happened rather than announcing a delivery it has not been told about.
+  if ($('#send')) {
+    $('#send').onclick = async () => {
+      try {
+        const out = await api.post(`/api/invoices/${id}/send`)
+        toast(out?.emailed_to ? `Invoice emailed to ${out.emailed_to}. Check the Outbox` : 'Invoice queued. Check the Outbox')
+      } catch (e) { toast(e.message, true) }
+    }
+  }
   // The way back from an invoice raised against the wrong customer or for the wrong amount. Until
   // this existed the only fix was sqlite3 on the server, so the mistake counted toward money owed
   // and chased the wrong customer for as long as the shop kept using the software.
