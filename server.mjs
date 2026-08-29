@@ -3675,11 +3675,19 @@ app.post('/api/estimates/:id/nudge', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
   if (requireCustomerEmail(c, res, 'follow-up')) return
   const s = getSettings()
+  // The shop's own Manual follow-up switch. queueEmail's default is deliver:true, and these two
+  // routes were the only customer-mail paths in the file that never passed it — the automation
+  // engine, POST /api/reorders/:id/nudge and POST /api/invoices/:id/request-payment all read
+  // mode_followups. Settings renders this switch as "Send nudges on quiet quotes / overdue
+  // invoices automatically" and the card promises "nothing is ever taken out of your hands"; a
+  // shop that set it to Manual still had a live customer email leave the building from a 24px
+  // button in a table row.
+  const deliver = s.mode_followups !== 'manual'
   queueEmail({ contact: c, kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
     template: s.email_template_nudge,
-    vars: { estimate_number: e.estimate_number, total: money(e.total) } })
-  logActivity('estimate', `Follow-up sent on ${e.estimate_number} (${money(e.total)}) to ${c.email}`, { contact_id: e.contact_id })
-  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+    vars: { estimate_number: e.estimate_number, total: money(e.total) }, deliver })
+  logActivity('estimate', `Follow-up ${deliver ? 'sent' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${c.email}`, { contact_id: e.contact_id })
+  res.json({ ok: true, delivered: deliver, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
 }))
 
 /** Nudge an overdue invoice. */
@@ -3689,11 +3697,12 @@ app.post('/api/invoices/:id/nudge', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', i.contact_id)
   if (refuseVoided(i, res) || requireCustomerEmail(c, res, 'reminder')) return
   const s = getSettings()
+  const deliver = s.mode_followups !== 'manual'   // the same switch, for the same reason as above
   queueEmail({ contact: c, kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
-    vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date } })
-  logActivity('invoice', `Payment reminder sent on ${i.invoice_number} to ${c.email}`, { contact_id: i.contact_id })
-  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+    vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver })
+  logActivity('invoice', `Payment reminder ${deliver ? 'sent' : 'drafted'} on ${i.invoice_number} to ${c.email}`, { contact_id: i.contact_id })
+  res.json({ ok: true, delivered: deliver, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
 }))
 
 /* ================= AUTOMATIONS ================= */

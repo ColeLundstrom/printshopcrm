@@ -1262,6 +1262,46 @@ await t('the Automation Modes card offers no switch the app ignores', async () =
   }
 })
 
+/* ---------- …and the switch reaches the buttons, not only the robot (v20) ----------
+ * The rule above asks whether ANYTHING reads each mode key, and mode_followups passes it because
+ * three other callers do: the automation engine's injected deps, POST /api/reorders/:id/nudge
+ * (whose docstring is literally "respects the shop's follow-up mode (drafts in Manual)") and POST
+ * /api/invoices/:id/request-payment. The two Follow-ups buttons were the only customer-mail paths
+ * in server.mjs that did not, so they took queueEmail's `deliver = true` default: a shop that had
+ * set Follow-ups to Manual still had a live customer email leave the building from a 24px button
+ * in a table row, with no confirm, no undo, and — because the click handler never awaited the post
+ * — a "Follow-up sent" toast even when the send had failed. */
+await t('the two Follow-ups buttons obey the same switch the automation engine does', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  for (const [route, what] of [["app.post('/api/estimates/:id/nudge'", 'the quote nudge'], ["app.post('/api/invoices/:id/nudge'", 'the payment reminder']]) {
+    const i = src.indexOf(route)
+    assert.ok(i > 0, `${route} should still be there`)
+    const body = src.slice(i, src.indexOf('\n}))', i))
+    assert.match(body, /const deliver = s\.mode_followups !== 'manual'/, `${what} ignores the shop's Manual follow-up mode`)
+    assert.match(body, /vars: \{[^}]*\}, deliver \}\)/, `${what} computes deliver and then does not pass it`)
+    assert.match(body, /delivered: deliver/, `${what} must tell the screen which of the two things happened`)
+    assert.match(body, /\$\{deliver \? 'sent' : 'drafted'\}/, '…and the customer timeline must not say "sent" for a draft')
+  }
+})
+await t('…and the button asks first, and reports what actually happened', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const fu = readFileSync(join(root, 'public/js/views/followups.js'), 'utf8')
+  assert.match(fu, /confirmModal\(title,/, 'both buttons mail a live customer with no confirm and no undo')
+  assert.match(fu, /There is no way to unsend it/, '…and the copy has to say so')
+  // The un-awaited post is the half that made the toast a lie.
+  assert.doesNotMatch(fu, /await api\.post\(`\/api\/estimates\/\$\{t\.dataset\.nudgeEst\}\/nudge`\)\n\s*toast\('Follow-up sent/,
+    'a rejected send became an unhandled rejection while the toast said it had gone')
+  assert.match(fu, /catch \(err\) \{ toast\(err\.message, true\); t\.disabled = false \}/, 'a failure has to be shown and the button given back')
+  assert.match(fu, /r\.delivered === false \? `Drafted to the Outbox/, 'in Manual mode the toast must not claim a send')
+})
+
 section('receptionist: one long message cannot become an unbounded prompt, forever')
 // Every DIRECT interpolation of the visitor's current message was bounded — 500 chars for intent,
 // 800 for a grounded answer, 1200 for extraction. The REPLAY of the conversation so far was not,

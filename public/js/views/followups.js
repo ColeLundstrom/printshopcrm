@@ -1,4 +1,4 @@
-import { api, $, esc, money, money0, fmtDate, setPage, empty, toast, go, on } from '../core.js'
+import { api, $, esc, money, money0, fmtDate, setPage, empty, toast, go, on, confirmModal } from '../core.js'
 
 /**
  * The money list.
@@ -41,7 +41,7 @@ export async function followupsView() {
                 <div class="dim" style="font-size:11.5px">${esc(e.company || e.email || '')}</div></td>
               <td class="num"><strong>${money(e.total)}</strong></td>
               <td class="num"><span style="color:${e.age >= 5 ? 'var(--amber)' : 'var(--txt-2)'}">${age(e.age)}</span></td>
-              <td class="num"><button class="btn ghost sm" data-nudge-est="${e.id}">Nudge</button></td>
+              <td class="num"><button class="btn ghost sm" data-nudge-est="${e.id}" data-who="${esc(e.contact_name || e.email || 'this customer')}">Nudge</button></td>
             </tr>`).join('')}</tbody></table>`
             : empty('✓', 'No quotes hanging', 'Every estimate you sent has been answered.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
         </div>
@@ -56,7 +56,7 @@ export async function followupsView() {
                 <div class="dim" style="font-size:11.5px">due ${fmtDate(i.due_date)}</div></td>
               <td class="num"><strong style="color:var(--amber)">${money(i.balance)}</strong></td>
               <td class="num"><span style="color:var(--red);font-weight:600">${age(i.age)}</span></td>
-              <td class="num"><button class="btn ghost sm" data-nudge-inv="${i.id}">Remind</button></td>
+              <td class="num"><button class="btn ghost sm" data-nudge-inv="${i.id}" data-who="${esc(i.contact_name || i.email || 'this customer')}">Remind</button></td>
             </tr>`).join('')}</tbody></table>`
             : empty('▣', 'Nothing overdue', 'Everyone has paid on time.', '<a class="btn" href="#/invoices">View invoices</a>')}
         </div>
@@ -91,18 +91,25 @@ export async function followupsView() {
     </div>`
 
   on($('#fu-body'), '[data-go]', (_e, t) => go(t.dataset.go))
-  on($('#fu-body'), '[data-nudge-est]', async (e, t) => {
+  /**
+   * Both of these mail a live customer, from a 24px button inside a row that is itself a click
+   * target, with no confirm and no undo. And neither awaited the post, so a rejected send — no
+   * SMTP, no address, a 429 — became an unhandled rejection while the toast said it had gone.
+   * The server now reports `delivered`, so the toast can say which of the two things happened
+   * instead of assuming.
+   */
+  const nudge = (path, title, verb) => async (e, t) => {
     e.stopPropagation()
-    t.disabled = true
-    await api.post(`/api/estimates/${t.dataset.nudgeEst}/nudge`)
-    toast('Follow-up sent. Check the Outbox')
-    followupsView()
-  })
-  on($('#fu-body'), '[data-nudge-inv]', async (e, t) => {
-    e.stopPropagation()
-    t.disabled = true
-    await api.post(`/api/invoices/${t.dataset.nudgeInv}/nudge`)
-    toast('Reminder sent. Check the Outbox')
-    followupsView()
-  })
+    const who = t.dataset.who || 'this customer'
+    confirmModal(title, `An email goes to ${who} now. There is no way to unsend it.`, async () => {
+      t.disabled = true
+      try {
+        const r = await api.post(path(t))
+        toast(r.delivered === false ? `Drafted to the Outbox — ${verb} are on Manual` : `${verb === 'follow-ups' ? 'Follow-up' : 'Reminder'} sent to ${r.emailed_to || who}`)
+        followupsView()
+      } catch (err) { toast(err.message, true); t.disabled = false }
+    }, 'Send it')
+  }
+  on($('#fu-body'), '[data-nudge-est]', nudge((t) => `/api/estimates/${t.dataset.nudgeEst}/nudge`, 'Send this follow-up?', 'follow-ups'))
+  on($('#fu-body'), '[data-nudge-inv]', nudge((t) => `/api/invoices/${t.dataset.nudgeInv}/nudge`, 'Send this payment reminder?', 'reminders'))
 }
