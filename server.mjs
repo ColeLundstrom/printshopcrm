@@ -5556,7 +5556,13 @@ const EXPORTS = {
           decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
           qty: lineQty(it), unit_price: it.unit_price ?? 0,
           taxable: it.taxable === false ? 'no' : 'yes',
-          amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
+          // lineAmount, not qty x unit_price. Extended sizes carry a per-piece upcharge — 2XL +$2,
+          // 3XL +$3 out of the box — and the document's stored subtotal has always included it.
+          // The export did not, so the lines under a $2,325 estimate summed to $2,150 and the
+          // difference was nowhere on the file: the one number a bookkeeper reconciles against.
+          // The upcharge gets its own column so the two figures can be told apart.
+          size_upcharge: lineUpcharge(it, getUpcharges()),
+          amount: lineAmount(it, getUpcharges()),
         }
       }
     }
@@ -5703,7 +5709,8 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
               decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
               qty: lineQty(it), unit_price: it.unit_price ?? 0,
               taxable: it.taxable === false ? 'no' : 'yes',
-              amount: round2(lineQty(it) * (Number(it.unit_price) || 0)),
+              size_upcharge: lineUpcharge(it, getUpcharges()),
+              amount: lineAmount(it, getUpcharges()),
             })
           }
         }

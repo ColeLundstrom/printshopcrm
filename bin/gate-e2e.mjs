@@ -3578,6 +3578,25 @@ try {
     chk('…as a number the spreadsheet will add up', amounts, '(^|,)-100(\\.0+)?(,|$)')
     chk('…not as text', String(amounts.includes("'-100")), '^false$')
 
+    /* …and the amount on each line is the amount the document charged.
+     * `amount` was `qty x unit_price`. Extended sizes carry a per-piece upcharge — 2XL +$2, 3XL
+     * +$3 out of the box — and the stored subtotal has always included it. Both exports left it
+     * out, so the lines summed UNDER the estimate's own total and the difference appeared nowhere
+     * in the file. This is the one number a bookkeeper reconciles against. */
+    await req('PUT', '/api/settings', { body: { size_upcharges: JSON.stringify({ '2XL': 2, '3XL': 3 }) } })
+    const ue = (await req('POST', '/api/estimates', { body: { contact_id: nc.id, items: [
+      { description: 'Upcharged Tees', unit_price: 8.75, sizes: { M: 100, '2XL': 10, '3XL': 2 } },
+    ] } })).json
+    chk('an estimate with extended sizes stores its subtotal WITH the upcharge', String(ue?.subtotal), '^1006$')
+    const li2 = (await req('GET', '/api/export/line_items.csv')).text
+    const row = li2.split('\n').find((l) => l.includes('Upcharged Tees')) || ''
+    chk('…and the exported line says the same number', row, '(^|,)1006(\\.0+)?(,|$)')
+    chk('…rather than the pre-upcharge figure', String(/(^|,)980(\.0+)?(,|$)/.test(row)), '^false$')
+    const aj = (await req('GET', '/api/export/all.json')).text
+    const jline = (JSON.parse(aj).tables?.line_items || []).find((l) => l.description === 'Upcharged Tees')
+    chk('…and so does the JSON export, which is the anti-lock-in path', String(jline?.amount), '^1006$')
+    chk('…naming the upcharge separately so the two figures can be told apart', String(jline?.size_upcharge), '^26$')
+
     // The guard it must not break: an attacker-supplied name is still forced to a literal string.
     const ec = (await req('POST', '/api/contacts', { body: { name: "=cmd|' /C calc'!A0", email: 'evil-csv@e2e.test' } })).json
     chk('a formula in a customer name is accepted as data', String(ec?.id > 0), '^true$')
