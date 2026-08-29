@@ -1700,6 +1700,63 @@ try {
     chk('…and cancelling really removes it', String(!!(a.json?.pending || []).find((p) => p.label === 'Drip Survivor')), '^false$')
   }
 
+  /* ---------- a stale customer dropdown does not answer "Something went wrong on our end" ----------
+   * `if (!b.contact_id)` is a truthiness check, and contact_id is a real foreign key on estimates,
+   * jobs and opportunities — so an id that no longer resolves raised FOREIGN KEY constraint
+   * failed, which wrap() turned into a bare 500 with no code and nothing anybody could act on.
+   * Two ordinary paths reach it: a customer <select> rendered before someone else deleted that
+   * customer (two tabs, or two people in a shop), and an integration posting an id it cached. The
+   * v1 API got exactly this refusal in round 4; the app's own create routes never did.
+   *
+   * The same routes bound free text straight through, and node:sqlite reads a bare OBJECT as a
+   * named-parameter bag — so {"title":{"a":1}} came back "Unknown named parameter" as a 500.
+   * str() was written for this and was applied to one field out of seven. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Deleted While You Looked', email: 'gone@e2e.test' } })
+    const goneC = r.json?.id
+    await req('DELETE', `/api/contacts/${goneC}`)
+    chk('the customer really is gone', String((await req('GET', `/api/contacts/${goneC}`)).status), '^404$')
+
+    for (const [what, path, body] of [
+      ['a quote', '/api/estimates', { contact_id: goneC, items: [{ description: '24 tees', sizes: { M: 24 }, unit_price: 12 }] }],
+      ['a job', '/api/jobs', { contact_id: goneC, title: 'Ghost job' }],
+      ['a deal', '/api/opportunities', { contact_id: goneC, title: 'Ghost deal', value: 500 }],
+    ]) {
+      const out = await req('POST', path, { body })
+      chk(`${what} for a customer who no longer exists is a clean refusal`, String(out.status), '^404$')
+      chk('…that says what happened and what to do', `${out.json?.code} ${out.text}`, '^customer_not_found .*Reload')
+    }
+    // …and a missing id is still the plain "pick a customer" it always was.
+    chk('no customer at all is still a 400', String((await req('POST', '/api/jobs', { body: { title: 'Nobody' } })).status), '^400$')
+
+    // Malformed free text: a 4xx or a clean save, never a 500.
+    r = await req('POST', '/api/contacts', { body: { name: 'Malformed Body Co', email: 'malformed@e2e.test' } })
+    const mfC = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: mfC, title: 'Typed properly', quantities: '24 M' } })
+    const mfJ = r.json?.id
+    for (const field of ['title', 'notes', 'decoration', 'assigned_to', 'due_date']) {
+      const out = await req('PUT', `/api/jobs/${mfJ}`, { body: { [field]: { a: 1 } } })
+      chk(`an object in ${field} does not take the job route down`, String(out.status), '^(200|400)$')
+    }
+    chk('…and the job kept the title a person typed', String((await req('GET', `/api/jobs/${mfJ}`)).json?.title), '^Typed properly$')
+
+    // sort_order went straight to the binding: an object 500'd and 1e400 wrote Infinity into the
+    // column the board orders its cards by. The pipeline's twin has carried this guard since
+    // v1.14.0, with a comment describing the bug; the job board never got it.
+    chk('an object sort_order on the job board is refused, not a 500',
+      String((await req('PATCH', `/api/jobs/${mfJ}/stage`, { body: { stage: 'prepress', sort_order: { a: 1 } } })).status), '^400$')
+    // JSON.stringify(Infinity) is `null`, so the literal has to go over the wire by hand — which
+    // is exactly how a real caller produces it: JSON.parse('1e400') is Infinity.
+    const infRes = await fetch(`${BASE}/api/jobs/${mfJ}/stage`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookieHeader() },
+      body: '{"stage":"prepress","sort_order":1e400}',
+    })
+    const infJson = await infRes.json().catch(() => ({}))
+    chk('…and an infinite one too', `${infRes.status} ${infJson?.code || ''}`, '^400 invalid_sort_order$')
+    r = await req('PATCH', `/api/jobs/${mfJ}/stage`, { body: { stage: 'prepress', sort_order: 3 } })
+    chk('…while a real one still moves the card', `${r.status} ${r.json?.sort_order}`, '^200 3$')
+  }
+
   /* ---------- the app does not say it emailed a customer who has no email address ----------
    * queueEmail writes an email_log row with `to_email = contact?.email ?? ''` and only actually
    * sends `if (deliver && to)`. Three routes called it and then answered {ok:true} with a timeline

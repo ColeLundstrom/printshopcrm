@@ -453,6 +453,31 @@ const MAX_PIECES = 1_000_000
 // crash the route. Coerce anything that isn't a usable scalar to a safe string before it is bound.
 const str = (v, fallback = '') =>
   v == null ? fallback : typeof v === 'string' ? v : (typeof v === 'number' || typeof v === 'boolean') ? String(v) : fallback
+/**
+ * Resolve the customer a document is being raised for, or answer why not.
+ *
+ * `if (!b.contact_id)` is a truthiness check, and contact_id is a real foreign key on estimates,
+ * jobs and opportunities — so an id that no longer resolves raised `FOREIGN KEY constraint
+ * failed`, which wrap() turned into a bare 500 with no `code` and nothing the caller could act on.
+ * Two ordinary paths reach it: a customer <select> rendered before someone else deleted that
+ * customer (two tabs, or two people), and an integration posting an id it cached. The v1 API got
+ * this exact refusal in round 4; the app's own create routes never did.
+ */
+const resolveContactId = (raw, res, verb) => {
+  const id = Number(raw)
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: `Pick a customer to ${verb} for.`, code: 'customer_required' })
+    return null
+  }
+  if (!get('SELECT id FROM contacts WHERE id = ?', id)) {
+    res.status(404).json({
+      error: 'That customer no longer exists — they may have been deleted while this screen was open. Reload and pick again.',
+      code: 'customer_not_found',
+    })
+    return null
+  }
+  return id
+}
 // HTML-escape for server-rendered customer-facing /p/ pages. Shop- and customer-entered strings
 // (names, notes, item descriptions — some from PUBLIC lead/gang-sheet forms) must never reach the
 // page as live markup, or a crafted name becomes stored XSS on the customer's proof/pay page.
@@ -2109,7 +2134,8 @@ const NOT_REPRESENTABLE = { error: 'Those line items do not add up to an amount 
 
 app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
-  if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer first' })
+  const contactId = resolveContactId(b.contact_id, res, 'quote')
+  if (contactId == null) return
   const s = getSettings()
   // A non-array here (a bare object, a string, or a duplicated JSON key collapsing to one value)
   // reached computeTotals and threw a 500 on the app's main create path.
@@ -2122,14 +2148,14 @@ app.post('/api/estimates', wrap((req, res) => {
   // `tax_rate` is not saying so — the editor's field always carries the shop's default, which is
   // how every quote written from a wholesale customer's own page came out taxed.
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
-  const rate = taxRateFor(+b.contact_id, b.tax_rate, { allowExemptOverride: b.tax_exempt_override === true })
+  const rate = taxRateFor(contactId, b.tax_rate, { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   const num = nextEstimateNumber()
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    +b.contact_id, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', now())
+    contactId, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', now())
   const id = Number(r.lastInsertRowid)
-  logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: +b.contact_id })
+  logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
   res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
 }))
@@ -2760,7 +2786,8 @@ const gridFromQuantities = (q) => {
 
 app.post('/api/jobs', wrap((req, res) => {
   const b = req.body || {}
-  if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer first' })
+  const contactId = resolveContactId(b.contact_id, res, 'book a job')
+  if (contactId == null) return
   const num = nextJobNumber()
   const grid = gridFromQuantities(b.quantities)
   // `garment` is what costFor() reads to pick the SKU the purchase order spends money on. A job
@@ -2768,10 +2795,10 @@ app.post('/api/jobs', wrap((req, res) => {
   // so its PO came back sku:null, est_cost 0, and submitting it said "set the exact style first"
   // with no field anywhere in the product to do that in. 17 columns, 17 placeholders, 17 values.
   const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    +b.contact_id, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
+    contactId, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
     STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', str(b.garment).trim() || null, b.quantities || '',
     grid || '{}', b.due_date || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
-  logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: +b.contact_id, job_id: id })
+  logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: contactId, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
 
@@ -2874,13 +2901,19 @@ app.put('/api/jobs/:id', wrap((req, res) => {
       nextLines = JSON.stringify([{ ...cur[0], description: nextGarment, garment: nextGarment }])
     }
   }
+  // str() on every free-text field, not just `garment`. node:sqlite refuses to bind an object or
+  // an array and — worse — reads a bare object as a NAMED-parameter bag, so `{"title":{"a":1}}`
+  // came back "Unknown named parameter" and the route answered a bare 500 with no field named and
+  // nothing the caller could act on. str() was written for exactly this and was applied to one
+  // field out of seven. An omitted field still means "leave it alone"; a malformed one now falls
+  // back to what was already stored rather than taking the route down.
   run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
-    b.title ?? j.title, b.decoration ?? j.decoration, nextGarment, nextQuantities, nextSizes, nextLines, b.due_date ?? j.due_date,
+    str(b.title, j.title), str(b.decoration, j.decoration), nextGarment, nextQuantities, nextSizes, nextLines, str(b.due_date, j.due_date),
     // `??` on every other field, and `b.rush ? 1 : 0` on this one — so any partial update cleared
     // it. PUT /api/jobs/:id {notes:"..."} took a job off RUSH: it dropped down the board's sort,
     // lost its badge on the work ticket and on Today, and stopped being counted by the Rush filter.
     // Nothing said so, and nothing on the job records that it ever was one.
-    b.notes ?? j.notes, b.assigned_to ?? j.assigned_to, b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), id)
+    str(b.notes, j.notes), str(b.assigned_to, j.assigned_to), b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), id)
   // A split change moves what the shop BUYS, on a job that may already have blanks on order, so
   // it goes on the timeline rather than happening silently between two screens.
   if (explicitLines && nextLines !== j.line_sizes) {
@@ -2895,7 +2928,16 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const stage = req.body?.stage
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `Unknown stage: ${stage}` })
-  const order = req.body?.sort_order ?? j.sort_order
+  // The guard its twin at PATCH /api/opportunities/:id/stage has carried since v1.14.0, with a
+  // comment describing this exact bug — and the job board, which is the one people actually drag
+  // all day, never got it. An object 500'd (node:sqlite reads a bare object as a named-parameter
+  // bag, so the error is "Unknown named parameter"), and "1e400" wrote Infinity into the column
+  // the board orders its cards by, after which that job sorts nowhere in particular forever.
+  let order = j.sort_order
+  if (req.body?.sort_order != null) {
+    order = Number(req.body.sort_order)
+    if (!Number.isFinite(order)) return res.status(400).json({ error: 'sort_order must be a number', code: 'invalid_sort_order' })
+  }
   const status = stage === 'complete' ? 'complete' : 'active'
   run('UPDATE jobs SET stage=?, sort_order=?, status=?, updated_at=? WHERE id=?', stage, order, status, now(), id)
   if (stage !== j.stage) {
@@ -3430,13 +3472,14 @@ const moneyIn = (v) => {
 
 app.post('/api/opportunities', wrap((req, res) => {
   const b = req.body || {}
-  if (!b.contact_id) return res.status(400).json({ error: 'Pick a customer' })
+  const contactId = resolveContactId(b.contact_id, res, 'open a deal')
+  if (contactId == null) return
   if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'Value must be a number', code: 'invalid_value' })
   const id = Number(run(`INSERT INTO opportunities (contact_id, title, stage, value, source, notes, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?)`,
-    +b.contact_id, b.title || 'New opportunity', pipeline.STAGE_KEYS.includes(b.stage) ? b.stage : 'lead',
-    round2(b.value), b.source || 'manual', b.notes || '', now(), now()).lastInsertRowid)
-  logActivity('note', `Opportunity added — ${b.title || 'New opportunity'} (${money(round2(b.value))})`, { contact_id: +b.contact_id })
+    contactId, str(b.title, '') || 'New opportunity', pipeline.STAGE_KEYS.includes(b.stage) ? b.stage : 'lead',
+    round2(b.value), str(b.source, '') || 'manual', str(b.notes, ''), now(), now()).lastInsertRowid)
+  logActivity('note', `Opportunity added — ${str(b.title, '') || 'New opportunity'} (${money(round2(b.value))})`, { contact_id: contactId })
   res.json(get('SELECT * FROM opportunities WHERE id = ?', id))
 }))
 
@@ -3446,7 +3489,7 @@ app.put('/api/opportunities/:id', wrap((req, res) => {
   const b = req.body || {}
   if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'Value must be a number', code: 'invalid_value' })
   run('UPDATE opportunities SET title=?, value=?, notes=?, updated_at=? WHERE id=?',
-    b.title ?? o.title, b.value != null ? moneyIn(b.value) : o.value, b.notes ?? o.notes, now(), o.id)
+    str(b.title, o.title), b.value != null ? moneyIn(b.value) : o.value, str(b.notes, o.notes), now(), o.id)
   res.json(get('SELECT * FROM opportunities WHERE id = ?', o.id))
 }))
 
