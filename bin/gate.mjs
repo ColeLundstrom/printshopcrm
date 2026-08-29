@@ -2253,6 +2253,57 @@ for (const [tz, stored, want, why] of [
  * followups.js:56/72, dashboard.js:49/50, capacity.js:135/136, board.js:323/327. jobs.due_date
  * was free text on POST and PUT /api/jobs, so a `staff` account could plant a payload that ran as
  * the owner on five ordinary screens. relTime() falls through to fmtDate, so it inherited it. */
+/* ---------- a shop's customer mail goes out on the shop's own account ----------
+ * smtpCreds() read `process.env.SMTP_HOST || s?.smtp_host` — the operator's environment FIRST —
+ * which inverts both its own docstring ("Credentials live in the shop's own settings (never
+ * ours)") and .env.example, where the server-wide values are documented as "a fallback". On a
+ * multi-tenant box one SMTP_HOST in the operator's .env sent EVERY shop's customer mail through
+ * the operator's server, as the operator's address, including shops that had wired their own
+ * domain in Settings and could see it there listed as connected. Measured with two SMTP catchers:
+ * the shop's own server received nothing. lib/suppliers.mjs:178 already makes this argument for
+ * distributor accounts, where env-first would price a shop's jobs off somebody else's rate card. */
+section('the shop\'s own mail credentials are the shop\'s own')
+{
+  const { smtpCreds, twilioCreds } = await import('../lib/notify.mjs')
+  const OPERATOR = { SMTP_HOST: 'operator.example', SMTP_PORT: '2525', SMTP_USER: 'operator', SMTP_PASS: 'operatorpass', SMTP_FROM: 'noreply@operator.example', TWILIO_SID: 'ACoperator', TWILIO_TOKEN: 'optoken', TWILIO_FROM: '+15550000000' }
+  const withEnv = (fn) => {
+    const saved = {}
+    for (const [k, v] of Object.entries(OPERATOR)) { saved[k] = process.env[k]; process.env[k] = v }
+    try { return fn() } finally { for (const k of Object.keys(OPERATOR)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k] } }
+  }
+  const SHOP = { smtp_host: 'mail.theshop.test', smtp_port: 587, smtp_user: 'shop', smtp_pass: 'shoppass', smtp_from: 'orders@theshop.test',
+    twilio_sid: 'ACshop', twilio_token: 'shoptoken', twilio_from: '+15551112222' }
+
+  await t('a shop that wired its own SMTP sends through its own server', () => {
+    const c = withEnv(() => smtpCreds(SHOP))
+    assert.equal(c.host, 'mail.theshop.test')
+    assert.equal(c.user, 'shop')
+    assert.equal(c.pass, 'shoppass')
+    assert.equal(c.from, 'orders@theshop.test')
+  })
+  await t('…and its own Twilio account is the one that gets billed', () => {
+    const c = withEnv(() => twilioCreds(SHOP))
+    assert.deepEqual(c, { sid: 'ACshop', token: 'shoptoken', from: '+15551112222' })
+  })
+  await t('…and a credential set is never mixed with the operator\'s', () => {
+    // The shop's host with the operator's password authenticates the wrong account against the
+    // wrong server, which is a worse failure than either alone.
+    const c = withEnv(() => smtpCreds(SHOP))
+    assert.ok(!Object.values(c).some((v) => String(v).includes('operator')), JSON.stringify(c))
+  })
+  await t('a shop that wired nothing still falls back to the server-wide values', () => {
+    // What a single-tenant self-host relies on, and what .env.example promises.
+    const c = withEnv(() => smtpCreds({}))
+    assert.equal(c.host, 'operator.example')
+    assert.equal(c.from, 'noreply@operator.example')
+    assert.equal(withEnv(() => twilioCreds({})).sid, 'ACoperator')
+  })
+  await t('…as does one that only got halfway through wiring its own', () => {
+    const c = withEnv(() => smtpCreds({ smtp_host: 'mail.theshop.test', smtp_user: 'shop' })) // no password
+    assert.equal(c.pass, 'operatorpass', 'an incomplete set is not a configured shop')
+  })
+}
+
 section('a date formatter cannot become a script tag')
 await t('an unparseable date comes back escaped, not verbatim', async () => {
   const core = await import('../public/js/core.js')
