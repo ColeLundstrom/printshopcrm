@@ -3620,6 +3620,69 @@ await t('deleting an estimate takes its mockups with it, so a reused id cannot i
   } finally { dbm.setDefaultDb(prev) }
 })
 
+/* ---------- a QuickBooks push never survives its invoice (v20) ----------
+ * qbo_sync.entity_id was the last parent pointer in the schema with no foreign key — and being
+ * polymorphic ('invoice' + a rowid) it can never have one. invoices.contact_id cascades, and
+ * DELETE /api/contacts/:id lets a customer go when their only invoice is VOIDED, which is the
+ * supported way to retract one raised in error. SQLite then hands the freed rowid to the next
+ * invoice, and the dead push row latches onto it. The queue screen relabels the old failure with
+ * the new customer's invoice number, "Retry" pushes an invoice nobody asked to push — and worst,
+ * enqueueQbo() skips an invoice that already has an open row, so the NEW invoice is never queued
+ * at all. The money moves, QuickBooks never hears about it, and nothing anywhere says so. */
+section('a QuickBooks push never survives its invoice')
+await t('deleting the customer takes the dead push row with the invoice', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Raised In Error', dbm.now(), dbm.now())
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (2, ?, ?, ?)', 'Real Customer', dbm.now(), dbm.now())
+    dbm.run("INSERT INTO invoices (contact_id, invoice_number, status, amount_due) VALUES (1, 'INV-1001', 'void', 800)")
+    const dead = dbm.get("SELECT id FROM invoices WHERE invoice_number = 'INV-1001'").id
+    dbm.run("INSERT INTO qbo_sync (entity, entity_id, status, error) VALUES ('invoice', ?, 'pending', ?)", dead, 'QuickBooks was down')
+
+    // The route's own path: a voided invoice does not block, so the cascade fires.
+    dbm.run('DELETE FROM contacts WHERE id = 1')
+    assert.equal(dbm.all('SELECT id FROM invoices').length, 0, 'precondition: the invoice cascaded away')
+    assert.equal(dbm.all("SELECT id FROM qbo_sync WHERE entity = 'invoice'").length, 0,
+      'the push row must not outlive the invoice it was raised against')
+
+    // Now the real harm: the freed rowid comes back on the next customer's invoice.
+    dbm.run("INSERT INTO invoices (contact_id, invoice_number, status, amount_due) VALUES (2, 'INV-1002', 'unpaid', 4200)")
+    const live = dbm.get("SELECT id FROM invoices WHERE invoice_number = 'INV-1002'").id
+    assert.equal(live, dead, 'precondition: SQLite reissued the rowid')
+    const shown = dbm.all(`SELECT q.status, q.error, i.invoice_number FROM qbo_sync q
+      LEFT JOIN invoices i ON i.id = q.entity_id WHERE q.entity = 'invoice'`)
+    assert.deepEqual(shown, [], "the new customer's invoice must not inherit the old failure")
+    // enqueueQbo()'s idempotence check is the silent one: an open row for this id skips the queue.
+    assert.equal(dbm.all("SELECT id FROM qbo_sync WHERE entity = 'invoice' AND entity_id = ? AND status IN ('pending','retrying','syncing')", live).length, 0,
+      'a stale open row would make enqueueQbo skip a real invoice, forever and silently')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('…and a database that is already carrying an orphan is swept on the next boot', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  // Drop the trigger to recreate the pre-fix state, then orphan a row the way an old build did.
+  db.exec('DROP TRIGGER IF EXISTS trg_qbo_sync_invoice_delete')
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gone', dbm.now(), dbm.now())
+    dbm.run("INSERT INTO invoices (contact_id, invoice_number, status, amount_due) VALUES (1, 'INV-9001', 'void', 500)")
+    const dead = dbm.get("SELECT id FROM invoices WHERE invoice_number = 'INV-9001'").id
+    dbm.run("INSERT INTO qbo_sync (entity, entity_id, status) VALUES ('invoice', ?, 'retrying')", dead)
+    dbm.run('DELETE FROM contacts WHERE id = 1')
+    assert.equal(dbm.all('SELECT id FROM qbo_sync').length, 1, 'precondition: the old build left the orphan behind')
+    dbm.initDb(db)   // the upgrade
+    assert.equal(dbm.all('SELECT id FROM qbo_sync').length, 0, 'the upgrade must clear an orphan already on disk')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('ROI: sales tax is not the shop\'s money')
 // jobRoi read invoices.amount_due / estimates.total, both tax-inclusive, and labelled the result
 // "what you actually keep". Every margin on the screen read high by roughly the tax rate, and the
