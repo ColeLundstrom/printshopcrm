@@ -4039,6 +4039,67 @@ section('the purchase order orders the shirt colour, not the ink colour')
   })
 }
 
+/* The S&S order body dropped size and colour entirely.
+ *
+ * consolidatePoLines keys on (sku|style, colour, size), so a size run correctly stays four rows —
+ * but every one of those rows carries the SAME sku, because the catalogue is style-level (G500 is
+ * "Gildan 5000", not "Gildan 5000 White M"). The wire body was `lines.map(l => ({identifier:
+ * l.sku, qty: l.qty}))`, so a 226-piece run of S/M/L/XL left the building as four identical
+ * lines of "G500" — 226 pieces of one unknown size, charged, with the local PO record still
+ * showing a correct size grid so nothing looked wrong until the boxes arrived.
+ *
+ * The honest answer is to refuse. A per-size distributor SKU only exists on a live lookup, and
+ * this project's own rule (round 5, restated when the brand fallbacks lost their SKUs) is that a
+ * visible dead end is recoverable and a confidently wrong order is not. The PO document itself is
+ * unaffected — it has always carried size and colour per line — so the shop can still download it
+ * and place the order by hand, which is what the refusal tells them to do. */
+section('a purchase order cannot leave with size and colour dropped')
+{
+  const SS = { ss_account: '12345', ss_key: 'k' }
+  await t('four sizes on one style-level SKU is refused, not sent as four identical lines', async () => {
+    const sup = await import('../lib/suppliers.mjs')
+    const po = { supplier: 'S&S Activewear', job: 'JOB-1', lines: [
+      { sku: 'G500', style: 'Gildan 5000', color: 'white', size: 'S', qty: 50 },
+      { sku: 'G500', style: 'Gildan 5000', color: 'white', size: 'M', qty: 80 },
+      { sku: 'G500', style: 'Gildan 5000', color: 'white', size: 'L', qty: 60 },
+      { sku: 'G500', style: 'Gildan 5000', color: 'white', size: 'XL', qty: 36 },
+    ] }
+    await assert.rejects(() => sup.submitPurchaseOrder(po, SS), /one SKU per size and colour/i)
+  })
+  await t('…and the dry run refuses it too, so the preview never shows a clean order', async () => {
+    const sup = await import('../lib/suppliers.mjs')
+    const po = { supplier: 'S&S Activewear', job: 'JOB-1', lines: [
+      { sku: 'G500', color: 'white', size: 'S', qty: 50 },
+      { sku: 'G500', color: 'white', size: 'M', qty: 80 },
+    ] }
+    await assert.rejects(() => sup.submitPurchaseOrder(po, SS, { dryRun: true }), /one SKU per size and colour/i)
+  })
+  await t('one SKU per size still submits — the guard is about collisions, not about sizes', async () => {
+    const sup = await import('../lib/suppliers.mjs')
+    const po = { supplier: 'S&S Activewear', job: 'JOB-1', lines: [
+      { sku: 'G500-WHT-S', color: 'white', size: 'S', qty: 50 },
+      { sku: 'G500-WHT-M', color: 'white', size: 'M', qty: 80 },
+    ] }
+    const out = await sup.submitPurchaseOrder(po, SS, { dryRun: true })
+    assert.equal(out.ok, true)
+    assert.equal(out.total_units, 130)
+  })
+  await t('a single-cell PO on a style-level SKU is fine — there is nothing to confuse', async () => {
+    const sup = await import('../lib/suppliers.mjs')
+    const po = { supplier: 'S&S Activewear', job: 'JOB-1', lines: [{ sku: 'G500', color: 'white', size: 'M', qty: 80 }] }
+    const out = await sup.submitPurchaseOrder(po, SS, { dryRun: true })
+    assert.equal(out.ok, true)
+  })
+  await t('the refusal names the SKU, so the shop knows which line to fix', async () => {
+    const sup = await import('../lib/suppliers.mjs')
+    const po = { supplier: 'S&S Activewear', job: 'JOB-1', lines: [
+      { sku: 'BC3001', color: 'navy', size: 'S', qty: 12 },
+      { sku: 'BC3001', color: 'navy', size: 'L', qty: 12 },
+    ] }
+    await assert.rejects(() => sup.submitPurchaseOrder(po, SS, { dryRun: true }), /BC3001/)
+  })
+}
+
 section('the estimate editor escapes what arrives as an object key')
 // public/js/views/estimates.js escapes every string field it knows about — description, detail,
 // qty, unit_price — and rendered three object-derived ones raw: the size-grid KEYS, the size-grid
