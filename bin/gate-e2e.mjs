@@ -3655,6 +3655,53 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- the slip in the box agrees with the ticket the order was picked from ----------
+   * Every other floor document reads jobLines(j) — the pick ticket, the work ticket and the
+   * purchase order all do. The packing slip built its items straight off the ESTIMATE. The
+   * per-garment split can be edited on the JOB after the estimate is invoiced (PUT
+   * /api/estimates/:id is 409-locked from that moment, so the estimate can never be brought back
+   * into agreement), which made the slip permanently stale. Measured on a job whose customer added
+   * 20 hoodies and 12 caps after invoicing: pick ticket, PO and work ticket all said 418 pieces;
+   * the slip said 386, and named per-size counts nobody picked or bought. That slip is the
+   * document that goes in the box and the one the customer signs RECEIVED BY against. */
+  {
+    /** Every (string) Tj in a PDF, in the order it was written. lib/pdf.mjs emits uncompressed. */
+    const pdfWords = (buf) => [...buf.toString('latin1').matchAll(/\(((?:\\.|[^()\\])*)\)\s*Tj/g)]
+      .map((m) => m[1].replace(/\\([()\\])/g, '$1'))
+    const after = (words, label) => {
+      const i = words.indexOf(label)
+      return i < 0 ? null : Number(words[i + 1])
+    }
+    const doc = async (path) => pdfWords(Buffer.from(await (await fetch(BASE + path, { headers: { Cookie: cookieHeader() } })).arrayBuffer()))
+
+    const sc = (await req('POST', '/api/contacts', { body: { name: 'Split Co', email: 'split@e2e.test' } })).json
+    const se = (await req('POST', '/api/estimates', { body: { contact_id: sc.id, items: [
+      { description: 'Gildan 5000 Tee — Black', unit_price: 9.5, sizes: { S: 24, M: 60, L: 80 } },
+      { description: 'Gildan 18500 Hoodie — Navy', unit_price: 22, sizes: { M: 10, L: 20 } },
+    ] } })).json
+    const conv = (await req('POST', `/api/estimates/${se.id}/convert`)).json
+    const jobId = conv?.job_id
+    chk('a two-garment order converts to a job', String(jobId ?? ''), '^\\d+$')
+
+    // The exact edit the line_sizes column was introduced for: the customer adds to the order
+    // after it has been invoiced, so the estimate is frozen and only the JOB can be corrected.
+    const bump = await req('PUT', `/api/jobs/${jobId}`, { body: { line_sizes: [
+      { garment: 'Gildan 5000 Tee — Black', description: 'Gildan 5000 Tee — Black', sizes: { S: 24, M: 60, L: 80 } },
+      { garment: 'Gildan 18500 Hoodie — Navy', description: 'Gildan 18500 Hoodie — Navy', sizes: { M: 10, L: 20, XL: 20 } },
+      { garment: 'Port & Company CP80 Cap — Black', description: 'Port & Company CP80 Cap — Black', sizes: { SM: 6, LXL: 6 } },
+    ] } })
+    chk('…and the split can still be corrected on the job after invoicing', String(bump.status), '^200$')
+
+    const pick = await doc(`/api/jobs/${jobId}/pick-ticket.pdf`)
+    const slip = await doc(`/api/jobs/${jobId}/packing-slip.pdf`)
+    const picked = after(pick, 'TOTAL')
+    const shipped = after(slip, 'TOTAL UNITS')
+    chk(`the pick ticket totals the corrected order (${picked})`, String(picked), '^226$')
+    chk(`…and the slip in the box says the same number (${shipped})`, String(shipped), `^${picked}$`)
+    chk('…and the slip lists the garment that was only ever added on the job',
+      String(slip.some((w) => /CP80|Cap/.test(w))), '^true$')
+  }
+
   /* ---------- what one signed-in account can mail out of the shop is bounded, and honest ----------
    * POST /api/notify/test carries a manager gate and a recipient allowlist, and its own comment
    * names the reason: "with a free-form `to` this was an authenticated open relay — any member

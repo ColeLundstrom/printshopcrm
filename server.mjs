@@ -4736,8 +4736,18 @@ app.get('/api/jobs/:id/packing-slip.pdf', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).send('Not found')
   const contact = get('SELECT * FROM contacts WHERE id = ?', j.contact_id)
+  // jobLines(j), the same source of truth the pick ticket, the work ticket and the purchase order
+  // read — not the estimate's items. The per-garment split can be edited on the JOB after the
+  // estimate has been invoiced (PUT /api/estimates/:id is 409-locked from that moment, so the
+  // estimate can never be brought back into agreement), which made the slip permanently stale.
+  // Measured on a job whose customer added 20 hoodies and 12 caps after invoicing: pick ticket,
+  // purchase order and work ticket all said 418 pieces; the slip in the box said 386, and named
+  // per-size counts that were never picked or bought. That slip is the document the customer
+  // signs RECEIVED BY against. The estimate is still read, for the one thing only it carries:
+  // the per-line `detail` text the customer approved.
   const est = j.estimate_id ? get('SELECT items FROM estimates WHERE id = ?', j.estimate_id) : null
-  const items = est ? parse(est.items, []) : [{ description: j.garment || j.title, sizes: parse(j.sizes, {}) }]
+  const detailFor = new Map(parse(est?.items, []).map((i) => [String(i.description || ''), i.detail || '']))
+  const items = jobLines(j).map((l) => ({ ...l, detail: l.detail || detailFor.get(String(l.description || '')) || '' }))
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${j.job_number}-packing-slip.pdf"`)
   res.send(packingSlip({ job: j, contact, settings: getSettings(), items }))
 }))
