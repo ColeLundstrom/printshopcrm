@@ -3611,6 +3611,29 @@ section('a two-garment order stays two garments all the way to the purchase orde
     assert.match(pdf, /\(100\)/, 'the tee subtotal')
     assert.match(pdf, /\(50\)/, 'the hoodie subtotal — the number the picker needs and never had')
   })
+
+  await t('…and it can be picked from for a cap order, whose sizes are not SIZES', async () => {
+    // SIZES is the canonical apparel run and does not contain the names caps and bags are really
+    // ordered in — 'SM' and 'LXL' on a fitted cap, 'OS' on a tote. Every write path accepts them:
+    // SIZE_KEY passes them, sizeTotal counts them, sizeKeys renders them. pickTicket's own block
+    // filter asked SIZES.some() instead, so a 120-cap order bought 120 on the PO, listed 120 on
+    // the packing slip and 120 on the work ticket — and printed "UNITS 0 / No sizes on file" on
+    // the ONE document the warehouse picks from.
+    const { pickTicket } = await import('../lib/pdf.mjs')
+    const { sizeTotal: st, SIZE_KEY: sk } = await import('../public/js/shared/pricing.js')
+    const caps = { SM: 60, LXL: 60 }
+    assert.ok(Object.keys(caps).every((k) => sk.test(k)), 'precondition: every write path accepts these')
+    assert.equal(st(caps), 120, 'precondition: they are counted everywhere else')
+    const pdf = pickTicket({
+      job: { job_number: 'JOB-1042', due_date: '2026-09-10', decoration: 'Embroidery' },
+      settings: { shop_name: 'Test Shop' },
+      lines: [{ description: 'Richardson 112 Trucker — Black', garment: 'Richardson 112 Trucker', sizes: caps }],
+    }).toString('latin1')
+    assert.ok(!/No sizes on file/.test(pdf), 'the picker was handed a blank ticket for a real order')
+    assert.match(pdf, /\(SM\)/, 'the SM row has to be on the ticket')
+    assert.match(pdf, /\(LXL\)/, 'and the LXL row')
+    assert.match(pdf, /\(120\)/, 'and the unit count must not be 0')
+  })
 }
 
 section('the money helper can only ever return a finite number')
