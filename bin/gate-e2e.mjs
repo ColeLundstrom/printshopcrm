@@ -4480,6 +4480,54 @@ try {
       chk('a canonical page still loads', String((await rawGet('/')).status), '^200$')
       chk('…and a canonical asset still loads', String((await rawGet('/js/core.js')).status), '^200$')
       chk('…and a canonical API path still reaches its own JSON 404', String((await rawGet('/api/nope')).status), '^40[14]$')
+
+      /* Every rate limit in the product was bucketed on `req.path` — the CONCRETE path, including
+       * whatever the caller put in a path parameter. Two consequences, both measured:
+       *
+       *  · one trailing slash doubles every limit. Express matches `/api/auth/signup/` to the same
+       *    route (strict routing is off), but it is a different `req.path`, so it is a fresh
+       *    bucket. Six signups, then six more.
+       *  · the 60-per-hour outbound relay cap added in round 16 to close the authenticated open
+       *    relay is keyed on `/api/conversations/<contactId>/reply` — so it is a cap per CUSTOMER,
+       *    not per member. POST /api/contacts has no role check, so a staff account makes another
+       *    contact with any external address and gets another 60. The cap did not bind at all.
+       *
+       * The bucket is now the ROUTE PATTERN plus whatever the route's own keyFn returns, so a path
+       * parameter can never mint a bucket and a trailing slash cannot double one. */
+      const signupBody = (n) => JSON.stringify({ shop_name: `RL Shop ${n}`, owner_name: 'R', owner_email: `rl${n}@rl.test`, password: 'GatePass-123456' })
+      const rawPost = (path, body, cookie) => new Promise((resolve) => {
+        const headers = { Host: `127.0.0.1:${P10}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        if (cookie) headers.Cookie = cookie
+        const rq = rawHttp({ host: '127.0.0.1', port: P10, method: 'POST', path, headers }, (resp) => {
+          let b = ''; resp.on('data', (d) => { b += d }); resp.on('end', () => resolve({ status: resp.statusCode, text: b, headers: resp.headers }))
+        })
+        rq.on('error', (e) => resolve({ status: 0, text: `error ${e.message}`, headers: {} }))
+        rq.end(body)
+      })
+
+      // The outbound relay cap, per member rather than per customer.
+      const owner = await rawPost('/api/auth/signup', JSON.stringify({ shop_name: 'Relay Ink', owner_name: 'O', owner_email: 'o@relay.test', password: 'GatePass-123456' }))
+      {
+        chk('a shop signs up to send from', String(owner.status), '^200$')
+        const oc = [].concat(owner.headers['set-cookie'] || []).map((c) => String(c).split(';')[0]).join('; ')
+        const mk = async (email) => JSON.parse((await rawPost('/api/contacts', JSON.stringify({ name: email, email }), oc)).text || '{}')
+        const a = await mk('a@customer.test')
+        const b = await mk('b@customer.test')
+        let capped = false
+        for (let i = 0; i < 70 && !capped; i++) {
+          const r = await rawPost(`/api/conversations/${a.id}/reply`, JSON.stringify({ body: `msg ${i}`, channel: 'email' }), oc)
+          if (r.status === 429) capped = true
+        }
+        chk('the outbound relay cap binds on one customer', String(capped), '^true$')
+        const other = await rawPost(`/api/conversations/${b.id}/reply`, JSON.stringify({ body: 'and again', channel: 'email' }), oc)
+        chk('…and a second customer does not hand the same member another 60', String(other.status), '^429$')
+      }
+      let sawLimit = false
+      for (let i = 0; i < 9 && !sawLimit; i++) sawLimit = (await rawPost('/api/auth/signup', signupBody(i))).status === 429
+      chk('signup is rate limited', String(sawLimit), '^true$')
+      const slashed = await rawPost('/api/auth/signup/', signupBody(99))
+      chk('…and one trailing slash does not hand out a second allowance', String(slashed.status), '^429$')
+
     } finally {
       try { rmSync(probePath, { force: true }) } catch { /* best effort */ }
       try { s10.kill('SIGKILL') } catch { /* already gone */ }

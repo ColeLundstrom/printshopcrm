@@ -327,7 +327,15 @@ const slackRaw = express.raw({ type: '*/*', limit: '256kb' }) // Slack payloads 
  */
 const slackLimit = rateLimit({
   windowMs: 60_000, max: 120,
-  keyFn: (req) => `${clientIp(req)}:${req.params.key || 'none'}`,
+  // The RESOLVED shop, not the string in the path — the same mistake the embed limiter's comment
+  // describes further down. `req.params.key` is wholly the caller's, so varying it minted a fresh
+  // 120/minute bucket per request and the ceiling was whatever the attacker felt like. Unresolvable
+  // keys share one bucket, so hammering junk is throttled rather than free.
+  keyFn: (req) => {
+    const raw = String(req.params.key || '')
+    const t = raw ? getTenantByEmbedKey(raw) : null
+    return `${clientIp(req)}:${t ? t.slug : 'unknown'}`
+  },
   message: 'Too many Slack requests.',
 })
 
@@ -992,7 +1000,22 @@ const clientIp = (req) => req.ip || req.socket?.remoteAddress || 'unknown'
 // anonymous embed routes key on IP+shop since there is no email to key on.
 function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = null } = {}) {
   return (req, res, next) => {
-    const key = keyFn ? `${req.path}:${keyFn(req)}` : `${req.path}:${clientIp(req)}:${String(req.body?.email || '').toLowerCase()}`
+    // The bucket is the ROUTE PATTERN, never the concrete path. `req.path` carries whatever the
+    // caller put in a path parameter and whatever trailing slash they felt like adding, and both
+    // minted fresh buckets:
+    //
+    //  · `/api/auth/signup/` matches the same route (strict routing is off) but is a different
+    //    req.path, so every limit in the product was exactly doubled by one keystroke.
+    //  · the 60-per-hour outbound relay cap added to close the authenticated open relay is
+    //    applied to `/api/conversations/:contactId/reply` — so it was a cap per CUSTOMER, not per
+    //    member. POST /api/contacts has no role check, so a staff account made another contact
+    //    with any external address and got another 60. Measured: 60 to contact 1 then 429, three
+    //    to contact 2 immediately after on the same session, all 200. The cap never bound.
+    //
+    // Every rateLimit() in this file is route-level middleware, so req.route is always set by the
+    // time this runs; baseUrl keeps two identically-named routes under different mounts apart.
+    const bucket = `${req.baseUrl || ''}${req.route?.path || req.path.replace(/\/+$/, '')}`
+    const key = keyFn ? `${bucket}:${keyFn(req)}` : `${bucket}:${clientIp(req)}:${String(req.body?.email || '').toLowerCase()}`
     const now = Date.now()
     let e = rlHits.get(key)
     if (!e || now - e.first > windowMs) { e = { first: now, count: 0, win: windowMs }; rlHits.set(key, e) }
