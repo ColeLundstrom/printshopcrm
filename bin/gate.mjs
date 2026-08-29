@@ -4954,17 +4954,43 @@ section('a backup can actually be put back')
     } finally { rmSync(f.dir, { recursive: true, force: true }) }
   })
 
-  await t('a database something still has open is not restored over', () => {
+  /* This fixture used to hold BEGIN EXCLUSIVE, and that is the ONE state the old probe could
+   * still see. SQLite documents EXCLUSIVE as behaving exactly like IMMEDIATE in WAL mode, and
+   * every PrintShopCRM database is WAL — so the probe only ever collided with another connection
+   * mid-WRITE. A running app holds an open, IDLE handle between requests, which is almost all of
+   * the time; the probe said "free" and the restore went ahead underneath it. So the fixture is
+   * now what a running service actually looks like from outside: open, having read, not writing. */
+  await t('a database a running service still has open is not restored over', () => {
     const f = fixture()
-    // A handle that HOLDS the database, which is what a running service looks like from outside.
+    const service = new DatabaseSync(f.live)
+    try {
+      service.exec('PRAGMA journal_mode = WAL')
+      service.prepare('SELECT count(*) AS n FROM customers').get()   // served a request, now idle
+      const out = run([f.backup, '--data-root', f.data, '--yes'], false)
+      assert.match(out, /still open/, 'restoring under a running service corrupts the file')
+      assert.match(out, /systemctl stop/, 'and it has to say what to do about it')
+      assert.equal(count(f.live), 1000, 'and nothing may have been written over it')
+    } finally { try { service.close() } catch { /* already gone */ } rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…and one that is mid-write is not either', () => {
+    const f = fixture()
     const service = new DatabaseSync(f.live)
     try {
       service.exec('PRAGMA journal_mode = WAL')
       service.exec('BEGIN EXCLUSIVE')
       const out = run([f.backup, '--data-root', f.data, '--yes'], false)
-      assert.match(out, /still open/, 'restoring under a running service corrupts the file')
-      assert.match(out, /systemctl stop/, 'and it has to say what to do about it')
+      assert.match(out, /still open/, 'a write in flight is still a running service')
     } finally { try { service.close() } catch { /* already gone */ } rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…while a database nothing holds still restores', () => {
+    const f = fixture()
+    try {
+      const out = run([f.backup, '--data-root', f.data, '--yes'], true)
+      assert.match(out, /Restored 1 database/, 'the guard must not refuse a stopped service')
+      assert.equal(count(f.live), 500, 'and the backup really has to land')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
   })
 
   await t('a backup that could not go off-site says so instead of reporting success', async () => {

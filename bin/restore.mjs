@@ -176,9 +176,23 @@ function census(path) {
  * Is anything still using this database?
  *
  * A restore over a running service corrupts the file AND is invisible: the service keeps serving
- * from its own page cache and writes it back afterwards. BEGIN EXCLUSIVE is the cheapest true
- * answer — it fails with SQLITE_BUSY while any other connection holds it — and needs no systemd,
- * so it works the same in Docker, on Fly, and on a laptop.
+ * from its own page cache and writes it back afterwards. This is the guard the whole tool leans
+ * on, and it needs no systemd, so it works the same in Docker, on Fly, and on a laptop.
+ *
+ * It used to be BEGIN EXCLUSIVE, which is the right answer for a rollback-journal database and
+ * NO answer at all here. SQLite documents EXCLUSIVE as behaving exactly like IMMEDIATE in WAL
+ * mode, and every PrintShopCRM database is WAL (lib/db.mjs: `PRAGMA journal_mode = WAL`) — so it
+ * only ever collided with another connection mid-WRITE. A running app holds an open, idle handle
+ * between requests, which is almost all of the time, so the probe said "free" and the restore
+ * went ahead. Measured against a live server: the restore completed, the app then took 116
+ * committed writes, reported zero errors, and read back 124 contacts from a file that had 8 on
+ * disk and passed quick_check. Two divergent copies of a shop, one of them in RAM, and nothing
+ * anywhere saying so.
+ *
+ * `PRAGMA locking_mode = EXCLUSIVE` is the WAL-correct question: it takes the WAL's locks
+ * outright on the first access and fails with SQLITE_BUSY if any other connection has the
+ * database open at all, idle or not. Verified both directions — BUSY with a live handle open,
+ * free the moment it closes.
  */
 function looksOpen(path) {
   if (!existsSync(path)) return false
@@ -186,8 +200,9 @@ function looksOpen(path) {
   try {
     db = new DatabaseSync(path)
     db.exec('PRAGMA busy_timeout = 500')
-    db.exec('BEGIN EXCLUSIVE')
-    db.exec('ROLLBACK')
+    db.exec('PRAGMA locking_mode = EXCLUSIVE')
+    // locking_mode is lazy — it takes the lock on the next access, not on the PRAGMA itself.
+    db.prepare('SELECT count(*) AS n FROM sqlite_master').get()
     return false
   } catch (e) {
     return /busy|locked/i.test(String(e?.message || e))
