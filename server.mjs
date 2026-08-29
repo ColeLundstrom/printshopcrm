@@ -6915,6 +6915,24 @@ app.get('/uploads/:file', (req, res) => {
   })
 })
 
+/**
+ * AGPL §13 — the two templated pages must never be served off disk.
+ *
+ * `index: false` on the static mount below only suppresses the DIRECTORY index, so `GET /` fell
+ * through to the SPA catch-all and got shellHtml(). An explicit `GET /index.html` or
+ * `GET /auth.html` matches a real file, and express.static answered it straight from disk —
+ * bypassing shellHtml()/authHtml(), the only two places `__SOURCE_LINK__` is ever replaced.
+ * Measured: `GET /` carried one `source-link`; `GET /index.html` and `GET /auth.html` carried
+ * zero, and shipped the literal placeholder instead. Both raw pages load /css and /js by absolute
+ * path, so they are a fully working copy of the app served to an anonymous caller with no offer of
+ * the Corresponding Source. That is a licence breach, not a cosmetic one — and it is exactly the
+ * "no off switch" this file's §13 note claims. Anything under public/ carrying a placeholder has
+ * to come through its renderer; the gate holds that no response body ever contains one.
+ */
+app.get(['/index.html', '/auth.html'], (req, res) => {
+  res.set('Cache-Control', 'no-cache').type('html').send(req.path === '/auth.html' ? authHtml() : shellHtml())
+})
+
 app.use(express.static(PUBLIC, {
   index: false,
   setHeaders: (res, p) => {

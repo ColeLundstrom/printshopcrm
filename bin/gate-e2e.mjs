@@ -966,7 +966,14 @@ try {
    * verified it by hand after the fact. A conditional, a template rename, or a stray edit to
    * either shell would have shipped a licence violation with a green gate. */
   {
-    for (const [path, what] of [['/', 'the app'], ['/login', 'the login page'], ['/signup', 'the signup page'], ['/reset', 'the reset page']]) {
+    // /index.html and /auth.html are on this list deliberately. `index: false` on the static mount
+    // only suppresses the DIRECTORY index, so `GET /` fell through to the SPA catch-all and was
+    // rendered — while an explicit `GET /index.html` matched a real file and express.static served
+    // it off disk, bypassing the only two places __SOURCE_LINK__ is ever replaced. Both raw pages
+    // load /css and /js by absolute path, so they were a fully working copy of the app handed to
+    // an anonymous caller with no offer of the Corresponding Source, shipping the literal
+    // placeholder where the §13 link belongs. Every path a user can type has to be on this list.
+    for (const [path, what] of [['/', 'the app'], ['/index.html', 'the app by its file name'], ['/auth.html', 'the auth page by its file name'], ['/login', 'the login page'], ['/signup', 'the signup page'], ['/reset', 'the reset page']]) {
       const page = await req('GET', path, { cookies: false })
       chk(`${what} serves the AGPL source link`, page.text, 'class="source-link"')
       chk(`…pointing somewhere a user can actually fetch it`, page.text, 'href="https?://[^"]+"[^>]*class="source-link"|class="source-link" href="https?://[^"]+"')
@@ -976,6 +983,18 @@ try {
     // — §13 applies to users interacting with the software remotely, which is the app itself.
     const shell = await req('GET', '/', { cookies: false })
     chk('the link names the licence, so it is recognisable as the §13 offer', shell.text, 'AGPL-3\\.0')
+
+    // Structural: any file under public/ that carries a template placeholder must be served by a
+    // renderer, never off disk — so the next templated page cannot repeat this by being added.
+    const { readdirSync, readFileSync: rf } = await import('node:fs')
+    const templated = readdirSync(join(ROOT, 'public'))
+      .filter((f) => f.endsWith('.html'))
+      .filter((f) => /__[A-Z0-9_]+__/.test(rf(join(ROOT, 'public', f), 'utf8')))
+    chk('the templated pages are found where they live', String(templated.sort().join(',')), '^auth\\.html,index\\.html$')
+    for (const f of templated) {
+      const raw = await req('GET', `/${f}`, { cookies: false })
+      chk(`/${f} is rendered, not served off disk`, String(/__[A-Z0-9_]+__/.test(raw.text)), '^false$')
+    }
   }
 
   /* ---------- a backorder the distributor cancelled does not wedge the job forever ----------
