@@ -191,6 +191,35 @@ try {
     chk('autopilot commit sends the estimate', String(r.status), '^200$')
     chk('…and does NOT fabricate a customer approval', String(r.json?.estimate?.status), '^sent$')
     chk('…and raises no invoice until the customer actually approves', String(r.json?.invoice), '^null$')
+
+    /* The "did that work?" press. commitAutopilot ran all the way through however many times it
+     * was called — its only guard was "already invoiced", which went dead the moment autopilot
+     * stopped raising invoices — so a second press mailed the customer the same estimate again,
+     * and a third mailed it a third time. And it wrote status='sent' unconditionally, so an
+     * estimate the customer had ALREADY APPROVED went back to 'sent' with approved_at still set:
+     * the pipeline card stuck on won, and the shop looking at a quote that says it is waiting on
+     * a customer who already said yes. The manual Send has carried this guard since v1.4.0. */
+    /* And the shop's own rules have to see it. commitAutopilot never fired estimate.sent, so the
+     * automations and the webhook subscribers (dispatchSubscriptions lives inside fireAuto) were
+     * blind to every quote autopilot sent — the shipped default rule that flags a big quote for a
+     * personal call was dead on exactly the path nobody is watching. */
+    const autoRuns = ((await req('GET', '/api/automations')).json?.runs || [])
+      .filter((x) => x.trigger === 'estimate.sent').length
+    chk('autopilot\'s send reaches the shop\'s own rules', String(autoRuns > 0), '^true$')
+
+    const outboxBefore = ((await req('GET', '/api/outbox')).json || []).length
+    r = await req('POST', '/api/autopilot/commit', { body: { estimate_id: estId } })
+    chk('pressing Send a second time answers cleanly', String(r.status), '^200$')
+    chk('…and says it did nothing, rather than doing it again', String(r.json?.already), '^true$')
+    const outboxAfter = ((await req('GET', '/api/outbox')).json || []).length
+    chk('…and the customer is not mailed the same estimate twice', String(outboxAfter), `^${outboxBefore}$`)
+
+    // Now the customer approves. A later commit must not drag it back to "waiting on them".
+    await req('POST', `/api/estimates/${estId}/approve`)
+    chk('the customer approves it', String((await req('GET', `/api/estimates/${estId}`)).json?.status), '^approved$')
+    r = await req('POST', '/api/autopilot/commit', { body: { estimate_id: estId } })
+    chk('committing an approved estimate does not un-approve it', String(r.json?.estimate?.status), '^approved$')
+    chk('…and does not re-send it', String(r.json?.sent), '^false$')
   }
 
   r = await req('PUT', '/api/pricebook', {

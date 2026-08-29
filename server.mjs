@@ -3614,6 +3614,26 @@ function commitAutopilot(estId, contact, { steps, jobId } = {}) {
   const mark = (key, label, detail, data) => steps?.push({ key, label, detail, ...(data || {}) })
   const s = getSettings()
 
+  /* This used to run all the way through however many times it was called, and the "already
+   * invoiced" guard above became dead the moment autopilot stopped raising invoices. So a second
+   * press of Send — the "did that work?" press — mailed the customer the same estimate again,
+   * and a third mailed it a third time. Worse, it wrote `status='sent'` unconditionally: an
+   * estimate the customer had already APPROVED went back to 'sent' with approved_at still set,
+   * the pipeline card stuck on won, and the shop looking at a quote that says it is waiting on a
+   * customer who already said yes. POST /api/estimates/:id/send has carried exactly this guard
+   * since c273ef4; this path never got it. */
+  const settled = ['approved', 'declined', 'invoiced'].includes(e.status)
+  if (settled) {
+    mark('sent', `Already ${e.status}`, 'The customer has answered this one — nothing was re-sent.',
+      { estimate_id: estId, approve_link: shareUrl('estimate', estId) })
+    return { invoice: null, job: get('SELECT * FROM jobs WHERE estimate_id = ?', estId), sent: false, already: true }
+  }
+  if (e.status === 'sent' && e.sent_at) {
+    mark('sent', 'Already sent', `Sent ${e.sent_at} — waiting on the customer’s approval.`,
+      { estimate_id: estId, approve_link: shareUrl('estimate', estId) })
+    return { invoice: null, job: get('SELECT * FROM jobs WHERE estimate_id = ?', estId), sent: false, already: true }
+  }
+
   // Autopilot SENDS the estimate and stops. It used to, in the very next line, mark the estimate
   // 'approved' with "Customer said yes" and raise a real invoice — before the customer had any
   // chance to reply. That fabricated a consent that never happened: a phantom unpaid invoice in
@@ -3626,6 +3646,11 @@ function commitAutopilot(estId, contact, { steps, jobId } = {}) {
   queueEmail({ contact, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
     vars: { estimate_number: e.estimate_number, total: money(e.total) } })
   logActivity('estimate', `Estimate ${e.estimate_number} sent to ${contact.name} by autopilot`, { contact_id: contact.id })
+  // The same event the manual Send fires. Without it the shop's own rules never saw an autopilot
+  // quote go out — the shipped default "Flag big quotes for a personal call" is dead on exactly
+  // the path nobody is watching — and no webhook subscriber heard about it either, because
+  // dispatchSubscriptions lives inside fireAuto.
+  fireAuto('estimate.sent', { estimate: get('SELECT * FROM estimates WHERE id = ?', estId), contact, total: e.total })
   mark('sent', 'Estimate sent', 'Waiting on the customer’s approval', { estimate_id: estId, approve_link: shareUrl('estimate', estId) })
   const job = jobId ? get('SELECT * FROM jobs WHERE id = ?', jobId) : get('SELECT * FROM jobs WHERE estimate_id = ?', estId)
   return { invoice: null, job: job ? get('SELECT * FROM jobs WHERE id = ?', job.id) : null, sent: true }
@@ -3639,7 +3664,7 @@ app.post('/api/autopilot/commit', wrap((req, res) => {
   const contact = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
   const steps = []
   const r = commitAutopilot(estId, contact, { steps })
-  res.json({ ok: true, steps, invoice: r?.invoice || null, job: r?.job || null,
+  res.json({ ok: true, steps, already: !!r?.already, sent: !!r?.sent, invoice: r?.invoice || null, job: r?.job || null,
     estimate: get('SELECT * FROM estimates WHERE id = ?', estId) })
 }))
 
