@@ -226,9 +226,19 @@ function drawTabbar(path) {
   if (more) more.onclick = (e) => { e.preventDefault(); toggleDrawer(more) }
 }
 
-async function refreshChrome() {
+/**
+ * Redraw the sidebar: the shop's name, and the six dots.
+ *
+ * This runs at the end of every navigate() and on every realtime notify/board/conversation event,
+ * so it is the hottest client path in the app — and it used to fetch six full list endpoints
+ * (/api/dashboard, /api/art, /api/followups, /api/automations, /api/conversations) to read six
+ * integers out of them: 48 MB and 1.6 s of server event loop per sidebar click on a shop with a
+ * few years of proofs, multiplied by every tab open on the floor whenever anyone moved a job.
+ * GET /api/chrome/badges returns exactly those six numbers and nothing else.
+ */
+async function drawChrome() {
   try {
-    const [{ settings }, d, art, fu, au, cv] = await Promise.all([api.get('/api/settings'), api.get('/api/dashboard'), api.get('/api/art'), api.get('/api/followups'), api.get('/api/automations'), api.get('/api/conversations')])
+    const [{ settings }, b] = await Promise.all([api.get('/api/settings'), api.get('/api/chrome/badges')])
     // In the lite edition the product brand is fixed by the deployment (stamped into the shell), not
     // a per-shop setting — don't let a shop's brand_name override the InkVoice chrome.
     if (window.__EDITION !== 'lite') {
@@ -238,16 +248,20 @@ async function refreshChrome() {
     }
     $('#shop-name').textContent = settings.shop_name
     $('#shop-initials').textContent = initials(settings.shop_name)
-    badges = {
-      active_jobs: d.kpis.active_jobs,
-      open_invoices: d.outstanding_invoices.length,
-      art_pending: art.filter((a) => a.status === 'sent' || a.status === 'rejected').length,
-      followups: fu.stale.length + fu.overdue.length,
-      automations: au.stats.enabled,
-      unread: cv.unread_total,
-    }
+    badges = b
     drawNav()
   } catch (e) { console.error('chrome refresh failed', e) }
+}
+
+/**
+ * Coalesce the bursts. One drag on the job board broadcasts to every open tab in the shop, and a
+ * busy floor produces a stream of them; each event used to start its own round trip, so the tabs
+ * queued up behind each other. At most one refresh is ever in flight or scheduled.
+ */
+let chromeTimer = null
+function refreshChrome() {
+  if (chromeTimer) return
+  chromeTimer = setTimeout(() => { chromeTimer = null; drawChrome() }, 250)
 }
 
 /**

@@ -5709,6 +5709,46 @@ await t('the PSC_PUBLIC_URL warning names the links that really are Host-derived
   assert.match(src, /const origin = trustedOrigin\(req, r\.tenant\)/, 'the reset route must still use the learned origin')
 })
 
+section('the sidebar does not download the shop to draw six dots')
+await t('the chrome refresh asks for badges, not for six list endpoints', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const app = readFileSync(join(root, 'public/js/app.js'), 'utf8')
+  const server = readFileSync(join(root, 'server.mjs'), 'utf8')
+
+  // refreshChrome() runs at the end of every navigate() AND on every realtime notify/board/
+  // conversation event — and rtBroadcast('board') reaches every tab open on the floor, so one
+  // drag re-ran this everywhere at once. Measured on a shop with 40k proofs: 48.12 MB and
+  // 1,632 ms of blocked event loop per sidebar click; four tablets on one board move blocked
+  // the whole box, every other tenant included, for 6,716 ms.
+  const i = app.indexOf('async function drawChrome')
+  assert.ok(i > 0, 'the chrome refresh must still exist')
+  const body = app.slice(i, app.indexOf('\n}', i))
+  for (const heavy of ['/api/dashboard', '/api/art', '/api/followups', '/api/automations', '/api/conversations']) {
+    assert.ok(!body.includes(heavy), `the chrome refresh must not fetch ${heavy} for a badge count`)
+  }
+  assert.match(body, /\/api\/chrome\/badges/, 'it should ask the endpoint that returns exactly the six numbers')
+
+  // The endpoint has to exist and produce every key the nav reads, or the dots go dark.
+  const j = server.indexOf("app.get('/api/chrome/badges'")
+  assert.ok(j > 0, 'GET /api/chrome/badges must exist')
+  const route = server.slice(j, j + 1400)
+  for (const key of ['active_jobs', 'open_invoices', 'art_pending', 'followups', 'automations', 'unread']) {
+    assert.match(route, new RegExp(`\\b${key}:`), `the badge endpoint must return ${key}`)
+  }
+  // Six counts, not six materialised lists — that is the entire point of the endpoint.
+  assert.ok(!/\ball\(/.test(route), 'the badge endpoint must count, never materialise rows')
+  // Seven counts for six numbers: `followups` is two populations (stale quotes + overdue
+  // invoices), which is exactly what the client used to add together.
+  assert.equal((route.match(/COUNT\(\*\)/g) || []).length, 7, 'six numbers, seven counts')
+
+  // A burst of board events must not stack a round trip each.
+  assert.match(app, /function refreshChrome\(\)\s*\{\s*if \(chromeTimer\) return/,
+    'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

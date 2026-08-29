@@ -3655,6 +3655,63 @@ try {
     chk('…including one that starts with a minus sign', cc2, "'-2\\+3\\+cmd")
   }
 
+  /* ---------- the sidebar's six dots cost six integers, not six list endpoints ----------
+   * refreshChrome() runs at the end of EVERY navigate() and on every realtime notify/board/
+   * conversation event — and one drag on the job board broadcasts to every tab open on the floor.
+   * It got its six numbers by fetching /api/settings + /api/dashboard + /api/art + /api/followups
+   * + /api/automations + /api/conversations and discarding everything else: measured at 48.12 MB
+   * and 1,632 ms of blocked event loop per sidebar click on a shop with 40k proofs, and 6,716 ms
+   * of fleet-wide block with four tablets reacting to one board move. Every tenant on the box
+   * waits through that, because the event loop is shared.
+   *
+   * The contract this asserts is the one that makes the fix safe: /api/chrome/badges must return
+   * the SAME six numbers the client used to derive, and it must be small. */
+  {
+    // Seed the two badges the earlier flow leaves at zero, so the equality below compares real
+    // populations rather than two zeroes agreeing with each other.
+    const bc = (await req('POST', '/api/contacts', { body: { name: 'Badge Co', email: 'badge@e2e.test' } })).json
+    const bj = (await req('POST', '/api/jobs', { body: { contact_id: bc.id, title: 'Badge Tees', decoration: 'Screen Print' } })).json
+    const bf = new FormData()
+    bf.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"></svg>'], { type: 'image/svg+xml' }), 'badge.svg')
+    const bart = await (await fetch(`${BASE}/api/jobs/${bj.id}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: bf })).json().catch(() => ({}))
+    chk('a proof is out with the customer, so art_pending is not zero',
+      String((await req('POST', `/api/art/${bart.id}/send`)).status), '^200$')
+
+    const b = await req('GET', '/api/chrome/badges')
+    chk('the chrome badge endpoint answers', String(b.status), '^200$')
+    const [d, art, fu, au, cv] = await Promise.all([
+      req('GET', '/api/dashboard'), req('GET', '/api/art'),
+      req('GET', '/api/followups'), req('GET', '/api/automations'), req('GET', '/api/conversations'),
+    ])
+    const old = {
+      active_jobs: d.json?.kpis?.active_jobs,
+      art_pending: (art.json || []).filter((a) => a.status === 'sent' || a.status === 'rejected').length,
+      followups: (fu.json?.stale || []).length + (fu.json?.overdue || []).length,
+      automations: au.json?.stats?.enabled,
+      unread: cv.json?.unread_total,
+    }
+    // Every badge the shop has any records for, so the equality is not a comparison of zeroes.
+    chk('…on a shop with real records to count',
+      String(old.followups > 0 && old.active_jobs > 0 && old.art_pending > 0 && old.automations > 0), '^true$')
+    for (const k of Object.keys(old)) {
+      chk(`…${k} matches what the six list endpoints said (${old[k]})`, String(b.json?.[k]), `^${old[k]}$`)
+    }
+    // open_invoices is the one that gets MORE correct: /api/dashboard's outstanding_invoices
+    // carries LIMIT 8, so the old derivation stopped counting at 8. The nav draws a dot, not a
+    // number, so nothing visible changes — but the value must be the truth, and it must still
+    // agree with the page for any shop under the page size.
+    const page = (d.json?.outstanding_invoices || []).length
+    chk('…open_invoices is at least the page /api/dashboard returned', String(b.json?.open_invoices >= page), '^true$')
+    chk('…and equals it wherever the page was not truncated', String(Math.min(b.json?.open_invoices, 8)), `^${page}$`)
+    // The whole point: the payload the hottest path in the app carries.
+    chk(`…and the whole answer is a few hundred bytes (${b.text.length}), not 48 MB`,
+      String(b.text.length < 512), '^true$')
+    const heavy = (await Promise.all(['/api/art', '/api/followups', '/api/conversations']
+      .map((u) => req('GET', u)))).reduce((n, r) => n + r.text.length, 0)
+    chk(`…where the three list endpoints it replaced carry ${heavy} bytes between them`,
+      String(heavy > b.text.length * 10), '^true$')
+  }
+
   /* ---------- a shop leaving with five years of history does not take the box with it ----------
    * /api/export/:table.csv called all(), which materialised the whole table, and then handed the
    * array to a toCsv() that built the entire file as one more string on top of it. Measured on a
