@@ -3990,6 +3990,58 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
  * disagree BY CONSTRUCTION: the dashboard's Outstanding KPI sums the balances with no sign filter,
  * so the negative is SUBTRACTED from every other customer's, while the A/R aging report filters
  * `> 0.005` and cannot show it at all. */
+/* ---------- the Orders board answers a finger (v20) ----------
+ * This is the lite edition's whiteboard, and its own docstring says it uses pointer events "so it
+ * works on the tablet or phone that actually lives on a shop floor". A later round added
+ * `if (e.pointerType === 'touch') return` to stop a sideways scroll committing a stage change —
+ * correct — but that return happens BEFORE `st` is assigned, and the only call site of openCard()
+ * was inside the pointerup handler behind `if (!st) return`. A browser fires compatibility MOUSE
+ * events after a touch, not a second pointerdown, and this file bound nothing to 'click'. So on
+ * the device the file was written for the board was completely inert: no drag, no tap, no modal.
+ * The two sibling boards carry the identical guard and BOTH pair it with a delegated click.
+ * And even reaching the modal did not help — it had Carrier, Tracking, Close, Open estimate, Open
+ * invoice and Save, and no stage control at all, while board.js and pipeline.js both have one. So
+ * Shipped was a one-way door: PUT /api/orders/:id/stage takes either direction and returns 200,
+ * and clearing the tracking number does NOT walk the card back (advanceOrder is forward-only and a
+ * blank number skips it entirely). */
+section('the Orders board answers a finger')
+await t('a tap opens a card, on the touch screen this board was written for', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const o = readFileSync(join(root, 'public/js/views/orders.js'), 'utf8')
+  // The touch guard stays — a sideways swipe must not commit a stage change.
+  assert.match(o, /if \(e\.pointerType === 'touch'\) return/, 'a finger must still not drag a card')
+  // …but the tap has to be answered somewhere a finger actually reaches. core.js `on()` is a
+  // DELEGATED CLICK, which is what a tap fires.
+  assert.match(o, /on\(\$\('#board'\), '\.jcard'/, 'nothing on this board answers a tap')
+  assert.match(o, /openCard\(byId\(t\.dataset\.id\)/, '…and the tap has to open the card')
+  // …and the pointerup path must not ALSO open it, or a mouse click opens the modal twice.
+  const up = o.slice(o.indexOf("window.addEventListener('pointerup'"), o.indexOf('function openCard('))
+  assert.doesNotMatch(up, /openCard\(/, 'the click delegate owns tapping now — two openers is two modals')
+  assert.match(up, /dragEndedAt = Date\.now\(\)/, 'and a real drop must suppress the click a mouse fires after it')
+  assert.match(o, /Date\.now\(\) - dragEndedAt < 250/, '…which the click delegate has to honour')
+})
+await t('…and the card it opens can move the order in either direction', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const o = readFileSync(join(root, 'public/js/views/orders.js'), 'utf8')
+  const card = o.slice(o.indexOf('function openCard('))
+  assert.match(card, /<select class="input" id="ob-stage" name="stage">/,
+    'with drag gone on touch, the modal is the ONLY way to change a stage — and it had no stage control')
+  assert.match(card, /api\.put\(`\/api\/orders\/\$\{c\.id\}\/stage`, \{ stage \}\)/, 'and it has to actually send it')
+  // Order matters: /tracking calls advanceOrder afterwards and advanceOrder is forward-only, so a
+  // stage set second would be clobbered by a tracking number still sitting in the box.
+  assert.ok(card.indexOf('/stage`, { stage })') < card.indexOf('/tracking`, f)'),
+    'the stage has to be sent BEFORE the tracking number, or a walk-back is silently undone')
+  // The screen used to promise that clearing the tracking number moves the card back. It does not.
+  assert.doesNotMatch(card, /Adding a tracking number moves this card to Shipped\.<\/div>/,
+    'the copy has to say that tracking only ever moves a card FORWARD')
+})
+
 section('a document is a demand for money, never the other way round')
 await t('a mistyped discount is refused rather than stored as a negative quote', async () => {
   const { computeTotals } = await import('../public/js/shared/pricing.js')
@@ -5055,7 +5107,10 @@ section('the board and the pipeline are usable without a mouse')
     const orders = readFileSync(join(root, 'public/js/views/orders.js'), 'utf8')
     const i = orders.indexOf("addEventListener('pointerdown'")
     assert.ok(i > 0, 'the orders board should still wire pointerdown')
-    assert.match(orders.slice(i, i + 700), /pointerType === 'touch'/,
+    // Bound by the END of the handler rather than a character count: the guard carries a long
+    // comment (it is the reason the board needed a delegated click), and a fixed window pushed the
+    // assertion off the code it is about the moment that comment grew.
+    assert.match(orders.slice(i, orders.indexOf('\n  })', i)), /pointerType === 'touch'/,
       'a touch pointer must not start a drag — a sideways swipe moves an order, and PUT /api/orders/:id/stage goes backwards as happily as forwards')
   })
 
