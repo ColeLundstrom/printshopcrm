@@ -1113,6 +1113,38 @@ await t('a blank quantity column still falls back to the size grid', async () =>
   const rows = parseCsv('customer,invoice #,quantity,s,m,total\nAcme,INV-3,,5,10,180.00')
   assert.equal(mapOrderRows(rows).orders[0].quantity, 15, 'blank must read as "not supplied", not 0')
 })
+/* The column order of the file decided which of two synonyms won, and the shop exporting the file
+ * has no idea it is choosing. Every real order export writes `Subtotal, Sales Tax, Total` in that
+ * order, and `subtotal` and `total` are both synonyms for `total` — so the PRE-TAX figure won and
+ * the invoice was raised, unpaid, at the wrong number, then chased at that number by A/R aging,
+ * the customer statement, the Outstanding KPI, the dunning email and the QuickBooks export. A
+ * shop migrating a year of open receivables at 8.25% imported $60,000 of A/R as $55,427. There is
+ * no undo on the importer, so the only repair was a hand re-import. */
+await t('a Subtotal column does not outrank Total, whichever order the file lists them in', async () => {
+  const { parseCsv, mapOrderRows } = await import('../lib/csv.mjs')
+  const read = (csv) => mapOrderRows(parseCsv(csv)).orders[0]
+  // The layout every real export actually uses.
+  const a = read('order #,customer,qty,subtotal,sales tax,total\n5001,Harbor City,300,2775.00,228.94,3003.94')
+  assert.equal(a.total, 3003.94, 'the pre-tax subtotal was imported as the amount due — $228.94 of a real balance dropped')
+  // The same order, columns the other way round. It must not change the money.
+  const b = read('order #,customer,qty,total,sales tax,subtotal\n5001,Harbor City,300,3003.94,228.94,2775.00')
+  assert.equal(b.total, a.total, 'column order must not change what the customer owes')
+  // A file that carries ONLY a subtotal column is unchanged — that is still the best figure it has.
+  assert.equal(read('order #,customer,qty,subtotal\n5001,Harbor City,300,2775.00').total, 2775)
+  // Same defect, same fix, on the other two fields where one synonym list holds two live names.
+  // `company` is ranked above a bare `name` on purpose — `Name` alone could be a product name —
+  // and the point here is that the ranking, not the file's column order, is what decides.
+  const c1 = read('order #,company,name,qty,total\n5001,Harbor City LLC,Dana Reyes,300,3003.94')
+  const c2 = read('order #,name,company,qty,total\n5001,Dana Reyes,Harbor City LLC,300,3003.94')
+  assert.equal(c1.customer_name, 'Harbor City LLC', 'the ranked synonym must win')
+  assert.equal(c2.customer_name, c1.customer_name, 'column order must not change who the customer is')
+  const d = read('order #,customer,qty,rate,unit price,total\n5001,Harbor City,300,1.00,9.25,3003.94')
+  assert.equal(d.unit_price, 9.25, '`unit price` outranks `rate`, whatever order the columns come in')
+  // A caller-supplied header alias is an explicit instruction and still beats every synonym.
+  const e = mapOrderRows(parseCsv('order #,customer,qty,widget total,total\n5001,Harbor City,300,111.00,3003.94'),
+    { headerAliases: { 'widget total': 'total' } }).orders[0]
+  assert.equal(e.total, 111, 'an explicit headerAlias must outrank the built-in synonyms')
+})
 await t('European thousands-dot money parses as thousands, not a decimal', async () => {
   const { coerceMoney } = await import('../lib/csv.mjs')
   assert.equal(coerceMoney('1.200'), 1200)      // was 1.2 — a 1000x understatement

@@ -1810,6 +1810,27 @@ try {
     const csv2 = csv.replace('2026-06-11', '2026-07-19').replace(',20,11,220', ',30,11,330')
     r = await req('POST', '/api/import/orders', { body: { text: csv2 } })
     chk('a different export still imports', String(Number(r.json?.imported) > 0), '^true$')
+
+    /* ---------- the migrating shop's receivables arrive at the figure the customer owes ----------
+     * `subtotal` and `total` are both synonyms for the same field, and the winner was whichever
+     * COLUMN came first — which the shop exporting the file has no idea it is choosing. Every real
+     * order export (Printavo, shopVOX, QuickBooks) writes `Subtotal, Sales Tax, Total` in that
+     * order, so the PRE-TAX figure won: a $3,003.94 invoice was raised, unpaid, at $2,775.00, and
+     * then chased at $2,775.00 by A/R aging, the customer statement, the Outstanding KPI, the
+     * dunning email and the QuickBooks export. A year of open receivables at 8.25% came in $4,573
+     * light. The importer has no undo, so the repair was a hand re-import. */
+    const taxedCsv = [
+      'Order #,Customer,Email,Date,Status,Product,Qty,Unit Price,Subtotal,Sales Tax,Total',
+      'MIG-5001,Harbor City Athletics,harbor@e2e.test,2026-06-14,Invoiced,Gildan 5000 Tee,300,9.25,2775.00,228.94,3003.94',
+    ].join('\n')
+    r = await req('POST', '/api/import/orders', { body: { text: taxedCsv } })
+    chk('an export laid out Subtotal, Tax, Total imports', String(r.json?.imported), '^1$')
+    const migrated = ((await req('GET', '/api/contacts?q=Harbor%20City%20Athletics')).json?.contacts || [])
+      .find((c) => c.email === 'harbor@e2e.test')
+    chk('…and the customer owes what the export said they owe, not the pre-tax figure',
+      String(round2e(migrated?.balance || 0)), '^3003.94$')
+    const migInv = ((await req('GET', '/api/invoices')).json || []).find((i) => i.contact_id === migrated?.id)
+    chk('…so the invoice it raises is for the whole balance', String(round2e(migInv?.amount_due ?? 0)), '^3003.94$')
   }
 
   /* ---------- a shop importing its history does not freeze every other shop ----------
