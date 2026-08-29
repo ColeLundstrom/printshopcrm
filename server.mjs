@@ -7598,6 +7598,15 @@ app.use((err, req, res, _next) => {
     if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'That file is too large.' })
     return res.status(400).json({ error: 'That upload was rejected — check the file and try again.' })
   }
+  // A shop whose database file has gone missing is not "something went wrong on our end" — it is
+  // one specific thing, with one specific fix, and the person reading it is the owner of the shop
+  // that is down. Say which failure it is and name the tool, the same way the startup banner does.
+  if (err?.code === 'tenant_db_missing') {
+    return res.status(503).json({
+      code: 'tenant_db_missing',
+      error: 'This shop\'s database is not on disk. Nothing has been overwritten — restore it from a snapshot with `npm run restore`, then reload.',
+    })
+  }
   const status = Number(err?.status || err?.statusCode) || 500
   // Deliberate 4xx errors carry a message the caller needs to act on ("url must be http(s)",
   // "unknown event"). Only 5xx gets the generic text — those can leak internals.

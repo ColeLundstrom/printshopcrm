@@ -9,7 +9,7 @@
  * app itself doesn't use. This needs only the Node you already have.
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -4532,6 +4532,73 @@ try {
       try { rmSync(probePath, { force: true }) } catch { /* best effort */ }
       try { s10.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T10, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+
+  /* ---------- a shop's database that has gone missing is a failure, not a fresh start ----------
+   *
+   * openTenantDb() let SQLite create the file. `new DatabaseSync(path)` creates on open, so a
+   * tenant database that has been deleted, renamed, or mounted away came back as an EMPTY one,
+   * bootstrapDb ran the schema against it happily, and nothing anywhere threw.
+   *
+   * Measured: wrote a customer and a paid invoice into a shop, stopped the server, deleted the
+   * .db, restarted. The owner logs in to a blank shop. brokenTenants stays empty. The admin
+   * console reports 0 customers and $0 revenue, which is indistinguishable from a new signup.
+   * And /health answers 200 {"ok":true} — so deploy/ship.sh, which polls exactly this endpoint to
+   * decide whether to roll a release back, calls the deploy a success with the shop's books gone.
+   *
+   * The whole brokenTenants → /health 503 → automatic-rollback chain was built for precisely this
+   * class of failure and could not see the worst member of it. Only createTenant may create a
+   * database now; every other open of a file that is not there is an error that says so and names
+   * the tool that fixes it. */
+  {
+    const T11 = mkdtempSync(join(tmpdir(), 'psc-e2e-lostdb-'))
+    const P11 = PORT + 16
+    const bootServer = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P11), PSC_DB: join(T11, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P11}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    const waitUp = async () => { for (let i = 0; i < 120; i++) { try { await fetch(`http://127.0.0.1:${P11}/health`); return } catch { /* not up */ } await sleep(500) } }
+    let s11 = bootServer()
+    started.push(s11)
+    try {
+      await waitUp()
+      const su = await fetch(`http://127.0.0.1:${P11}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Vanish Ink', owner_name: 'V', owner_email: 'v@vanish.test', password: 'GatePass-123456' }),
+      })
+      chk('a shop signs up and gets its own database', String(su.status), '^200$')
+      const cookie = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const mk = await fetch(`http://127.0.0.1:${P11}/api/contacts`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({ name: 'Real Customer', email: 'real@customer.test' }),
+      })
+      chk('…and the shop writes a customer into it', String(mk.status), '^200$')
+
+      // Take the database away, exactly as a bad restore, a botched migration or a lost mount does.
+      s11.kill('SIGKILL')
+      await new Promise((r) => s11.on('exit', r))
+      const slug = readdirSync(join(T11, 'tenants'))[0]
+      chk('the shop has a database on disk', String(!!slug), '^true$')
+      rmSync(join(T11, 'tenants', slug, 'printshop.db'), { force: true })
+
+      s11 = bootServer()
+      started.push(s11)
+      await waitUp()
+      const health = await fetch(`http://127.0.0.1:${P11}/health`)
+      const hbody = await health.text()
+      chk('a missing shop database makes /health fail, so a deploy rolls back', String(health.status), '^503$')
+      chk('…and it names the shop that is broken', hbody, 'unavailable')
+
+      // And the owner is told, rather than shown an empty shop that looks brand new.
+      const me = await fetch(`http://127.0.0.1:${P11}/api/auth/me`, { headers: { Cookie: cookie } })
+      chk('…and the owner does not silently land in a blank shop', String(me.status), '^503$')
+      chk('…they are told which failure it is, and what fixes it', await me.text(), 'npm run restore')
+    } finally {
+      try { s11.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T11, { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
 
