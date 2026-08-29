@@ -4113,6 +4113,79 @@ await t('…and the visitor\'s own turn refuses to write on a deal that is not t
     'and when it matches nothing of ours, open a fresh deal rather than writing on a stranger\'s')
 })
 
+/* ---------- three small ones with big blast radius (v20) ---------- */
+section('three small ones with big blast radius')
+await t('every credential in the product comes from the CSPRNG, including the one an admin hands over', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("app.post('/api/admin/shops'")
+  assert.ok(i > 0, 'the admin shop-create route should still be there')
+  // Comments stripped: this rule is about what the code DOES, and the comment explaining the fix
+  // naturally names the thing it removed.
+  const body = src.slice(i, src.indexOf('\n}))', i)).replace(/^\s*\/\/.*$/gm, '')
+  assert.doesNotMatch(body, /Math\.random/, 'a shop OWNER password minted from Math.random is predictable from a few observed draws')
+  assert.match(body, /crypto\.randomBytes\(\d+\)\.toString\('base64url'\)/, '…and base64url is a fixed length, where toString(36) drops trailing zeros')
+  // The length bug: two short draws put the password under MIN_PASSWORD and createTenant then
+  // 400'd the operator for a password they never typed.
+  const { MIN_PASSWORD } = await import('../lib/tenants.mjs')
+  const crypto = await import('node:crypto')
+  for (let n = 0; n < 200; n++) {
+    const pw = `${crypto.randomBytes(4).toString('base64url')}-${crypto.randomBytes(6).toString('base64url')}`
+    assert.ok(pw.length >= (MIN_PASSWORD || 8), `minted a ${pw.length}-character password against a ${MIN_PASSWORD} minimum`)
+  }
+})
+await t('the handler that catches every unexpected throw logs a stack, like its three siblings', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const line = src.split('\n').find((l) => l.includes("console.error('unhandled:'"))
+  assert.ok(line, 'the terminal error handler should still log something')
+  assert.match(line, /err\.stack/, 'every 500 in production was one unattributable line')
+  assert.match(line, /err\?\.code/, '…and this handler branches on err.code eleven lines later')
+  // The three that always got it right, so the rule is "all four" rather than "this one".
+  for (const other of ['unhandledRejection:', 'uncaughtException:']) {
+    const l = src.split('\n').find((x) => x.includes(`console.error('${other}`))
+    assert.match(l || '', /\.stack/, `${other} must keep its stack too`)
+  }
+})
+await t('cp .env.example .env does not switch webhook retention to forever', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // `??` only falls back on undefined/null. A bare `KEY=` line sets the EMPTY STRING, Number('')
+  // is 0, and 0 is the documented "keep everything" switch — so every install that followed the
+  // docs kept every webhook payload forever, on a table that grows with every delivery.
+  const env = readFileSync(join(root, '.env.example'), 'utf8')
+  assert.doesNotMatch(env, /^PSC_WEBHOOK_RETENTION_DAYS=[ \t]*$/m, 'a bare KEY= line is not "unset", it is the empty string')
+  const dbm = await import('../lib/db.mjs')
+  const prev = process.env.PSC_WEBHOOK_RETENTION_DAYS
+  try {
+    // The default expression has to survive a blank as well as an absent variable.
+    for (const v of ['', '   ', undefined]) {
+      if (v === undefined) delete process.env.PSC_WEBHOOK_RETENTION_DAYS
+      else process.env.PSC_WEBHOOK_RETENTION_DAYS = v
+      const days = Number(String(process.env.PSC_WEBHOOK_RETENTION_DAYS ?? '').trim() || 30)
+      assert.equal(days, 30, `PSC_WEBHOOK_RETENTION_DAYS=${JSON.stringify(v)} must mean the 30-day default, not "forever"`)
+    }
+    // …and the documented escape hatch still works.
+    process.env.PSC_WEBHOOK_RETENTION_DAYS = '0'
+    assert.equal(Number(String(process.env.PSC_WEBHOOK_RETENTION_DAYS ?? '').trim() || 30), 0, 'an explicit 0 still means keep everything')
+    const src = readFileSync(join(root, 'lib/db.mjs'), 'utf8')
+    assert.match(src, /days = Number\(String\(process\.env\.PSC_WEBHOOK_RETENTION_DAYS \?\? ''\)\.trim\(\) \|\| 30\)/,
+      'the shipped default has to be the one this test just proved')
+    assert.equal(typeof dbm.pruneWebhookDeliveries, 'function', 'the sweep should still exist')
+  } finally {
+    if (prev === undefined) delete process.env.PSC_WEBHOOK_RETENTION_DAYS
+    else process.env.PSC_WEBHOOK_RETENTION_DAYS = prev
+  }
+})
+
 section('a nonce is not an identity')
 await t('the OAuth state is never handed to a client', async () => {
   const { DatabaseSync } = await import('node:sqlite')

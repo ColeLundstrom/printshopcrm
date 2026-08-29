@@ -1617,7 +1617,16 @@ app.get('/api/admin/shops', wrap((req, res) => {
 app.post('/api/admin/shops', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return
   const b = req.body || {}
-  const password = String(b.password || '').trim() || Math.random().toString(36).slice(2, 6) + '-' + Math.random().toString(36).slice(2, 8)
+  // A shop OWNER's login, and the one credential in the product that did not come from the CSPRNG:
+  // sessions, API keys, reset tokens and webhook secrets all use crypto.randomBytes. Math.random
+  // is seeded per process and predictable from a handful of observed draws, and this endpoint hands
+  // the result back in a response an operator then reads out.
+  // It was also intermittently WRONG: Math.random().toString(36) drops trailing zeros, so a draw
+  // like 0.5 renders "0.i" and .slice(2, 6) yields one character. Two short draws put the password
+  // under MIN_PASSWORD, so createTenant threw weak_password and the operator got
+  // "400 Password must be at least 8 characters" for a password they never typed. base64url is a
+  // fixed length, so that cannot happen.
+  const password = String(b.password || '').trim() || `${crypto.randomBytes(4).toString('base64url')}-${crypto.randomBytes(6).toString('base64url')}`
   try {
     const t = await createTenant({ shop_name: b.shop_name, owner_name: b.owner_name, owner_email: b.owner_email, password })
     logActivity('admin', `Admin created shop ${t.shop_name} (${b.owner_email})`)
@@ -7830,7 +7839,12 @@ server.headersTimeout = 35000
  * page — which carries a full stack trace and absolute server paths straight to the browser.
  */
 app.use((err, req, res, _next) => {
-  console.error('unhandled:', req.method, req.path, err && err.message)
+  // The stack, like the other three handlers in this file (fatalStartup, unhandledRejection,
+  // uncaughtException) — this was the only one that dropped it, and it is the one that catches
+  // every unexpected throw out of every route, so every 500 in production was a single
+  // unattributable line. err.code too, because this handler branches on it eleven lines down.
+  // Nothing leaves the process: the response body is still the generic text built below.
+  console.error('unhandled:', req.method, req.path, err?.code || '', (err && (err.stack || err.message)) || err)
   // A route that throws AFTER it has started writing cannot be given a status any more — but it
   // must still be finished. This returned without res.end(), so the socket stayed open with no FIN
   // and no terminating chunk until the client gave up (measured at 75s on the export path), and
