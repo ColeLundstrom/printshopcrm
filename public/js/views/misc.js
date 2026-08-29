@@ -158,7 +158,7 @@ function staffCard(d, me, esc) {
             <td><div style="font-weight:600">${esc(m.name || '')}${m.email === myEmail ? ' <span class="dim" style="font-weight:400">(you)</span>' : ''}</div>
               <div class="dim" style="font-size:12px">${esc(m.email)}${m.status !== 'active' ? ' · <span style="color:var(--amber)">' + esc(m.status) + '</span>' : ''}</div></td>
             <td>${roleCell(m)}</td>
-            <td class="num" style="width:40px">${canManage && m.email !== myEmail && (isOwner || m.role !== 'owner') ? `<button class="btn danger sm" data-du="${m.id}" title="Remove">&times;</button>` : ''}</td>
+            <td class="num" style="width:40px">${canManage && m.email !== myEmail && (isOwner || m.role !== 'owner') ? `<button class="btn danger sm" data-du="${m.id}" title="Remove" aria-label="Remove ${esc(m.name || m.email)} from this shop">&times;</button>` : ''}</td>
           </tr>`).join('')}</tbody></table>` : '<div class="dim">No staff yet.</div>'}
           <p class="dim" style="font-size:12px;line-height:1.6"><strong style="color:var(--txt-2)">Owner</strong> ${ROLE_DESC.owner}. <strong style="color:var(--txt-2)">Manager</strong> ${ROLE_DESC.manager.toLowerCase()}. <strong style="color:var(--txt-2)">Staff</strong> ${ROLE_DESC.staff.toLowerCase()}. Printavo bills per seat — here your whole crew is free.</p>
         </div></details>

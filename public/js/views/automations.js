@@ -78,7 +78,7 @@ export async function automationsView() {
             <div class="au-meta">
               ${a.run_count ? `<div class="au-count">${a.run_count}×</div><div class="dim" style="font-size:10px">${relTime(a.last_run_at)}</div>` : '<div class="dim" style="font-size:10.5px">never run</div>'}
             </div>
-            <button class="del" data-del="${a.id}" data-nodrag title="Delete">&times;</button>
+            <button class="del" data-del="${a.id}" data-nodrag title="Delete" aria-label="Delete the automation ${esc(a.name)}">&times;</button>
           </div>`).join('')}</div>`
           : empty('⟳', 'No automations yet', 'Rules run themselves so you stop chasing people by hand.')}
       </div>
@@ -212,7 +212,7 @@ function autoForm(a) {
         $('#ab-conds', root).innerHTML = `${state.conditions.map((c, i) => `<div class="row" style="gap:7px;margin-bottom:6px">
             <select class="input" data-ck="${i}" style="max-width:180px">${cfg.conditions.map((x) => `<option value="${x.key}" ${x.key === c.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
             <input class="input" data-cv="${i}" value="${esc(c.value ?? '')}" style="max-width:130px">
-            <button class="del" data-rmc="${i}">&times;</button></div>`).join('')}
+            <button class="del" data-rmc="${i}" aria-label="Remove condition ${i + 1}">&times;</button></div>`).join('')}
           <button class="btn ghost sm" id="add-cond">+ Add condition</button>
           ${state.conditions.length ? '' : '<span class="dim" style="font-size:11.5px;margin-left:8px">Always runs</span>'}`
         $('#add-cond', root).onclick = () => { state.conditions.push({ key: 'total_over', value: '' }); drawConds() }
@@ -228,7 +228,7 @@ function autoForm(a) {
             <div class="row" style="gap:7px">
               <select class="input" data-ak="${i}" style="max-width:210px">${cfg.actions.map((x) => `<option value="${x.key}" ${x.key === act.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
               <div class="sp"></div>
-              ${state.actions.length > 1 ? `<button class="del" data-rma="${i}">&times;</button>` : ''}
+              ${state.actions.length > 1 ? `<button class="del" data-rma="${i}" aria-label="Remove action ${i + 1}">&times;</button>` : ''}
             </div>
             ${def.fields.map((f) => f.long
               ? `<textarea class="input" data-af="${i}:${f.key}" placeholder="${esc(f.label)}" style="margin-top:6px;min-height:70px">${esc(act.config?.[f.key] || '')}</textarea>`

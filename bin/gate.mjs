@@ -2271,6 +2271,79 @@ for (const [tz, stored, want, why] of [
  * and /var/lib/printshopcrm to "$USER", the INTERACTIVE account — so even an operator who worked
  * the account out for themselves got "could not create its data directory" or "attempt to write a
  * readonly database". The rule was stated only in Troubleshooting, after the failure. */
+/* ---------- a control a screen reader can only call "times" ----------
+ * The accessible name of a <button> is taken from its CONTENT before its title (accname 4.3.2:
+ * step 2F precedes 2I), so a button whose text is `&times;` is announced "times, button" and a
+ * title="Remove" on the same element is never used for the name. Twelve of them, including delete
+ * a recorded payment, remove a team member and delete an automation — every one destructive.
+ * matrices.js already shipped the correct pattern; the rule below is written over every view so
+ * the thirteenth is caught when it is written rather than in a later audit. */
+section('every destructive control says what it destroys')
+await t('no glyph-only button is left for a screen reader to guess at', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const files = fs.readdirSync(join(root, 'public/js/views')).map((n) => `public/js/views/${n}`)
+    .concat(['public/js/keys.js', 'public/js/core.js', 'public/js/app.js'])
+  const GLYPH = /<button(?![^>]*aria-label)[^>]*>\s*(?:&times;|×|✕|↑|↓)\s*<\/button>/
+  for (const f of files) {
+    const src = fs.readFileSync(join(root, f), 'utf8')
+    assert.doesNotMatch(src, GLYPH, `${f} has a glyph-only button with no aria-label — a screen reader calls it "times"`)
+  }
+})
+await t('a refused field says so where the field is, not only in a silent div', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => fs.readFileSync(join(root, f), 'utf8')
+  // Every inline validation message was written into a plain styled <div>: no role, no aria-live,
+  // no announce(), and there was no aria-invalid or aria-describedby anywhere in public/ at all.
+  for (const [f, id] of [
+    ['public/js/views/estimates.js', 'nc-err'],
+    ['public/js/views/matrices.js', 'mx-n-err'],
+    ['public/js/views/matrices.js', 'mx-paste-err'],
+    ['public/js/views/admin.js', 'ns-err'],
+  ]) {
+    assert.match(read(f), new RegExp(`id="${id}"[^>]*role="alert"`), `${f}: #${id} must be a live region`)
+  }
+  assert.match(read('public/js/views/estimates.js'), /aria-invalid/, 'the field the message is about must be marked invalid')
+  assert.match(read('public/js/views/estimates.js'), /aria-describedby/, '…and pointed at the message')
+})
+await t('the one screen that gives a verdict says it out loud', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const cap = fs.readFileSync(join(root, 'public/js/views/capacity.js'), 'utf8')
+  assert.match(cap, /id="promise-out"[^>]*aria-live="polite"/, '"can we promise this date?" answered into a silent div')
+  assert.match(cap, /announce\(`\$\{verdict\}/, 'and the settled answer must be spoken')
+})
+await t('the only delivery path a shop has without SMTP is reachable from the keyboard', async () => {
+  const core = await import('../public/js/core.js')
+  // "Marked sent. No email connected yet, copy the customer link to send it" — the app tells the
+  // owner this box IS the delivery path, and it was a bare <div> with cursor:pointer.
+  assert.match(core.CLICKABLE_ROWS, /\.copy/, 'the share-link box must be in the keyboard upgrade list')
+  const node = { tagName: 'DIV', attrs: {}, hasAttribute: (a) => a in node.attrs, setAttribute: (a, v) => { node.attrs[a] = v }, addEventListener: () => {} }
+  core.upgradeClickableRows({ querySelectorAll: () => [node], matches: () => false })
+  assert.equal(node.attrs.tabindex, '0', 'it needs to be focusable')
+  assert.equal(node.attrs.role, 'button', 'and to announce as the control it behaves like')
+})
+await t('Floor Mode\'s stage buttons are a size a thumb can hit', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const css = fs.readFileSync(join(join(dirname(fileURLToPath(import.meta.url)), '..'), 'public/css/app.css'), 'utf8')
+  const rule = (css.match(/^\.scan-stage \{[^}]*\}/m) || [''])[0]
+  // These advance a job and stamp a labour timestamp the profitability report is built from, with
+  // no undo. They were ~32px tall with 6px between them, and the 44px block in the sheet cannot
+  // reach them: .scan-stage carries none of its selectors, this rule is declared after it, and
+  // that block is gated at max-width 900px while a floor tablet is 1024.
+  assert.match(rule, /min-height:\s*var\(--tap|min-height:\s*44px/, `.scan-stage was: ${rule}`)
+  assert.match(css, /\.scan-stages \{[^}]*gap:\s*(?:1[0-9]|[2-9][0-9])px/, 'and the pills need spacing between them')
+})
+
 section('the install the docs describe can be followed to the end')
 await t('the account the unit runs as is one the docs tell you to create', async () => {
   const { readFileSync } = await import('node:fs')

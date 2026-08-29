@@ -87,7 +87,7 @@ function newShopModal() {
         <div class="field"><label>Owner email *</label><input class="input" id="ns-email" type="email" placeholder="milo@example.com"></div>
       </div>
       <div class="field" style="margin-top:10px"><label>Temp password (optional — auto-generated if blank)</label><input class="input" id="ns-pw" placeholder="leave blank to auto-generate"></div>
-      <div class="dim" id="ns-err" style="color:#ef4444;font-size:12px;display:none;margin-top:8px"></div>`,
+      <div class="dim" id="ns-err" role="alert" style="color:#ef4444;font-size:12px;display:none;margin-top:8px"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="ns-go">Create shop</button>`,
     onMount: (bg) => {
       const err = (m) => { const e = $('#ns-err', bg); e.textContent = m; e.style.display = '' }

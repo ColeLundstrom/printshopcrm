@@ -191,7 +191,7 @@ function addFaqRow(q, a) {
   row.className = 'faqrow'
   row.innerHTML = `<input class="input faq-q" placeholder="Question a customer asks…" value="${esc(q)}">
     <textarea class="input faq-a" placeholder="How the bot answers">${esc(a)}</textarea>
-    <button class="btn danger sm faq-x" title="Remove">&times;</button>`
+    <button class="btn danger sm faq-x" title="Remove" aria-label="Remove this question and answer">&times;</button>`
   $('.faq-x', row).onclick = () => row.remove()
   $('#faqs').appendChild(row)
 }

@@ -505,7 +505,11 @@ export function setPage(title, actions = '', crumb = '') {
  * attaching art to a job had NO keyboard path at all: not Tab, not Enter, not Space. Enter on
  * the zone now clicks it, which is exactly what the mouse does, and the native picker opens.
  */
-export const CLICKABLE_ROWS = '.click,.jcard[data-id],.convo-item[data-c],.autorow[data-edit],.setup-chip[data-setup],.card[data-job],.drop,.csv-drop'
+// `.copy` is the estimate's Customer Link box. It carries cursor:pointer and an onclick, and it is
+// a bare <div> — so it was mouse-only, on the one control that matters most when a shop has no SMTP
+// wired: "Marked sent. No email connected yet, copy the customer link to send it" is the app
+// telling the owner this box IS the delivery path.
+export const CLICKABLE_ROWS = '.click,.jcard[data-id],.convo-item[data-c],.autorow[data-edit],.setup-chip[data-setup],.card[data-job],.drop,.csv-drop,.copy'
 
 const KB_INNER = 'a[href],button,input,select,textarea,label,summary,[contenteditable="true"]'
 const KB_TABLE = /^(TR|TD|TH|THEAD|TBODY)$/

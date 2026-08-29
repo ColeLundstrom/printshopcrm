@@ -24,12 +24,12 @@ export function openAssistant(seed) {
     <div class="asst-head">
       <div class="asst-badge">◍</div>
       <div style="flex:1"><div class="asst-title">Assistant</div><div class="asst-sub">Message your problem</div></div>
-      <button class="asst-x" data-close>&times;</button>
+      <button class="asst-x" data-close aria-label="Close the assistant">&times;</button>
     </div>
     <div class="asst-log" id="asst-log"></div>
     <div class="asst-compose">
       <textarea id="asst-input" rows="1" placeholder="Ask or tell me anything…"></textarea>
-      <button class="asst-send" id="asst-send" title="Send">↑</button>
+      <button class="asst-send" id="asst-send" title="Send" aria-label="Send this message">↑</button>
     </div>
   </div>`)
   document.body.appendChild(panel)

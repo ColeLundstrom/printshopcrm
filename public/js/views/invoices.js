@@ -121,7 +121,7 @@ export async function invoiceDetailView(id) {
         ${i.payments.length ? `<table class="tbl"><tbody>${i.payments.map((p) => `<tr>
           <td><strong>${money(p.amount)}</strong><div class="dim" style="font-size:11.5px">${esc(p.method)}${p.note ? ` · ${esc(p.note)}` : ''}</div></td>
           <td class="num dim" style="font-size:12px">${fmtDate(p.created_at)}</td>
-          <td class="num" style="width:34px"><button class="del btn danger sm" data-del-payment="${p.id}">&times;</button></td>
+          <td class="num" style="width:34px"><button class="del btn danger sm" data-del-payment="${p.id}" aria-label="Delete the ${esc(money(p.amount))} ${esc(p.method || '')} payment">&times;</button></td>
         </tr>`).join('')}</tbody></table>` : '<div class="card-b dim">No payments recorded.</div>'}
       </div>
 

@@ -142,7 +142,7 @@ function renderList() {
     </div>
     <div class="gsb-item-a">
       <button class="btn ghost sm" data-dup="${d.id}" title="Add a separate copy of this design as its own row">＋</button>
-      <button class="btn ghost sm" data-del="${d.id}" title="Remove" style="color:var(--red)">×</button>
+      <button class="btn ghost sm" data-del="${d.id}" title="Remove" aria-label="Remove ${esc(d.name || 'this design')}" style="color:var(--red)">×</button>
     </div>
   </div>`).join('')
 }

@@ -126,7 +126,7 @@ function setupCard(ob) {
     <div class="setup-card-h"><h3>Finish setting up your shop</h3>
       <div class="spacer"></div><span class="dim" style="font-size:12px">${ob.onboarding.done}/${ob.onboarding.total}</span>
       <button class="btn ghost sm" data-setup="1" style="margin-left:10px">Resume →</button>
-      <button class="x" id="setup-dismiss" title="Dismiss" style="background:none;border:0;color:var(--txt-3);cursor:pointer;font-size:18px;margin-left:4px">&times;</button></div>
+      <button class="x" id="setup-dismiss" title="Dismiss" aria-label="Dismiss the setup checklist" style="background:none;border:0;color:var(--txt-3);cursor:pointer;font-size:18px;margin-left:4px">&times;</button></div>
     <div class="setup-chips">${chips}</div>
   </div>`
 }

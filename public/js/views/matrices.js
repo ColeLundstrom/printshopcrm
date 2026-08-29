@@ -118,7 +118,7 @@ function newMatrixModal() {
         <option value="piece">Per piece — multiplied by the quantity</option>
         <option value="flat">A flat charge — the whole line, whatever the quantity</option>
       </select></div>
-      <div class="dim" id="mx-n-err" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
+      <div class="dim" id="mx-n-err" role="alert" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="mx-n-go">Create &amp; edit</button>`,
     onMount: (bg) => {
       $('#mx-n-name', bg).focus()
@@ -347,7 +347,7 @@ function pasteModal() {
     body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Copy the grid straight out of your spreadsheet and paste it here. First row = your column headings, first column = your row headings. Headings can be anything — “11 oz Mug”, “Both sides”, “1-11”.</p>
       <textarea class="input" id="mx-paste-text" rows="10" style="font-family:var(--mono,monospace);font-size:12px" placeholder="Quantity,11 oz Mug,15 oz Mug&#10;1-11,18.00,20.00&#10;12-23,13.00,14.50"></textarea>
       <p class="dim" style="font-size:11.5px;margin-top:8px">This replaces the whole grid in <strong style="color:var(--txt-2)">${esc(m.name)}</strong>.</p>
-      <div class="dim" id="mx-paste-err" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
+      <div class="dim" id="mx-paste-err" role="alert" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="mx-paste-go">Read the grid</button>`,
     onMount: (bg) => {
       $('#mx-paste-go', bg).onclick = async () => {

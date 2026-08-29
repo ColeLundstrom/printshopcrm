@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast , onOnce, localDay } from '../core.js'
+import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast, onOnce, localDay, announce } from '../core.js'
 
 /**
  * Capacity & Promise Dates — the question no MIS answers: can the shop physically hit this date
@@ -62,7 +62,7 @@ function render(d) {
               <label>Colors / screens<input type="number" id="pc" min="1" max="12" value="3" inputmode="numeric"></label>
               <label>Wanted by<input type="date" id="pd" value="${nextFriday()}"></label>
             </div>
-            <div id="promise-out" class="promise-out"></div>
+            <div id="promise-out" class="promise-out" role="status" aria-live="polite" aria-atomic="true"></div>
           </div>
         </div>
 
@@ -155,6 +155,9 @@ function wire(d) {
       else if (r.feasible) { verdict = `Yes — ships by ${shipStr}`; cls = 'ok'; note = cushion > 0 ? `${cushion} working day${cushion === 1 ? '' : 's'} of cushion before ${fmtDate(due)}` : `lands exactly on ${fmtDate(due)} — no slack` }
       else { verdict = `Not by ${fmtDate(due)}`; cls = 'no'; note = `earliest is ${shipStr} — ${Math.abs(cushion)} working day${Math.abs(cushion) === 1 ? '' : 's'} short. Quote a later date, add a press, or run overtime.` }
       out.innerHTML = `<div class="promise-verdict ${cls}"><div class="pv-main">${esc(verdict)}</div><div class="pv-note">${esc(note)}</div></div>`
+      // The one screen in the app that gives a yes/no verdict, and it gave it silently. The input
+      // handlers are already debounced at 250ms, so this speaks once per settled edit.
+      announce(`${verdict}. ${note}`)
     }).catch((e) => { out.innerHTML = `<div class="dim">${esc(e.message)}</div>` })
   }
   ;['#pq', '#pc', '#pd'].forEach((sel) => on($(sel).closest('.promise-grid'), sel, () => { clearTimeout(promiseTimer); promiseTimer = setTimeout(runPromise, 250) }, 'input'))

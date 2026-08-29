@@ -100,7 +100,7 @@ export function helpOverlay() {
   if ($('.kbd-help')) return $('.kbd-help').remove()
   const ov = el(`<div class="kbd-help" tabindex="-1">
     <div class="kbd-card">
-      <div class="kbd-h"><h3>Keyboard shortcuts</h3><button class="x" data-close>&times;</button></div>
+      <div class="kbd-h"><h3>Keyboard shortcuts</h3><button class="x" data-close aria-label="Close the shortcut list">&times;</button></div>
       <div class="kbd-cols">
         <div><div class="kbd-sec">Anywhere</div>
           ${SHORTCUTS.map((s) => `<div class="kbd-row"><span>${s.desc}</span><span class="kbd-keys">${s.keys.map((k) => `<kbd>${esc(k)}</kbd>`).join('')}</span></div>`).join('')}</div>

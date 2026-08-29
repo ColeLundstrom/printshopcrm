@@ -107,7 +107,7 @@ export function quoteModal(settings, onUse) {
           <select class="input" data-lf="name">${LOCS.map((n) => `<option ${n === l.name ? 'selected' : ''}>${n}</option>`).join('')}</select>
           <input class="input num" data-lf="colors" type="number" min="1" max="12" value="${l.colors}">
           <span class="dim" style="font-size:11px">colors${state.darkGarment ? ' +UB' : ''}</span>
-          ${state.locations.length > 1 ? `<button class="del" data-rmloc="${i}">&times;</button>` : '<span></span>'}
+          ${state.locations.length > 1 ? `<button class="del" data-rmloc="${i}" aria-label="Remove print location ${i + 1}">&times;</button>` : '<span></span>'}
         </div>`).join('')
       }
 

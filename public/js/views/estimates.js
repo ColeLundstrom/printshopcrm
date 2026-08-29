@@ -125,7 +125,7 @@ export async function estimateEditor(id) {
         <button class="mx-btn" data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${esc(it.matrix.name)}: ${esc(it.matrix.row)} × ${esc(it.matrix.col)}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
       </div>
       <div class="amt">${money(lineAmount(it, up))}</div>
-      <button class="del" data-del="${i}" title="Remove line">&times;</button>
+      <button class="del" data-del="${i}" title="Remove line" aria-label="Remove line ${i + 1}">&times;</button>
     </div>
     ${gridded ? `<div class="sizegrid" data-sg="${i}">
       ${sizesFor(it).map((s) => `<label class="sz ${Number(it.sizes[s]) > 0 ? 'on' : ''}">
@@ -211,11 +211,19 @@ export async function estimateEditor(id) {
       body: `<div class="field"><label>Name *</label><input class="input" id="nc-name" placeholder="Jamie Rivera"></div>
         <div class="grid2"><div class="field"><label>Company</label><input class="input" id="nc-company" placeholder="Lakeside High School"></div>
         <div class="field"><label>Email</label><input class="input" id="nc-email" type="email" placeholder="jamie@example.com"></div></div>
-        <div class="dim" id="nc-err" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
+        <div class="dim" id="nc-err" role="alert" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
       footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="nc-save">Create &amp; use</button>`,
       onMount: (bg) => {
-        const err = (m) => { const e = $('#nc-err', bg); e.textContent = m; e.style.display = '' }
+        // role="alert" on the div gets it read out; aria-invalid + aria-describedby tie it to the
+        // field, so a screen reader that lands on the input hears WHY it was refused. There was no
+        // aria-invalid or aria-describedby anywhere in public/ before this.
+        const err = (m, field = '#nc-name') => {
+          const e = $('#nc-err', bg); e.textContent = m; e.style.display = ''
+          const f = $(field, bg)
+          if (f) { f.setAttribute('aria-invalid', 'true'); f.setAttribute('aria-describedby', 'nc-err'); f.focus() }
+        }
         $('#nc-save', bg).addEventListener('click', async () => {
+          $('#nc-name', bg).removeAttribute('aria-invalid')
           const name = $('#nc-name', bg).value.trim()
           if (!name) return err('A customer name is required.')
           try {
@@ -458,7 +466,7 @@ export async function estimateDetailView(id) {
 
       <div class="card"><div class="card-h"><h3>Customer Link</h3></div><div class="card-b">
         <p class="dim" style="font-size:12.5px;margin-bottom:9px">Customers approve here. No login, no account.</p>
-        <div class="copy" id="share">${esc(location.origin + e.share_url)}</div>
+        <div class="copy" id="share" aria-label="Copy the customer approval link">${esc(location.origin + e.share_url)}</div>
         <div class="row" style="margin-top:10px">
           <a class="btn ghost sm" href="${esc(e.share_url)}" target="_blank">Open customer view</a>
           ${e.status !== 'approved' ? `<button class="btn danger sm" id="del">Delete</button>` : ''}

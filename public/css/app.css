@@ -1561,8 +1561,14 @@ td.bad, .bad { color: var(--red); }
 .scan-num { font: 700 15px/1 ui-monospace, monospace; color: var(--txt-2); margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .scan-job-card h2 { margin: 0 0 4px; }
 .scan-advance { width: 100%; min-height: 56px; font-size: 17px; margin: 14px 0 10px; }
-.scan-stages { display: flex; flex-wrap: wrap; gap: 6px; }
-.scan-stage { padding: 8px 12px; border-radius: var(--r-full); border: 1px solid var(--line); background: var(--panel-2); color: var(--txt-2); font-size: 12px; cursor: pointer; }
+/* Floor Mode's stage pills advance a job — and stamp a labour timestamp the shop's own
+   profitability report is built from — so a mis-tap is not a cosmetic problem: it moves the wrong
+   order and writes a scan row with no undo. They were ~32px tall with 6px between them, and the
+   44px touch-target block above could not reach them: `.scan-stage` carries none of its selectors,
+   this rule is declared AFTER it so source order would have lost anyway, and the block is gated at
+   max-width 900px while a floor tablet is 1024. Sized here, unconditionally. */
+.scan-stages { display: flex; flex-wrap: wrap; gap: 10px; }
+.scan-stage { display: inline-flex; align-items: center; min-height: var(--tap, 44px); padding: 8px 14px; border-radius: var(--r-full); border: 1px solid var(--line); background: var(--panel-2); color: var(--txt-2); font-size: 13px; cursor: pointer; }
 .scan-stage.cur { background: rgba(16, 211, 154, .15); color: var(--accent); border-color: rgba(16, 211, 154, .35); font-weight: 700; }
 .scan-done { color: var(--accent); font-weight: 700; margin-bottom: 8px; }
 .scan-log { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; font-size: 12px; display: grid; gap: 3px; }
