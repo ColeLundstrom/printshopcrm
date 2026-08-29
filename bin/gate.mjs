@@ -2420,6 +2420,40 @@ await t('a refused field says so where the field is, not only in a silent div', 
   assert.match(read('public/js/views/estimates.js'), /aria-invalid/, 'the field the message is about must be marked invalid')
   assert.match(read('public/js/views/estimates.js'), /aria-describedby/, '…and pointed at the message')
 })
+/* ---------- the screen the whole product prices from talks to nobody (v20) ----------
+ * matrices.js labels every cell of its grid `aria-label="${row}, ${col}"`. pricing.js renders the
+ * identical grid — up to 8 quantity bands × 14 colour counts, 112 real sell prices the app quotes
+ * from, "your number beats the calculator" — and labelled none of them, so every one reads out as
+ * "edit text, blank" with no way to tell the 24-piece 3-colour price from the 500-piece 1-colour.
+ * The same screen reported Save, and the server's REJECTION of a save, into silent <span>s. */
+await t('every cell of the price matrix says which price it is', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const pb = fs.readFileSync(join(root, 'public/js/views/pricing.js'), 'utf8')
+  const grid = pb.slice(pb.indexOf('function renderMatrix('), pb.indexOf('card.innerHTML', pb.indexOf('function renderMatrix(')))
+  assert.match(grid, /class="pm-in"[\s\S]{0,220}aria-label=/, 'the editable price cells carry no name at all')
+  assert.match(grid, /pieces, \$\{esc\(colName/, 'the name has to say which quantity band and which column')
+  assert.match(grid, /<th scope="col">/, 'and the header row has to be a header row')
+  assert.match(grid, /class="pm-qty" scope="row"/, '…as does the quantity column')
+})
+await t('…and it says out loud whether the shop\'s prices were saved', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const pb = fs.readFileSync(join(root, 'public/js/views/pricing.js'), 'utf8')
+  assert.match(pb, /class="dim pb-note" role="status" aria-live="polite"/, 'the per-service note was a silent span')
+  assert.match(pb, /id="mx-note"[^>]*aria-live="polite"/, 'and so was the matrix note')
+  // A live region is not enough where the node itself is replaced by the re-render — and it is
+  // never enough for an error the shop has to act on, which needs to interrupt.
+  assert.equal((pb.match(/announce\(/g) || []).length, 6,
+    'three outcomes, each with its success and its failure, must all be spoken')
+  assert.match(pb, /announce\(`\$\{name\} was not saved\. \$\{err\.message\}`, true\)/,
+    "the server's rejection is the one thing the shop most needs to hear, and it must interrupt")
+})
+
 await t('the one screen that gives a verdict says it out loud', async () => {
   const fs = await import('node:fs')
   const { join, dirname } = await import('node:path')

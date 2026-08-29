@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal , onOnce} from '../core.js'
+import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal, onOnce, announce } from '../core.js'
 
 /* Pricing Matrix + margin-floor guard — the shop's whole price grid, generated from its own
    costing inputs, with the real margin of every cell and a hard flag on anything that loses money. */
@@ -82,7 +82,7 @@ function serviceCard(s) {
       <div class="row" style="gap:10px;align-items:center;margin-top:4px">
         <button class="btn sm pb-save" type="button">Save ${esc(s.name)}</button>
         ${s.edited ? `<button class="btn ghost sm pb-reset" type="button">${s.custom ? 'Delete this service' : 'Reset to stock'}</button>` : ''}
-        <span class="dim pb-note" style="font-size:11.5px"></span>
+        <span class="dim pb-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span>
       </div>
     </div></div>`
 }
@@ -180,7 +180,13 @@ function wireBook(b) {
       } else {
         note.innerHTML = '<span style="color:var(--accent)">Saved — your quotes use this now.</span>'
       }
-    } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
+      // The note element is REPLACED with the card, so writing into a live region is not enough
+      // on its own — the region a screen reader was watching no longer exists. Say it out loud.
+      announce(`${name} saved — your quotes use this now.`)
+    } catch (err) {
+      note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`
+      announce(`${name} was not saved. ${err.message}`, true)
+    }
   })
   onOnce($('#view'), '.pb-reset', async (e, el) => {
     const name = el.closest('.pb-svc').dataset.svc
@@ -197,8 +203,12 @@ function wireBook(b) {
     try {
       const r = await api.put('/api/pricebook', { matrices: { [mxState.service]: collectMatrixCells() } })
       note.innerHTML = `<span style="color:var(--accent)">Saved. ${r.cells} custom cell(s) — your quotes use these now.</span>`
+      announce(`Matrix saved. ${r.cells} custom cell${r.cells === 1 ? '' : 's'}.`)
       reloadMatrixUnlessTyping()
-    } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
+    } catch (err) {
+      note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`
+      announce(`The matrix was not saved. ${err.message}`, true)
+    }
   })
   onOnce($('#view'), '#mx-file', async (_e, el) => {
     const file = el.files && el.files[0]; if (!file) return
@@ -210,8 +220,12 @@ function wireBook(b) {
       // rows the book does not have, and every break the stock list lacks reads as the calculator.
       await api.put('/api/pricebook', { matrices: { [mxState.service]: r.cells }, ...(r.bands ? { bands: r.bands } : {}) })
       note.innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price(s) from your sheet.</span>`
+      announce(`Imported ${r.filled} price${r.filled === 1 ? '' : 's'} from your sheet.`)
       reloadMatrixUnlessTyping()
-    } catch (err) { note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>` }
+    } catch (err) {
+      note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`
+      announce(`That sheet could not be read. ${err.message}`, true)
+    }
     el.value = ''
     // 'change', not onOnce's default 'click'. The input is display:none inside a <label class="btn">,
     // so clicking the label fires a synthetic click on the input that BUBBLES — this handler ran
@@ -248,11 +262,18 @@ async function loadMatrix(service, colors) {
 function renderMatrix(card, r) {
   const m = r.matrix
   const isColors = m.axis === 'colors'
-  const head = m.cols.map((c) => `<th>${isColors ? c + (c === 1 ? ' color' : '') : esc(String(c))}</th>`).join('')
+  // Every one of these cells is a real sell price the app quotes from — "your number beats the
+  // calculator" — and up to 8 quantity bands × 14 colour counts is 112 of them. Unlabelled, a
+  // screen reader calls each one "edit text, blank", with no way to know whether you are typing
+  // the 24-piece 3-colour price or the 500-piece 1-colour price. matrices.js labels the identical
+  // grid; this one, the one the price book itself uses, never did.
+  const colName = (c) => (isColors ? `${c} colour${c === 1 ? '' : 's'}` : String(c))
+  const head = m.cols.map((c) => `<th scope="col">${isColors ? c + (c === 1 ? ' color' : '') : esc(String(c))}</th>`).join('')
   const body = m.rows.map((row) => `<tr>
-    <th class="pm-qty">${row.qty}+</th>
+    <th class="pm-qty" scope="row">${row.qty}+</th>
     ${row.cells.map((price, i) => `<td class="pm-cell ${row.custom[i] ? 'pm-custom' : ''}">
-      <input class="pm-in" data-cell="${bandKey(m, row.qty)}|${m.cols[i]}" type="number" step="0.01" min="0"
+      <input class="pm-in" data-cell="${bandKey(m, row.qty)}|${m.cols[i]}" type="number" step="0.01" min="0" inputmode="decimal"
+        aria-label="${esc(String(row.qty))}+ pieces, ${esc(colName(m.cols[i]))}"
         value="${row.custom[i] ? Number(price).toFixed(2) : ''}" placeholder="${Number(price).toFixed(2)}"></td>`).join('')}
   </tr>`).join('')
   card.innerHTML = `<div class="card-h"><h3>Your price matrix</h3><div class="spacer"></div>
@@ -271,7 +292,7 @@ function renderMatrix(card, r) {
       <div class="tbl-wrap"><table class="pm-table pm-editable">
         <thead><tr><th>Qty &darr; / ${isColors ? 'Colours' : 'Units'} &rarr;</th>${head}</tr></thead>
         <tbody>${body}</tbody></table></div>
-      <div id="mx-note" class="dim" style="font-size:12px;margin-top:10px"></div>
+      <div id="mx-note" class="dim" role="status" aria-live="polite" aria-atomic="true" style="font-size:12px;margin-top:10px"></div>
     </div>`
 }
 
