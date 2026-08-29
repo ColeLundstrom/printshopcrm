@@ -4784,7 +4784,11 @@ app.post('/api/purchase-orders/:id/receive', requireRole('manager'), wrap((req, 
    * to mean it. In-memory is enough for the same reason the rate limiter's Map is: one process.
    */
   const sig = JSON.stringify(receipts.map((r) => [Number(r?.line_id) || 0, Number(r?.qty) || 0]).sort((a, b) => a[0] - b[0]))
-  const dupeKey = `${before.id}:${sig}`
+  // The shop, then the PO. Purchase-order ids are per-tenant ROWIDS — every shop's first PO is id
+  // 1 — so a key built from the id alone is the same key for every shop on the box, and shop B
+  // booking its own delivery was told it was a duplicate of shop A's. Tenant isolation is absolute:
+  // one shop's activity must not be visible in another's behaviour, let alone block it.
+  const dupeKey = `${curSlug()}:${before.id}:${sig}`
   if (receipts.length && req.body?.confirm !== true) {
     const at = recentReceipts.get(dupeKey)
     if (at && Date.now() - at < 120_000) {

@@ -4917,6 +4917,31 @@ try {
       chk('…and confirming it really is a second delivery still works', String(confirmed.json?.received), '^12$')
 
       const { readFileSync: rfsRecv } = await import('node:fs')
+      /* Two shops on one box must not share a receipt. The duplicate guard is an in-memory Map,
+       * and purchase-order ids are per-tenant ROWIDS — every shop's first PO is id 1 and its first
+       * line is id 1 — so a key built from those alone is the same key for every shop on the
+       * server. Shop B booking its own delivery would be told it was a duplicate of shop A's, and
+       * tenant isolation is absolute: one shop's activity must never be visible in another's
+       * behaviour, let alone block it. */
+      const su2 = await fetch(`http://127.0.0.1:${P15}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Other Ink', owner_name: 'O', owner_email: 'o@other.test', password: 'GatePass-123456' }),
+      })
+      const ck2 = (su2.headers.getSetCookie?.() ?? [su2.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const J2 = (method, path, body) => fetch(`http://127.0.0.1:${P15}${path}`, {
+        method, headers: { 'Content-Type': 'application/json', Cookie: ck2 },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }))
+      chk('a second shop exists on the same server', String(su2.status), '^200$')
+      const cust2 = (await J2('POST', '/api/contacts', { name: 'Their Co', email: 't@co.test' })).json
+      const job2 = (await J2('POST', '/api/jobs', { contact_id: cust2.id, title: 'Their order', garment: 'Gildan 5000 Tee — Black', quantities: '12 M' })).json
+      await J2('POST', `/api/jobs/${job2.id}/po/submit`, {})
+      const po2 = (await J2('GET', `/api/jobs/${job2.id}/purchase-orders`)).json.purchase_orders[0]
+      chk('…with its own first purchase order, at the same rowid', String(po2.id === po.id), '^true$')
+      const theirs = await J2('POST', `/api/purchase-orders/${po2.id}/receive`, { receipts: [{ line_id: po2.lines[0].id, qty: 6 }] })
+      chk('…and its receipt is not refused as the other shop\'s duplicate', String(theirs.status), '^200$')
+      chk('…and it actually landed', String(theirs.json?.received), '^6$')
+
       const ui = rfsRecv(join(ROOT, 'public/js/views/board.js'), 'utf8')
       const i = ui.indexOf('function openReceive')
       chk('the Receive button locks while the request is in flight', String(ui.slice(i, i + 3400)), 'save\\.disabled = true')
