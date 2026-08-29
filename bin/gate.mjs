@@ -4845,7 +4845,7 @@ await t('Back out of an unsaved grid asks first', async () => {
  * the timings the other way round, none at all. */
 section('a backup can actually be put back')
 {
-  const { mkdtempSync, rmSync, mkdirSync, copyFileSync, existsSync, readdirSync, writeFileSync, statSync } = await import('node:fs')
+  const { mkdtempSync, rmSync, mkdirSync, copyFileSync, existsSync, readdirSync, writeFileSync, readFileSync, statSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
@@ -4982,6 +4982,68 @@ section('a backup can actually be put back')
       const out = run([f.backup, '--data-root', f.data, '--yes'], false)
       assert.match(out, /still open/, 'a write in flight is still a running service')
     } finally { try { service.close() } catch { /* already gone */ } rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  /* ---------- the other half of a backup ----------
+   * deploy/backup.sh writes uploads.tar.gz beside the databases and counts the files into it, and
+   * restore.mjs walked straight past it. Reproduced end to end — backup, wipe, restore — and got
+   * "✓ Restored 2 database(s)" with zero artwork on disk. The app comes back up healthy and every
+   * proof, every mockup and the shop's own logo is a broken image, with nothing on any screen
+   * saying where the files went. Art IS the customer's property; it is the part of a print shop's
+   * data you cannot re-derive. */
+  const withArt = (files) => {
+    const f = fixture()
+    const src = join(f.dir, 'art-src', 'uploads')
+    mkdirSync(src, { recursive: true })
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(src, name), body)
+    execFileSync('tar', ['czf', join(f.backup, 'uploads.tar.gz'), '-C', join(f.dir, 'art-src'), 'uploads'], { stdio: 'ignore' })
+    // …and the live data root has the shop's current art, which a restore replaces.
+    mkdirSync(join(f.data, 'uploads'), { recursive: true })
+    writeFileSync(join(f.data, 'uploads', 'todays-proof.png'), 'TODAY')
+    return f
+  }
+
+  await t('a restore puts the customers\' artwork back, not just the databases', () => {
+    const f = withArt({ 'proof-v3.png': 'APPROVED-ARTWORK', 'shop-logo.png': 'LOGO' })
+    try {
+      const out = run([f.backup, '--data-root', f.data, '--yes'], true)
+      assert.match(out, /Restored 1 database/, 'the databases still restore')
+      const art = join(f.data, 'uploads')
+      assert.ok(existsSync(join(art, 'proof-v3.png')), 'the approved proof has to come back — it is what the customer signed off')
+      assert.equal(readFileSync(join(art, 'proof-v3.png'), 'utf8'), 'APPROVED-ARTWORK')
+      assert.ok(existsSync(join(art, 'shop-logo.png')), 'and the shop logo, which is on every invoice')
+      assert.match(out, /2 artwork file\(s\)/, 'and it has to say how many, the way the backup counted them')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…moving what was there aside rather than destroying it', () => {
+    const f = withArt({ 'proof-v3.png': 'APPROVED-ARTWORK' })
+    try {
+      run([f.backup, '--data-root', f.data, '--yes'], true)
+      const safety = readdirSync(join(f.data, 'backups'))
+      const prev = join(f.data, 'backups', safety[0], 'uploads-previous', 'todays-proof.png')
+      assert.ok(existsSync(prev), 'the art that was on disk must be recoverable — a restore may never be what loses it')
+      assert.equal(readFileSync(prev, 'utf8'), 'TODAY')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…and a backup with NO artwork in it says so instead of reporting success', () => {
+    const f = fixture()                                        // databases only, as backup.sh
+    try {                                                      // writes when uploads/ is missing
+      const out = run([f.backup, '--data-root', f.data, '--yes'], true)
+      assert.match(out, /NO ARTWORK IN THIS BACKUP/, 'a database-only restore looks perfectly healthy and is missing every proof')
+      assert.match(out, /broken image/, 'and it has to say what that means on screen')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('…and the plan says it before anything is touched', () => {
+    const f = withArt({ 'proof-v3.png': 'APPROVED-ARTWORK' })
+    try {
+      const out = run([f.backup, '--data-root', f.data], true)   // no --yes
+      assert.match(out, /uploads\.tar\.gz/, 'the plan must name the artwork it is going to restore')
+      assert.equal(readFileSync(join(f.data, 'uploads', 'todays-proof.png'), 'utf8'), 'TODAY',
+        'and a plan-only run must not touch a single file')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
   })
 
   await t('…while a database nothing holds still restores', () => {

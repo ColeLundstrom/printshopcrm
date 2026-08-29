@@ -332,6 +332,13 @@ and you are back to the state you were trying to undo. `bin/restore.mjs` moves t
 `-shm` aside instead of leaving or deleting them, so the last few minutes of work are still
 recoverable if you need them.
 
+It restores the **artwork** as well as the databases. `deploy/backup.sh` writes an
+`uploads.tar.gz` beside them, and that is the half of your data you cannot re-derive — every
+approved proof, every mockup, your shop logo. A restore that put the databases back and left the
+files behind came up looking perfectly healthy with every image on every screen broken. If the
+backup you point it at has no artwork in it, it says so in as many words rather than reporting
+success. `--skip-art` leaves the files on disk alone, if that is what you actually want.
+
 It also verifies the backup *before* touching the live database, refuses to run while anything
 still has a database open, keeps a copy of everything it replaced in
 `/var/lib/printshopcrm/backups/pre-restore-<timestamp>/` so the restore is itself undoable, and

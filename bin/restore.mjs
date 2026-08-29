@@ -45,13 +45,19 @@
  *   5. it verifies the restored file and reports the row counts you can recognise;
  *   6. it puts the original owner and mode back, so a `sudo` restore does not leave the service
  *      with a database it cannot write to;
- *   7. and it changes nothing at all without --yes.
+ *   7. it puts the ARTWORK back too, and refuses to call a restore finished if the backup has
+ *      none — deploy/backup.sh writes uploads.tar.gz beside the databases, and this tool used to
+ *      walk straight past it and print "✓ Restored 2 database(s)". The app came back up healthy
+ *      and every proof, mockup and shop logo was a broken image, with nothing on any screen
+ *      saying the files were gone;
+ *   8. and it changes nothing at all without --yes.
  */
 import { DatabaseSync } from 'node:sqlite'
 import {
   statSync, readdirSync, mkdirSync, copyFileSync, renameSync, existsSync,
   chownSync, chmodSync,
 } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join, resolve, dirname, basename } from 'node:path'
 
 /* ------------------------------------------------------------------ args */
@@ -93,6 +99,8 @@ if (!positional.length || flag('--help') || flag('-h')) {
                          (stop the service first instead — this is here for a wedged lock)
     --keep-wal           do NOT move the existing -wal aside. Almost never right; the stale
                          write-ahead log is the thing that silently empties a restore.
+    --skip-art           restore the databases only, leaving the artwork on disk as it is.
+                         Say so deliberately; the default is to put the art back too.
 
   Stop the app first:   sudo systemctl stop printshopcrm
   Start it after:       sudo systemctl start printshopcrm
@@ -216,6 +224,41 @@ const pairs = planFor(SRC)
 // safety copy anywhere else in the data root would be re-archived every night forever.
 const SAFETY = join(DATA_ROOT, 'backups', `pre-restore-${stamp}`)
 
+/**
+ * Customer artwork, which is the half of a backup that is not a database.
+ *
+ * deploy/backup.sh writes `uploads.tar.gz` beside the databases and counts the files into it, and
+ * this tool used to walk straight past it: a documented restore printed "✓ Restored 2
+ * database(s)", the app came back up healthy, and every proof, every mockup and the shop's own
+ * logo was a broken image. Reproduced end to end — backup, wipe, restore — with zero artwork on
+ * disk afterwards and nothing on any screen saying where it went.
+ *
+ * Accepts either the archive or an already-unpacked `uploads/` directory, because an operator who
+ * has untarred the nightly by hand should not be told their backup is incomplete.
+ */
+const ART_LIVE = join(DATA_ROOT, 'uploads')
+const artSource = (() => {
+  try { if (!statSync(SRC).isDirectory()) return null } catch { return null }
+  for (const name of ['uploads.tar.gz', 'uploads.tgz']) {
+    const p = join(SRC, name)
+    if (existsSync(p)) return { kind: 'archive', path: p }
+  }
+  const dir = join(SRC, 'uploads')
+  try { if (statSync(dir).isDirectory()) return { kind: 'directory', path: dir } } catch { /* not there */ }
+  return null
+})()
+const countArt = (dir) => {
+  let n = 0
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(join(d, e.name))
+      else n++
+    }
+  }
+  try { walk(dir) } catch { /* unreadable — reported as 0 */ }
+  return n
+}
+
 say('')
 say(`  Restore plan`)
 say(`    from       ${SRC}`)
@@ -242,6 +285,20 @@ for (const p of pairs) {
     say(`        → moved into the safety copy. Left in place it would replay over the restore${walBytes ? ' — this is the one that empties a shop' : ''}.`)
   }
   if (open) say(`        STILL OPEN — something is using this database`)
+}
+
+if (flag('--skip-art')) {
+  say(`    · artwork left alone (--skip-art)`)
+} else if (artSource) {
+  const live = existsSync(ART_LIVE) ? countArt(ART_LIVE) : 0
+  say(`    ✓ ${artSource.kind === 'archive' ? basename(artSource.path) : 'uploads/'}`)
+  say(`        → ${ART_LIVE}${live ? `   (replacing ${live} file(s), moved into the safety copy)` : '   (new)'}`)
+} else {
+  // The loud half. A database-only restore looks completely healthy and is missing every proof.
+  say(`    ✗ NO ARTWORK IN THIS BACKUP`)
+  say(`        ${ART_LIVE} will be left exactly as it is.`)
+  say(`        If this backup is all you have, every proof, mockup and shop logo the databases`)
+  say(`        still point at is a broken image with nothing on screen to explain it.`)
 }
 say('')
 
@@ -314,11 +371,62 @@ for (const p of pairs) {
   say(`      ${census(p.to)}   quick_check ok`)
 }
 
+/* ------------------------------------------------------- the artwork */
+let artNote = 'no artwork in this backup — the files on disk were left alone'
+if (!flag('--skip-art') && artSource) {
+  // MOVED aside, never deleted, and on the same filesystem so it is a rename rather than a copy
+  // of somebody's whole art library. If the unpack fails it goes straight back.
+  const kept = join(SAFETY, 'uploads-previous')
+  let movedAside = false
+  if (existsSync(ART_LIVE)) {
+    mkdirSync(SAFETY, { recursive: true })
+    renameSync(ART_LIVE, kept)
+    movedAside = true
+  }
+  try {
+    mkdirSync(ART_LIVE, { recursive: true })
+    if (artSource.kind === 'archive') {
+      // tar, because backup.sh wrote a tar and Node has no archive reader in the standard
+      // library — and this tool takes no dependencies. Present on Linux, macOS and Windows 10+.
+      execFileSync('tar', ['xzf', artSource.path, '-C', DATA_ROOT], { stdio: ['ignore', 'ignore', 'pipe'] })
+    } else {
+      const copyTree = (from, to) => {
+        mkdirSync(to, { recursive: true })
+        for (const e of readdirSync(from, { withFileTypes: true })) {
+          if (e.isDirectory()) copyTree(join(from, e.name), join(to, e.name))
+          else copyFileSync(join(from, e.name), join(to, e.name))
+        }
+      }
+      copyTree(artSource.path, ART_LIVE)
+    }
+    const n = countArt(ART_LIVE)
+    if (!n) throw new Error('the archive unpacked to no files')
+    artNote = `${n} artwork file(s) restored to ${ART_LIVE}`
+    if (movedAside) undo.push({ back: kept, to: ART_LIVE, dir: true })
+    say(`  ✓ ${ART_LIVE}`)
+    say(`      ${n} artwork file(s)`)
+  } catch (e) {
+    // Put the shop's own art back before saying anything else. A restore must never be the thing
+    // that loses the files it was run to recover.
+    try { if (movedAside) { renameSync(ART_LIVE, join(SAFETY, 'uploads-failed-unpack')); renameSync(kept, ART_LIVE) } } catch { /* nothing better to do */ }
+    const why = String(e?.message || e).slice(0, 200)
+    say('')
+    say(`  ✗ THE ARTWORK DID NOT RESTORE: ${why}`)
+    say(`      The databases above are restored. ${movedAside ? 'The art that was on disk has been put back.' : ''}`)
+    say(`      Unpack it by hand:   tar xzf '${artSource.path}' -C '${DATA_ROOT}'`)
+    artNote = `ARTWORK NOT RESTORED — ${why}`
+  }
+}
+
 say('')
 say(`  Restored ${restored} database(s).`)
+say(`  Artwork: ${artNote}`)
+if (!flag('--skip-art') && !artSource) {
+  say('  → Every proof, mockup and shop logo the restored databases point at is a broken image.')
+}
 say(`  What was replaced is in ${SAFETY} — including any -wal, so this is undoable:`)
 say('')
-for (const u of undo.slice(0, 3)) say(`      cp '${u.back}' '${u.to}'`)
+for (const u of undo.slice(0, 3)) say(`      ${u.dir ? `rm -rf '${u.to}' && mv '${u.back}' '${u.to}'` : `cp '${u.back}' '${u.to}'`}`)
 if (undo.length > 3) say(`      … and ${undo.length - 3} more`)
 say('')
 say('  Start the app and check it:')
