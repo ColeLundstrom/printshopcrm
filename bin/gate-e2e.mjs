@@ -9,7 +9,7 @@
  * app itself doesn't use. This needs only the Node you already have.
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -4397,6 +4397,93 @@ try {
     } finally {
       try { s3.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T3, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+
+  /* ---------- every spelling of /uploads reaches the guard, or reaches nothing ----------
+   *
+   * `app.get('/uploads/:file')` is the ONE place tenant ownership of an uploaded file is checked,
+   * and round 15 wrote it precisely because express.static under public/ was serving every shop's
+   * customer artwork to anyone. It works — on the one spelling Express routes to it.
+   *
+   * The Express ROUTER does not normalise a path. express.static does. So every other spelling of
+   * the same file skipped the guard entirely and got the bytes off disk, with no cookie at all:
+   *
+   *   /uploads/F      404   ← the guard
+   *   //uploads/F     200   /./uploads/F  200   /uploads//F   200   /uploads/./F  200
+   *   ///uploads/F    200   /uploads/%2e/F 200  /uploads/../uploads/F 200
+   *
+   * That is the round-15 crit re-opened in full: no session check, no ?t= token, no ownership
+   * re-read (so deleting a proof stopped revoking the artwork), and express.static answers
+   * `Cache-Control: public`, where the guard deliberately answers `private` so a shared proxy
+   * cannot hand one shop's art to the next caller.
+   *
+   * The fix is upstream of all of it: a request whose path is not already canonical is refused
+   * before any route sees it. Refused, not rewritten — decoding `%2e%2e` and then re-routing
+   * would turn an encoded traversal into a real route hit, which is a worse bug than the one
+   * being fixed. This also closes `//api/...`, which had been reaching the SPA catch-all and
+   * answering 200 + HTML to a caller with no session. */
+  {
+    const T10 = mkdtempSync(join(tmpdir(), 'psc-e2e-paths-'))
+    const P10 = PORT + 15
+    const s10 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P10), PSC_DB: join(T10, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P10}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s10)
+    // A real file on disk under public/uploads, which is what the shop's proofs are. Named so a
+    // stray copy is obviously the gate's and never a shop's.
+    const probe = 'zz-gate-path-probe.png'
+    const probePath = join(ROOT, 'public', 'uploads', probe)
+    try {
+      writeFileSync(probePath, 'GATE-PRIVATE-ARTWORK-BYTES')
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P10}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      // fetch() normalises a URL before it goes on the wire, so it cannot express these at all.
+      // Raw http with an explicit `path` sends exactly what it is given.
+      const rawGet = (path) => new Promise((resolve) => {
+        const rq = rawHttp({ host: '127.0.0.1', port: P10, method: 'GET', path }, (resp) => {
+          let b = ''; resp.on('data', (d) => { b += d }); resp.on('end', () => resolve({ status: resp.statusCode, text: b, headers: resp.headers }))
+        })
+        rq.on('error', (e) => resolve({ status: 0, text: `error ${e.message}`, headers: {} }))
+        rq.end()
+      })
+
+      const canonical = await rawGet(`/uploads/${probe}`)
+      chk('the guarded upload path refuses a caller with no session', String(canonical.status), '^404$')
+
+      for (const spelling of [
+        `//uploads/${probe}`,
+        `///uploads/${probe}`,
+        `/./uploads/${probe}`,
+        `/uploads//${probe}`,
+        `/uploads/./${probe}`,
+        `/uploads/%2e/${probe}`,
+        `/uploads/../uploads/${probe}`,
+        `/uploads/%2e%2e/uploads/${probe}`,
+      ]) {
+        const r = await rawGet(spelling)
+        chk(`…and so does ${spelling}`, String(r.status), '^40[04]$')
+        chk(`…without leaking a byte of it`, String(/GATE-PRIVATE-ARTWORK-BYTES/.test(r.text)), '^false$')
+      }
+
+      // The same hole, one route family over: //api/... used to miss the auth gate's API branch
+      // AND the JSON 404, and answer 200 + the whole SPA shell to an anonymous caller.
+      const dslashApi = await rawGet('/​/api/contacts'.replace('​', ''))
+      chk('//api/contacts does not answer 200 with the app shell', String(dslashApi.status), '^(40[014]|429)$')
+
+      // And the ordinary paths still work, which is the half that makes this shippable.
+      chk('a canonical page still loads', String((await rawGet('/')).status), '^200$')
+      chk('…and a canonical asset still loads', String((await rawGet('/js/core.js')).status), '^200$')
+      chk('…and a canonical API path still reaches its own JSON 404', String((await rawGet('/api/nope')).status), '^40[14]$')
+    } finally {
+      try { rmSync(probePath, { force: true }) } catch { /* best effort */ }
+      try { s10.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T10, { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
 

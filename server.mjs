@@ -126,6 +126,42 @@ app.set('case sensitive routing', true)
 app.disable('x-powered-by')
 
 /**
+ * A request whose path is not already canonical never reaches a route.
+ *
+ * Same family as the case-sensitivity note above, and it re-opened the same crit. The Express
+ * ROUTER does not normalise a path; express.static does. `GET /uploads/:file` is the one place
+ * tenant ownership of an uploaded file is checked — so every other spelling of that file skipped
+ * the guard and was served off disk by the static mount, with no cookie at all. Measured on a
+ * two-shop install, anonymously:
+ *
+ *   /uploads/F              404   ← the guard doing its job
+ *   //uploads/F             200   /./uploads/F   200   /uploads//F   200   /uploads/./F  200
+ *   ///uploads/F            200   /uploads/%2e/F 200   /uploads/../uploads/F  200
+ *
+ * That is round 15's crit back in full: no session, no ?t= token, no ownership re-read (so
+ * deleting a proof stopped revoking the art), and express.static answers `Cache-Control: public`
+ * where the guard deliberately answers `private`, so a shared proxy caches one shop's artwork for
+ * the next caller. It also covers `//api/...`, which had been missing both the auth gate's API
+ * branch and the JSON 404 and answering 200 + the whole SPA shell to an anonymous caller.
+ *
+ * REFUSED, not rewritten. Rewriting means decoding first, and `/api/contacts/%2e%2e/admin` decoded
+ * and re-normalised is `/api/admin` — that hands the caller a DIFFERENT route than the one they
+ * asked for, which is a worse bug than the one being closed. A 404 grants nothing.
+ *
+ * Deliberately narrow so it cannot break a legitimate URL: only an empty segment, a `.`/`..`
+ * segment, or an encoded slash/dot/backslash. `%20` and every other ordinary escape pass
+ * untouched, so a path parameter like /api/pricebook/Screen%20Print still works.
+ */
+const NON_CANONICAL_PATH = /\/\/|(^|\/)\.\.?(\/|$)|%2f|%5c|%2e/i
+app.use((req, res, next) => {
+  if (!NON_CANONICAL_PATH.test(req.path)) return next()
+  // 404, not 400: the same reasoning as the uploads guard — a distinct status would confirm to a
+  // prober that the canonical path is worth trying.
+  if (req.path.startsWith('/api/') || req.path.startsWith('//api/')) return res.status(404).json({ error: 'Not found' })
+  return res.status(404).end()
+})
+
+/**
  * Security response headers.
  *
  * This app shipped with none of these, so a browser had no instruction to keep the CRM out of a
