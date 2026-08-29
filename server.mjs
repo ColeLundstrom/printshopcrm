@@ -4754,6 +4754,11 @@ app.get('/api/purchase-orders/:id', wrap((req, res) => {
   res.json(po)
 }))
 
+// Recent receipt signatures, so the same delivery booked twice is a question rather than a silent
+// erasure of the shortage. Pruned on the same cadence as the rate limiter's buckets.
+const recentReceipts = new Map()
+setInterval(() => { const t = Date.now(); for (const [k, v] of recentReceipts) if (t - v > 300_000) recentReceipts.delete(k) }, 120_000).unref?.()
+
 /**
  * Receive goods against a PO, per size cell. Body: { receipts: [{ line_id, qty }] }. This is the
  * "100 ordered, 97 arrived — 2 S and 1 M short" case that no competitor models per cell.
@@ -4761,7 +4766,36 @@ app.get('/api/purchase-orders/:id', wrap((req, res) => {
 app.post('/api/purchase-orders/:id/receive', requireRole('manager'), wrap((req, res) => {
   const before = getPurchaseOrder(+req.params.id)
   if (!before) return res.status(404).json({ error: 'Purchase order not found' })
-  const updated = receivePurchaseOrder(before.id, Array.isArray(req.body?.receipts) ? req.body.receipts : [], { by: req.member?.name })
+  const receipts = Array.isArray(req.body?.receipts) ? req.body.receipts : []
+  /**
+   * The same delivery, booked twice, is a shortage the shop can no longer see.
+   *
+   * receivePurchaseOrder is additive — `qty_received + add` — and the `Math.min(qty_ordered, …)`
+   * cap HIDES the overflow by landing exactly on "complete". Measured: 12 ordered, 6 arrived, two
+   * identical posts of {receipts:[{line_id, qty:6}]} → qty_received 6 → 12, short 6 → 0, both 200,
+   * status 'received'. A double-click turns a six-short delivery into "All blanks received", the
+   * shortage disappears from the pick ticket, the packing slip and ROI — the list this route's own
+   * docstring names — and poAlreadySent() then blocks re-submitting to chase the missing goods.
+   *
+   * POST /api/invoices/:id/payments answers exactly this question, and its comment applies here
+   * word for word: the dialog's in-flight guard is per-tab, so two people at two desks, one person
+   * on a phone and a laptop, or a re-click after a response that never arrived all walk past it.
+   * Same shape and the same escape — a question that names what it matched, and `confirm: true`
+   * to mean it. In-memory is enough for the same reason the rate limiter's Map is: one process.
+   */
+  const sig = JSON.stringify(receipts.map((r) => [Number(r?.line_id) || 0, Number(r?.qty) || 0]).sort((a, b) => a[0] - b[0]))
+  const dupeKey = `${before.id}:${sig}`
+  if (receipts.length && req.body?.confirm !== true) {
+    const at = recentReceipts.get(dupeKey)
+    if (at && Date.now() - at < 120_000) {
+      return res.status(409).json({
+        code: 'duplicate_receipt',
+        error: `That exact receipt was already recorded on ${before.po_number || `PO #${before.id}`} less than two minutes ago. If a second delivery really did arrive, confirm to record it again — otherwise the shortage stays as it is.`,
+      })
+    }
+  }
+  const updated = receivePurchaseOrder(before.id, receipts, { by: req.member?.name })
+  if (receipts.length) recentReceipts.set(dupeKey, Date.now())
   const shortLines = updated.lines.filter((l) => l.short > 0)
   logActivity('note', `Received on ${updated.po_number}: ${updated.received}/${updated.ordered} pcs${updated.short > 0 ? ` — ${updated.short} short (${shortLines.map((l) => `${l.short} ${l.size}`).join(', ')})` : ''}`, { job_id: updated.job_id })
   res.json(updated)

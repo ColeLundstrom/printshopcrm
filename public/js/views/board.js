@@ -660,18 +660,42 @@ function openReceive(jobId, po) {
       <div id="recv-note" class="dim" style="font-size:12px;margin-top:10px"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="recv-save">Receive</button>`,
     onMount: (bg) => {
-      $('#recv-save', bg).onclick = async () => {
+      const save = $('#recv-save', bg)
+      save.onclick = async () => {
+        // The PO-submit handler a hundred lines up locks its button for exactly this reason and
+        // this one did not, so a double-click sent the delivery twice — and receiving is additive,
+        // so the second one quietly closed out a real shortage.
+        if (save.disabled) return
         const receipts = [...bg.querySelectorAll('input[data-line]')]
           .map((i) => ({ line_id: Number(i.dataset.line), qty: Number(i.value) || 0 }))
           // `> 0` dropped every correction on the way out, so a negative typed into the box above
           // left as an empty receipts array and the shop got "Enter at least one quantity."
           .filter((r) => r.qty !== 0)
         if (!receipts.length) { $('#recv-note', bg).textContent = 'Enter at least one quantity, or a negative number to take back a receipt.'; return }
-        try {
-          const updated = await api.post(`/api/purchase-orders/${po.id}/receive`, { receipts })
+        const post = async (confirm) => {
+          const updated = await api.post(`/api/purchase-orders/${po.id}/receive`, confirm ? { receipts, confirm: true } : { receipts })
           toast(updated.fully_received ? 'All blanks received' : `Received — ${updated.received}/${updated.ordered}${updated.short ? `, ${updated.short} still short` : ''}`)
           closeModal(); loadReceiving(jobId)
-        } catch (e) { $('#recv-note', bg).textContent = e.message }
+        }
+        save.disabled = true
+        const label = save.textContent
+        save.textContent = 'Receiving…'
+        try {
+          await post(false)
+        } catch (e) {
+          // The server refuses an identical receipt inside two minutes rather than silently
+          // doubling it. That is a question, not a wall — ask it, and record it if the shop means
+          // it. Read the code off the parsed body, the same way the duplicate-payment dialog does.
+          if (e.data?.code === 'duplicate_receipt') {
+            save.disabled = false; save.textContent = label
+            confirmModal('Record this delivery again?', e.message,
+              async () => { try { await post(true) } catch (e2) { toast(e2.message, true) } })
+            return
+          }
+          $('#recv-note', bg).textContent = e.message
+        } finally {
+          if (save.isConnected) { save.disabled = false; save.textContent = label }
+        }
       }
     },
   })

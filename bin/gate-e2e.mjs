@@ -4848,6 +4848,85 @@ try {
     }
   }
 
+
+  /* ---------- receiving the same delivery twice does not erase a real shortage ----------
+   *
+   * receivePurchaseOrder is additive — `qty_received + add` — and the receive route had none of
+   * the duplicate protection the one other money-touching route in the product carries. Worse,
+   * the `Math.min(qty_ordered, …)` cap HIDES the overflow by landing exactly on "complete":
+   *
+   *   12 ordered, 6 arrived. Two identical posts of {receipts:[{line_id, qty:6}]} →
+   *   qty_received 6 → 12, short 6 → 0, both 200, PO status 'received'.
+   *
+   * So a double-click turns a six-short delivery into "All blanks received". The shortage vanishes
+   * from the pick ticket, the packing slip and ROI — the exact list the receive route's own
+   * docstring names — and poAlreadySent() then blocks re-submitting to chase the missing goods.
+   * The shop finds out on press day, six shirts short, with nothing on any screen that says so.
+   *
+   * POST /api/invoices/:id/payments already answers this question, in a comment that applies here
+   * word for word: the dialog's in-flight guard is per-tab, so two people at two desks, or a
+   * re-click after a response that never arrived, walk straight past it. Same shape, same escape —
+   * a question naming what it matched, and `confirm: true` to mean it. */
+  {
+    const T15 = mkdtempSync(join(tmpdir(), 'psc-e2e-recv-'))
+    const P15 = PORT + 20
+    const s15 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P15), PSC_DB: join(T15, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P15}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s15)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P15}/health`)).ok) break } catch { /* not up */ }
+        await sleep(500)
+      }
+      const su = await fetch(`http://127.0.0.1:${P15}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Recv Ink', owner_name: 'R', owner_email: 'r@recv.test', password: 'GatePass-123456' }),
+      })
+      const ck = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      const J = (method, path, body) => fetch(`http://127.0.0.1:${P15}${path}`, {
+        method, headers: { 'Content-Type': 'application/json', Cookie: ck },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }))
+
+      const cust = (await J('POST', '/api/contacts', { name: 'Short Co', email: 'short@co.test' })).json
+      // POST /api/jobs builds its grid from `quantities`, the free-text field the job form posts.
+      const job = (await J('POST', '/api/jobs', { contact_id: cust.id, title: 'Short order', garment: 'Gildan 5000 Tee — Black', quantities: '12 M' })).json
+      // No distributor is connected, so the submit fails — but the local PO record is persisted
+      // first, deliberately, because that is what receiving works against.
+      await J('POST', `/api/jobs/${job.id}/po/submit`, {})
+      const pos = (await J('GET', `/api/jobs/${job.id}/purchase-orders`)).json
+      const po = pos.purchase_orders[0]
+      chk('the job has a purchase order to receive against', String(po?.ordered), '^12$')
+      const line = po.lines[0]
+
+      const first = await J('POST', `/api/purchase-orders/${po.id}/receive`, { receipts: [{ line_id: line.id, qty: 6 }] })
+      chk('six of twelve arrive', String(first.json?.received), '^6$')
+      chk('…and the shop is six short', String(first.json?.short), '^6$')
+
+      const again = await J('POST', `/api/purchase-orders/${po.id}/receive`, { receipts: [{ line_id: line.id, qty: 6 }] })
+      chk('the identical receipt again is questioned, not applied', String(again.status), '^409$')
+      chk('…and it says what it matched', JSON.stringify(again.json), 'duplicate_receipt')
+      const still = (await J('GET', `/api/purchase-orders/${po.id}`)).json
+      chk('…so the shortage is still on the record', String(still?.short), '^6$')
+
+      // …and it is a question, not a wall: the six that really did turn up later still go in.
+      const confirmed = await J('POST', `/api/purchase-orders/${po.id}/receive`, { receipts: [{ line_id: line.id, qty: 6 }], confirm: true })
+      chk('…and confirming it really is a second delivery still works', String(confirmed.json?.received), '^12$')
+
+      const { readFileSync: rfsRecv } = await import('node:fs')
+      const ui = rfsRecv(join(ROOT, 'public/js/views/board.js'), 'utf8')
+      const i = ui.indexOf('function openReceive')
+      chk('the Receive button locks while the request is in flight', String(ui.slice(i, i + 3400)), 'save\\.disabled = true')
+      chk('…and the duplicate question is asked on the screen, not just refused', String(ui.slice(i, i + 3400)), 'duplicate_receipt')
+    } finally {
+      try { s15.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T15, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
 } catch (err) {
   say('✗', `harness error: ${err.message}`)
   fails++
