@@ -1101,6 +1101,56 @@ await t('a 60-invoice statement paginates and buckets land where the calendar sa
   assert.ok(s.includes('CURRENT'), 'aging strip renders')
 })
 
+/* ---------- a data restatement runs once, not on every restart ----------
+ * applyMigrations() runs on every process start, against every tenant database. An additive
+ * schema change is idempotent by construction; an UPDATE that rewrites somebody's DATA is not.
+ * The deal-value restatement guarded itself with "does this still equal the total it was written
+ * from?", which is not a latch — a person is perfectly entitled to type the tax-inclusive figure,
+ * because that is what the customer is going to pay and it is the number on the quote in front of
+ * them. So $2,931.45 was rewritten to $2,726.00 at the next restart, and again at the one after
+ * they retyped it, forever, from no screen and with nothing on the record to say why. */
+section('a migration that rewrites data runs once, ever')
+await t('the restatement still fixes a value that was never touched by a person', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.initDb(mem)
+  mem.exec('DELETE FROM schema_migrations')   // a database from before the latch existed
+  mem.exec(`INSERT INTO estimates (id, estimate_number, status, items, subtotal, tax, total)
+              VALUES (1, 'EST-1', 'sent', '[]', 2726.00, 205.45, 2931.45);
+            INSERT INTO opportunities (id, estimate_id, title, value, stage)
+              VALUES (1, 1, 'Spirit wear', 2931.45, 'quoted');`)
+  dbmod.initDb(mem)
+  assert.equal(mem.prepare('SELECT value AS v FROM opportunities WHERE id = 1').get().v, 2726,
+    'a deal value nobody has typed must still be corrected to exclude sales tax')
+  mem.close()
+})
+await t('…and never rewrites the figure a person typed afterwards', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.initDb(mem)
+  mem.exec(`INSERT INTO estimates (id, estimate_number, status, items, subtotal, tax, total)
+              VALUES (1, 'EST-1', 'sent', '[]', 2726.00, 205.45, 2931.45);`)
+  // The owner types what the customer is actually going to pay. It happens to equal the total.
+  mem.exec(`INSERT INTO opportunities (id, estimate_id, title, value, stage)
+              VALUES (1, 1, 'Spirit wear', 2931.45, 'quoted');`)
+  for (let restart = 0; restart < 3; restart++) dbmod.initDb(mem)
+  assert.equal(mem.prepare('SELECT value AS v FROM opportunities WHERE id = 1').get().v, 2931.45,
+    'three restarts must not touch a number a person put there')
+  mem.close()
+})
+await t('…and the latch is recorded where a human can see it', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.initDb(mem)
+  const row = mem.prepare("SELECT name, applied_at FROM schema_migrations WHERE name = 'opportunity_value_excludes_tax'").get()
+  assert.ok(row, 'the one-shot restatement should record that it ran')
+  assert.ok(row.applied_at, 'and when')
+  mem.close()
+})
+
 /* ---------- v56 audit regressions (2026-08-21 16-agent section audit) ---------- */
 section('audit regressions: money and data-integrity')
 await t('quantities exported as "24.00" import as 24, not 2400', async () => {
