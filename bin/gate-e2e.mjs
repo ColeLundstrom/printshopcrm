@@ -3102,6 +3102,54 @@ try {
       String(Math.abs(round2e(Number(r.json?.subtotal) + Number(r.json?.tax)) - round2e(r.json?.amount_due)) < 0.005), '^true$')
   }
 
+  /* ---------- the embed chat's cap counts requests, not the strings the caller chose ----------
+   * embedLimit keyed on `${ip}:${req.query.shop}` — the shop key exactly as the CALLER sent it.
+   * On a single-tenant install (PSC_AUTH unset, which is the default for every self-hoster)
+   * embedRun does not validate ?shop= at all, so varying one character per request minted a fresh
+   * bucket every time: the cap never fired, and each accepted message is a billed model call on
+   * the shop's own API key plus a chat_sessions row. The comment three lines below the limiter
+   * already described this exact mistake for signup and lead capture.
+   *
+   * Its own instance, single-tenant, because that is the install the hole is in. */
+  {
+    const T8 = mkdtempSync(join(tmpdir(), 'psc-e2e-embed-'))
+    const P8 = PORT + 14
+    const embedSrv = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P8), PSC_DB: join(T8, 'printshop.db'), PSC_SECRET: 'gate' },  // no PSC_AUTH: single-tenant
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(embedSrv)
+    try {
+      for (let i = 0; i < 120; i++) {
+        try { if ((await fetch(`http://127.0.0.1:${P8}/health`)).status === 200) break } catch { /* not up yet */ }
+        await sleep(500)
+      }
+      const start = async (shopKey) => {
+        const res = await fetch(`http://127.0.0.1:${P8}/api/embed/chat/start?shop=${encodeURIComponent(shopKey)}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page_url: 'https://shop.test/' }),
+        })
+        return res.status
+      }
+      // The published ceiling is 12 chats per 15 minutes from one connection.
+      let sameKey = 0
+      for (let i = 0; i < 20; i++) if (await start('abc123') === 429) sameKey++
+      chk('the embed chat cap fires when the key stays the same', String(sameKey > 0), '^true$')
+
+      // The attack: one character different each time, same connection, same shop.
+      let varied = 0, accepted = 0
+      for (let i = 0; i < 40; i++) {
+        const st = await start(`abc123-${i}`)
+        if (st === 429) varied++; else accepted++
+      }
+      chk(`varying the shop key does not mint a fresh budget (${accepted} accepted of 40)`, String(varied > 0), '^true$')
+      chk('…and the run stays well inside the published ceiling', String(accepted <= 12), '^true$')
+    } finally {
+      try { embedSrv.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T8, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /* ---------- a shop leaving with five years of history does not take the box with it ----------
    * /api/export/:table.csv called all(), which materialised the whole table, and then handed the
    * array to a toCsv() that built the entire file as one more string on top of it. Measured on a

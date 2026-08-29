@@ -926,8 +926,21 @@ function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = n
 // the shop's own website), so anyone can call it. Each message runs a billed LLM call and writes a
 // chat_sessions row, so without a cap one scraper can burn a shop's AI budget and grow its DB
 // unbounded. Scoped per IP+shop so one abuser can't throttle a different shop's real visitors.
-const embedKeyOf = (req) => String(req.query.shop || req.body?.shop || req.query.s || 'none')
-const embedLimit = (max, message) => rateLimit({ windowMs: 15 * 60_000, max, message, keyFn: (req) => `${clientIp(req)}:${embedKeyOf(req)}` })
+//
+// The shop half of that key is the RESOLVED shop, not the string the caller sent — which is the
+// mistake the comment three lines below already describes for signup and lead capture. On a
+// single-tenant install (PSC_AUTH unset, which is the default for every self-hoster) embedRun
+// does not validate ?shop= at all, so varying it minted a fresh bucket per request: 300 chat
+// messages accepted from one IP against a designed ceiling of 180, up to 900 model calls billed
+// to the shop's own API key. An unresolvable key shares one bucket, so hammering junk keys is
+// throttled rather than free.
+const embedBucketOf = (req) => {
+  if (!AUTH_ENABLED) return 'single'  // one shop; a caller-chosen string must not mint buckets
+  const raw = String(req.query.shop || req.body?.shop || req.query.s || '')
+  const t = raw ? getTenantByEmbedKey(raw) : null
+  return t ? t.slug : 'unknown'
+}
+const embedLimit = (max, message) => rateLimit({ windowMs: 15 * 60_000, max, message, keyFn: (req) => `${clientIp(req)}:${embedBucketOf(req)}` })
 // Signup and lead capture also take an email, but there it is the *caller's* choice rather than a
 // target account: mixing it into the key let one host mint an unlimited number of fresh buckets by
 // varying the field, so those routes get a plain per-IP ceiling instead.
