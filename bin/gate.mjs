@@ -4004,6 +4004,63 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
  * Shipped was a one-way door: PUT /api/orders/:id/stage takes either direction and returns 200,
  * and clearing the tracking number does NOT walk the card back (advanceOrder is forward-only and a
  * blank number skips it entirely). */
+/* ---------- a nonce is not an identity (v20) ----------
+ * qbo_oauth_state and gdrive_oauth_state were written into the ordinary settings row, and
+ * publicSettings() only blanks SECRET_KEYS — so GET /api/settings, which has no requireRole (only
+ * its `members` array is gated), handed the live OAuth state to every signed-in account of any
+ * role. That state was the ONLY check on /api/qbo/callback and /api/gdrive/callback, neither of
+ * which had a role gate at all. A staff account could therefore read the state, consent to the
+ * shop's own Intuit app against their OWN QuickBooks company, and repoint the shop's books. The
+ * Drive half is worse: once gdrive_refresh_token is theirs, POST /api/jobs/:id/art uploads every
+ * subsequent customer proof into their Drive, shares it, and deletes the local copy.
+ * The state also never expires and is cleared only on SUCCESS, so one manager who starts a connect
+ * and closes the tab leaves a permanently valid nonce in a payload every staff member can read. */
+section('a nonce is not an identity')
+await t('the OAuth state is never handed to a client', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.setSetting('qbo_oauth_state', 'nonce-abc')
+    dbm.setSetting('gdrive_oauth_state', 'nonce-def')
+    dbm.setSetting('shop_name', 'Alpha Ink')
+    const pub = dbm.publicSettings()
+    assert.equal('qbo_oauth_state' in pub, false, 'the QuickBooks state is the only lock on its callback')
+    assert.equal('gdrive_oauth_state' in pub, false, 'and the Drive one on its')
+    assert.equal(pub.shop_name, 'Alpha Ink', 'the rest of the settings still have to come through')
+    // …and a secret is still blanked-with-a-flag rather than deleted, because the form needs to
+    // know whether one is set. These are two different rules and both have to keep holding.
+    dbm.setSetting('smtp_pass', 'hunter2')
+    const p2 = dbm.publicSettings()
+    assert.equal(p2.smtp_pass, '', 'a stored credential is never sent')
+    assert.equal(p2.smtp_pass_set, true, '…but the form has to know it is there')
+  } finally { dbm.setDefaultDb(prev) }
+})
+await t('…and finishing a connection takes the same role as starting one', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  for (const [route, what] of [['/api/qbo/callback', 'QuickBooks'], ['/api/gdrive/callback', 'Google Drive']]) {
+    const i = src.indexOf(`app.get('${route}'`)
+    assert.ok(i > 0, `${route} should still be there`)
+    const body = src.slice(i, src.indexOf('\n}))', i))
+    assert.match(body, /hasRole\(req, 'manager'\)/,
+      `${what}: the state nonce proves a flow was started, never who is finishing it`)
+    // Plain text, not requireRole's JSON — this response is read by a human in an address bar.
+    assert.match(body, /res\.status\(403\)\.send\(/, `${what}: a browser redirect lands here, so the refusal has to be readable`)
+    // And the check has to come FIRST, before the state comparison tells a prober anything.
+    assert.ok(body.indexOf('hasRole') < body.indexOf('oauth_state'), `${what}: gate before you compare`)
+  }
+  // The routes it mirrors, which have always been gated.
+  assert.match(src, /app\.get\('\/api\/qbo\/connect', requireRole\('manager'\)/, 'the connect route keeps its gate')
+  assert.match(src, /app\.get\('\/api\/gdrive\/connect', requireRole\('manager'\)/, 'and so does the Drive one')
+})
+
 section('the Orders board answers a finger')
 await t('a tap opens a card, on the touch screen this board was written for', async () => {
   const { readFileSync } = await import('node:fs')

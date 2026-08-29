@@ -5677,8 +5677,22 @@ app.get('/api/qbo/connect', requireRole('manager'), wrap((req, res) => {
   res.json({ url: qbo.authorizeUrl({ clientId: s.qbo_client_id, redirectUri: QBO_REDIRECT(req), state }) })
 }))
 
-/** Intuit redirects back here with an auth code + realmId. */
+/**
+ * Intuit redirects back here with an auth code + realmId.
+ *
+ * Manager, like the /connect route it finishes. The `state` nonce was the ONLY check here, and
+ * GET /api/settings used to hand that nonce to every signed-in account — so a staff member could
+ * consent to the shop's own Intuit app against their OWN QuickBooks company and repoint the books.
+ * The state is no longer published (lib/db.mjs INTERNAL_KEYS), and this is the second lock: a
+ * nonce proves a flow was started, never who is finishing it.
+ *
+ * This cannot break a connection that worked before. The session cookie is SameSite=Lax, so it
+ * rides a top-level redirect from Intuit, and the success path already redirects to /#/settings —
+ * a page that needs a session in this browser anyway. Plain text, not requireRole's JSON: this
+ * response is read by a human in an address bar.
+ */
 app.get('/api/qbo/callback', wrap(async (req, res) => {
+  if (!hasRole(req, 'manager')) return res.status(403).send('Connecting QuickBooks needs manager access. Ask an owner or manager to finish this.')
   const s = getSettings()
   if (!req.query.state || req.query.state !== s.qbo_oauth_state) return res.status(400).send('QuickBooks connection expired — try again.')
   const r = await qbo.exchangeCode({ clientId: s.qbo_client_id, clientSecret: s.qbo_client_secret, code: String(req.query.code || ''), redirectUri: QBO_REDIRECT(req) })
@@ -5710,8 +5724,15 @@ app.get('/api/gdrive/connect', requireRole('manager'), wrap((req, res) => {
   res.json({ url: gdrive.authorizeUrl({ clientId: s.gdrive_client_id, redirectUri: GDRIVE_REDIRECT(req), state }) })
 }))
 
-/** Google redirects back with an auth code; store the refresh token + mark connected. */
+/**
+ * Google redirects back with an auth code; store the refresh token + mark connected.
+ *
+ * Manager, for the same reason as the QuickBooks callback above, and the consequence here is
+ * worse: once gdrive_refresh_token belongs to somebody else, POST /api/jobs/:id/art uploads every
+ * subsequent customer proof into their Drive, shares it, and then deletes the local copy.
+ */
 app.get('/api/gdrive/callback', wrap(async (req, res) => {
+  if (!hasRole(req, 'manager')) return res.status(403).send('Connecting Google Drive needs manager access. Ask an owner or manager to finish this.')
   const s = getSettings()
   if (!req.query.state || req.query.state !== s.gdrive_oauth_state) return res.status(400).send('Google Drive connection expired — start again from Settings.')
   const r = await gdrive.exchangeCode({ clientId: s.gdrive_client_id, clientSecret: s.gdrive_client_secret, code: String(req.query.code || ''), redirectUri: GDRIVE_REDIRECT(req) })
