@@ -12,10 +12,11 @@
   --txt-3: #8792a6;
   --accent: #10d39a;
   --accent-2: #16e6aa;
-  --accent-dim: #0b8f6a;
+  --accent-dim: #0a7d5d;   /* 4.91:1 with the #eafff8 on .bubble.out; #0b8f6a was 3.91 */
   --accent-glow: rgba(16, 211, 154, .14);
   --accent-ink: #04120d;
   --violet: #8b7cff;
+  --violet-solid: #5a46e0;   /* the one place violet is a TEXT background: 6.20:1 with #fff */
   --amber: #f7b955;
   --red: #ff5f6d;
   --blue: #4aa8ff;
@@ -45,6 +46,7 @@
   --accent-glow: rgba(7, 177, 131, .12);
   --accent-ink: #ffffff;
   --violet: #6f5cf0;
+  --violet-solid: #5a46e0;
   --amber: #a35c00;
   --red: #c5262c;
   --blue: #1b62c0;
@@ -576,6 +578,11 @@ body.dragging { cursor: grabbing; user-select: none; }
 .bubble.out { align-self: flex-end; background: var(--accent-dim); color: #eafff8; border-bottom-right-radius: var(--r-sm); }
 .bub-txt { font-size: var(--fs-sm); line-height: 1.5; }
 .bub-meta { font-size: var(--fs-3xs); margin-top: var(--sp-2); opacity: .65; }
+/* On a coloured fill an opacity is not a subtlety, it is two stops of contrast: #eafff8 at .65
+   over the outbound bubble composites to 2.53:1 at 10px, and the AGENT label at .55 to 2.00:1.
+   Cancelled only where the text sits on a fill — .bubble.in and the other .logmsg tones sit on
+   --panel-2 and keep theirs. */
+.bubble.out .bub-meta, .logmsg.agent .who { opacity: 1; }
 .ct-compose { border-top: 1px solid var(--line); padding: var(--sp-5) var(--sp-6); flex: none; background: var(--bg-2); }
 
 @media (max-width: 800px) { .convo { grid-template-columns: 1fr; height: auto; } .convo-thread { min-height: 60vh; } }
@@ -971,7 +978,7 @@ body { overflow-x: hidden; }
 .logmsg .who { display: block; font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .5px; opacity: .55; margin-bottom: var(--sp-2); }
 .logmsg.me { background: var(--panel-2); align-self: flex-start; }
 .logmsg.bot { background: var(--accent-glow); align-self: flex-end; }
-.logmsg.agent { background: var(--violet); color: #fff; align-self: flex-end; }
+.logmsg.agent { background: var(--violet-solid); color: #fff; align-self: flex-end; }
 .logmsg.sys { background: transparent; color: var(--txt-3); font-style: italic; align-self: center; font-size: var(--fs-2xs); }
 
 /* tables that must scroll on mobile */

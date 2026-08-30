@@ -8534,6 +8534,71 @@ await t('the source link is not faded below the readable minimum', async () => {
   }
 })
 
+/* ---------- the messages the shop sent are legible in the theme it ships with ----------
+ * Dark is the default: :root and :root[data-theme="dark"] share a block, and index.html falls back
+ * to dark whenever prefers-color-scheme is not light. Three text-on-fill styles failed 4.5:1 there
+ * and passed in light, so the palette that was tuned is the one fewer shops run.
+ *
+ *   .bubble.out          every message this shop has sent a customer     3.91:1 at 13px
+ *   .bub-meta on it      "Sent 2:14 PM · email"                          2.53:1 at 10px
+ *   .logmsg.agent        a staff takeover reply in the bot transcript    3.27:1 at 13px
+ *   .logmsg .who on it   the AGENT label                                 2.00:1 at 10px
+ *
+ * None of them reaches the large-text exemption (18.66px bold / 24px), so 4.5:1 applies. */
+section('the conversation surfaces are legible in the default theme')
+await t('every message bubble clears 4.5:1 in dark as well as light', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const css = readFileSync(join(root, 'public/css/app.css'), 'utf8')
+
+  const srgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+  const lum = (h) => { const [r, g, b] = srgb(h).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05) }
+  /** What a colour at `a` opacity actually composites to over `bg` — opacity is not exempt. */
+  const over = (fg, bg, a) => '#' + srgb(fg).map((v, i) => Math.round((v * a + srgb(bg)[i] * (1 - a)) * 255).toString(16).padStart(2, '0')).join('')
+  // Each palette block, keyed by where it starts. The dark one is :root, which is the default.
+  const tok = (name, from) => (css.slice(css.indexOf(from)).match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, 'i')) || [])[1]
+
+  for (const [theme, anchorTok] of [['dark (the default)', '--bg:'], ['light', '--bg: #f5f7fa']]) {
+    const dim = tok('--accent-dim', anchorTok)
+    const violet = tok('--violet-solid', anchorTok)
+    assert.ok(dim, `${theme}: could not read --accent-dim`)
+    assert.ok(violet, `${theme}: --violet-solid is missing — .logmsg.agent is the one place --violet carries TEXT, and --violet cannot be darkened for it without changing every gradient and tint that also uses it`)
+    // The outbound bubble: every message this shop has ever sent a customer.
+    assert.ok(ratio('#eafff8', dim) >= 4.5,
+      `${theme}: the messages the shop SENT measure ${ratio('#eafff8', dim).toFixed(2)}:1 on --accent-dim ${dim}`)
+    // A staff takeover reply in the receptionist transcript.
+    assert.ok(ratio('#ffffff', violet) >= 4.5,
+      `${theme}: a staff takeover reply measures ${ratio('#ffffff', violet).toFixed(2)}:1 on --violet-solid ${violet}`)
+    // …and the timestamp under each, at the opacity the CASCADE actually gives it. Both base rules
+    // carry one (.bub-meta .65, .logmsg .who .55); what matters is whatever the last matching rule
+    // leaves, so read that rather than assume it.
+    const opacityOf = (base, override) => {
+      const later = css.lastIndexOf(override)
+      const src = later >= 0 ? css.slice(later, css.indexOf('}', later)) : (css.slice(css.indexOf(base), css.indexOf('}', css.indexOf(base))))
+      return Number((src.match(/opacity:\s*([\d.]+)/) || [, '1'])[1])
+    }
+    for (const [label, fg, bg, base, override] of [
+      ['the bubble timestamp', '#eafff8', dim, '.bub-meta {', '.bubble.out .bub-meta'],
+      ['the AGENT label', '#ffffff', violet, '.logmsg .who {', '.logmsg.agent .who'],
+    ]) {
+      const a = opacityOf(base, override)
+      const faded = over(fg, bg, a)
+      assert.ok(ratio(faded, bg) >= 4.5,
+        `${theme}: ${label} composites to ${ratio(faded, bg).toFixed(2)}:1 at opacity ${a} on a coloured fill — an opacity there is two stops of contrast, not a subtlety`)
+    }
+  }
+  // The opacity has to be cancelled where the text lands on a coloured fill — .bubble.in and the
+  // other .logmsg tones sit on --panel-2 and keep theirs.
+  assert.match(css, /\.bubble\.out \.bub-meta[^{]*\{[^}]*opacity:\s*1/, 'the bubble timestamp keeps a .65 that costs it 2 stops')
+  assert.match(css, /\.logmsg\.agent \.who[^{]*\{[^}]*opacity:\s*1/, 'the AGENT label keeps a .55 that puts it at 2.00:1')
+  assert.match(css, /\.logmsg\.agent \{[^}]*var\(--violet-solid\)/, '.logmsg.agent must use the text-safe token')
+  // …and --violet itself is untouched, because it is correct everywhere it is NOT a text fill.
+  assert.match(css, /\.asst-ai \{[^}]*color:\s*var\(--violet\)/, '--violet stays as it is for the badge')
+})
+
 /* ---------- a listener bound during a render, on a root that survives it (v11) ----------
  * The fourth and fifth instances of the bug 84ee9ad was supposed to have closed. The existing gate
  * rule looks for a delegated binding on #view; these two slipped past it, one because the root was
