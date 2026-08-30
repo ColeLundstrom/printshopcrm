@@ -1190,6 +1190,49 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- the two documents that leave the building carry the customer's PO number ----------
+   * invoices.po_number is a real column, captured in the invoice form, stored by PUT
+   * /api/invoices/:id and rendered on three screens and on the public pay page — and it reached NO
+   * printed document. A B2B accounts-payable department will not pay an invoice that does not
+   * carry their PO number: it comes back as an exception and the invoice ages into the 31-60
+   * bucket over a field the shop had already typed.
+   *
+   * The packing slip was worse: its PO / REF cell read job.po_number / order_ref / reference, and
+   * `jobs` has none of those columns, so it printed "—" on every slip ever produced. Its DATE cell
+   * read job.shipped_at — also not a column; the real one is ship_date, which nothing in the
+   * product had ever written — so it fell back to the day the job was BOOKED. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'AP Annette', email: 'ap@e2e.test' } })
+    const poC = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: poC, items: [{ description: 'Gildan 5000 Tee', sizes: { M: 60 }, unit_price: 9 }] } })
+    const poE = r.json?.id
+    await req('POST', `/api/estimates/${poE}/approve`)
+    r = await req('POST', `/api/estimates/${poE}/convert`, { body: {} })
+    const poInv = r.json?.invoice_id
+    const poJob = r.json?.job_id
+    r = await req('PUT', `/api/invoices/${poInv}`, { body: { po_number: '4501-22' } })
+    chk('the shop can type the customer PO number', String(r.status), '^200$')
+
+    r = await req('GET', `/api/invoices/${poInv}/pdf`)
+    chk('…and it reaches the invoice the customer pays from', r.text, '\\(4501-22\\) Tj')
+    chk('…labelled', r.text, '\\(PO\\) Tj')
+
+    r = await req('GET', `/api/jobs/${poJob}/packing-slip.pdf`)
+    chk('…and the packing slip in the box', r.text, '\\(4501-22\\) Tj')
+    chk('…where PO / REF is no longer a dash on every slip ever printed', String(/\(PO \/ REF\) Tj[\s\S]{0,200}\(-\) Tj/.test(r.text)), '^false$')
+
+    // The slip's DATE is the day it SHIPPED, not the day it was booked.
+    await req('PATCH', `/api/jobs/${poJob}/stage`, { body: { stage: 'shipping' } })
+    r = await req('GET', `/api/jobs/${poJob}`)
+    const shipped = r.json?.job?.ship_date ?? r.json?.ship_date
+    chk('crossing into Shipping stamps the ship date', String(!!shipped), '^true$')
+    // Dragged back and forth, the day the box went out does not move.
+    await req('PATCH', `/api/jobs/${poJob}/stage`, { body: { stage: 'production' } })
+    await req('PATCH', `/api/jobs/${poJob}/stage`, { body: { stage: 'complete' } })
+    r = await req('GET', `/api/jobs/${poJob}`)
+    chk('…and it is stamped once, not rewritten by every drag', String(r.json?.job?.ship_date ?? r.json?.ship_date), `^${shipped}$`)
+  }
+
   /* ---------- the payout destination is not a settings field ----------
    * stripe_account_id and stripe_charges_enabled are exactly the pair connectReady() tests, and
    * together they are where the money goes: createConnectedCheckout puts the account id in

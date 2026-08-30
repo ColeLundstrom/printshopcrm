@@ -3369,6 +3369,13 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
   }
   const status = stage === 'complete' ? 'complete' : 'active'
   run('UPDATE jobs SET stage=?, sort_order=?, status=?, updated_at=? WHERE id=?', stage, order, status, now(), id)
+  // jobs.ship_date has existed since the v1 migrations and NOTHING has ever written it, so the
+  // packing slip's DATE cell fell back to the day the job was booked — seventy days stale on an
+  // ordinary order, printed on the document receiving signs. Stamped once, on the first crossing,
+  // so a card dragged back and forth does not keep rewriting the day the box went out.
+  if ((stage === 'shipping' || stage === 'complete') && !j.ship_date) {
+    run('UPDATE jobs SET ship_date = ? WHERE id = ?', todayIso(), id)
+  }
   if (stage !== j.stage) {
     const label = STAGES.find((s) => s.key === stage).label
     // Every transition is recorded so the job's timeline is complete. Tagged `board`, not `scan`:
@@ -5142,8 +5149,14 @@ app.get('/api/jobs/:id/packing-slip.pdf', wrap((req, res) => {
   const est = j.estimate_id ? get('SELECT items FROM estimates WHERE id = ?', j.estimate_id) : null
   const detailFor = new Map(parse(est?.items, []).map((i) => [String(i.description || ''), i.detail || '']))
   const items = jobLines(j).map((l) => ({ ...l, detail: l.detail || detailFor.get(String(l.description || '')) || '' }))
+  // The customer's PO number lives on the invoice, which is where the shop types it. The slip's
+  // PO / REF cell has printed "—" on every packing slip ever produced because it looked for the
+  // number on `jobs`, where there is no such column and never was.
+  const inv = j.invoice_id ? get('SELECT po_number FROM invoices WHERE id = ?', j.invoice_id)
+    : j.estimate_id ? get("SELECT po_number FROM invoices WHERE estimate_id = ? AND status != 'void' ORDER BY id DESC", j.estimate_id)
+      : null
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${j.job_number}-packing-slip.pdf"`)
-  res.send(packingSlip({ job: j, contact, settings: getSettings(), items }))
+  res.send(packingSlip({ job: { ...j, po_number: inv?.po_number || '' }, contact, settings: getSettings(), items }))
 }))
 
 /** Warehouse pick ticket PDF — the size grid as a checkable pick list. */
