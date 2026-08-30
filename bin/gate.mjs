@@ -2493,6 +2493,51 @@ section('the app does not discard what the shop has typed')
    * The router had no way to refuse a hash change either, which is why the fix is a state
    * machine and not an `if`: putting the URL back fires hashchange AGAIN, and that second event
    * would re-run the router and repaint the editor — destroying exactly what is being saved. */
+  await t('the price book keeps the 112 prices you typed into its grid', async () => {
+    const pb = code(await readFile('public/js/views/pricing.js'))
+    // 8 quantity bands × 14 colour counts, none of it on the server until Save matrix — and three
+    // controls sitting directly above the grid overwrote the card from the SERVER with no confirm
+    // and no undo: the Service select, the "Colours on your press" box, and every tab in #pm-tabs.
+    // A shop that went down the grid typing its real rates and then changed Service to check the
+    // embroidery sheet lost the lot. These are the numbers every quote, Autopilot and the Slack
+    // quick-quote price from, and the card says "your number beats the calculator".
+    assert.match(pb, /let mxDirty = false/, 'it has to know whether anything is unsaved')
+    assert.match(pb, /function leaveMatrix\(next\)/, 'and go through one guarded exit')
+    assert.match(pb, /confirmModal\('Leave these prices\?'/, 'the shop gets asked, not told')
+    for (const [ctl, want] of [
+      ["'#mx-svc'", 'the Service select'],
+      ["'#mx-colors'", 'the colours-on-your-press box'],
+      ["'#pm-tabs button'", 'the tabs'],
+    ]) {
+      const line = pb.split('\n').find((l) => l.includes(ctl) && l.includes('onOnce'))
+      assert.ok(line, `${want} should still be bound`)
+      assert.match(line, /leaveMatrix\(/, `${want} must not discard typed prices`)
+    }
+    // A redraw marks the freshly-drawn grid clean, or the guard fires on a grid nobody touched.
+    assert.match(pb, /mxDirty = false\s*\n\s*for \(const i of card\.querySelectorAll\('\.pm-in'\)\)/,
+      'renderMatrix has to reset the flag and re-bind to the cells it just drew')
+    // …and a successful save is not something to be asked about.
+    assert.match(pb, /mxDirty = false\s*\n\s*note\.innerHTML = `<span style="color:var\(--accent\)">Saved\./,
+      'saving clears it')
+  })
+
+  await t('a FAQ row typed into the receptionist is not reported clean', async () => {
+    const ag = code(await readFile('public/js/views/agent.js'))
+    // trackDirty() swept the controls that existed when the view rendered. addFaqRow() binds
+    // nothing, so a row added AFTER that — "+ FAQ", type the question, type the answer — left
+    // __pscAgentDirty() returning false. app.js asks it before repainting on a realtime 'chat'
+    // event, and server.mjs broadcasts that to the WHOLE shop on every takeover reply: answering
+    // one website chat, from this tab or a colleague's desk, deleted the row just typed.
+    assert.doesNotMatch(ag, /for \(const el of \$\$\('#view input, #view textarea, #view select'\)\)/,
+      'a one-shot sweep cannot see a row added later')
+    assert.match(ag, /onOnce\(\$\('#view'\), 'input, textarea, select', markCfgDirty, 'input'\)/,
+      'the tracking has to be delegated')
+    assert.match(ag, /onOnce\(\$\('#view'\), 'input, textarea, select', markCfgDirty, 'change'\)/)
+    // Adding and removing a row emit no input event at all.
+    assert.match(ag, /addFaqRow\('', ''\); markCfgDirty\(\)/, 'adding a row counts')
+    assert.match(ag, /row\.remove\(\); markCfgDirty\(\)/, 'so does removing one')
+  })
+
   await t('a hash change can be refused, and putting the URL back does not repaint the screen', async () => {
     // The shipped module, imported and run — not a copy of it.
     const { createNavGuard } = await import('../public/js/shared/navguard.js')

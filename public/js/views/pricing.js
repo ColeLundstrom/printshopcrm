@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal, onOnce, announce } from '../core.js'
+import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal, onOnce, announce, confirmModal } from '../core.js'
 
 /* Pricing Matrix + margin-floor guard — the shop's whole price grid, generated from its own
    costing inputs, with the real margin of every cell and a hard flag on anything that loses money. */
@@ -143,7 +143,7 @@ function wireBook(b) {
   bookData = b
   if (bookBound) return
   bookBound = true
-  onOnce($('#view'), '#pm-tabs button', (e, el) => loadChart(el.dataset.c))
+  onOnce($('#view'), '#pm-tabs button', (e, el) => leaveMatrix(() => loadChart(el.dataset.c)))
 
   const readCard = (card) => {
     const g = (f) => card.querySelector(`[data-f="${f}"]`)?.value
@@ -196,12 +196,13 @@ function wireBook(b) {
     await api.del(`/api/pricebook?name=${encodeURIComponent(name)}`)
     toast(`${name} reset`); loadBook()
   })
-  onOnce($('#view'), '#mx-svc', (_e, el) => loadMatrix(el.value), 'change')
-  onOnce($('#view'), '#mx-colors', (_e, el) => loadMatrix(null, Number(el.value) || 8), 'change')
+  onOnce($('#view'), '#mx-svc', (_e, el) => leaveMatrix(() => loadMatrix(el.value)), 'change')
+  onOnce($('#view'), '#mx-colors', (_e, el) => leaveMatrix(() => loadMatrix(null, Number(el.value) || 8)), 'change')
   onOnce($('#view'), '#mx-save', async () => {
     const note = $('#mx-note'); note.textContent = 'Saving…'
     try {
       const r = await api.put('/api/pricebook', { matrices: { [mxState.service]: collectMatrixCells() } })
+      mxDirty = false
       note.innerHTML = `<span style="color:var(--accent)">Saved. ${r.cells} custom cell(s) — your quotes use these now.</span>`
       announce(`Matrix saved. ${r.cells} custom cell${r.cells === 1 ? '' : 's'}.`)
       reloadMatrixUnlessTyping()
@@ -294,6 +295,32 @@ function renderMatrix(card, r) {
         <tbody>${body}</tbody></table></div>
       <div id="mx-note" class="dim" role="status" aria-live="polite" aria-atomic="true" style="font-size:12px;margin-top:10px"></div>
     </div>`
+  // The card is rebuilt from the server on every load, so the freshly drawn grid is clean and the
+  // listeners go on the cells this render just made.
+  mxDirty = false
+  for (const i of card.querySelectorAll('.pm-in')) i.addEventListener('input', () => { mxDirty = true })
+}
+
+/* -------------------------------------------------------------------------------------------------
+ * The grid holds up to 8 quantity bands × 14 colour counts = 112 real sell prices, and nothing is
+ * on the server until Save matrix. Three controls sitting directly above it — the Service select,
+ * the "Colours on your press" box and every tab in #pm-tabs — called loadMatrix()/loadChart(),
+ * which overwrite the card from the SERVER. A shop that went down the grid typing its real rates
+ * and then changed the Service to check the embroidery sheet lost the lot: no confirm, no toast,
+ * no undo. These are the numbers every quote, Autopilot and the Slack quick-quote price from, and
+ * the card itself says "your number beats the calculator".
+ *
+ * views/matrices.js already ships this guard for its own grid, and reloadMatrixUnlessTyping()
+ * above shows the shape was known — it just only covered the redraw the SAVE schedules.
+ * ---------------------------------------------------------------------------------------------- */
+let mxDirty = false
+
+/** Run `next` — but not over prices the shop has typed and not saved. */
+function leaveMatrix(next) {
+  if (!mxDirty) return next()
+  confirmModal('Leave these prices?',
+    'The prices you typed into the grid have not been saved. Changing this discards them.',
+    () => { mxDirty = false; next() }, 'Discard changes')
 }
 
 // The band-min for a qty (mirrors the server key) — the matrix rows are already band mins, so use qty.

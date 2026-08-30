@@ -1,4 +1,4 @@
-import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText } from '../core.js'
+import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText, onOnce } from '../core.js'
 
 /* The AI Receptionist — configure the bot, preview it live, and work the leads it captures. */
 
@@ -119,12 +119,21 @@ export async function agentView() {
  * second person answering a website chat from their own desk wiped the first person's work.
  * ---------------------------------------------------------------------------------------------- */
 let cfgDirty = false
+const markCfgDirty = () => { cfgDirty = true }
+/*
+ * Delegated, not a one-shot sweep of the controls that happened to exist at render time. The
+ * sweep missed every FAQ row added AFTER the page was drawn — addFaqRow() binds nothing — so a
+ * shop that clicked "+ FAQ", typed the question and the answer, and touched nothing else was
+ * reported CLEAN. app.js asks __pscAgentDirty() before repainting on a realtime 'chat' event, and
+ * server.mjs broadcasts that to the whole shop on every takeover reply: answering one website
+ * chat, from this tab or a colleague's, silently deleted the row that had just been typed.
+ *
+ * onOnce because #view is repainted and never replaced.
+ */
 function trackDirty() {
   cfgDirty = false
-  for (const el of $$('#view input, #view textarea, #view select')) {
-    el.addEventListener('input', () => { cfgDirty = true })
-    el.addEventListener('change', () => { cfgDirty = true })
-  }
+  onOnce($('#view'), 'input, textarea, select', markCfgDirty, 'input')
+  onOnce($('#view'), 'input, textarea, select', markCfgDirty, 'change')
 }
 // app.js asks before it repaints this screen out from under someone.
 if (typeof window !== 'undefined') window.__pscAgentDirty = () => cfgDirty
@@ -188,7 +197,7 @@ function bindConfig() {
   $('#enabled').onchange = () => { $('#enabled-lbl').textContent = $('#enabled').checked ? 'Live' : 'Off' }
   on($('#modepick'), '.modeopt', (_e, t) => { $$('.modeopt').forEach((b) => b.classList.remove('on')); t.classList.add('on') })
   $('#accent').oninput = updateEmbed
-  $('#add-faq').onclick = () => addFaqRow('', '')
+  $('#add-faq').onclick = () => { addFaqRow('', ''); markCfgDirty() }
   $('#save').onclick = async () => {
     const body = currentConfig()
     $('#save').disabled = true; $('#save-note').textContent = 'Saving…'
@@ -214,7 +223,7 @@ function addFaqRow(q, a) {
   row.innerHTML = `<input class="input faq-q" placeholder="Question a customer asks…" value="${esc(q)}">
     <textarea class="input faq-a" placeholder="How the bot answers">${esc(a)}</textarea>
     <button class="btn danger sm faq-x" title="Remove" aria-label="Remove this question and answer">&times;</button>`
-  $('.faq-x', row).onclick = () => row.remove()
+  $('.faq-x', row).onclick = () => { row.remove(); markCfgDirty() }
   $('#faqs').appendChild(row)
 }
 
