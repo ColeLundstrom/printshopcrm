@@ -2805,6 +2805,71 @@ section('every PDF this product prints stays on the paper')
     const bad = overhang(buf)
     assert.equal(bad.length, 0, `${bad.length} op(s) past the right margin, worst "${bad[0]?.str}"`)
   })
+
+  /* The right margin is only half of "stays on the paper". A value can be perfectly inside the
+   * page and still be drawn straight THROUGH the cell beside it, which is worse: nothing is
+   * missing, so nothing looks wrong until a human tries to read the overlap.
+   *
+   * The packing slip's meta strip drew Job / PO-Ref / Date on a 160pt pitch with no clip() at all,
+   * while the pick ticket's identical strip three hundred lines away clips to 150. A 60-character
+   * customer PO ends at x=530.6 where DATE starts at 388: the ship date on the document receiving
+   * signs is printed over. Invisible to the right-margin rule, because 530.6 is well inside 558.
+   *
+   * Same shape as the overhang rule: measure every op the renderer emits and require the ones
+   * sharing a baseline not to overlap. Swept over every document the product prints, with the
+   * long values a real shop actually has. */
+  const collisions = (buf) => {
+    const rows = new Map()
+    for (const o of ops(buf)) {
+      const k = o.y.toFixed(1)
+      if (!rows.has(k)) rows.set(k, [])
+      rows.get(k).push({ ...o, right: o.x + wOf(o.str, o.size, o.bold) })
+    }
+    const out = []
+    for (const row of rows.values()) {
+      row.sort((a, b) => a.x - b.x)
+      for (let i = 1; i < row.length; i++) {
+        if (row[i - 1].right > row[i].x + 0.5) out.push([row[i - 1], row[i]])
+      }
+    }
+    return out
+  }
+
+  await t('nothing is drawn through the cell beside it, on any document', () => {
+    // A real customer PO from a school district, and a real long job title.
+    const LONG_PO = 'PO-2026-RCISD-ATHLETICS-0000471829-REV-B'
+    const JOB = {
+      id: 1, job_number: 'JOB-1042', title: LONG_DESC, created_at: '2026-07-02', ship_date: '2026-09-11',
+      due_date: '2026-09-09', po_number: LONG_PO, decoration: 'Screen Print', garment: LONG_DESC,
+      sizes: { S: 10, M: 20, L: 20, XL: 10, '2XL': 4, '3XL': 2 },
+    }
+    const ITEMS = [{ description: LONG_DESC, detail: LONG_CO, sizes: { S: 10, M: 20, L: 20, XL: 10 }, qty: 60, unit_price: 18.75 }]
+    const docs = {
+      'packing slip': () => pdf.packingSlip({ job: JOB, contact, settings: SETTINGS, items: ITEMS }),
+      'pick ticket': () => pdf.pickTicket({ job: JOB, contact, settings: SETTINGS, items: ITEMS }),
+      estimate: () => pdf.renderDocument('ESTIMATE', {
+        doc: { estimate_number: 'EST-1001', subtotal: 1125, tax: 92.81, total: 1217.81, status: 'sent', created_at: '2026-08-01', po_number: LONG_PO },
+        contact, settings: SETTINGS, items: ITEMS,
+      }),
+      invoice: () => pdf.renderDocument('INVOICE', {
+        doc: { invoice_number: 'INV-1001', subtotal: 1125, tax: 92.81, amount_due: 1217.81, amount_paid: 0, status: 'unpaid', created_at: '2026-08-01', po_number: LONG_PO },
+        contact, settings: SETTINGS, items: ITEMS,
+      }),
+      statement: () => pdf.customerStatement({
+        contact, settings: SETTINGS, asOf: '2026-08-29',
+        invoices: [{ invoice_number: 'INV-9', amount_due: 1234567.89, amount_paid: 0, status: 'unpaid', created_at: '2026-05-01', due_date: '2026-06-01', po_number: LONG_PO }],
+      }),
+    }
+    const bad = []
+    for (const [name, make] of Object.entries(docs)) {
+      let buf
+      try { buf = make() } catch (e) { assert.fail(`${name} did not render: ${e.message}`) }
+      for (const [a, b] of collisions(buf)) {
+        bad.push(`${name}: "${a.str.slice(0, 34)}" (ends ${a.right.toFixed(1)}) over "${b.str.slice(0, 20)}" (starts ${b.x.toFixed(1)})`)
+      }
+    }
+    assert.deepEqual(bad, [], `overprinted cells — ${bad.join(' | ')}`)
+  })
 }
 
 section('a failed Autopilot run is not a dead end')
