@@ -326,9 +326,25 @@ export async function estimateEditor(id) {
           // A flat charge is a fee line by definition: it must not multiply by a size grid.
           if (pick.unit === 'flat' && target.sizes) { delete target.sizes; target.qty = 1; target.taxable = false }
         } else {
+          /* The picker asks for a quantity, prices on it, and prints "48 pcs = $624.00" — and
+           * this branch then dropped it, because blankItem()'s grid is all zeroes. The new line
+           * landed at 0 pcs, its Amount cell read $0.00, Pieces / Subtotal / Total did not move,
+           * and the 48 the shop had just typed was gone with no message. Two screens disagreeing
+           * about the same order by the whole value of the line — and a shop that saves without
+           * noticing sends the customer a quote with a $0.00 line on it.
+           *
+           * quote.js solves the identical problem the identical way (seed the grid, then say
+           * so), and a flat charge really is one unit, so only the per-piece branch needs it. */
+          const picked = Math.max(0, Math.floor(Number(pick.qty) || 0))
           items.push(pick.unit === 'flat'
             ? { ...blankFee(), description: pick.description, detail: pick.detail, qty: 1, unit_price: pick.price, matrix: pick.matrix }
-            : { ...blankItem(), decoration: '', description: pick.description, detail: pick.detail, unit_price: pick.price, matrix: pick.matrix })
+            : { ...blankItem(), decoration: '', description: pick.description, detail: pick.detail,
+                sizes: { S: 0, M: picked, L: 0, XL: 0 }, unit_price: pick.price, matrix: pick.matrix })
+          markEditorDirty()
+          draw()
+          return toast(pick.unit === 'flat' || !picked
+            ? `Priced from ${pick.matrix.name}`
+            : `Priced from ${pick.matrix.name} — now spread the ${picked} pieces across sizes`)
         }
         markEditorDirty()
         draw()

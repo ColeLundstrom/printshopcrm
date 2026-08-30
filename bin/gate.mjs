@@ -6661,6 +6661,53 @@ section('a paused drip does not wake up about a deleted record')
  * the shop is about to promise read "earliest is — — 0 working days short. Quote a later date,
  * add a press, or run overtime." for a run that does not fit in five years. announce() spoke the
  * same sentence to a screen reader, and r.reason was read nowhere at all. */
+/* ---------- the price picker quotes a number and then adds that line ----------
+ * matrixPickerModal asks for a quantity, prices on it, and prints "Mug Printing · 24-47 × 11 oz
+ * Mug · 48 pcs = $624.00" — then handed pick.qty to a branch that ignored it, because
+ * blankItem()'s grid is all zeroes. The new line landed at 0 pcs with an Amount of $0.00 and the
+ * quote's Pieces / Subtotal / Total did not move. Two screens disagreeing about the same order by
+ * the whole value of the line, with no message. */
+section('a line priced from a matrix carries the quantity it was priced on')
+await t('picking 48 pieces off a per-piece matrix adds 48 pieces, not zero', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/estimates.js'), 'utf8')
+  const { lineQty, lineAmount } = await import('../public/js/shared/pricing.js')
+
+  // The picker really does hand the quantity over — read it out of the shipped file.
+  const picker = readFileSync(join(root, 'public/js/views/matrices.js'), 'utf8')
+  const use = picker.slice(picker.indexOf("$('#mp-use', bg).onclick"), picker.indexOf('load(start.id)'))
+  assert.match(use, /qty: Number\(\$\('#mp-qty', bg\)\.value\) \|\| 0/, 'the picker passes pick.qty')
+
+  // Build the new line exactly as the shipped branch does.
+  const branch = src.slice(src.indexOf('const picked = Math.max(0, Math.floor(Number(pick.qty) || 0))'), src.indexOf('markEditorDirty()\n          draw()'))
+  assert.ok(branch.length > 40, 'found the add-a-line branch')
+  const items = []
+  const blankItem = () => ({ description: '', detail: '', decoration: 'Screen Print', sizes: { S: 0, M: 0, L: 0, XL: 0 }, unit_price: 0, taxable: true })
+  const blankFee = () => ({ description: '', detail: '', qty: 1, unit_price: 0, taxable: false })
+  const run = new Function('items', 'blankItem', 'blankFee', 'pick', branch)
+  const matrix = { id: 1, name: 'Mug Printing', row: '24-47', col: '11 oz Mug' }
+
+  run(items, blankItem, blankFee, { price: 13, unit: 'piece', qty: 48, description: 'Mug Printing', detail: '24-47 · 11 oz Mug', matrix })
+  assert.equal(lineQty(items[0]), 48, 'the picker said 48 pcs; the line has to be 48 pcs')
+  assert.equal(lineAmount(items[0], {}), 624, 'the picker said $624.00; the line has to be $624.00')
+
+  // A flat charge really is one unit — it must not multiply by a size grid.
+  run(items, blankItem, blankFee, { price: 45, unit: 'flat', qty: 48, description: 'Setup', detail: 'flat', matrix })
+  assert.equal(items[1].sizes, undefined, 'a flat charge carries no size grid')
+  assert.equal(lineAmount(items[1], {}), 45, 'and is worth its flat price, once')
+
+  // A picker used with no quantity typed is still a legitimate way to add a line.
+  run(items, blankItem, blankFee, { price: 13, unit: 'piece', qty: 0, description: 'Mug Printing', detail: 'x', matrix })
+  assert.equal(lineQty(items[2]), 0)
+  assert.equal(lineAmount(items[2], {}), 0)
+
+  // …and the shop is told what to do next, the way the calculator already does.
+  assert.match(src, /now spread the \$\{picked\} pieces across sizes/, 'say where the pieces went')
+})
+
 section('the promise tool does not render a no-answer as a one-day miss')
 await t('a run that cannot be scheduled says so, in the engine\'s own words', async () => {
   const { readFileSync } = await import('node:fs')
