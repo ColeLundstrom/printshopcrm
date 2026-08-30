@@ -3845,6 +3845,25 @@ try {
       chk('…and the shop is active again', String(react.json?.tenant?.status), '^active$')
       // …and the owner can get back in, which is the point of the whole exchange.
       chk('…so its owner can sign in again', String((await tryLogin('GatePass-123456')).status), '^200$')
+
+      /* ---------- the account backoff must never refuse a password that is RIGHT ----------
+       * loginBackoff() was consulted BEFORE authMember(), so the owner's own correct password was
+       * never evaluated once the account was in backoff — 429, not 200. That turns a delay into a
+       * permanent remote lockout of any named owner: the sign-in address is printed on every
+       * estimate the shop sends, and one wrong guess every 15 minutes (four requests an hour, one
+       * IP, inside rateLimit({max:12})) renews a ceiling that never lapses. The escapes both fail
+       * on a default self-host: /api/auth/forgot 503s with no platform mail, and the fix that 503
+       * body recommends — `npm run admin -- reset-password` — writes control.db from a DIFFERENT
+       * PROCESS, so the in-memory counter is untouched and the brand-new password is 429'd too.
+       * Only a restart cleared it, and a restart needs a shell. */
+      for (let i = 0; i < 6; i++) await tryLogin(`NopeNope-${i}`)
+      const stillWrong = await tryLogin('NotThePassword-456')
+      chk('a wrong password inside the account backoff is refused', String(stillWrong.status), '^(401|429)$')
+      const rightAnyway = await tryLogin('GatePass-123456')
+      chk('…and the CORRECT password is still accepted inside it', String(rightAnyway.status), '^200$')
+      chk('…so the owner is never locked out of their own shop', String(rightAnyway.json?.ok), '^true$')
+      // A correct sign-in clears the counter, exactly as the code comment has always promised.
+      chk('…and a correct sign-in clears the counter', String((await tryLogin('GatePass-123456')).status), '^200$')
     } finally {
       try { s6.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T6, { recursive: true, force: true }) } catch { /* best effort */ }

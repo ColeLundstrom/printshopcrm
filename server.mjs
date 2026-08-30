@@ -1154,6 +1154,10 @@ const clearRateLimit = (req) => { if (req._rlKey) rlHits.delete(req._rlKey) }
  *
  * It is a delay, not a permanent lockout, and a correct password clears it instantly — so someone
  * who knows a victim's email can slow that account down but can never lock them out of their shop.
+ * That promise is kept by WHERE the login route acts on this, not by this function: the backoff is
+ * applied only after authMember() has refused the password. Checked before it, as it was until
+ * round 23, the same guesser locked the owner out permanently and neither the reset link nor
+ * `npm run admin -- reset-password` could lift it.
  * Counters live in memory: a restart forgives everyone, which is the safe direction to fail.
  */
 const loginFails = new Map()
@@ -1434,16 +1438,33 @@ Please sign in and change your password from your profile the first time you're 
 
 app.post('/api/auth/login', rateLimit({ max: 12 }), wrap(async (req, res) => {
   const b = req.body || {}
-  // Account-wide backoff first: this is what a distributed spray runs into, since the per-IP
-  // window above hands every new host its own budget.
+  // The account-wide backoff is what a distributed spray runs into, since the per-IP window above
+  // hands every new host its own budget. But it is read here and ACTED ON only below, after the
+  // password has been checked — the order is the whole fix.
+  //
+  // Consulting it first meant the owner's own correct password was never evaluated once the
+  // account was in backoff, which turned a delay into a permanent remote lockout. A sign-in
+  // address is printed on every estimate a shop sends, so it is public; one wrong guess every 15
+  // minutes is four requests an hour from one IP, inside rateLimit({max: 12}), and each one renews
+  // a ceiling that therefore never lapses. Both documented escapes fail on a default self-host:
+  // /api/auth/forgot 503s with no platform relay, and the fix that 503 body recommends —
+  // `npm run admin -- reset-password` — writes control.db from a DIFFERENT PROCESS, so the
+  // in-memory counter is untouched and the brand-new password comes back 429 as well. Only a
+  // restart cleared it, and a restart needs a shell the shop owner does not have.
+  //
+  // Nothing about the brake changes for a guesser: every wrong password is still counted, still
+  // answered 429 while the window is open, and still says nothing about whether the account
+  // exists. The only behaviour that changes is that the person who actually knows the password is
+  // no longer collateral. The cost is one scrypt per guess instead of zero, which the per-IP
+  // limiter on this same route already bounds.
   const wait = loginBackoff(b.email)
-  if (wait > 0) {
-    res.setHeader('Retry-After', String(wait))
-    return res.status(429).json({ error: `Too many failed sign-ins for this account. Try again in ${wait < 60 ? `${wait} seconds` : `${Math.ceil(wait / 60)} minute(s)`}.`, code: 'rate_limited' })
-  }
   const r = await authMember(b.email, b.password)
   if (!r) {
     recordLoginFail(b.email)
+    if (wait > 0) {
+      res.setHeader('Retry-After', String(wait))
+      return res.status(429).json({ error: `Too many failed sign-ins for this account. Try again in ${wait < 60 ? `${wait} seconds` : `${Math.ceil(wait / 60)} minute(s)`}.`, code: 'rate_limited' })
+    }
     return res.status(401).json({ error: 'Wrong email or password' })
   }
   // The password was RIGHT. Do not count it as a failure — the account backoff is for guessing,
