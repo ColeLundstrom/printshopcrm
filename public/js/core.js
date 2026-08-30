@@ -1,5 +1,7 @@
 /* Shared plumbing: fetch wrapper, DOM helpers, modal, toast, hash router. */
 
+import { createNavGuard } from './shared/navguard.js'
+
 /**
  * What to tell a human when the response body was not JSON we could read. The status is usually
  * the whole story — and for the restart window specifically, "try again in a moment" is the true
@@ -469,6 +471,14 @@ export function skeleton(kind = 'list') {
 const routes = []
 export const route = (re, handler) => routes.push({ re, handler })
 export const go = (hash) => { location.hash = hash }
+
+/* A screen that holds unsaved work arms this; app.js's navigate() asks before it repaints.
+ * The predicate returns false to REFUSE the navigation, and then owns asking the person and
+ * re-issuing go() once they have answered. It is disarmed automatically the moment a navigation
+ * is allowed through, so a view only ever guards while it is the view on screen. */
+const navGuard = createNavGuard((hash) => { location.hash = hash })
+export const guardLeave = (fn) => navGuard.register(fn)
+export const acceptRoute = (target) => navGuard.accept(target)
 
 export async function runRouter() {
   // Match against the path only; a `?query` (e.g. ?new=1, ?sep=1) shouldn't break routes

@@ -1,4 +1,4 @@
-import { api, $, $$, esc, route, runRouter, initials, on, toast, announce } from './core.js'
+import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
@@ -279,6 +279,11 @@ function allowedRoute() {
 async function navigate() {
   closeDrawer({ silent: true }) // choosing a destination inside the drawer closes it; don't steal focus
   closeSearch() // otherwise the palette lingers over the new page on back/forward
+  // Ask the screen we are leaving whether it is safe to repaint over it. A hash change is this
+  // app's only navigation, so this is the single choke point every route change goes through:
+  // Cancel, a sidebar click, a `g e` shortcut and the browser's Back button all land here.
+  // Returning false means the URL has been put back and this screen must NOT be redrawn.
+  if (!acceptRoute(location.hash || '#/')) return
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
   if (!allowedRoute(path)) { location.hash = '#/'; return }
   drawNav()

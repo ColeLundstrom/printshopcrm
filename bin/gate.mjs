@@ -2428,6 +2428,77 @@ section('the app does not discard what the shop has typed')
     assert.doesNotMatch(ob, /onboarding\/step[^\n]*\.catch\(\(\) => \{\}\)/,
       'a checklist tick that did not record must say so')
   })
+
+  /* ---------- the estimate editor, the LAST screen with no guard at all ----------
+   * The price-matrix grid and the settings form both grew one. The estimate editor — a customer,
+   * a tax rate, N garment lines with a size grid each, a parsed email, a calculated quote line
+   * and a customer-facing notes block, none of it on the server until Save — had zero: no
+   * `dirty`, no beforeunload, no confirm. Cancel, a sidebar click, `g e`, the browser's Back
+   * button and a tab close every one of them discarded the whole quote in silence.
+   *
+   * The router had no way to refuse a hash change either, which is why the fix is a state
+   * machine and not an `if`: putting the URL back fires hashchange AGAIN, and that second event
+   * would re-run the router and repaint the editor — destroying exactly what is being saved. */
+  await t('a hash change can be refused, and putting the URL back does not repaint the screen', async () => {
+    // The shipped module, imported and run — not a copy of it.
+    const { createNavGuard } = await import('../public/js/shared/navguard.js')
+    const put = []
+    const g = createNavGuard((h) => put.push(h))
+
+    assert.equal(g.accept('#/estimates/5/edit'), true, 'the first navigation is never guarded')
+    assert.equal(g.armed(), false, 'and it arrives with nothing armed')
+
+    let dirty = true
+    g.register(() => !dirty)
+    assert.equal(g.armed(), true, 'the editor arms the guard')
+
+    assert.equal(g.accept('#/dashboard'), false, 'a dirty editor refuses the navigation')
+    assert.deepEqual(put, ['#/estimates/5/edit'], 'and the URL is put back to where the shop still is')
+    assert.equal(g.accept('#/estimates/5/edit'), false,
+      'the revert\'s own hashchange must NOT repaint — that repaint is the data loss')
+    assert.equal(g.armed(), true, 'the guard survives its own revert; the work is still unsaved')
+
+    dirty = false // "Discard changes"
+    assert.equal(g.accept('#/dashboard'), true, 'once discarded, the navigation goes through')
+    assert.equal(g.armed(), false, 'and the guard is disarmed for the screen being drawn')
+    assert.equal(g.accept('#/invoices'), true, 'so the next screen is not guarded by the last one')
+    assert.deepEqual(put, ['#/estimates/5/edit'], 'nothing else was ever reverted')
+
+    // A guard that throws must not wedge the shop on one screen forever.
+    const t2 = createNavGuard(() => {})
+    t2.accept('#/a'); t2.register(() => { throw new Error('boom') })
+    assert.equal(t2.accept('#/b'), true, 'a broken guard is ignored, never a trap')
+  })
+
+  await t('the estimate editor arms that guard, and knows when it is dirty', async () => {
+    const est = code(await readFile('public/js/views/estimates.js'))
+    assert.match(est, /guardLeave\(/, 'the editor must register a leave guard')
+    assert.match(est, /let editorDirty = false/, 'and track whether anything is unsaved')
+    assert.match(est, /beforeunload/, 'the tab-close path needs the same promise the matrix editor makes')
+    assert.match(est, /confirmModal\('Leave without saving\?'/, 'and the shop gets asked, not told')
+    // Typing anywhere in the editor counts.
+    assert.match(est, /onOnce\(\$\('#view'\), 'input, select, textarea', markEditorDirty, 'input'\)/, 'every typed character')
+    assert.match(est, /onOnce\(\$\('#view'\), 'input, select, textarea', markEditorDirty, 'change'\)/, '…and every picker')
+    // So do the mutations that emit no input event at all: adding a line, pricing off a matrix,
+    // the calculator, a parsed email, adding a size, deleting a line. All of these were the
+    // expensive ones — ten minutes of work that never touched a keystroke the DOM reported.
+    assert.equal((est.match(/markEditorDirty\(\)/g) || []).length >= 7, true,
+      'the structural edits (add line, matrix, calculator, parsed email, add size, delete line) must mark it too')
+    // Saving must not then ask on the way out.
+    assert.match(est, /editorDirty = false[^\n]*\n\s*toast\(isNew \? `Estimate/, 'a saved estimate leaves without a prompt')
+  })
+
+  await t('every hash change in the app goes through that one choke point', async () => {
+    const app = code(await readFile('public/js/app.js'))
+    const core = code(await readFile('public/js/core.js'))
+    assert.match(app, /if \(!acceptRoute\(location\.hash \|\| '#\/'\)\) return/,
+      'navigate() must ask before it repaints, and bail when refused')
+    // The bail has to come BEFORE the router runs, or the guard is decoration.
+    assert.ok(app.indexOf('acceptRoute(') < app.indexOf('await runRouter()'),
+      'the guard has to be asked before runRouter(), not after')
+    assert.match(core, /export const guardLeave = \(fn\) => navGuard\.register\(fn\)/, 'views arm it through core')
+    assert.match(core, /export const acceptRoute = \(target\) => navGuard\.accept\(target\)/, 'and the router asks through core')
+  })
 }
 
 section('every destructive control says what it destroys')

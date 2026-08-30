@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText } from '../core.js'
+import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
@@ -48,8 +48,27 @@ const blankFee = () => ({ description: '', detail: '', qty: 1, unit_price: 0, ta
 // taxable:true so it reduces the taxable base, since discounting taxable goods should reduce the tax.
 const blankDiscount = () => ({ description: 'Discount', detail: '', qty: 1, unit_price: 0, taxable: true })
 
+/* -------------------------------------------------------------------------------------------------
+ * Unsaved-work state for the estimate editor.
+ *
+ * This is the other screen — with the price-matrix grid — where a shop types for ten minutes
+ * before saving once: a customer, a tax rate, any number of garment lines with a size grid each,
+ * a parsed email, a calculated quote line, and a notes block the customer reads. None of it
+ * exists on the server until Save. Cancel, a sidebar click, the `g e` shortcut, the browser's
+ * Back button and a tab close all threw the whole quote away in silence.
+ *
+ * Module-level rather than a closure so the once-bound beforeunload listener below reads the
+ * CURRENT editor's state and not the first one ever opened. matrices.js does the same, for the
+ * same reason.
+ * ---------------------------------------------------------------------------------------------- */
+let editorDirty = false
+const markEditorDirty = () => { editorDirty = true }
+/** The gate and app.js both need to be able to ask. */
+if (typeof window !== 'undefined') window.__pscEstimateDirty = () => editorDirty
+
 export async function estimateEditor(id) {
   const isNew = id === 'new'
+  editorDirty = false
   const params = new URLSearchParams(location.hash.split('?')[1] || '')
   const { contacts } = await api.get('/api/contacts')
   const settings = (await api.get('/api/settings')).settings
@@ -233,6 +252,7 @@ export async function estimateEditor(id) {
             opt.value = String(c.id); opt.textContent = c.name + (c.company ? `, ${c.company}` : '')
             const sel = $('#contact'); sel.insertBefore(opt, sel.querySelector('option[value="__new"]'))
             sel.value = String(c.id); est.contact_id = c.id
+            markEditorDirty() // the new customer is saved; choosing them on this quote is not
             closeModal(); syncTaxExempt(true); toast(`Added ${c.name}`)
           } catch (e) { err(e.message || 'Could not create the customer. Try again.') }
         })
@@ -270,12 +290,14 @@ export async function estimateEditor(id) {
     const next = SIZES.find((s) => !shown.includes(s))
     if (!next) return toast('Every size is already on this line')
     items[i].sizes = { ...items[i].sizes, [next]: 0 }
+    markEditorDirty()
     draw()
   })
 
   on($('#rows'), '[data-del]', (_e, t) => {
     items.splice(+t.dataset.del, 1)
     if (!items.length) items.push(blankItem())
+    markEditorDirty()
     draw()
   })
 
@@ -308,6 +330,7 @@ export async function estimateEditor(id) {
             ? { ...blankFee(), description: pick.description, detail: pick.detail, qty: 1, unit_price: pick.price, matrix: pick.matrix }
             : { ...blankItem(), decoration: '', description: pick.description, detail: pick.detail, unit_price: pick.price, matrix: pick.matrix })
         }
+        markEditorDirty()
         draw()
         toast(`Priced from ${pick.matrix.name}`)
       },
@@ -315,7 +338,7 @@ export async function estimateEditor(id) {
   }
   on($('#rows'), '[data-mx]', (_e, t) => priceFromMatrix(+t.dataset.mx))
 
-  const addLine = (mk) => { items.push(mk()); draw(); $$('#rows .ir').pop().querySelector('input').focus() }
+  const addLine = (mk) => { items.push(mk()); markEditorDirty(); draw(); $$('#rows .ir').pop().querySelector('input').focus() }
   $('#add').onclick = () => addLine(blankItem)
   $('#add-fee').onclick = () => addLine(blankFee)
   $('#add-disc').onclick = () => addLine(blankDiscount)
@@ -327,13 +350,14 @@ export async function estimateEditor(id) {
   $('#quote-calc').onclick = () => quoteModal(settings, (line) => {
     if (line.rush_days) rushDays = Math.max(rushDays, Number(line.rush_days) || 0)
     delete line.rush_days
-    items.push(line); draw()
+    items.push(line); markEditorDirty(); draw()
   })
   $('#read-email').onclick = () => intakeModal((line, parsed) => {
     // First read replaces the empty starter row rather than sitting under it.
     if (items.length === 1 && !items[0].description && !items[0].unit_price) items = []
     items.push(line)
     if (parsed?.notes && !$('#notes').value) $('#notes').value = parsed.notes
+    markEditorDirty()
     draw()
   })
   $('#tax').oninput = totals
@@ -356,11 +380,41 @@ export async function estimateEditor(id) {
     const btn = $('#save'); btn.disabled = true; btn.textContent = 'Saving…'
     try {
       const saved = isNew ? await api.post('/api/estimates', payload) : await api.put(`/api/estimates/${id}`, payload)
+      editorDirty = false // it is on the server now; leaving must not ask
       toast(isNew ? `Estimate ${saved.estimate_number} created` : 'Estimate saved')
       go(`/estimates/${saved.id}`)
     } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = isNew ? 'Create Estimate' : 'Save' }
   }
+
+  // Every typed character in the editor — customer, tax rate, description, detail, qty, rate,
+  // every size box, the notes block. Delegated on #view so a redraw of #rows cannot lose it, and
+  // through onOnce because #view is repainted and never replaced.
+  onOnce($('#view'), 'input, select, textarea', markEditorDirty, 'input')
+  onOnce($('#view'), 'input, select, textarea', markEditorDirty, 'change')
+
+  // The paths the app DOES control: Cancel, a sidebar click, `g e`, the browser's Back button.
+  // All of them are a hash change, and app.js routes every hash change through this.
+  guardLeave((to) => {
+    if (!editorDirty) return true
+    confirmModal('Leave without saving?',
+      isNew
+        ? 'This quote has never been saved. Leaving now discards it.'
+        : 'The changes you made to this quote are only in this browser. Leaving now discards them.',
+      () => { editorDirty = false; go(to) }, 'Discard changes')
+    return false
+  })
+
   draw()
+}
+
+// The paths the app does NOT control: tab close, reload, navigating off the origin entirely.
+// Bound once, and it only speaks while the estimate editor is actually the screen on show.
+if (typeof window !== 'undefined' && !window.__pscEstimateGuard) {
+  window.__pscEstimateGuard = true
+  window.addEventListener('beforeunload', (e) => {
+    if (!editorDirty || !document.getElementById('rows')) return
+    e.preventDefault(); e.returnValue = ''
+  })
 }
 
 /* ---------- detail ---------- */
