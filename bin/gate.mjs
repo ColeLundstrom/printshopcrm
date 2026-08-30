@@ -2665,6 +2665,43 @@ section('the app does not discard what the shop has typed')
     assert.match(router, /runRouter\(\)/, '…that actually re-runs the route')
   })
 
+  /* ---------- the OTHER four screens that type for ten minutes and save once ----------
+   * estimates.js registers guardLeave and is the only one. The price-matrix editor, the price
+   * book's grid, Settings and the receptionist config each track a dirty flag, each show it, and
+   * each guard only the controls INSIDE their own screen — plus a `beforeunload`, whose comment on
+   * three of them claims it covers "the browser's Back button". In a hash router it never does:
+   * Back is a hashchange, and a hashchange fires no beforeunload. So the sidebar, the `g` keyboard
+   * shortcuts, the tabbar and Back all threw the work away in silence. */
+  await t('every screen that tracks unsaved work asks the router before it is repainted over', async () => {
+    for (const [file, what] of [
+      ['public/js/views/matrices.js', 'the price-matrix grid'],
+      ['public/js/views/pricing.js', "the price book's matrix card"],
+      ['public/js/views/misc.js', 'the settings form'],
+      ['public/js/views/agent.js', 'the receptionist config'],
+    ]) {
+      const src = code(await readFile(file))
+      assert.match(src, /guardLeave\(/, `${what} tracks a dirty flag and never arms the router guard (${file})`)
+      assert.match(src, /import \{[^}]*\bguardLeave\b/, `${file} must import guardLeave from core`)
+    }
+  })
+
+  await t('…and the guard it arms is the same shape estimates.js proved', async () => {
+    for (const [file, flag] of [
+      ['public/js/views/matrices.js', 'dirty'],
+      ['public/js/views/pricing.js', 'mxDirty'],
+      ['public/js/views/misc.js', 'settingsDirty'],
+      ['public/js/views/agent.js', 'cfgDirty'],
+    ]) {
+      const src = code(await readFile(file))
+      const g = src.slice(src.indexOf('guardLeave('), src.indexOf('guardLeave(') + 500)
+      assert.match(g, new RegExp(`if \\(!${flag}\\) return true`),
+        `${file}: a clean screen must leave without a prompt`)
+      assert.match(g, /confirmModal\(/, `${file}: the shop gets asked, not told`)
+      assert.match(g, /return false/, `${file}: refusing means the guard owns re-issuing the navigation`)
+      assert.match(g, /go\(to\)/, `${file}: …and it must actually re-issue it, or Discard is a dead end`)
+    }
+  })
+
   await t('clicking the screen you are already on repaints it', async () => {
     const app = code(await readFile('public/js/app.js'))
     // location.hash = '#/estimates' while already on '#/estimates' fires no hashchange, so

@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal, onOnce, announce, confirmModal } from '../core.js'
+import { api, $, $$, esc, money, setPage, toast, on, go, modal, closeModal, onOnce, announce, confirmModal, guardLeave } from '../core.js'
 
 /* Pricing Matrix + margin-floor guard — the shop's whole price grid, generated from its own
    costing inputs, with the real margin of every cell and a hard flag on anything that loses money. */
@@ -299,6 +299,18 @@ function renderMatrix(card, r) {
   // listeners go on the cells this render just made.
   mxDirty = false
   for (const i of card.querySelectorAll('.pm-in')) i.addEventListener('input', () => { mxDirty = true })
+
+  /* The paths the app DOES control: the sidebar, the tabbar, the `g` keyboard shortcuts and the
+   * browser's Back button. Every one of them is a hash change, and a hash change fires no
+   * beforeunload — so the listener below never saw any of them. This is the choke point that does.
+   * Refusing owns re-issuing the navigation once the shop has answered. */
+  guardLeave((to) => {
+    if (!mxDirty) return true
+    confirmModal('Leave these prices?',
+      'The prices you typed into the grid have not been saved. Leaving now discards them.',
+      () => { mxDirty = false; go(to) }, 'Discard changes')
+    return false
+  })
 }
 
 /* -------------------------------------------------------------------------------------------------

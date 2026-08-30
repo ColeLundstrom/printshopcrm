@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal , onOnce } from '../core.js'
+import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal , onOnce, guardLeave } from '../core.js'
 
 /* Custom price matrices — the shop's own price sheets, in any shape.
  *
@@ -298,6 +298,18 @@ function wireEditor() {
       () => { dirty = false; go(to) }, 'Discard changes')
   }
   $('#mx-back').onclick = () => leaveEditor('/matrices')
+
+  /* The paths the app DOES control: the sidebar, the tabbar, the `g` keyboard shortcuts and the
+   * browser's Back button. Every one of them is a hash change, and a hash change fires no
+   * beforeunload — so the listener below never saw any of them. This is the choke point that does.
+   * Refusing owns re-issuing the navigation once the shop has answered. */
+  guardLeave((to) => {
+    if (!dirty) return true
+    confirmModal('Leave without saving?',
+      'The prices you typed are only in this browser. Leaving now discards them.',
+      () => { dirty = false; go(to) }, 'Discard changes')
+    return false
+  })
   $('#mx-dup').onclick = async () => {
     const { matrix } = await api.post(`/api/matrices/${m.id}/duplicate`)
     toast(`Copied to “${matrix.name}”`); go(`/matrices/${matrix.id}`)
@@ -319,8 +331,10 @@ function wireEditor() {
 
 function markDirty() { dirty = true; countCells() }
 
-// The same promise for the paths the app does not control: tab close, reload, the browser's own
-// Back button. Bound once, and it only speaks while the grid is actually on screen.
+// The same promise for the paths the app does not control: tab close, reload, and navigating off
+// the origin entirely. NOT the browser's Back button — that is a hash change, it fires no
+// beforeunload, and it is the guardLeave above that catches it. Bound once, and it only speaks
+// while the grid is actually on screen.
 if (typeof window !== 'undefined' && !window.__pscMxGuard) {
   window.__pscMxGuard = true
   window.addEventListener('beforeunload', (e) => {

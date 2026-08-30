@@ -1,4 +1,4 @@
-import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText, onOnce } from '../core.js'
+import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText, onOnce, go, confirmModal, guardLeave } from '../core.js'
 
 /* The AI Receptionist — configure the bot, preview it live, and work the leads it captures. */
 
@@ -134,6 +134,18 @@ function trackDirty() {
   cfgDirty = false
   onOnce($('#view'), 'input, textarea, select', markCfgDirty, 'input')
   onOnce($('#view'), 'input, textarea, select', markCfgDirty, 'change')
+
+  /* The paths the app DOES control: the sidebar, the tabbar, the `g` keyboard shortcuts and the
+   * browser's Back button. Every one of them is a hash change, and a hash change fires no
+   * beforeunload — so the listener below never saw any of them. This is the choke point that does.
+   * Refusing owns re-issuing the navigation once the shop has answered. */
+  guardLeave((to) => {
+    if (!cfgDirty) return true
+    confirmModal('Leave without saving?',
+      'The receptionist settings you changed are only in this browser. Leaving now discards them.',
+      () => { cfgDirty = false; go(to) }, 'Discard changes')
+    return false
+  })
 }
 // app.js asks before it repaints this screen out from under someone.
 if (typeof window !== 'undefined') window.__pscAgentDirty = () => cfgDirty

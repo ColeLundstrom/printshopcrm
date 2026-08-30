@@ -1,4 +1,4 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText } from '../core.js'
+import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave } from '../core.js'
 
 /* ---------- art queue ---------- */
 
@@ -569,8 +569,21 @@ export async function settingsView() {
       () => { settingsDirty = false; settingsView() }, 'Discard and reload')
   }
   const repaintChrome = () => { repaint(); window.dispatchEvent(new Event('psc:settings')) }
-  // The paths the app does not control: tab close, reload, the browser's Back button. Bound once,
-  // and it only speaks while the settings form is actually on screen.
+
+  /* The paths the app DOES control: the sidebar, the tabbar, the `g` keyboard shortcuts and the
+   * browser's Back button. Every one of them is a hash change, and a hash change fires no
+   * beforeunload — so the listener below never saw any of them. This is the choke point that does.
+   * Refusing owns re-issuing the navigation once the shop has answered. */
+  guardLeave((to) => {
+    if (!settingsDirty) return true
+    confirmModal('Leave without saving?',
+      'The settings you changed are only in this browser. Leaving now discards them.',
+      () => { settingsDirty = false; go(to) }, 'Discard changes')
+    return false
+  })
+  // The paths the app does not control: tab close, reload, navigating off the origin entirely. NOT
+  // the browser's Back button — that is a hash change and fires no beforeunload; the guardLeave
+  // above catches it. Bound once, and it only speaks while the settings form is on screen.
   if (!window.__pscSettingsGuard) {
     window.__pscSettingsGuard = true
     window.addEventListener('beforeunload', (e) => {
