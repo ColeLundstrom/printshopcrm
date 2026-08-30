@@ -9,7 +9,7 @@ import {
   freezeUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, canWrite, SECRET_KEYS,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, canWrite, SECRET_KEYS,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -793,6 +793,20 @@ const fireAuto = (trigger, ctx) => {
 // cannot import this file — they emit a signal through db.mjs instead. Wire it to the same
 // automation dispatch the manual and API paths use, so a bot-captured lead gets the nurture drip.
 onContactCreated((contact) => { try { fireAuto('contact.created', { contact }) } catch (e) { console.error('contact.created:', e && e.message) } })
+/* The other half of POST /api/invoices/:id/payments, for the doors that live in lib/ and cannot
+ * import this file. Everything below the INSERT there happens here too, so a payment is the same
+ * payment whichever door it came through: the order card walks forward, the shop's own
+ * "Thank the customer when they pay" rule and every invoice.paid webhook subscriber fire once, and
+ * the books are queued without anyone clicking. */
+onPaymentRecorded(({ invoice_id, before_status }) => {
+  const inv = get('SELECT * FROM invoices WHERE id = ?', invoice_id)
+  if (!inv) return
+  advanceOrder(inv.estimate_id, 'paid')   // money in — never backward; see advanceOrder
+  if (inv.status === 'paid' && before_status !== 'paid') {
+    fireAuto('invoice.paid', { invoice: inv, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: inv.amount_due })
+  }
+  enqueueQbo(inv.id)
+})
 
 /* ================= AUTH & MULTI-TENANCY =================
  * When PSC_AUTH=1, every request is resolved to a logged-in shop and run inside that shop's

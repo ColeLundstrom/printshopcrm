@@ -6743,6 +6743,83 @@ section('the assistant does not invent money the screens do not show')
   })
 }
 
+/* ---------- the assistant's payment is the same payment ----------
+ * doMarkPaid INSERTs into `payments`, syncs the invoice status and logs — and stops. The only
+ * other door that puts cash on an invoice, POST /api/invoices/:id/payments, does four more things,
+ * and lib/assistant.mjs cannot reach any of them: advanceOrder, fireAuto('invoice.paid') and
+ * enqueueQbo are all module-private to server.mjs, which lib/ must not import (cycle). So a
+ * payment recorded from the assistant panel is invisible to QuickBooks, to the shop's own shipped
+ * "Thank the customer when they pay" rule, to every invoice.paid webhook subscriber, and to the
+ * Orders board — and it walks straight past the 120-second duplicate-cheque guard.
+ * lib/db.mjs already carries the shape for exactly this: onContactCreated/emitContactCreated. */
+section('a payment the assistant records is the same payment as any other')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const asst = await import('../lib/assistant.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  dbmod.run('INSERT INTO contacts (id, name, email) VALUES (1, ?, ?)', 'Northgate Booster Club', 'ap@northgate.test')
+  dbmod.run(`INSERT INTO invoices (id, contact_id, invoice_number, status, amount_due, amount_paid, due_date)
+             VALUES (1, 1, 'INV-1003', 'sent', 1000, 0, date('now','+7 day'))`)
+
+  let heard = []
+  await t('…so the books, the board and the automations hear about it', async () => {
+    assert.equal(typeof dbmod.onPaymentRecorded, 'function',
+      'lib/ has no way to tell server.mjs money arrived — advanceOrder, fireAuto and enqueueQbo are all private to it')
+    dbmod.onPaymentRecorded((p) => heard.push(p))
+    const r = await asst.ask('record a payment of $500 on INV-1003')
+    assert.match(String(r.reply), /Recorded \$500\.00/, `the payment itself must still record: ${r.reply}`)
+    assert.equal(heard.length, 1, 'nothing downstream was told: no QuickBooks queue row, no invoice.paid, no order card moved')
+    assert.equal(heard[0].invoice_id, 1)
+    assert.equal(heard[0].before_status, 'sent', 'the hook has to carry the status BEFORE, or invoice.paid cannot fire once')
+  })
+
+  await t('…and the same cheque twice is a question, not two payments', async () => {
+    const again = await asst.ask('record a payment of $500 on INV-1003')
+    assert.match(String(again.reply), /already recorded/i,
+      `the assistant walks past the duplicate guard the only other payment door has: ${again.reply}`)
+    assert.equal(dbmod.get('SELECT COUNT(*) AS c FROM payments').c, 1,
+      'two identical $500 rows in the same second — the invoice reads PAID for $1,000 and the customer is never chased')
+    assert.equal(heard.length, 1, 'and nothing downstream was told about the one that did not happen')
+  })
+
+  await t('…while a genuine second payment can still be recorded, in the words it offered', async () => {
+    // Drive the exact phrasing the refusal suggests. ask()'s router needs
+    // /\b(mark|record).+(paid|payment)\b/, so a suggestion like "record $500 on INV-1003 again"
+    // routes to "I didn't catch that one" — an escape a shop cannot actually use is not an escape.
+    const refusal = await asst.ask('record a payment of $500 on INV-1003')
+    const offered = /say “([^”]+)”/.exec(String(refusal.reply))?.[1]
+    assert.ok(offered, `the refusal must offer words to say: ${refusal.reply}`)
+    const yes = await asst.ask(offered)
+    assert.match(String(yes.reply), /Recorded \$500\.00/,
+      `the assistant does not understand the escape it just told the shop to use ("${offered}"): ${yes.reply}`)
+    assert.equal(dbmod.get('SELECT COUNT(*) AS c FROM payments').c, 2)
+    assert.equal(dbmod.get('SELECT status FROM invoices WHERE id = 1').status, 'paid')
+    assert.equal(heard.length, 2, 'the refusal in between must not have emitted anything')
+    // 'partial' after the first $500, 'paid' after the second — so the listener's
+    // `status === 'paid' && before !== 'paid'` test fires invoice.paid exactly once, on the
+    // payment that actually settled it.
+    assert.equal(heard[0].before_status, 'sent')
+    assert.equal(heard[1].before_status, 'partial', 'the second payment is the one that flips it to paid')
+  })
+
+  await t('and server.mjs is actually registered on the other end of that hook', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+    const i = src.indexOf('onPaymentRecorded(')
+    assert.ok(i > 0, 'a hook nobody listens to is worse than no hook — it looks fixed')
+    const body = src.slice(i, i + 900)
+    assert.match(body, /advanceOrder\(/, 'the order card has to move')
+    assert.match(body, /fireAuto\('invoice\.paid'/, "…the shop's own thank-you rule and every webhook subscriber have to fire")
+    assert.match(body, /enqueueQbo\(/, '…and the books have to hear about it without anyone clicking')
+  })
+}
+
 section('imported history stays out of every timed automation, as the comment claims')
 {
   const { DatabaseSync } = await import('node:sqlite')
