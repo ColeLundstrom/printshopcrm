@@ -50,9 +50,18 @@ export async function activityView() {
 
 /* ---------- outbox ---------- */
 
-export async function outboxView() {
+export async function outboxView(showNeeds = false) {
   setPage('Outbox')
-  const [rows, notif] = await Promise.all([api.get('/api/outbox'), api.get('/api/notify/status').catch(() => ({ email: false, sms: false }))])
+  /* The list is a newest-50 window, and the only Send button in the product is drawn per row on
+   * this screen — so every unsent message past the 50th had no Send control anywhere, while the
+   * card below promises "nothing vanishes". The ones that fall off the bottom are the OLDEST,
+   * which is to say the ones that have been waiting longest. "Needs sending" is the escape. */
+  const [box, notif] = await Promise.all([
+    api.get(`/api/outbox${showNeeds ? '?needs=1' : ''}`),
+    api.get('/api/notify/status').catch(() => ({ email: false, sms: false })),
+  ])
+  const rows = box.rows || []
+  const needs = box.needs_sending || 0
   // shop_email (not `email`) is the honest signal: `email` is also true when only our platform relay
   // is set, which shop→customer mail never uses — so this banner used to promise delivery that
   // wasn't happening.
@@ -86,6 +95,13 @@ export async function outboxView() {
           ? 'Your email isn\'t connected yet, so what you send is saved here with a shareable link instead of reaching the customer — nothing vanishes. Connect it under <strong>Settings → Sending Email</strong> and it goes out from your own address.'
           : 'No delivery is wired yet, so "sent" mail is recorded here instead of reaching customers — nothing vanishes. Add SMTP / Twilio in Settings → Message Delivery and the same calls go out for real.')}</p>
     </div></div>
+    <div class="row" style="gap:8px;align-items:center;margin-bottom:10px">
+      <button class="btn ${showNeeds ? 'ghost' : ''} sm" type="button" id="ob-all" aria-pressed="${!showNeeds}">Recent</button>
+      <button class="btn ${showNeeds ? '' : 'ghost'} sm" type="button" id="ob-needs" aria-pressed="${showNeeds}">Needs sending${needs ? ` (${needs})` : ''}</button>
+      ${!showNeeds && needs > rows.filter(sendable).length
+        ? `<span class="dim" style="font-size:12px">${needs} message${needs === 1 ? '' : 's'} still waiting — not all of them fit in this list.</span>`
+        : ''}
+    </div>
     <div class="card" id="outbox-list">${rows.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>To</th><th>Subject</th><th>Type</th><th>Status</th><th class="num">Sent</th></tr></thead>
       <tbody>${rows.map((m) => `<tr class="click" data-id="${m.id}">
@@ -93,7 +109,11 @@ export async function outboxView() {
         <td><span class="tag">${esc(m.kind)}</span></td>
         <td>${status(m)}</td>
         <td class="num dim" style="font-size:12px">${relTime(m.created_at)}</td>
-      </tr>`).join('')}</tbody></table></div>` : empty('✉', 'Outbox empty', 'Send an estimate or a proof to see it here.')}</div>`
+      </tr>`).join('')}</tbody></table></div>`
+      : empty('✉', showNeeds ? 'Nothing waiting' : 'Outbox empty', showNeeds ? 'Every message has gone out or been sent by hand.' : 'Send an estimate or a proof to see it here.')}</div>`
+
+  $('#ob-all').onclick = () => outboxView(false)
+  $('#ob-needs').onclick = () => outboxView(true)
 
   // Scoped to this table, not #view — [data-id] is not globally unique, so a #view binding would
   // survive navigation and pop an old email over job / invoice / contact rows elsewhere.

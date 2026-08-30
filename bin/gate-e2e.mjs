@@ -207,11 +207,11 @@ try {
       .filter((x) => x.trigger === 'estimate.sent').length
     chk('autopilot\'s send reaches the shop\'s own rules', String(autoRuns > 0), '^true$')
 
-    const outboxBefore = ((await req('GET', '/api/outbox')).json || []).length
+    const outboxBefore = ((await req('GET', '/api/outbox')).json?.rows || []).length
     r = await req('POST', '/api/autopilot/commit', { body: { estimate_id: estId } })
     chk('pressing Send a second time answers cleanly', String(r.status), '^200$')
     chk('…and says it did nothing, rather than doing it again', String(r.json?.already), '^true$')
-    const outboxAfter = ((await req('GET', '/api/outbox')).json || []).length
+    const outboxAfter = ((await req('GET', '/api/outbox')).json?.rows || []).length
     chk('…and the customer is not mailed the same estimate twice', String(outboxAfter), `^${outboxBefore}$`)
 
     // Now the customer approves. A later commit must not drag it back to "waiting on them".
@@ -1812,7 +1812,7 @@ try {
     r = await req('POST', `/api/reorders/${mmId}/nudge`, { body: {} })
     chk('a reorder nudge in Manual mode reports that it was drafted, not sent', String(r.json?.delivered ?? 'missing'), '^false$')
     await sleep(300)
-    let box = (await req('GET', '/api/outbox')).json || []
+    let box = (await req('GET', '/api/outbox')).json?.rows || []
     const draft = box.find((m) => m.via === 'draft')
     chk('Manual mode leaves the message in the outbox as a draft', String(!!draft), '^true$')
     chk('…and it is not marked delivered', String(draft?.delivered ?? 0), '^0|^false')
@@ -1822,7 +1822,7 @@ try {
     // something, reports honestly, and does not leave the row claiming to be delivered.
     chk('a drafted message has a Send that reaches the mail layer', String(r.status), '^200$|^502$')
     chk('…and says plainly whether it went out', r.text, 'ok|not.*connect|Message Delivery|smtp')
-    box = (await req('GET', '/api/outbox')).json || []
+    box = (await req('GET', '/api/outbox')).json?.rows || []
     const after = box.find((m) => m.id === draft?.id)
     chk('…and never claims delivery it did not get', String(after?.delivered ? 'claimed' : 'honest'), '^honest$')
     chk('…while leaving the row out of the "draft, nobody has touched it" state', String(after?.via ?? ''), '^(?!draft$).+')
@@ -1842,14 +1842,14 @@ try {
     const doomedId = r.json?.id
     await req('POST', `/api/reorders/${doomedId}/nudge`, { body: {} })
     await sleep(300)
-    const doomedMsg = ((await req('GET', '/api/outbox')).json || []).find((m) => m.contact_id === doomedId && !m.delivered)
+    const doomedMsg = ((await req('GET', '/api/outbox')).json?.rows || []).find((m) => m.contact_id === doomedId && !m.delivered)
     chk('a customer about to be deleted has a message waiting in the outbox', String(!!doomedMsg), '^true$')
     chk('…and the customer deletes cleanly', String((await req('DELETE', `/api/contacts/${doomedId}`)).status), '^200$')
 
     r = await req('POST', `/api/outbox/${doomedMsg?.id}/send`, { body: {} })
     chk('…and their orphaned message can still be sent, not 500 forever', String(r.status), '^200$|^502$')
     chk('…with an answer that matches what actually happened', r.text, 'ok|not.*connect|Message Delivery|smtp')
-    const doomedAfter = ((await req('GET', '/api/outbox')).json || []).find((m) => m.id === doomedMsg?.id)
+    const doomedAfter = ((await req('GET', '/api/outbox')).json?.rows || []).find((m) => m.id === doomedMsg?.id)
     chk('…and the row records the attempt rather than staying a draft', String(doomedAfter?.via ?? ''), '^(?!draft$).+')
 
     await req('PUT', '/api/settings', { body: { mode_followups: 'ai' } })
@@ -1949,6 +1949,41 @@ try {
     const stmt = await req('GET', `/api/contacts/${lateId}/statement.pdf`)
     chk('the statement the shop mails out prints OVERDUE, not UNPAID', String(/OVERDUE/.test(stmt.text)), '^true$')
     chk('…and does not print UNPAID beside its own past-due bucket', String(/UNPAID/.test(stmt.text)), '^false$')
+  }
+
+  /* ---------- nothing in the Outbox is out of reach of the Send button ----------
+   * GET /api/outbox was a bare `ORDER BY id DESC LIMIT 50` with no filter, and the ONLY Send
+   * control in the product is drawn per row on that screen. So every unsent message past the 50th
+   * had no Send button anywhere — while the card above the list promises "nothing vanishes… add
+   * SMTP and the same calls go out for real". The rows that fall off the bottom are the OLDEST,
+   * which is to say the ones that have been waiting longest. Fifty is one busy week for a shop
+   * with Follow-ups on "Ask me first", where every nudge is a draft by design. */
+  {
+    const ob = (await req('POST', '/api/contacts', { body: { name: 'Backlog Co', email: 'backlog@e2e.test' } })).json
+    // 60 quotes, each sent, each writing an outbox row. No SMTP is wired on the gate server, so
+    // every one of them lands as 'logged' — exactly the state of week one on a real shop.
+    const first = []
+    for (let i = 0; i < 60; i++) {
+      const e = (await req('POST', '/api/estimates', { body: { contact_id: ob.id, items: [{ description: `Backlog ${i}`, qty: 1, unit_price: 10 } ] } })).json
+      await req('POST', `/api/estimates/${e.id}/send`, { body: {} })
+      if (i < 3) first.push(`Backlog ${i}`)
+    }
+    const recent = (await req('GET', '/api/outbox')).json
+    chk('the default list is still the recent window', String((recent.rows || []).length <= 50), '^true$')
+    chk('…and it says how many are actually waiting', String(recent.needs_sending >= 60), '^true$')
+    const oldest = (recent.rows || []).some((m) => first.some((f) => String(m.subject || '').includes(f) || String(m.body || '').includes(f)))
+    chk('…and the oldest of them have fallen off it', String(oldest), '^false$')
+
+    const waiting = (await req('GET', '/api/outbox?needs=1')).json
+    chk('"Needs sending" reaches past the window', String((waiting.rows || []).length >= 60), '^true$')
+    const target = (waiting.rows || []).find((m) => !m.delivered)
+    chk('…and every row it returns is one a person can send', String(!!target), '^true$')
+    const sent = await req('POST', `/api/outbox/${target.id}/send`, { body: {} })
+    chk('…and the Send button on it actually works', String(sent.status === 200 || sent.status === 502), '^true$')
+    // The screen has to be able to offer the escape, not just the API.
+    const view = (await req('GET', '/js/views/misc.js', { cookies: false })).text
+    chk('the Outbox screen carries the control that reaches them', view, 'id="ob-needs"')
+    chk('…and tells the shop when the list is hiding some', view, 'not all of them fit in this list')
   }
 
   /* ---------- a deal is worth zero or more ----------
@@ -2413,7 +2448,7 @@ try {
     r = await req('POST', `/api/estimates/${nmEst}/convert`, { body: { due_date: '2026-03-01' } })
     const nmInv = r.json?.invoice_id
 
-    const outboxLen = async () => ((await req('GET', '/api/outbox')).json || []).length
+    const outboxLen = async () => ((await req('GET', '/api/outbox')).json?.rows || []).length
     const before = await outboxLen()
     for (const [what, path] of [
       ['emailing the invoice', `/api/invoices/${nmInv}/send`],

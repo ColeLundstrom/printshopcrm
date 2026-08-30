@@ -6503,8 +6503,27 @@ app.get('/api/activities', wrap((_req, res) => {
     ORDER BY a.created_at DESC, a.id DESC LIMIT 100`))
 }))
 
-app.get('/api/outbox', wrap((_req, res) => {
-  res.json(all('SELECT * FROM email_log ORDER BY id DESC LIMIT 50'))
+/**
+ * The Outbox, and the messages in it that still need a person.
+ *
+ * This was a bare `ORDER BY id DESC LIMIT 50` with no filter of any kind, and the only Send
+ * button in the product is drawn per row on this screen. So every unsent message past the 50th
+ * had no Send control anywhere — not on this screen, not on any other — while the card above the
+ * list promises "nothing vanishes… add SMTP and the same calls go out for real". Fifty messages
+ * is one busy week for a shop in Manual follow-ups mode, and the ones that fall off the bottom
+ * are the OLDEST, which is to say the ones that have been waiting longest.
+ *
+ * `?needs=1` returns only the rows that need sending — a draft, a failure, or anything queued
+ * before mail was wired — so the backlog is always reachable however long it is. The count comes
+ * back on every response so the screen can say there is one without asking twice.
+ */
+app.get('/api/outbox', wrap((req, res) => {
+  const NEEDS = `delivered = 0 AND via IN ('draft', 'error', 'logged')`
+  const needs_sending = get(`SELECT COUNT(*) AS n FROM email_log WHERE ${NEEDS}`).n
+  const rows = String(req.query.needs ?? '') === '1'
+    ? all(`SELECT * FROM email_log WHERE ${NEEDS} ORDER BY id DESC LIMIT 500`)
+    : all('SELECT * FROM email_log ORDER BY id DESC LIMIT 50')
+  res.json({ rows, needs_sending })
 }))
 
 /**
