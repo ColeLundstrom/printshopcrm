@@ -8311,6 +8311,45 @@ await t('the receiving card offers it, and confirms first', async () => {
   assert.match(handler, /purchase-orders\/\$\{b\.dataset\.closepo\}\/close/, 'it must call the close route')
 })
 
+/* ---------- …and short-closing it is not the last thing that can happen to it (v28) ----------
+ *
+ * Every other purchase-order state has a control on the receiving card: "Receive blanks" and
+ * "Short-close" while it is open, "Correct receipt" once it is fully received. 'closed' printed
+ * a line of text and nothing else — and Short-close sits nine pixels from Receive, so the
+ * mis-click is the routine one. The distributor who cancels a balance and then ships it a week
+ * later is just as routine. The server would have taken that delivery all along; the shop had no
+ * button that reached it. */
+await t('a short-closed order can be reopened from the receiving card', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+  const closed = src.indexOf("po.status === 'closed'")
+  assert.ok(closed > 0, 'the short-closed branch of the receiving card moved — re-point this test')
+  const branch = src.slice(closed, closed + 900)
+  assert.match(branch, /data-reopenpo=/, 'a short-closed order has no control on it at all — the only exit is sqlite3')
+  const i = src.indexOf("querySelectorAll('[data-reopenpo]')")
+  assert.ok(i > 0, 'the reopen button is rendered but nothing is bound to it')
+  assert.match(src.slice(i, i + 600), /purchase-orders\/\$\{b\.dataset\.reopenpo\}\/reopen/, 'it must call the reopen route')
+})
+
+await t('…and the reopen route exists and never returns the order to draft', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("'/api/purchase-orders/:id/reopen'")
+  assert.ok(i > 0, 'there is no reopen route — a short-closed purchase order is a one-way door')
+  // Strip comments: the docstring above the handler explains the draft hazard by naming it, and
+  // an assertion that matches prose instead of code passes on a broken fix.
+  const body = src.slice(i, i + 1400).split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  assert.match(body, /requireRole\('manager'\)/, 'reopening a placed order is not a shop-floor action')
+  assert.ok(!/'draft'/.test(body), "reopen must never return a PO to 'draft' — poAlreadySent() would then let /po/submit place a second real, chargeable order")
+  assert.match(body, /placed_manually/, 'an order that was placed by hand has to go back to placed_manually, not submitted')
+})
+
 /* ---------- a receipt entered by mistake can be walked back from the screen (v18) ----------
  *
  * The receiving dialog pre-fills every line with the FULL outstanding count, so one click on

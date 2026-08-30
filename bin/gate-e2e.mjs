@@ -1211,6 +1211,29 @@ try {
     const acts = ((await req('GET', '/api/activities')).json || []).filter((a) => /short-closed/.test(String(a.description || '')))
     chk('…and the timeline says it happened', String(acts.length >= 1), '^true$')
 
+    /* A short-closed order was the one PO state with no way out. Short-close sits nine pixels
+     * from Receive on the same card, and the distributor who says the balance is cancelled and
+     * then ships it a week later is routine. /receive never had a status guard, so the server
+     * would always have taken that late delivery — there was simply no control that reached it,
+     * and no route that put the order back to open. sqlite3 was the only exit. */
+    r = await req('POST', `/api/purchase-orders/${shortPo?.id}/reopen`, { body: {} })
+    chk('a short-closed order can be reopened', String(r.status), '^200$')
+    chk('…and it is no longer closed', String(r.json?.purchase_order?.status), '^partial$')
+    chk('…without inventing blanks that never arrived', String(r.json?.purchase_order?.received), `^${arrived?.qty_ordered}$`)
+    chk('…and the shortage is still outstanding', String(r.json?.purchase_order?.short > 0), '^true$')
+    // It must not fall back to 'draft': 'draft' is not in poAlreadySent(), so /po/submit would
+    // wave a second real, chargeable order through at the distributor.
+    r = await req('POST', `/api/jobs/${shortJ}/po/submit`, { body: {} })
+    chk('…and reopening does not let a second real order be placed', String(r.json?.already === true || r.status === 409), '^true$')
+    // The balance turns up after all — the whole point of reopening.
+    const late = (shortPo?.lines || [])[0]
+    r = await req('POST', `/api/purchase-orders/${shortPo?.id}/receive`, { body: { receipts: [{ line_id: late?.id, qty: late?.qty_ordered }] } })
+    chk('…and the late delivery can then be received', String(r.json?.short), '^0$')
+    chk('…which settles the order', String(r.json?.status), '^received$')
+    // Reopening an order that is not closed is a no-op, not a way to rewind a live one.
+    r = await req('POST', `/api/purchase-orders/${shortPo?.id}/reopen`, { body: {} })
+    chk('reopening an order that is not closed changes nothing', String(r.json?.already === true && r.json?.purchase_order?.status === 'received'), '^true$')
+
     r = await req('DELETE', `/api/jobs/${shortJ}`)
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }

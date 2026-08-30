@@ -643,7 +643,13 @@ function renderReceiving(jobId, pos) {
       </div>
       ${shortLines.length ? `<div class="dim" style="font-size:11.5px;margin-top:5px">Short: ${shortLines.map((l) => `${l.short} ${esc(l.size)}`).join(', ')}</div>` : ''}
       ${po.status === 'closed'
-        ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Short-closed — ${po.short} never arrived</div>`
+        // 'closed' was the one state on this card with no button on it, and Short-close sits nine
+        // pixels from Receive — so the mis-click is routine, and so is the distributor who ships
+        // the "cancelled" balance a week later. Reopening puts the order back in the state it was
+        // in before, which is what /receive would have done on its own; the shop just had nothing
+        // that reached it.
+        ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Short-closed — ${po.short} never arrived</div>
+           <button class="btn ghost sm" data-reopenpo="${po.id}" style="margin-top:7px">Reopen order</button>`
         : po.fully_received
           // "✓ Fully received" used to be the whole branch, and it was a one-way door. The dialog
           // pre-fills the full outstanding count, so one click books the lot — and then there was
@@ -660,6 +666,17 @@ function renderReceiving(jobId, pos) {
   }).join('')
   body.querySelectorAll('[data-recv]').forEach((b) => {
     b.addEventListener('click', () => { const po = pos.find((x) => String(x.id) === b.dataset.recv); if (po) openReceive(jobId, po) })
+  })
+  body.querySelectorAll('[data-reopenpo]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (b.disabled) return
+      b.disabled = true
+      try {
+        await api.post(`/api/purchase-orders/${b.dataset.reopenpo}/reopen`, {})
+        toast('Order reopened — you can receive the balance or short-close it again')
+        jobDetailView(jobId)
+      } catch (e) { b.disabled = false; toast(e.message, true) }
+    })
   })
   body.querySelectorAll('[data-closepo]').forEach((b) => {
     b.addEventListener('click', () => confirmModal('Short-close this order?',

@@ -5288,6 +5288,35 @@ app.post('/api/purchase-orders/:id/close', requireRole('manager'), wrap((req, re
   res.json({ ok: true, purchase_order: getPurchaseOrder(po.id) })
 }))
 
+/**
+ * Reopen a short-closed purchase order: the balance turned up after all, or Short-close was hit
+ * by mistake.
+ *
+ * 'closed' was the one purchase-order state with no way out. renderReceiving draws buttons on
+ * every other state — "Receive blanks" and "Short-close" while it is open, "Correct receipt" once
+ * it is fully received — and for 'closed' it printed a line of text and nothing else. Short-close
+ * sits nine pixels from Receive on the same card, so the mis-click is the routine one, and the
+ * real case is just as routine: a distributor who said the balance was cancelled ships it a week
+ * later. The server would have taken that delivery all along — /receive has no status guard and
+ * receivePurchaseOrder walks the status back on its own — but the shop had no control that
+ * reaches it. The only exit was sqlite3.
+ *
+ * The status it returns to is the one receivePurchaseOrder computes for the same situation, for
+ * the same reason: it must never fall back to 'draft', because 'draft' is not in poAlreadySent()
+ * and /po/submit would then wave a second real, chargeable order through.
+ */
+app.post('/api/purchase-orders/:id/reopen', requireRole('manager'), wrap((req, res) => {
+  const po = getPurchaseOrder(+req.params.id)
+  if (!po) return res.status(404).json({ error: 'Purchase order not found', code: 'not_found' })
+  if (po.status !== 'closed') return res.json({ ok: true, already: true, purchase_order: po })
+  const status = po.fully_received ? 'received'
+    : po.received > 0 ? 'partial'
+    : po.submitted_at ? 'submitted' : 'placed_manually'
+  run('UPDATE purchase_orders SET status = ?, updated_at = ? WHERE id = ?', status, now(), po.id)
+  logActivity('note', `${po.po_number || `PO #${po.id}`} reopened — ${po.short} still outstanding`, { job_id: po.job_id })
+  res.json({ ok: true, purchase_order: getPurchaseOrder(po.id) })
+}))
+
 /* ================= RIP / PRINT PACKAGE ================= */
 
 /**
