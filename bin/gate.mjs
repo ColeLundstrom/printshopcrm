@@ -3185,11 +3185,15 @@ await t('the error branch puts the Run button back and keeps the pasted email', 
   // paths, and the sidebar's Autopilot link sets the hash it is already on, which fires no
   // hashchange and repaints nothing. The one escape was F5 — which re-runs autopilotView() and
   // draws #ap-text empty, taking the customer's pasted email with it.
-  const catchBlock = src.slice(src.indexOf('} catch (e) {', src.indexOf('async function run()')), src.indexOf('/** Review mode'))
+  // Located on `async function run(` rather than `run()`: run() took a resume argument in round
+  // 24 so a retry after the server had already booked the order resumes instead of minting a
+  // second estimate, and pinning this to the old signature made indexOf return -1 and silently
+  // slice from the FIRST catch in the file. The subject of this case is unchanged.
+  const catchBlock = src.slice(src.indexOf('} catch (e) {', src.indexOf('async function run(')), src.indexOf('/** Review mode'))
   assert.ok(catchBlock.length > 40, 'found run()\'s catch')
   assert.doesNotMatch(catchBlock, /innerHTML \+=/, 'appending an error leaves a screen with no control on it')
   assert.match(catchBlock, /id="ap-run"/, 'the error state has to carry a Run button')
-  assert.match(catchBlock, /\$\('#ap-run'\)\.onclick = run/, '…and it has to be bound')
+  assert.match(catchBlock, /\$\('#ap-run'\)\.onclick = /, '…and it has to be bound')
   assert.doesNotMatch(catchBlock, /\$\('#ap-text'\)/, 'and it must not touch the paste')
   assert.match(catchBlock, /role="alert"/, 'the message is announced, not just drawn')
   // The paste really does live outside the block run() replaces, or none of the above helps.
@@ -10656,6 +10660,54 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   // 100+ sends in a sitting, so the old per-route 60 would have turned this into a broken Send.
   assert.match(src, /const OUTBOUND_MAX = [^\n]*\|\| 300/, 'the shared ceiling must clear a real invoice run')
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
+})
+
+section('Autopilot\'s own "Try again" does not book the order twice')
+
+await t('a retry after the books were written resumes instead of re-posting', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const ap = readFileSync(join(root, 'public/js/views/autopilot.js'), 'utf8')
+  const code = ap.split('\n').map((l) => l.replace(/\s*\/\/.*$/, '')).join('\n')
+  // Phase 1 of POST /api/autopilot writes the contact, the estimate number and the job number
+  // BEFORE any of the client steps that can throw (loadImg, renderMockup, canvas.toBlob, the art
+  // upload). The catch offered one button, "Try again →", bound straight back to run() — so one
+  // pasted email became EST-1010/JOB-1009 and then EST-1011/JOB-1010, on one customer, with
+  // nothing on the board saying they are the same order and no merge anywhere in the product.
+  // In Full Auto the first pass has already emailed the customer, so the second mails them a
+  // second differently-numbered estimate for the same job.
+  assert.match(code, /async function run\(resume = null\)/, 'run() has to be able to resume')
+  assert.match(code, /let r = resume/, '…and skip the POST when the server already booked it')
+  const caught = code.slice(code.indexOf('} catch (e) {', code.indexOf('async function run(')))
+  assert.match(caught, /\$\('#ap-run'\)\.onclick = \(\) => run\(lastRun\)/,
+    'the retry button must resume the booked order, not re-post the paste')
+  assert.doesNotMatch(caught, /onclick = run\b/, 'the bare re-post binding is the defect')
+  // An onclick handler is CALLED WITH THE EVENT, so the PRIMARY button must not bind `run`
+  // directly either — that would hand a MouseEvent to `resume` and skip the POST entirely.
+  assert.doesNotMatch(code, /\$\('#ap-run'\)\.onclick = run\n/, 'a bare binding passes the click event as resume')
+  assert.match(code, /resume && Array\.isArray\(resume\.steps\)/,
+    'and only a real run result may count as a resume, whatever gets passed in')
+  // A fresh screen must never resume onto the previous customer's job — same class as the
+  // uploadedArt leak this file already documents.
+  const view = code.slice(code.indexOf('export async function autopilotView'), code.indexOf("$('#view').innerHTML"))
+  assert.match(view, /lastRun = null/, 'a new Autopilot screen has to forget the last run')
+})
+
+await t('an attachment that is not an image says so instead of showing an empty error', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ap = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/js/views/autopilot.js'), 'utf8')
+  const fn = ap.slice(ap.indexOf('const loadImg = (src)'), ap.indexOf('const loadImg = (src)') + 600)
+  // Image.onerror rejects with a ProgressEvent, not an Error, so e.message was undefined — and
+  // esc(undefined) and toast(undefined) both render the empty string. The shop got a blank red
+  // box. The drop zone takes ANY file (accept="image/*" is only on the hidden picker), and .ai /
+  // .eps is the ordinary deliverable a print customer emails.
+  assert.doesNotMatch(fn, /i\.onerror = rej\b/, 'rejecting with the raw event renders an empty error box')
+  assert.match(fn, /rej\(new Error\(/, 'the failure has to carry a message a person can act on')
+  assert.match(fn, /PNG or JPG/, '…and name what to do instead')
 })
 
 section('four small things that were quietly wrong')

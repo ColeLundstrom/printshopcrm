@@ -40,6 +40,12 @@ const STEPS = [
 ]
 
 let uploadedArt = null
+// The record POST /api/autopilot already made, if it succeeded and a LATER step then threw.
+// Phase 1 of that route writes the contact, the estimate number and the job number before any of
+// the client-side steps below can fail, so a retry that re-POSTs mints a second numbered estimate
+// and a second job for the same order — with nothing on the board saying they are the same, and no
+// merge anywhere in the product. Held so the retry can resume instead.
+let lastRun = null
 /** Drop the held blob and its object URL. Called on every (re)render and before every new pick. */
 function releaseArt() {
   if (uploadedArt) { try { URL.revokeObjectURL(uploadedArt) } catch { /* already released */ } }
@@ -56,6 +62,7 @@ export async function autopilotView() {
   // carried the PREVIOUS customer's logo, uploaded under the new job's number, and the step list
   // reported "Pulled from the attachment" for an attachment that customer never sent.
   releaseArt()
+  lastRun = null   // a fresh screen is a fresh order — never resume onto the last customer's job
   $('#view').innerHTML = `
     <div class="ap">
       <div class="ap-hero">
@@ -115,12 +122,14 @@ export async function autopilotView() {
     mode = t.dataset.mode; store.set('psc-ap-mode', mode)
     $$('#ap-dial button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode))
   })
-  $('#ap-run').onclick = run
+  // () => run(), not `run`: an onclick handler is CALLED WITH THE EVENT, so binding the function
+  // directly would pass a MouseEvent as `resume` and the run would skip the POST it exists to make.
+  $('#ap-run').onclick = () => run()
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function run() {
+async function run(resume = null) {
   const text = $('#ap-text').value.trim()
   if (text.length < 8) return toast('Paste the customer email first', true)
 
@@ -144,8 +153,16 @@ async function run() {
   }
 
   try {
-    activate('read'); await sleep(450)
-    const r = await api.post('/api/autopilot', { text, contact_name: $('#ap-name').value, contact_email: $('#ap-email').value, mode })
+    // Resume, if the server already booked this order and a later step threw. Re-POSTing was
+    // measured to produce EST-1010/JOB-1009 and then EST-1011/JOB-1010 for one pasted email.
+    // `resume` must look like a run result, not merely be truthy — this is the one place a stray
+    // argument (a click event, say) would silently skip creating the estimate the screen reports.
+    let r = resume && Array.isArray(resume.steps) ? resume : null
+    if (!r) {
+      activate('read'); await sleep(450)
+      r = await api.post('/api/autopilot', { text, contact_name: $('#ap-name').value, contact_email: $('#ap-email').value, mode })
+    }
+    lastRun = r
     const detailOf = (k) => r.steps.find((s) => s.key === k)?.detail || ''
 
     // Phase 1 always runs — read, customer, draft estimate.
@@ -190,9 +207,13 @@ async function run() {
     $('#ap-stage').innerHTML = `<div class="ap-empty">
       <div class="ap-orbit"><span>◆</span></div>
       <p class="ap-err" role="alert">${esc(e.message)}</p>
-      <button class="btn ap-go" id="ap-run">Try again →</button>
+      <button class="btn ap-go" id="ap-run">${lastRun ? 'Finish the mockup →' : 'Try again →'}</button>
     </div>`
-    $('#ap-run').onclick = run // #ap-text is in the other card and still holds what was pasted
+    // A failure BEFORE the server wrote anything re-runs the whole thing, which is right. A failure
+    // after it re-enters at the art step against the estimate and job that already exist, so the
+    // shop is never billed a second estimate number for one order — and in Full Auto, so the
+    // customer is never emailed a second, differently-numbered estimate for the same job.
+    $('#ap-run').onclick = () => run(lastRun) // #ap-text is in the other card and still holds the paste
   }
 }
 
@@ -288,7 +309,18 @@ const garmentFor = (order) => {
   return GARMENT_COLORS.find((g) => g.name === name) || GARMENT_COLORS[0]
 }
 
-const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = src })
+// Image.onerror hands back a ProgressEvent, not an Error, so `e.message` was undefined and both
+// esc() and toast() render that as the empty string — the shop got an EMPTY red alert box with no
+// clue what failed. The drop zone accepts any file (accept="image/*" is only on the hidden picker),
+// and .ai / .eps / a CMYK .tif is the ordinary deliverable a print customer emails, so this is the
+// commonest way to reach it. Reject with something a person can act on.
+const loadImg = (src) => new Promise((res, rej) => {
+  const i = new Image()
+  i.crossOrigin = 'anonymous'
+  i.onload = () => res(i)
+  i.onerror = () => rej(new Error('That attachment could not be read as an image — attach a PNG or JPG, or leave it blank and Autopilot will draw one.'))
+  i.src = src
+})
 
 /** A clean generative emblem when no art was attached — initials in a ringed badge. */
 function synthArt(order, name) {
