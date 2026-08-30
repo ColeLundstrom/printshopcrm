@@ -49,7 +49,7 @@ import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
-import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable } from './lib/notify.mjs'
+import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable, oneRecipient, oneDestination } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
 import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor, bandFor } from './lib/pricebook.mjs'
@@ -2038,10 +2038,28 @@ app.get('/api/contacts/:id', wrap((req, res) => {
   })
 }))
 
+/**
+ * `contacts.email` is a RECIPIENT, and it was stored with no validation at all — `str(b.email)`.
+ * It goes on to nodemailer's `to:` and to the relay's `To`, both of which are address-LIST fields,
+ * so `a@x.com, b@y.com, c@z.com` in this box is a fan-out. lib/notify.mjs now refuses to put a
+ * list on the wire, which covers every one of the nine doors that writes this column; this is the
+ * other half, so the person typing is told at the point of typing rather than finding out from an
+ * outbox row later. Blank stays legal — a walk-in has no email and never needed one.
+ */
+const badRecipient = (v) => str(v).trim() && !oneRecipient(str(v))
+const badPhone = (v) => str(v).trim() && !oneDestination(str(v))
+const contactAddressError = (b) => (
+  badRecipient(b.email) ? 'That does not look like a single email address — one address per customer, no commas.'
+    : badPhone(b.phone) ? 'That does not look like a single phone number — one number per customer, no commas.'
+      : ''
+)
+
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
   const name = str(b.name).trim()
   if (!name) return res.status(400).json({ error: 'Name is required' })
+  const bad = contactAddressError(b)
+  if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
   const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
@@ -2059,6 +2077,8 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
   const name = str(b.name).trim()
   if (!name) return res.status(400).json({ error: 'A customer needs a name.' })
+  const bad = contactAddressError(b)
+  if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, updated_at=? WHERE id=?',
     name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
     b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), now(), id)

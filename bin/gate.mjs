@@ -8723,6 +8723,86 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- one message, one recipient ---------- */
+/*
+ * `contacts.email` is a RECIPIENT and nothing validated it: `str(b.email)` on POST and PUT
+ * /api/contacts, a length cap and nothing else on the v1 API, raw on the anonymous embed insert.
+ * It goes on to nodemailer's `to:` and the relay's `To`, both of which are address-LIST fields.
+ * So one contact row reading `a@x.com, b@y.com, c@z.com` is a fan-out — and the shipped,
+ * enabled-by-default "New lead nurture" rule fires email.customer on contact.created, so a single
+ * POST /api/contacts from a STAFF account mails N strangers From: the shop with the shop's SPF
+ * alignment, or through the PLATFORM's relay on a shop with no SMTP of its own. The 300/hour
+ * outbound cap counts requests, so without this it counts one request carrying 200 recipients once.
+ *
+ * Enforced at the delivery chokepoint rather than at each of the nine write doors, because the
+ * tenth door will not know to check.
+ */
+section('one message goes to one recipient')
+{
+  const { oneRecipient, oneDestination, sendEmail, sendSms } = await import('../lib/notify.mjs')
+
+  await t('an ordinary address is untouched', () => {
+    for (const ok of ['a@x.com', 'a.b+tag@sub.example.co.uk', "o'brien@x.com", 'A@X.COM']) {
+      assert.equal(oneRecipient(ok), ok, ok)
+    }
+  })
+  await t('…and a LIST is not an address', () => {
+    for (const bad of ['a@x.com, b@y.com', 'a@x.com;b@y.com', 'a@x.com,b@y.com', '"a,b"@x.com']) {
+      assert.equal(oneRecipient(bad), '', bad)
+    }
+  })
+  await t('…and neither is a header', () => {
+    for (const bad of ['a@x.com\nBcc: c@z.com', 'a@x.com\r\nBcc: c@z.com', 'Shop <a@x.com>', 'a@x.com b@y.com']) {
+      assert.equal(oneRecipient(bad), '', JSON.stringify(bad))
+    }
+  })
+  await t('…and something that is not an address at all is refused', () => {
+    for (const bad of ['', null, undefined, 'a@@x.com', 'a@x', '@x.com', 'a@', `${'x'.repeat(250)}@y.com`]) {
+      assert.equal(oneRecipient(bad), '', JSON.stringify(bad))
+    }
+  })
+  await t('a phone number is judged on the same rule, but the shop’s own formats still pass', () => {
+    // The receptionist extracts and stores exactly these shapes on purpose — refusing them would
+    // silently kill SMS for any shop that types a number the way a person writes one.
+    for (const ok of ['+17145551234', '(714) 555-1234', '714.555.1234', '+1 714 555 1234', '+44 20 7946 0958']) {
+      assert.equal(oneDestination(ok), ok, ok)
+    }
+    for (const bad of ['7145551234,7145559999', '714\n555', 'call me', '']) {
+      assert.equal(oneDestination(bad), '', JSON.stringify(bad))
+    }
+  })
+
+  await t('sendEmail refuses a list, and says so honestly rather than delivering', async () => {
+    // No credentials wired, so a well-formed address degrades to `logged` exactly as before —
+    // the refusal has to be distinguishable from that, or the outbox cannot show the shop why.
+    const good = await sendEmail({ to: 'a@x.com', subject: 's', body: 'b', settings: {} })
+    assert.equal(good.via, 'logged', 'precondition: an ordinary address still takes the normal path')
+    const bad = await sendEmail({ to: 'a@x.com, b@y.com, c@z.com', subject: 's', body: 'b', settings: {} })
+    assert.equal(bad.delivered, false)
+    assert.equal(bad.via, 'error', 'it must record as an error, not as "logged"')
+    assert.match(bad.error, /single valid email address/, '…and name the reason on the outbox row')
+  })
+  await t('…and sendSms refuses the same way', async () => {
+    const bad = await sendSms({ to: '+17145551234,+17145559999', body: 'b', settings: {} })
+    assert.equal(bad.delivered, false)
+    assert.equal(bad.via, 'error')
+    assert.equal((await sendSms({ to: '(714) 555-1234', body: 'b', settings: {} })).via, 'logged',
+      'a number a person actually typed must still take the normal path')
+  })
+
+  await t('…and the two hand-edited doors tell the person typing, at the point of typing', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+    for (const door of ["app.post('/api/contacts'", "app.put('/api/contacts/:id'"]) {
+      const i = src.indexOf(door)
+      assert.ok(i > 0, `precondition: ${door} exists`)
+      assert.match(src.slice(i, i + 900), /contactAddressError\(b\)/, `${door} must refuse a list before it stores one`)
+    }
+  })
+}
+
 /* ---------- the page you can only reach when you are locked out ---------- */
 /*
  * public/auth.html's expired-reset-link handler did `$('submit').classList.add('hide')`, and
