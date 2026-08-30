@@ -95,7 +95,7 @@ export async function agentView() {
       </div>
 
       <div class="card">
-        <div class="card-h"><h3>Chats & leads</h3><div class="spacer"></div><span class="pill ${sessions.sessions.length ? 'green' : ''}">${sessions.sessions.length}</span></div>
+        <div class="card-h"><h3>Chats &amp; leads</h3><div class="spacer"></div>${sessions.waiting ? `<span class="pill red">${sessions.waiting} waiting on a person</span>` : ''}<span class="pill ${sessions.sessions.length ? 'green' : ''}">${sessions.sessions.length}</span></div>
         <div id="sessions">${renderSessions(sessions.sessions)}</div>
       </div>
     </div>

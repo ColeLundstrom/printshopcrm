@@ -84,7 +84,7 @@ export async function automationsView() {
       </div>
 
       <div class="card">
-        <div class="card-h"><h3>What they did</h3><div class="spacer"></div><a class="btn ghost sm" href="#/outbox">Outbox</a></div>
+        <div class="card-h"><h3>What they did</h3>${d.failed_runs ? `<span class="pill red">${d.failed_runs} failed</span>` : ''}<div class="spacer"></div><a class="btn ghost sm" href="#/outbox">Outbox</a></div>
         <div class="card-b" style="max-height:520px;overflow-y:auto">
           ${d.runs.length ? `<div class="tl">${d.runs.map((r) => `
             <div class="tl-i ${r.status === 'ran' ? '' : 'gray'}">

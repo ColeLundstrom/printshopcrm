@@ -1897,7 +1897,78 @@ try {
     r = await req('POST', `/api/developers/deliveries/${dead?.id}/redeliver`, { body: {} })
     chk('a paused webhook is not quietly re-driven behind the owner\'s back', String(r.status), '^409$')
     chk('…and says what to do about it first', r.text, 'paused')
+    /* ---------- …and the button has to still be on the screen a day later ----------
+     * The delivery log is a bare `ORDER BY d.id DESC LIMIT 25` over ALL statuses, and "Send again"
+     * is drawn per row and only on status='failed'. So an hour's outage against a dead endpoint,
+     * followed by an ordinary afternoon of successful deliveries, pushes every failure off the
+     * window — and POST /api/developers/deliveries/:id/redeliver still works perfectly while
+     * nothing in the product can name an id to give it. When retention prunes, the payloads go
+     * with them. This is the Outbox defect on the route the redeliver feature compares itself to.
+     * The case above creates ONE delivery, so the window never overflowed and it stayed green. */
+    r = await req('POST', '/api/developers/webhooks', { body: { url: 'https://example.com/hook-window', events: ['contact.created'] } })
+    const winSub = r.json?.id
+    shopDb('gate-shop', (db) => {
+      const ins = db.prepare("INSERT INTO webhook_deliveries (subscription_id, event, payload, status, attempts, last_error, next_attempt_at, created_at) VALUES (?,?,?,?,?,?,NULL,datetime('now'))")
+      for (let i = 0; i < 40; i++) ins.run(winSub, 'invoice.paid', '{}', 'failed', 3, 'HTTP 502')
+      for (let i = 0; i < 30; i++) ins.run(winSub, 'contact.created', '{}', 'delivered', 1, null)
+    })
+    const win = await req('GET', '/api/developers')
+    const winFailed = (win.json?.deliveries || []).filter((x) => x.status === 'failed').length
+    chk('an outage buried under a good afternoon still offers Send again', String(winFailed > 0), '^true$')
+    chk('…and the screen is told how many are really waiting', String(Number(win.json?.failed_deliveries ?? 0) >= 40), '^true$')
+    shopDb('gate-shop', (db) => db.prepare('DELETE FROM webhook_deliveries WHERE subscription_id = ?').run(winSub))
+    await req('DELETE', `/api/developers/webhooks/${winSub}`)
+
     await req('DELETE', `/api/developers/webhooks/${subId}`)
+  }
+
+  /* ---------- the only escape is drawn per row, on a window ordinary traffic overflows ----------
+   * Three more of the shape the Outbox fix closed. In each one a permanently latched failure can
+   * only be released by a button the client renders per row, from a list the server caps
+   * newest-first across ALL statuses — so success pushes the failures out of reach, and no screen
+   * anywhere says they exist. GET /api/qbo/queue already sorts its failures to the top of its own
+   * cap for exactly this reason; these three never got the same rule. */
+  {
+    // 1. automation_runs. already() latches on 'error' PERMANENTLY — its own comment names
+    //    POST /api/automations/runs/:id/retry as "the real escape" — and automations.js draws
+    //    "Try again" only on status='error'.
+    shopDb('gate-shop', (db) => {
+      const ins = db.prepare("INSERT INTO automation_runs (automation_id, automation_name, trigger, entity_type, entity_id, entity_label, status, detail, created_at) VALUES (1,?,?,'invoice',?,?,?,?,datetime('now'))")
+      for (let i = 0; i < 8; i++) ins.run('Chase overdue invoices', 'invoice.overdue', 10 + i, `INV-10${10 + i}`, 'error', 'SMTP 421 greylisted')
+      for (let i = 0; i < 70; i++) ins.run('Chase overdue invoices', 'invoice.overdue', 200 + i, `INV-20${i}`, 'ran', null)
+    })
+    const au = await req('GET', '/api/automations')
+    const errs = (au.json?.runs || []).filter((x) => x.status === 'error').length
+    chk('a latched automation failure keeps its Try again button', String(errs > 0), '^true$')
+    chk('…and the screen is told how many failed', String(Number(au.json?.failed_runs ?? 0) >= 8), '^true$')
+    shopDb('gate-shop', (db) => db.exec("DELETE FROM automation_runs WHERE automation_name = 'Chase overdue invoices'"))
+
+    // 2. automation_pending. `status IS NULL` is 1 for a LIVE row and 0 for a parked one, so
+    //    `ORDER BY status IS NULL DESC` sorted the live drip to the top and the parked rows —
+    //    the only ones carrying Resume and Cancel — past the LIMIT 100.
+    shopDb('gate-shop', (db) => {
+      const ins = db.prepare("INSERT INTO automation_pending (automation_id, automation_name, trigger, ctx, actions, next_index, due_at, label, status, attempts, note, created_at) VALUES (1,?,?,'{}','[]',0,datetime('now','+1 day'),?,?,0,?,datetime('now'))")
+      for (let i = 0; i < 3; i++) ins.run('Quote follow-up drip', 'estimate.sent', `Parked customer ${i}`, 'failed', 'SMTP 535 authentication failed')
+      for (let i = 0; i < 130; i++) ins.run('Quote follow-up drip', 'estimate.sent', `Live customer ${i}`, null, null)
+    })
+    const au2 = await req('GET', '/api/automations')
+    const parked = (au2.json?.pending || []).filter((x) => x.status).length
+    chk('a parked drip is inside the window that draws its Resume button', String(parked >= 3), '^true$')
+    chk('…and the KPI beside it is not contradicting the list', String(Number(au2.json?.stats?.parked ?? 0) >= 3), '^true$')
+    shopDb('gate-shop', (db) => db.exec("DELETE FROM automation_pending WHERE automation_name = 'Quote follow-up drip'"))
+
+    // 3. chat_sessions. 'handoff' means a visitor asked to speak to a person, and the Receptionist
+    //    list is the only opener and the only caller of the takeover reply route.
+    shopDb('gate-shop', (db) => {
+      const ins = db.prepare("INSERT INTO chat_sessions (public_id, channel, status, state, page_url, created_at, updated_at) VALUES (?,'web',?,'{}','https://shop.test',datetime('now'),?)")
+      for (let i = 0; i < 3; i++) ins.run(`handoff-${i}`, 'handoff', "2026-01-01 00:00:00")
+      for (let i = 0; i < 80; i++) ins.run(`closed-${i}`, 'closed', "2026-08-01 00:00:00")
+    })
+    const se = await req('GET', '/api/agent/sessions')
+    const waiting = (se.json?.sessions || []).filter((x) => x.status === 'handoff').length
+    chk('a visitor who asked for a human is still openable', String(waiting >= 3), '^true$')
+    chk('…and the card is told how many are waiting', String(Number(se.json?.waiting ?? 0) >= 3), '^true$')
+    shopDb('gate-shop', (db) => db.exec("DELETE FROM chat_sessions WHERE public_id LIKE 'handoff-%' OR public_id LIKE 'closed-%'"))
   }
 
   /* ---------- one invoice, one status, whichever endpoint you ask ----------

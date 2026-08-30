@@ -104,7 +104,7 @@ function paint(d) {
     </div>
 
     ${d.deliveries.length ? `<div class="card">
-      <h2>Recent deliveries</h2>
+      <h2>Recent deliveries${d.failed_deliveries ? ` <span class="pill red">${d.failed_deliveries} failed</span>` : ''}</h2>
       <table class="tbl">
         <tr><th>Event</th><th>URL</th><th>Status</th><th>Detail</th><th>When</th><th></th></tr>
         ${d.deliveries.map((r) => `<tr>

@@ -3861,7 +3861,17 @@ app.get('/api/automations', wrap((_req, res) => {
     // that quietly does nothing is only better than one that mails everybody if you can SEE it.
     automations: listAutomations().map((a) => ({ ...a, params: parse(a.params, {}), needs_setup: needsSetup(a) })),
     triggers: TRIGGERS, actions: ACTIONS, conditions: CONDITIONS,
-    runs: all(`SELECT * FROM automation_runs ORDER BY id DESC LIMIT 60`),
+    // Failures first, then the rest of the window. This is the rule GET /api/qbo/queue already
+    // sorts by, and the defect the Outbox's `?needs=1` filter closed: the ONE button that releases
+    // a permanently latched failure is drawn per row, so a failure that falls off a newest-first
+    // cap is a state no screen in the product can reach.
+    // Here: already() counts status='error' as fired, permanently, and its own comment names
+    // POST /api/automations/runs/:id/retry as "the real escape". automations.js draws Try again
+    // only on an 'error' row. A greylisted night writes 8 of them; the next working day writes 60
+    // ordinary 'ran' rows on top; the 8 overdue chases become unre-runnable, and the rule still
+    // reads green.
+    runs: all(`SELECT * FROM automation_runs ORDER BY (status != 'error'), id DESC LIMIT 60`),
+    failed_runs: get(`SELECT COUNT(*) AS c FROM automation_runs WHERE status = 'error'`).c,
     stats: {
       enabled: get(`SELECT COUNT(*) AS c FROM automations WHERE enabled = 1`).c,
       total_runs: get(`SELECT COALESCE(SUM(run_count),0) AS c FROM automations`).c,
@@ -3873,9 +3883,15 @@ app.get('/api/automations', wrap((_req, res) => {
     // rule, or parked because its record was deleted was previously visible only as an integer
     // on a KPI card — there was no screen anywhere that could name WHO was in a sequence, and no
     // way to resume or cancel one. A queue a human cannot see is a queue they cannot fix.
+    //
+    // `status IS NULL` is 1 for a LIVE row and 0 for a parked one, so the `DESC` that used to end
+    // this ORDER BY sorted the live drip to the top and pushed the parked rows — the only ones
+    // carrying Resume and Cancel — past the LIMIT. `stats.parked` above is an unbounded COUNT(*),
+    // so the card said "3 parked" over a table containing none of them. Ascending puts the rows
+    // the shop is being asked to act on where this query exists to put them.
     pending: all(`SELECT id, automation_id, automation_name, trigger, next_index, due_at, label,
                          status, attempts, note, created_at
-                    FROM automation_pending ORDER BY status IS NULL DESC, due_at LIMIT 100`),
+                    FROM automation_pending ORDER BY status IS NULL, due_at LIMIT 100`),
   })
 }))
 
@@ -4467,7 +4483,12 @@ app.get('/api/agent/config', async (_req, res) => {
 
 app.put('/api/agent/config', requireRole('manager'), wrap((req, res) => res.json({ config: saveBotConfig(req.body || {}) })))
 
-app.get('/api/agent/sessions', wrap((_req, res) => res.json({ sessions: listSessions() })))
+app.get('/api/agent/sessions', wrap((_req, res) => res.json({
+  sessions: listSessions(),
+  // Same rule as the three lists above: the count is unbounded so the card can say how many
+  // people are actually waiting, rather than reporting the length of a capped window.
+  waiting: get("SELECT COUNT(*) AS c FROM chat_sessions WHERE status = 'handoff'").c,
+})))
 
 app.get('/api/agent/sessions/:pid', wrap((req, res) => {
   const s = sessionByPublicId(req.params.pid)
@@ -5840,9 +5861,18 @@ app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
     api_key_set: !!key,
     api_key_preview: key ? `${key.slice(0, 13)}…${key.slice(-4)}` : '',
     webhooks: listWebhooks(),
+    // Failures first, then the rest of the window. This is the rule GET /api/qbo/queue already
+    // sorts by, and the defect the Outbox's `?needs=1` filter closed: the ONE button that releases
+    // a permanently latched failure is drawn per row, so a failure that falls off a newest-first
+    // cap is a state no screen in the product can reach.
+    // Here: "Send again" is drawn only on status='failed', and redeliver is the only way back into
+    // the pipeline. An hour's outage burns 40 deliveries to 'failed' with next_attempt_at NULL,
+    // which retryDueWebhooks() never looks at again; one afternoon of successful deliveries hides
+    // every one of them. When PSC_WEBHOOK_RETENTION_DAYS prunes, the payloads go too.
     deliveries: all(`SELECT d.id, d.event, d.status, d.attempts, d.last_error, d.created_at, s.url
                      FROM webhook_deliveries d JOIN webhook_subscriptions s ON s.id = d.subscription_id
-                     ORDER BY d.id DESC LIMIT 25`),
+                     ORDER BY (d.status != 'failed'), d.id DESC LIMIT 25`),
+    failed_deliveries: get("SELECT COUNT(*) AS c FROM webhook_deliveries WHERE status = 'failed'").c,
     events: ['contact.created', 'estimate.sent', 'estimate.approved', 'invoice.paid', 'job.stage', 'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received'],
     docs: '/docs-api.html',
   })
