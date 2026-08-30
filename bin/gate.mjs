@@ -2618,6 +2618,111 @@ section('the app does not discard what the shop has typed')
  * estimate numbers, and the shop then has to work out which one the customer was sent"), and four
  * controls with exactly that shape never got it. */
 /* ---------- no screen may end in a state with no control on it ---------- */
+/* ---------- nothing is drawn past the edge of the paper ----------
+ * Every text site in lib/pdf.mjs is supposed to go through clip() or wrap(). Four did not, and
+ * they carried the values most likely to be long — the customer's own email, the item
+ * description, a payment reference, a school-district booster-club name. There is no ellipsis and
+ * nothing on the page saying a character was lost: the tail is simply not drawn.
+ *
+ * So this is a RULE over every op the renderer emits, not four assertions: parse the content
+ * stream, measure each string with the shipped metrics, and require its right edge to land inside
+ * the margin. Written this way so the fifth unclipped site is caught when it is written. */
+section('every PDF this product prints stays on the paper')
+{
+  const pdf = await import('../lib/pdf.mjs')
+  const PAGE_W = 612
+  const MARGIN = 54
+  const W_REG = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584]
+  const W_BOLD = [278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584]
+  const wOf = (str, size, bold) => {
+    const t = bold ? W_BOLD : W_REG
+    let w = 0
+    for (const ch of str) { const c = ch.charCodeAt(0); w += c >= 32 && c <= 126 ? t[c - 32] : 556 }
+    return (w * size) / 1000
+  }
+  /** Every text op the renderer emitted: { x, y, size, bold, str }. */
+  const ops = (buf) => [...String(buf).matchAll(/\/(F1|F2) ([\d.]+) Tf 1 0 0 1 ([\d.-]+) ([\d.-]+) Tm \((.*?)\) Tj/g)]
+    .map((m) => ({ bold: m[1] === 'F2', size: Number(m[2]), x: Number(m[3]), y: Number(m[4]), str: m[5].replace(/\\([()\\])/g, '$1') }))
+  const overhang = (buf) => ops(buf)
+    .map((o) => ({ ...o, right: o.x + wOf(o.str, o.size, o.bold) }))
+    .filter((o) => o.right > PAGE_W - MARGIN + 0.5)
+
+  // Real shapes: a school-district address, a full style-and-imprint description, a booster club.
+  const LONG_EMAIL = 'katherine.vandermeulen@riverside-consolidated-schools.example.org'
+  const LONG_CO = 'Riverside Consolidated Independent School District No. 4 Athletic Booster Club'
+  const LONG_DESC = 'Gildan 18500 Heavy Blend Hooded Sweatshirt - Sport Grey - 4/0 Front + 1/0 Back'
+  const SETTINGS = { shop_name: 'Ink & Iron Print Co.', tax_rate: 8.25, estimate_terms: 'Net 30. A 3% spoilage allowance applies to every run. Rush orders carry a surcharge quoted at the time of order.' }
+  const contact = { name: 'Katherine Vandermeulen', company: LONG_CO, email: LONG_EMAIL, phone: '(714) 555-0117' }
+
+  await t('a long customer email does not run off the estimate', () => {
+    const buf = pdf.renderDocument('ESTIMATE', {
+      doc: { estimate_number: 'EST-1001', subtotal: 100, tax: 8.25, total: 108.25, status: 'sent', created_at: '2026-08-01' },
+      contact, settings: SETTINGS, items: [{ description: 'Tee', qty: 10, unit_price: 10 }],
+    })
+    const bad = overhang(buf)
+    assert.equal(bad.length, 0, `${bad.length} op(s) past the right margin, worst "${bad[0]?.str}" ending at ${bad[0]?.right?.toFixed(1)}`)
+    // …and it is trimmed honestly rather than silently cut.
+    assert.match(String(buf), /\.\.\.\) Tj/, 'a trimmed line has to say it was trimmed')
+  })
+
+  await t('a long item description does not print through the quantity', () => {
+    // DESCRIPTION starts at x=54 and was clipped to a bare literal 300, so it reached 350.7;
+    // QTY is drawn RIGHT-aligned at 372, so "12000" starts at 345.6. The gutter is 0.2pt at
+    // 1,200 pieces and negative above it — worst on exactly the orders a customer checks hardest.
+    for (const qty of [10, 1200, 12000, 250000]) {
+      const buf = pdf.renderDocument('INVOICE', {
+        doc: { invoice_number: 'INV-1', subtotal: 1, tax: 0, amount_due: 1, amount_paid: 0, created_at: '2026-08-01', status: 'unpaid' },
+        contact: { name: 'AP', email: 'ap@x.test' }, settings: SETTINGS,
+        items: [{ description: LONG_DESC, qty, unit_price: 10 }],
+      })
+      const row = ops(buf).filter((o) => o.y > 550 && o.y < 700)
+      const desc = row.find((o) => o.str.startsWith('Gildan 18500'))
+      const q = row.find((o) => /^[\d,]+$/.test(o.str) && o.x > 300 && o.x < 372)
+      assert.ok(desc && q, `found the description and the quantity for qty=${qty}`)
+      const descRight = desc.x + wOf(desc.str, desc.size, desc.bold)
+      assert.ok(q.x >= descRight + 6, `qty=${qty}: description ends at ${descRight.toFixed(1)}, quantity starts at ${q.x.toFixed(1)}`)
+    }
+  })
+
+  await t('a payment reference does not print through the amount beside it', () => {
+    const buf = pdf.renderDocument('INVOICE', {
+      doc: { invoice_number: 'INV-2', subtotal: 2000, tax: 0, amount_due: 2000, amount_paid: 1500, created_at: '2026-08-01', status: 'partial' },
+      contact: { name: 'AP', email: 'ap@x.test' }, settings: SETTINGS,
+      items: [{ description: 'Tee', qty: 10, unit_price: 200 }],
+      payments: [{ method: 'Company check #10482 from Riverside Athletics booster club', note: 'deposit', amount: 1500, created_at: '2026-08-05' }],
+    })
+    const bad = overhang(buf)
+    assert.equal(bad.length, 0, `${bad.length} op(s) past the right margin, worst "${bad[0]?.str}"`)
+    // The cheque number the shop typed was on three screens and no piece of paper.
+    assert.match(String(buf), /10482/, 'the payment reference has to reach the document')
+    assert.match(String(buf), /\(BALANCE DUE\) Tj/)
+  })
+
+  await t('a long company name does not print through TOTAL DUE on the statement', () => {
+    const buf = pdf.customerStatement({
+      contact: { company: LONG_CO, name: 'Katherine Vandermeulen', email: LONG_EMAIL },
+      settings: SETTINGS, asOf: '2026-08-29',
+      invoices: [{ invoice_number: 'INV-9', amount_due: 1234567.89, amount_paid: 0, status: 'unpaid', created_at: '2026-05-01', due_date: '2026-06-01' }],
+    })
+    const bad = overhang(buf)
+    assert.equal(bad.length, 0, `${bad.length} op(s) past the right margin, worst "${bad[0]?.str}"`)
+    const forOp = ops(buf).find((o) => o.str.startsWith('Riverside Consolidated'))
+    const due = ops(buf).find((o) => o.str.includes('1,234,567.89'))
+    assert.ok(forOp && due, 'found both the name and the balance')
+    assert.ok(forOp.x + wOf(forOp.str, forOp.size, forOp.bold) <= due.x,
+      'the customer\'s name and the amount they owe must not print through each other')
+  })
+
+  await t('the packing slip keeps its ship-to block on the paper', () => {
+    const buf = pdf.packingSlip({
+      job: { job_number: 'JOB-1042', created_at: '2026-07-02' },
+      contact, settings: SETTINGS, items: [{ description: LONG_DESC, sizes: { S: 10, M: 20, L: 20, XL: 10 } }],
+    })
+    const bad = overhang(buf)
+    assert.equal(bad.length, 0, `${bad.length} op(s) past the right margin, worst "${bad[0]?.str}"`)
+  })
+}
+
 section('a failed Autopilot run is not a dead end')
 await t('the error branch puts the Run button back and keeps the pasted email', async () => {
   const { readFileSync } = await import('node:fs')
