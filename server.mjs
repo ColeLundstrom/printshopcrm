@@ -6153,6 +6153,12 @@ const EXPORTS = {
   art_versions: () => iterate('SELECT * FROM art_versions ORDER BY id'),
   // The one everyone else drops: every line of every document, flattened, with sizes.
   line_items: function* () {
+    // Hoisted, because getUpcharges() is a full `SELECT key, value FROM settings` plus an object
+    // build plus a JSON.parse, and it was called TWICE PER LINE. On a three-year shop that is
+    // 60,020 settings scans in one request — 3.0s of wall clock, and because SQLite here is
+    // synchronous it is 3.0s of blocked event loop for every OTHER shop on the box too. The rates
+    // cannot change mid-export: this generator holds no await between rows.
+    const up = getUpcharges()
     for (const e of iterate('SELECT e.*, c.name AS customer, c.company FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id')) {
       for (const [i, it] of parse(e.items, []).entries()) {
         yield {
@@ -6167,8 +6173,8 @@ const EXPORTS = {
           // The export did not, so the lines under a $2,325 estimate summed to $2,150 and the
           // difference was nowhere on the file: the one number a bookkeeper reconciles against.
           // The upcharge gets its own column so the two figures can be told apart.
-          size_upcharge: lineUpcharge(it, getUpcharges()),
-          amount: lineAmount(it, getUpcharges()),
+          size_upcharge: lineUpcharge(it, up),
+          amount: lineAmount(it, up),
         }
       }
     }
@@ -6305,7 +6311,10 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
       const emit = async (row) => { await write(`${first ? '\n' : ',\n'}      ${JSON.stringify(row)}`); first = false }
 
       if (name === 'line_items') {
-        // Flatten every estimate's line items, contact name joined in — no per-row lookup.
+        // Flatten every estimate's line items, contact name joined in — no per-row lookup. Same
+        // hoist as the CSV generator above: getUpcharges() is a settings scan and it was running
+        // twice per line, blocking the shared event loop for 3.1s on a three-year shop.
+        const up = getUpcharges()
         for (const e of iterate('SELECT e.*, c.name AS customer, c.company FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id')) {
           for (const [i, it] of parse(e.items, []).entries()) {
             await emit({
@@ -6315,8 +6324,8 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
               decoration: it.decoration || '', size_breakdown: sizeSummary(it.sizes) || '',
               qty: lineQty(it), unit_price: it.unit_price ?? 0,
               taxable: it.taxable === false ? 'no' : 'yes',
-              size_upcharge: lineUpcharge(it, getUpcharges()),
-              amount: lineAmount(it, getUpcharges()),
+              size_upcharge: lineUpcharge(it, up),
+              amount: lineAmount(it, up),
             })
           }
         }

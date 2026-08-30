@@ -8723,6 +8723,53 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- a settings scan does not belong inside a row loop ---------- */
+/*
+ * getUpcharges() is `SELECT key, value FROM settings` + an object build + a JSON.parse, and the
+ * two export builders called it TWICE PER LINE ITEM. Measured on a synthetic three-year shop
+ * (30k estimates): 60,020 settings scans in one request, ~3.0s of wall clock — and because SQLite
+ * here is synchronous on a single shared process, that is 3.0s during which every OTHER shop on
+ * the box is frozen. /health worst latency during the export was measured at 3,088 ms.
+ *
+ * Written as a RULE over every row loop rather than as two fixtures: the shape ("read the shop's
+ * configuration once, not once per row") is what has to hold, and the next writer of a streaming
+ * export will not have read this comment either.
+ */
+section('no per-row loop re-reads the shop’s settings')
+await t('every loop over database rows hoists getSettings/getUpcharges out of itself', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+
+  // Body of the loop that starts at `from`, by brace matching from its first `{`.
+  const bodyAt = (from) => {
+    const open = src.indexOf('{', src.indexOf('\n', from) === -1 ? from : from)
+    let i = src.indexOf('{', from)
+    if (i < 0) return ''
+    let depth = 0
+    for (let j = i; j < src.length; j++) {
+      if (src[j] === '{') depth++
+      else if (src[j] === '}') { depth--; if (!depth) return src.slice(i, j + 1) }
+    }
+    return src.slice(open)
+  }
+
+  const loops = [...src.matchAll(/for \(const \w+ of (?:iterate|all)\(/g)]
+  assert.ok(loops.length >= 15, `precondition: found ${loops.length} row loops, expected 15+`)
+
+  const offenders = []
+  for (const m of loops) {
+    const body = bodyAt(m.index)
+    for (const call of ['getUpcharges()', 'getSettings()']) {
+      if (body.includes(call)) {
+        offenders.push(`${call} inside the row loop at server.mjs:${src.slice(0, m.index).split('\n').length}`)
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `a full settings scan runs per row: ${offenders.join(' · ')}`)
+})
+
 /* ---------- one message, one recipient ---------- */
 /*
  * `contacts.email` is a RECIPIENT and nothing validated it: `str(b.email)` on POST and PUT
