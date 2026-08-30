@@ -11203,8 +11203,81 @@ await t('a realm change clears the mappings, before the new realm overwrites the
   const code = body.split('\n').map((l) => l.replace(/\s*\/\/.*$/, '')).join('\n')
   assert.ok(code.indexOf('clearQboMappings()') < code.indexOf('applySettingsPatch({'),
     'clear against the OLD realm, before applySettingsPatch overwrites the value being compared')
-  assert.match(body, /realm !== s\.qbo_realm_id/,
+  assert.match(code, /realm !== prevRealm/,
     'only on a CHANGE: reconnecting the SAME company must keep its mappings or every invoice duplicates')
+  /* …and the realm it compares against has to survive a Disconnect.
+   *
+   * The guard used to read `s.qbo_realm_id`, which POST /api/settings/disconnect/quickbooks
+   * blanks — and Disconnect-then-Connect is the sequence the Books screen invites in those words.
+   * So the previous realm was '' on the next callback, the branch never fired whichever company
+   * answered, and the shop's books were unsyncable for ever: `Object Not Found : Id 101` on an
+   * invoice that HAD synced, and `Invalid Reference Id: Customers element id 100 not found` on
+   * one that never had, because contact.qbo_id short-circuits ensureCustomer. Requeue, Retry,
+   * reconnect and disconnect-reconnect all reproduced it. */
+  assert.match(code, /const prevRealm = s\.qbo_realm_id \|\| s\.qbo_last_realm_id/,
+    'the previous realm must be remembered across a disconnect, or the guard can never fire after one')
+  assert.match(code, /setSetting\('qbo_last_realm_id', realm\)/,
+    'nothing writes the remembered realm, so it is always empty and the guard is decoration')
+})
+
+await t('…and Disconnect does not erase the memory of which company it was', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf('const DISCONNECT_GROUPS')
+  assert.ok(i > 0, 'DISCONNECT_GROUPS moved — re-point this test')
+  const group = src.slice(i, src.indexOf('\n}', i))
+  const qb = group.split('\n').find((l) => /^\s*quickbooks:/.test(l))
+  assert.ok(qb, 'no quickbooks disconnect group')
+  assert.match(qb, /qbo_realm_id/, 'precondition: Disconnect still clears the live realm')
+  assert.doesNotMatch(qb, /qbo_last_realm_id/,
+    'clearing the remembered realm on Disconnect puts the guard straight back where it was')
+})
+
+await t('the remembered realm is server-established and cannot be posted', async () => {
+  const dbm = await import('../lib/db.mjs')
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb ? dbm.getDb() : null
+  dbm.setDefaultDb(db)
+  try {
+    // A client that could set this could make the next connect look like the SAME company and
+    // keep a dead company's ids — or look like a different one and wipe live mappings.
+    dbm.setSetting('qbo_last_realm_id', '9130000000000001')
+    dbm.applySettingsPatch({ qbo_last_realm_id: '4' })
+    assert.equal(dbm.getSettings().qbo_last_realm_id, '9130000000000001', 'the remembered realm is patchable from a request body')
+  } finally { if (prev) dbm.setDefaultDb(prev) }
+})
+
+await t('the OAuth callbacks do not write a token expiry through the patcher that refuses it', async () => {
+  const dbm = await import('../lib/db.mjs')
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb ? dbm.getDb() : null
+  dbm.setDefaultDb(db)
+  try {
+    // Both expiries are in SETTINGS_NOT_PATCHABLE, deliberately, so no client can claim a live
+    // connection. That also silently dropped them on the FOUR server paths that legitimately
+    // establish them — so they have read '' since the columns existed, and the day anything adds
+    // proactive refresh it would refresh on every call or never.
+    dbm.applySettingsPatch({ qbo_token_expires: '1234', gdrive_token_expires: '5678' })
+    assert.equal(dbm.getSettings().qbo_token_expires, '', 'precondition: the patcher refuses it')
+    assert.equal(dbm.getSettings().gdrive_token_expires, '', 'precondition: the patcher refuses it')
+  } finally { if (prev) dbm.setDefaultDb(prev) }
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8').split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  for (const m of src.matchAll(/applySettingsPatch\(\{[^}]*\}/g)) {
+    assert.doesNotMatch(m[0], /_token_expires/, `this call can never store it: ${m[0].slice(0, 110)}`)
+  }
+  assert.match(src, /setSetting\('qbo_token_expires'/, 'the QuickBooks callback has to store it some other way')
+  assert.match(src, /setSetting\('gdrive_token_expires'/, 'so does the Drive callback')
 })
 
 await t('the mapping sweep really clears all four columns, and only when it should', async () => {

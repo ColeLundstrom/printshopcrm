@@ -3805,7 +3805,13 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
       const buffer = readFileSync(req.file.path)
       const out = await gdrive.withRefresh({
         clientId: s0.gdrive_client_id, clientSecret: s0.gdrive_client_secret, refreshToken: s0.gdrive_refresh_token,
-        onRefresh: (nt) => applySettingsPatch({ gdrive_access_token: nt.accessToken, gdrive_refresh_token: nt.refreshToken, gdrive_token_expires: String(nt.expiresAt || '') }),
+        // setSetting for the expiry, not applySettingsPatch: it is in SETTINGS_NOT_PATCHABLE so
+        // that no client can claim it, which also dropped it on the three server paths that
+        // establish it. Stored as '' since the column existed.
+        onRefresh: (nt) => {
+          applySettingsPatch({ gdrive_access_token: nt.accessToken, gdrive_refresh_token: nt.refreshToken })
+          setSetting('gdrive_token_expires', String(nt.expiresAt || ''))
+        },
         op: async (accessToken) => {
           const at = accessToken || s0.gdrive_access_token
           const root = await gdrive.ensureFolder({ accessToken: at, name: 'PrintShopCRM' })
@@ -6241,11 +6247,36 @@ app.get('/api/qbo/callback', wrap(async (req, res) => {
   if (!r.ok) return res.status(400).send(`QuickBooks connection failed: ${esc(r.error || 'unknown')}`)
   // Compare BEFORE applySettingsPatch overwrites the realm we are comparing against.
   const realm = String(req.query.realmId || r.realmId || '')
-  if (realm && s.qbo_realm_id && realm !== s.qbo_realm_id) {
+  /**
+   * …and compare against the REMEMBERED realm, not only the live one.
+   *
+   * The realm-change guard read `s.qbo_realm_id`, which POST /api/settings/disconnect/quickbooks
+   * blanks — and Disconnect-then-Connect is exactly the sequence the Books screen invites, in
+   * those words ("Removes the saved keys and tokens… anything waiting will queue until you
+   * connect again"). So on the next callback the previous realm was '' , falsy, and the branch
+   * was skipped whichever company was on the other end.
+   *
+   * Measured against a per-realm stub: connect A, sync two invoices, Disconnect, connect B —
+   * every push then failed for ever with `Object Not Found : Id 101`, and an invoice that had
+   * NEVER touched company A failed too, with `Invalid Reference Id: Customers element id 100`,
+   * because `contact.qbo_id` short-circuits ensureCustomer. clearQboMappings() is the only thing
+   * in the tree that nulls those columns; Requeue, Retry, reconnect and disconnect-reconnect all
+   * reproduced it. No column any screen could clear.
+   *
+   * A same-company reconnect must still keep its mappings — clearing them there would duplicate
+   * every invoice in QuickBooks on the next push — so the test stays an exact string equality.
+   */
+  const prevRealm = s.qbo_realm_id || s.qbo_last_realm_id
+  if (realm && prevRealm && realm !== prevRealm) {
     clearQboMappings()
     logActivity('note', 'QuickBooks company changed — the ids from the previous company were cleared so this one can sync from scratch', {})
   }
-  applySettingsPatch({ qbo_realm_id: realm, qbo_access_token: r.accessToken, qbo_refresh_token: r.refreshToken, qbo_token_expires: String(r.expiresAt || '') })
+  applySettingsPatch({ qbo_realm_id: realm, qbo_access_token: r.accessToken, qbo_refresh_token: r.refreshToken })
+  // Not through applySettingsPatch: qbo_token_expires is in SETTINGS_NOT_PATCHABLE precisely
+  // because no client may claim it — which silently dropped it here too, in the one place that
+  // legitimately establishes it. It has been stored as '' since the column existed.
+  setSetting('qbo_token_expires', String(r.expiresAt || ''))
+  setSetting('qbo_last_realm_id', realm)
   setSetting('qbo_oauth_state', '')
   logActivity('note', 'QuickBooks Online connected', {})
   res.redirect('/#/settings?qbo=connected')
@@ -6285,7 +6316,8 @@ app.get('/api/gdrive/callback', wrap(async (req, res) => {
   if (!req.query.state || req.query.state !== s.gdrive_oauth_state) return res.status(400).send('Google Drive connection expired — start again from Settings.')
   const r = await gdrive.exchangeCode({ clientId: s.gdrive_client_id, clientSecret: s.gdrive_client_secret, code: String(req.query.code || ''), redirectUri: GDRIVE_REDIRECT(req) })
   if (!r.ok) return res.status(400).send(`Google Drive connection failed: ${esc(r.error || 'unknown')}`)
-  applySettingsPatch({ gdrive_access_token: r.accessToken, gdrive_refresh_token: r.refreshToken, gdrive_token_expires: String(r.expiresAt || '') })
+  applySettingsPatch({ gdrive_access_token: r.accessToken, gdrive_refresh_token: r.refreshToken })
+  setSetting('gdrive_token_expires', String(r.expiresAt || ''))
   setSetting('gdrive_connected', '1')
   setSetting('gdrive_oauth_state', '')
   logActivity('note', 'Google Drive connected — new art will be stored there', {})
@@ -6364,7 +6396,10 @@ async function syncInvoiceToQboInner(invoiceId) {
   const contactOf = (id) => get('SELECT * FROM contacts WHERE id = ?', id)
   const out = await qbo.withRefresh({
     clientId: s.qbo_client_id, clientSecret: s.qbo_client_secret, refreshToken: s.qbo_refresh_token,
-    onRefresh: (nt) => applySettingsPatch({ qbo_access_token: nt.accessToken, qbo_refresh_token: nt.refreshToken, qbo_token_expires: String(nt.expiresAt || '') }),
+    onRefresh: (nt) => {
+      applySettingsPatch({ qbo_access_token: nt.accessToken, qbo_refresh_token: nt.refreshToken })
+      setSetting('qbo_token_expires', String(nt.expiresAt || ''))
+    },
     // withRefresh REPLAYS this whole callback after a 401 refresh, so it must be idempotent:
     // every piece of state is re-read here rather than captured once outside.
     op: async (accessToken = s.qbo_access_token) => {
