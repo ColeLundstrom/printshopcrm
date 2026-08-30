@@ -565,7 +565,7 @@ section('the share buttons do not claim to have copied when they have not')
 section('reset/seed: a demo script may not overwrite a real shop')
 {
   const { execFileSync } = await import('node:child_process')
-  const { mkdtempSync, rmSync, readFileSync } = await import('node:fs')
+  const { mkdtempSync, rmSync, readFileSync, existsSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
@@ -624,6 +624,50 @@ section('reset/seed: a demo script may not overwrite a real shop')
       const r = seedInto(dbPath)
       assert.match(r.out, /PSC_SEED_FORCE=1/)
       assert.equal(seedInto(dbPath, { PSC_SEED_FORCE: '1' }).code, 0, 'the escape it prints must work')
+    })
+
+    /* …and the OTHER half of `npm run reset`, which is the half that runs first.
+     *
+     * package.json's reset is `bin/reset.mjs && npm run seed`, and only seed.mjs carried the lock.
+     * So the unlink happened BEFORE the guard INSTALL.md describes ever ran: the file, its -wal
+     * and its -shm were already gone when seed got its turn to refuse. Measured on a database with
+     * shop_name 'Acme Real Shop' and a customer row: deleted, exit 0, not even the path printed.
+     * INSTALL.md:53 promises this of BOTH scripts by name. */
+    const resetOf = (dbPath2, env = {}) => {
+      try {
+        const out = execFileSync(process.execPath, ['--no-warnings', join(root, 'bin/reset.mjs')],
+          { cwd: root, env: { ...process.env, PSC_DB: dbPath2, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        return { code: 0, out }
+      } catch (e) { return { code: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` } }
+    }
+    const realPath = join(tmp, 'real.db')
+    await t('a real shop survives `npm run reset` — the half that deletes, not the half that seeds', () => {
+      seedInto(realPath, { PSC_SEED_FORCE: '1' })
+      execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', `
+        const { DatabaseSync } = await import('node:sqlite')
+        const d = new DatabaseSync(${JSON.stringify(realPath)})
+        d.prepare("INSERT INTO settings (key,value) VALUES ('shop_name','Acme Real Shop') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run()
+      `], { encoding: 'utf8' })
+      const before = countIn(realPath)
+      assert.ok(before > 0, 'precondition: the shop has records')
+      const r = resetOf(realPath)
+      assert.equal(r.code, 1, 'deleting a real shop must fail, loudly')
+      assert.match(r.out, /Refusing to reset/)
+      assert.match(r.out, /Acme Real Shop/, 'it must name the shop it just protected')
+      assert.match(r.out, new RegExp(`resetting ${realPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'and print the file it was about to delete')
+      assert.equal(countIn(realPath), before, 'not one row gone')
+    })
+    await t('…and it names the same escape the sibling script names, and that escape works', () => {
+      assert.match(resetOf(realPath).out, /PSC_SEED_FORCE=1/)
+      assert.equal(resetOf(realPath, { PSC_SEED_FORCE: '1' }).code, 0, 'the escape it prints must work')
+      assert.equal(existsSync(realPath), false, '…and really does delete it')
+    })
+    await t('…while the demo shop and a blank database are still reset without a fuss', () => {
+      const demo = join(tmp, 'demo.db')
+      seedInto(demo)
+      assert.equal(resetOf(demo).code, 0, 'the demo shop is what the script is for')
+      assert.equal(existsSync(demo), false)
+      assert.equal(resetOf(join(tmp, 'never-existed.db')).code, 0, 'nothing to protect, nothing to say')
     })
   } finally { rmSync(tmp, { recursive: true, force: true }) }
 }
