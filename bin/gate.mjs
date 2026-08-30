@@ -4641,6 +4641,83 @@ await t('…and the route will not write \'submitted\' without one either', asyn
  * verify-sync, and the rollback ship.sh itself prints put the code back and left the data
  * destroyed with nothing on the box to restore from. deploy/release.sh has refused to deploy
  * without exactly this snapshot since it was written. */
+/* ---------- the busy timeout has to be set before the thing that needs it (v28) ----------
+ *
+ * `busy_timeout` was set one statement AFTER `journal_mode = WAL` in both lib/db.mjs and
+ * lib/tenants.mjs. Setting journal_mode is itself a locking operation — it takes an exclusive
+ * lock to convert the file — and `VACUUM INTO`, which is how bin/snapshot.mjs and every backup
+ * this product takes write their copies, produces a database in `journal_mode=delete`. So every
+ * RESTORED database needs that conversion on first open, and with any second reader attached it
+ * failed at 0 ms: no wait, no retry, the exact failure the timeout exists to prevent, on the exact
+ * path a shop is on when it is already having its worst day.
+ *
+ * In lib/tenants.mjs it is worse in kind, because that runs at MODULE SCOPE: the whole process
+ * dies at import with a raw stack, bypassing the app's own friendly startup handler, for every
+ * shop on the box at once, in a 3-second Restart=always loop. */
+section('a restored database opens even while something else is reading it')
+await t('the WAL conversion waits for the lock instead of failing at 0 ms', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const box = mkdtempSync(join(tmpdir(), 'psc-lock-'))
+  try {
+    const src = join(box, 'live.db')
+    { const d = new DatabaseSync(src); d.exec('PRAGMA journal_mode = WAL'); d.exec('CREATE TABLE t(x)'); d.close() }
+    // Exactly what bin/snapshot.mjs writes, and therefore exactly what a restore puts in place.
+    const snap = join(box, 'restored.db')
+    { const d = new DatabaseSync(src, { readOnly: true }); d.prepare('VACUUM INTO ?').run(snap); d.close() }
+    { const d = new DatabaseSync(snap, { readOnly: true })
+      assert.equal(d.prepare('PRAGMA journal_mode').get().journal_mode, 'delete',
+        'precondition: a VACUUM INTO copy is not in WAL, so opening it converts the file')
+      d.close() }
+
+    // One other reader with a read transaction open — an admin CLI, a second worker, the tail of
+    // the restore itself. Held for the whole of both attempts, so there is no timing race here.
+    const holder = new DatabaseSync(snap)
+    holder.exec('BEGIN')
+    holder.prepare('SELECT count(*) AS c FROM t').get()
+    const attempt = (order) => {
+      const h = new DatabaseSync(snap)
+      const t0 = Date.now()
+      let threw = null
+      try {
+        if (order === 'journal-first') { h.exec('PRAGMA journal_mode = WAL'); h.exec('PRAGMA busy_timeout = 800') }
+        else { h.exec('PRAGMA busy_timeout = 800'); h.exec('PRAGMA journal_mode = WAL') }
+      } catch (e) { threw = e.message }
+      const ms = Date.now() - t0
+      try { h.close() } catch { /* already gone */ }
+      return { threw, ms }
+    }
+    const bad = attempt('journal-first')
+    const good = attempt('timeout-first')
+    holder.exec('ROLLBACK'); holder.close()
+
+    assert.ok(bad.threw, 'precondition: a held read lock really does block the conversion')
+    assert.ok(bad.ms < 250, `precondition: the shipped order gave up immediately (${bad.ms}ms)`)
+    assert.ok(good.ms >= 700,
+      `setting busy_timeout first has to make the conversion WAIT for the lock, and it waited ${good.ms}ms of 800`)
+  } finally { rmSync(box, { recursive: true, force: true }) }
+})
+
+await t('…and both database handles set it in that order', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const [f, why] of [
+    ['lib/db.mjs', 'every tenant database'],
+    ['lib/tenants.mjs', 'control.db — and this one runs at module scope, so it kills the process at import'],
+  ]) {
+    // Comments stripped: both files explain the hazard by naming both pragmas.
+    const src = readFileSync(join(root, f), 'utf8').split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+    const timeout = src.indexOf("busy_timeout = 5000")
+    const journal = src.indexOf("journal_mode = WAL")
+    assert.ok(timeout > 0 && journal > 0, `${f}: both pragmas should still be here`)
+    assert.ok(timeout < journal, `${f}: busy_timeout is set AFTER journal_mode, so ${why} fails at 0 ms on a restored file`)
+  }
+})
+
 section('a deploy takes a snapshot it can be put back from')
 await t('ship.sh snapshots before it flips, not after and not never', async () => {
   const { readFileSync } = await import('node:fs')
