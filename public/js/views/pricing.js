@@ -81,7 +81,7 @@ function serviceCard(s) {
       </div>
       <div class="row" style="gap:10px;align-items:center;margin-top:4px">
         <button class="btn sm pb-save" type="button">Save ${esc(s.name)}</button>
-        ${s.edited ? `<button class="btn ghost sm pb-reset" type="button">${s.custom ? 'Delete this service' : 'Reset to stock'}</button>` : ''}
+        ${s.edited ? `<button class="btn ghost sm pb-reset" type="button" data-custom="${s.custom ? '1' : '0'}">${s.custom ? 'Delete this service' : 'Reset to stock'}</button>` : ''}
         <span class="dim pb-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span>
       </div>
     </div></div>`
@@ -188,13 +188,28 @@ function wireBook(b) {
       announce(`${name} was not saved. ${err.message}`, true)
     }
   })
-  onOnce($('#view'), '.pb-reset', async (e, el) => {
+  // One click, next to Save, destroyed a custom service AND every price in its matrix out of
+  // settings.price_book — 48 cells, measured — with no confirm, no undo and no restore route
+  // anywhere in the product. Six comparable deletes in this app confirm first; this was one of
+  // three that did not.
+  onOnce($('#view'), '.pb-reset', (e, el) => {
     const name = el.closest('.pb-svc').dataset.svc
-    // ?name=, not the path: a service the shop called "Front/Back" encodes to %2F, which the
-    // path-canonicalisation guard refuses — so in the path this button 404'd on exactly the names
-    // a shop is most likely to invent, and left the service unremovable.
-    await api.del(`/api/pricebook?name=${encodeURIComponent(name)}`)
-    toast(`${name} reset`); loadBook()
+    const custom = el.dataset.custom === '1'
+    confirmModal(
+      custom ? `Delete "${name}"?` : `Reset ${name} to stock rates?`,
+      custom
+        ? `"${name}" and every price in its matrix are removed. Estimates and invoices already priced from it keep their prices — nothing already quoted changes. This cannot be undone.`
+        : `Every rate you have changed on ${name} goes back to the stock rate. Your custom services are not affected. This cannot be undone.`,
+      async () => {
+        try {
+          // ?name=, not the path: a service the shop called "Front/Back" encodes to %2F, which the
+          // path-canonicalisation guard refuses — so in the path this button 404'd on exactly the
+          // names a shop is most likely to invent, and left the service unremovable.
+          await api.del(`/api/pricebook?name=${encodeURIComponent(name)}`)
+          toast(custom ? `${name} deleted` : `${name} reset`); loadBook()
+        } catch (err) { toast(err.message, true) }
+      },
+      custom ? 'Delete' : 'Reset')
   })
   onOnce($('#view'), '#mx-svc', (_e, el) => leaveMatrix(() => loadMatrix(el.value)), 'change')
   onOnce($('#view'), '#mx-colors', (_e, el) => leaveMatrix(() => loadMatrix(null, Number(el.value) || 8)), 'change')

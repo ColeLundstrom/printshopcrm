@@ -3350,6 +3350,38 @@ await t('a decoration outside the eight built-ins survives an edit', async () =>
     'the select must be built from the helper')
 })
 
+/* ---------- nothing deletes the shop's work on one click (v28) ----------
+ *
+ * Six deletes in this app confirm first — a matrix, a proof, a payment, a login, a rule, a
+ * mockup, each with a paragraph saying what breaks. Three did not. The worst is the price book's:
+ * "Delete this service" sits next to Save, and one click removed a custom service AND every price
+ * in its 8x8 matrix out of settings.price_book. Driven: 48 cells gone, and grep finds no restore,
+ * no undo and no trash anywhere near pricebook. */
+section('the three deletes that did not ask first')
+await t('a custom service, a webhook and the shop logo all confirm before they go', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // Rules are about code: a docstring that mentions confirmModal must not satisfy the assertion.
+  const read = (f) => fs.readFileSync(join(root, f), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  for (const [f, marker, what] of [
+    ['public/js/views/pricing.js', "'.pb-reset'", 'Delete this service / Reset to stock'],
+    ['public/js/views/developers.js', "'[data-wh-del]'", 'Delete webhook'],
+    ['public/js/views/misc.js', "$('#logo-clear')", 'Remove logo'],
+  ]) {
+    const src = read(f)
+    const i = src.indexOf(marker)
+    assert.ok(i > 0, `${what} moved — re-point this test`)
+    const h = src.slice(i, i + 1600)
+    assert.match(h, /confirmModal\(/, `${f}: ${what} deletes on one click, with no confirm and no undo`)
+    const del = h.search(/api\.del\(/)
+    assert.ok(del > 0, `${f}: no delete call found near ${what} — re-point this test`)
+    assert.ok(h.indexOf('confirmModal(') < del, `${f}: ${what} must ask BEFORE it deletes`)
+  }
+})
+
 section('a rule the shop deleted does not come back on the next deploy')
 {
   const setupShop = async () => {

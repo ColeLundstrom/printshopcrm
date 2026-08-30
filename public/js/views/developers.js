@@ -1,4 +1,4 @@
-import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate , onOnce} from '../core.js'
+import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate, onOnce, confirmModal } from '../core.js'
 
 /**
  * Developers — API key, webhook subscriptions, delivery log, docs. On every plan: the
@@ -56,10 +56,18 @@ export async function developersView() {
     try { await api.patch(`/api/developers/webhooks/${b.dataset.whToggle}`, { active: b.dataset.active !== '1' }); refresh() }
     catch (err) { toast(err.message, true) }
   })
-  onOnce($('#view'), '[data-wh-del]', async (e) => {
+  // Deleting a subscription destroys its signing secret and, by cascade, its whole delivery
+  // history — so the integration on the other end stops silently and has to be re-registered with
+  // a new secret pasted in by hand. That is not a one-click action.
+  onOnce($('#view'), '[data-wh-del]', (e) => {
     const b = e.target.closest('[data-wh-del]')
-    try { await api.del(`/api/developers/webhooks/${b.dataset.whDel}`); refresh() }
-    catch (err) { toast(err.message, true) }
+    const where = b.closest('tr')?.querySelector('td')?.textContent?.trim() || 'That endpoint'
+    confirmModal('Delete this webhook?',
+      `${where} stops receiving events immediately, its signing secret is destroyed, and its delivery history goes with it. Adding it again issues a NEW secret, which you will have to paste into the other system before it works.`,
+      async () => {
+        try { await api.del(`/api/developers/webhooks/${b.dataset.whDel}`); refresh() }
+        catch (err) { toast(err.message, true) }
+      }, 'Delete')
   })
   // Three attempts over about ten minutes is the whole retry budget, so an endpoint that was down
   // over lunch drops every event in that window and the row goes to 'failed', which the retry loop

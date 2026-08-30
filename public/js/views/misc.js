@@ -658,10 +658,14 @@ export async function settingsView() {
     }
   }
   const logoClear = $('#logo-clear')
-  if (logoClear) logoClear.onclick = async () => {
-    try { await api.del('/api/settings/logo'); toast('Logo removed'); repaintChrome() }
-    catch (e) { toast(e.message, true) }
-  }
+  // The mildest of the three raw deletes — a logo can be uploaded again — but it comes off every
+  // document the shop sends from the moment it is clicked, and it was still one click.
+  if (logoClear) logoClear.onclick = () => confirmModal('Remove your logo?',
+    'It comes off every estimate, invoice, proof and receipt you send from now on. You can upload it again at any time.',
+    async () => {
+      try { await api.del('/api/settings/logo'); toast('Logo removed'); repaintChrome() }
+      catch (e) { toast(e.message, true) }
+    }, 'Remove')
 
   // Lite "Sending Email": provider preset fills the technical fields, so the shop only supplies its
   // own address and an app password — and mail then goes out from the shop's own domain.
