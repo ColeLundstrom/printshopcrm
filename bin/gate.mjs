@@ -9687,6 +9687,44 @@ section('an expired reset link does not take the buttons off the login page')
     assert.equal(r.els.submit.textContent, 'Sign in')
     assert.equal(r.timers.length, 0, 'no token, so nothing is validated and nothing is scheduled')
   })
+
+  /* ---------- …and it is the one page core.js never gets to fix ----------
+   * Every other screen in the product has its labels joined to their controls at runtime by
+   * core.js's wireLabels(), and its messages announced through the live regions a11yUpgrade()
+   * creates at boot. auth.html loads neither: it is a standalone page with one inline script. So
+   * its four labels pointed at nothing — Shop name, Your name, Email and Password all read out as
+   * "edit text, blank" — and #err and #notice were plain divs, so "That email or password is not
+   * right" was shown and never spoken. The one page you cannot get past, to the one person who
+   * cannot see why. */
+  await t('every field on the sign-in page has a label joined to it', () => {
+    const labels = [...AUTH.matchAll(/<label([^>]*)>([^<]*)<\/label>/g)]
+    assert.ok(labels.length >= 4, `expected the four fields, found ${labels.length}`)
+    const ids = new Set([...AUTH.matchAll(/<input[^>]*\bid="([^"]+)"/g)].map((m) => m[1]))
+    for (const [, attrs, text] of labels) {
+      const f = /\bfor="([^"]+)"/.exec(attrs)
+      assert.ok(f, `<label>${text}</label> is joined to nothing`)
+      assert.ok(ids.has(f[1]), `<label for="${f[1]}"> points at no input on the page`)
+    }
+    // The honeypot stays out of the accessibility tree and stays unlabelled.
+    assert.match(AUTH, /class="hp"[^>]*aria-hidden="true"/, 'the honeypot must stay hidden from AT')
+  })
+
+  await t('a refused sign-in is announced, not just coloured red', () => {
+    assert.match(AUTH, /id="err"[^>]*role="alert"/, '#err must be a live region')
+    assert.match(AUTH, /id="notice"[^>]*role="status"/, '#notice must be one too')
+    assert.match(AUTH, /id="notice"[^>]*aria-live="polite"/, '…a polite one')
+    // A region that is display:none when its text is written is not announced when it is revealed.
+    // Reveal first, then write — the same rule core.js's liveRegion() documents.
+    const src = AUTH.slice(AUTH.lastIndexOf('<script>') + 8, AUTH.lastIndexOf('</script>'))
+    for (const id of ['err', 'notice']) {
+      const show = new RegExp(`\\$\\('${id}'\\)\\.style\\.display = 'block'`, 'g')
+      assert.ok(show.test(src) || new RegExp(`${id}\\.style\\.display = 'block'`).test(src), `${id} is revealed somewhere`)
+    }
+    assert.doesNotMatch(src, /err\.textContent = [^\n]*\n\s*err\.style\.display = 'block'/,
+      'write into a revealed region, not a hidden one — otherwise nothing is announced')
+    assert.doesNotMatch(src, /\$\('notice'\)\.textContent = [^\n]*\n\s*\$\('notice'\)\.style\.display = 'block'/,
+      'same for the notice')
+  })
 }
 
 /* ---------- every route that mails a customer draws on ONE allowance ---------- */

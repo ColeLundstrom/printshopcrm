@@ -71,10 +71,10 @@
         <div id="signup-fields" class="hide">
           <h2>Start your shop</h2>
           <div class="sub">Your own isolated workspace — set up in under a minute.</div>
-          <label>Shop name</label>
-          <input name="shop_name" placeholder="Rebel Ink Press" autocomplete="organization">
-          <label>Your name</label>
-          <input name="owner_name" placeholder="Alex Rivera" autocomplete="name">
+          <label for="f-shop">Shop name</label>
+          <input id="f-shop" name="shop_name" placeholder="Rebel Ink Press" autocomplete="organization">
+          <label for="f-owner">Your name</label>
+          <input id="f-owner" name="owner_name" placeholder="Alex Rivera" autocomplete="name">
           <!-- Honeypot. Off-screen rather than type="hidden" so it also catches the bots that only
                fill inputs they can see; a real person can't tab into it or read it. Same field name
                as the marketing site's lead form so the two look alike to a scripted submitter. -->
@@ -86,16 +86,16 @@
         </div>
 
         <div id="email-field">
-          <label>Email</label>
-          <input name="email" type="email" placeholder="you@yourshop.com" autocomplete="email" required>
+          <label for="f-email">Email</label>
+          <input id="f-email" name="email" type="email" placeholder="you@yourshop.com" autocomplete="email" required>
         </div>
         <div id="password-field">
-          <label id="password-label">Password</label>
-          <input name="password" type="password" placeholder="••••••••" autocomplete="current-password" required minlength="8">
+          <label id="password-label" for="f-password">Password</label>
+          <input id="f-password" name="password" type="password" placeholder="••••••••" autocomplete="current-password" required minlength="8">
         </div>
 
-        <div class="err" id="err"></div>
-        <div class="notice" id="notice"></div>
+        <div class="err" id="err" role="alert" aria-live="assertive" aria-atomic="true"></div>
+        <div class="notice" id="notice" role="status" aria-live="polite" aria-atomic="true"></div>
         <button class="btn" id="submit" type="submit">Sign in</button>
       </form>
       <div class="foot" id="forgot-foot"><a href="#" onclick="mode('forgot');return false">Forgot your password?</a></div>
@@ -177,15 +177,15 @@
         }
         if (M === 'forgot') {
           // Deliberately the same message whether or not that address has an account.
-          $('notice').textContent = d.message || 'If that email has an account, a reset link is on its way.'
           $('notice').style.display = 'block'
+          $('notice').textContent = d.message || 'If that email has an account, a reset link is on its way.'
           btn.disabled = false; btn.textContent = TITLES[M]
           return false
         }
         location.href = d.onboarding ? '/#/welcome' : '/'
       } catch (ex) {
-        err.textContent = ex.fix ? `${ex.message}\n\n${ex.fix}` : ex.message
         err.style.display = 'block'
+        err.textContent = ex.fix ? `${ex.message}\n\n${ex.fix}` : ex.message
         btn.disabled = false; btn.textContent = TITLES[M]
       }
       return false
@@ -207,8 +207,8 @@
       fetch('/api/auth/reset?token=' + encodeURIComponent(RESET_TOKEN)).then(readJson).then((d) => {
         // Unreadable answer (a restart) — leave the form alone rather than declaring the link dead.
         if (d === null || d.valid) return
-        $('err').textContent = 'That reset link has expired or already been used. Request a new one.'
         $('err').style.display = 'block'
+        $('err').textContent = 'That reset link has expired or already been used. Request a new one.'
         $('password-field').classList.add('hide')
         $('submit').classList.add('hide')
         setTimeout(() => {
@@ -216,8 +216,8 @@
           mode('forgot')
           // mode() clears #err, so without this the switch also erases the explanation and the
           // person is left looking at a form they never asked for, with no idea why.
-          $('notice').textContent = 'That reset link had expired. Enter your email and we will send you a fresh one.'
           $('notice').style.display = 'block'
+          $('notice').textContent = 'That reset link had expired. Enter your email and we will send you a fresh one.'
         }, 2500)
       }).catch(() => {})
     }
