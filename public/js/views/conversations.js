@@ -12,10 +12,29 @@ let activeId = null
 export async function conversationsView(contactId) {
   setPage('Conversations')
   activeId = contactId ? +contactId : activeId
-  $('#view').innerHTML = `<div class="convo">
-    <div class="convo-list card" id="convo-list"><div class="dim" style="padding:20px">Loading…</div></div>
-    <div class="convo-thread card" id="convo-thread"></div>
-  </div>`
+  /**
+   * Do not rebuild the shell when it is already on screen.
+   *
+   * The realtime path does not enter at drawThread — where the draft-preserving capture below
+   * lives, correctly, for its own repaints. app.js re-enters HERE on every `chat` frame, and
+   * server.mjs broadcasts one to the whole shop on every takeover reply from the receptionist
+   * screen. This innerHTML destroys #ct-text three lines before drawThread reads it, so the
+   * capture saw an empty box on the one path its comment is about, and the reply the shop was
+   * half-way through typing was gone. Driven under a DOM shim against a real websocket frame:
+   * "Hi Coach — yes, we can have those 48 hoodies ready by the 12th. I will" → "".
+   *
+   * Guarding the shell rather than threading the draft through also keeps the caret and the
+   * channel picker, which the rebuild reset to Email — so an SMS reply went out as an email.
+   *
+   * Every other route in the app replaces #view wholesale on entry, so arriving here from
+   * anywhere else still rebuilds; drawList() and drawThread() repaint both panes regardless.
+   */
+  if (!$('#convo-list')) {
+    $('#view').innerHTML = `<div class="convo">
+      <div class="convo-list card" id="convo-list"><div class="dim" style="padding:20px">Loading…</div></div>
+      <div class="convo-thread card" id="convo-thread"></div>
+    </div>`
+  }
   await drawList()
   if (activeId) await drawThread(activeId)
   else $('#convo-thread').innerHTML = empty('▭', 'Pick a conversation', 'Every email and text with a customer lives here, both directions.')
@@ -50,6 +69,10 @@ async function drawThread(id) {
   // AND the half-written answer survives. After a successful send the caller has already cleared
   // the box, so what is restored is the empty string, which is correct.
   const draft = $('#ct-text')?.value ?? ''
+  // The chosen channel is part of the reply being written. It lived only in the `let channel`
+  // below, which the repaint re-initialised to 'email' — so a shop that had picked SMS and was
+  // typing sent the customer an email instead, with nothing on screen to say it had changed.
+  const channelWas = $('#ct-channel .on')?.dataset.ch === 'sms' ? 'sms' : 'email'
   const d = await api.get(`/api/conversations/${id}`)
   const c = d.contact
   $('#convo-thread').innerHTML = `
@@ -70,7 +93,7 @@ async function drawThread(id) {
     <div class="ct-compose">
       <div class="row" style="margin-bottom:7px">
         <div class="tabs" id="ct-channel">
-          <button data-ch="email" class="on">Email</button><button data-ch="sms">SMS</button>
+          <button data-ch="email" class="${channelWas === 'email' ? 'on' : ''}">Email</button><button data-ch="sms" class="${channelWas === 'sms' ? 'on' : ''}">SMS</button>
         </div>
         <div class="sp"></div>
         <button class="btn ghost sm" id="ct-ai">Draft with AI</button>
@@ -82,7 +105,7 @@ async function drawThread(id) {
 
   if (draft) $('#ct-text').value = draft
   const body = $('#ct-body'); body.scrollTop = body.scrollHeight
-  let channel = 'email'
+  let channel = channelWas
   on($('#ct-channel'), '[data-ch]', (_e, t) => { channel = t.dataset.ch; $$('#ct-channel button').forEach((b) => b.classList.toggle('on', b.dataset.ch === channel)) })
 
   $('#ct-send').onclick = async () => {

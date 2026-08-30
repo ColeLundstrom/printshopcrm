@@ -8552,6 +8552,37 @@ section('three screens that threw away the shop’s work')
     assert.match(fn, /if \(draft\) \$\('#ct-text'\)\.value = draft/, 'the draft is captured and then never put back')
   })
 
+  /* …and the path it was written for does not enter at drawThread at all.
+   *
+   * app.js re-enters conversationsView() on every realtime `chat` frame, and server.mjs
+   * broadcasts one to the WHOLE SHOP on every takeover reply from the receptionist screen.
+   * conversationsView's own innerHTML destroys #ct-text three lines before drawThread reads it,
+   * so the capture above saw null → '' on exactly the path its comment is about. Driven under a
+   * DOM shim against a real websocket frame: "Hi Coach — yes, we can have those 48 hoodies ready
+   * by the 12th. I will" → "". The two assertions above were green the whole time. */
+  await t('…and a colleague answering a website chat does not wipe it either', async () => {
+    const src = await readView('public/js/views/conversations.js')
+    const i = src.indexOf('export async function conversationsView')
+    const j = src.indexOf('async function drawList')
+    assert.ok(i > 0 && j > i, 'conversationsView moved — re-point this test')
+    const cv = src.slice(i, j)
+    assert.match(cv, /if \(!\$\('#convo-list'\)\)/,
+      'a realtime chat frame re-enters here and rebuilds the shell, throwing the reply away before drawThread can save it')
+    assert.ok(cv.indexOf("if (!$('#convo-list'))") < cv.indexOf("$('#view').innerHTML"),
+      'the guard has to be in FRONT of the innerHTML, not after it')
+  })
+
+  await t('…and the channel picker survives the repaint, so an SMS reply is not sent as an email', async () => {
+    const src = await readView('public/js/views/conversations.js')
+    const i = src.indexOf('async function drawThread')
+    const fn = src.slice(i, i + 4000)
+    assert.match(fn, /channelWas = \$\('#ct-channel \.on'\)\?\.dataset\.ch/,
+      'the chosen channel is read back before the markup holding it is replaced')
+    assert.doesNotMatch(fn, /let channel = 'email'/,
+      "the repaint re-initialises the channel to email, so a reply the shop had set to SMS goes out as an email with nothing on screen saying so")
+    assert.match(fn, /let channel = channelWas/, 'and the handler has to start from the restored value')
+  })
+
   await t('…and the receptionist screen it was modelled on is still guarded', async () => {
     const app = await readView('public/js/app.js')
     assert.match(app, /__pscAgentDirty/, 'the guard this one copies has gone')
