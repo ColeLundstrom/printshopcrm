@@ -1190,6 +1190,33 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- the payout destination is not a settings field ----------
+   * stripe_account_id and stripe_charges_enabled are exactly the pair connectReady() tests, and
+   * together they are where the money goes: createConnectedCheckout puts the account id in
+   * payment_intent_data.transfer_data.destination AND in on_behalf_of, so it is both the payout
+   * destination and the merchant of record on the customer's card statement. Both were in
+   * SETTING_DEFAULTS, therefore writable, and in neither SECRET_KEYS nor SETTINGS_NOT_PATCHABLE —
+   * so one PUT /api/settings repointed every card payment the shop takes, from a role that is
+   * deliberately NOT allowed to run Connect itself. Nothing in public/ has ever posted them. */
+  {
+    r = await req('PUT', '/api/settings', { body: { stripe_account_id: 'acct_ATTACKER', stripe_charges_enabled: '1' } })
+    chk('PUT /api/settings still answers', String(r.status), '^200$')
+    r = await req('GET', '/api/settings')
+    chk('…but the payout destination is not a settings field', String(r.json?.settings?.stripe_account_id || ''), '^$')
+    chk('…and neither is "Stripe says this account can charge"', String(r.json?.settings?.stripe_charges_enabled || ''), '^$')
+    for (const k of ['qbo_token_expires', 'gdrive_token_expires', 'gdrive_connected']) {
+      await req('PUT', '/api/settings', { body: { [k]: '9999999999' } })
+      const got = (await req('GET', '/api/settings')).json?.settings?.[k] || ''
+      chk(`…nor ${k}, which only the OAuth callback establishes`, String(got), '^$')
+    }
+    // The fields a person really does type are untouched. Put it back afterwards — this runs
+    // inside one shop's whole first day and shop_name reaches every document.
+    const wasName = (await req('GET', '/api/settings')).json?.settings?.shop_name || ''
+    r = await req('PUT', '/api/settings', { body: { shop_name: 'Ink & Iron' } })
+    chk('an ordinary settings save still works', String(r.json?.shop_name), '^Ink & Iron$')
+    await req('PUT', '/api/settings', { body: { shop_name: wasName } })
+  }
+
   /* ---------- an EDIT clears the same bars a create does ----------
    * PUT /api/automations/:id checked only missingTriggerParam, which returns null for a trigger it
    * cannot FIND — so an unknown trigger, an empty name and a zero-action rule all stored happily.

@@ -6560,7 +6560,7 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
  */
 const DISCONNECT_GROUPS = {
   slack: ['slack_bot_token', 'slack_signing_secret'],
-  stripe: ['stripe_secret', 'stripe_publishable'],
+  stripe: ['stripe_secret', 'stripe_publishable', 'stripe_account_id', 'stripe_charges_enabled'],
   twilio: ['twilio_sid', 'twilio_token', 'twilio_from'],
   smtp: ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_secure'],
   ai: ['ai_api_key'],
