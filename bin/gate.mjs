@@ -4861,10 +4861,16 @@ await t('…and the two receivables screens cannot report different money', asyn
     const src = readFileSync(join(join(dirname(fileURLToPath(import.meta.url)), '..'), 'server.mjs'), 'utf8')
     const kpiSql = /const outstanding = round2\(get\(\s*`([^`]+)`/.exec(src)
     assert.ok(kpiSql, 'the Outstanding KPI query should still be readable')
-    const agingSql = /const open = all\(`(SELECT \* FROM invoices[^`]+)`/.exec(src)
+    // Read it out of the A/R aging ROUTE, not out of the first query in the file that happens to
+    // look like it. This regex used to match the customer STATEMENT's query — a different route
+    // with a coincidentally identical WHERE clause — so it was asserting agreement between the
+    // dashboard and a report it was not looking at.
+    const agingRoute = src.slice(src.indexOf("app.get('/api/reports/ar-aging'"))
+    assert.ok(agingRoute.startsWith("app.get('/api/reports/ar-aging'"), 'the A/R aging route should still exist')
+    const agingSql = /const open = all\(`([\s\S]+?)`\)/.exec(agingRoute)
     assert.ok(agingSql, "the A/R aging report's own query should still be readable")
     const kpi = dbm.get(kpiSql[1]).v
-    const aging = dbm.all(agingSql[1].replace(/contact_id = \?/, 'contact_id = 1').replace(/ORDER BY[\s\S]*$/, ''))
+    const aging = dbm.all(agingSql[1].replace(/ORDER BY[\s\S]*$/, ''))
       .reduce((n, r) => n + (r.amount_due - r.amount_paid), 0)
     assert.equal(kpi, aging, 'Outstanding on the dashboard and the A/R aging report read the same invoices')
     assert.equal(kpi, 1000, '…and "Outstanding" means money customers owe the shop, not netted against a credit')

@@ -2027,7 +2027,7 @@ app.get('/api/contacts/:id', wrap((req, res) => {
   res.json({
     contact: c,
     estimates: all('SELECT * FROM estimates WHERE contact_id = ? ORDER BY id DESC', c.id),
-    invoices: all('SELECT * FROM invoices WHERE contact_id = ? ORDER BY id DESC', c.id),
+    invoices: all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? ORDER BY i.id DESC`, todayIso(), c.id),
     jobs: all('SELECT * FROM jobs WHERE contact_id = ? ORDER BY id DESC', c.id),
     activities: all('SELECT * FROM activities WHERE contact_id = ? ORDER BY created_at DESC, id DESC LIMIT 40', c.id),
     stats: {
@@ -2938,7 +2938,12 @@ app.get('/api/invoices', wrap((req, res) => {
 }))
 
 app.get('/api/invoices/:id', wrap((req, res) => {
-  const i = get(`SELECT i.*, c.name AS contact_name, c.email AS contact_email FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.id=?`, +req.params.id)
+  // The stored `status` column does not know what day it is — the same defect the v1 detail route
+  // carries a comment about, fixed there and not here. The LIST computes the effective status, so
+  // an invoice showed as OVERDUE on the Invoices screen and the shop clicked through to a detail
+  // page that said UNPAID: $848.22 reported two ways on two screens, one click apart. The mailed
+  // statement did it too, printing UNPAID beside its own red 1-30 DAYS aging bucket.
+  const i = get(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status, c.name AS contact_name, c.email AS contact_email FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.id=?`, todayIso(), +req.params.id)
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const est = i.estimate_id ? get('SELECT * FROM estimates WHERE id = ?', i.estimate_id) : null
   res.json({
@@ -5170,11 +5175,15 @@ app.get('/api/reports/ar-aging', wrap((_req, res) => {
 app.get('/api/contacts/:id/statement.pdf', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', +req.params.id)
   if (!c) return res.status(404).json({ error: 'Contact not found' })
-  const open = all(`SELECT * FROM invoices WHERE contact_id = ? AND status != 'void' AND (amount_due - amount_paid) > 0.005
-    ORDER BY COALESCE(due_date, date(created_at)) ASC, id ASC`, c.id)
-  const settled = all(`SELECT * FROM invoices WHERE contact_id = ? AND status != 'void' AND (amount_due - amount_paid) <= 0.005
-    AND created_at >= date('now', '-365 days')
-    ORDER BY COALESCE(due_date, date(created_at)) DESC, id DESC LIMIT 60`, c.id)
+  // Effective status, so the pill beside a line agrees with the aging bucket the same document
+  // puts it in. The stored column printed UNPAID next to a red "1-30 DAYS" column on the very
+  // statement the shop mails to the customer it is chasing.
+  const today = todayIso()
+  const open = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? AND i.status != 'void' AND (i.amount_due - i.amount_paid) > 0.005
+    ORDER BY COALESCE(i.due_date, date(i.created_at)) ASC, i.id ASC`, today, c.id)
+  const settled = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? AND i.status != 'void' AND (i.amount_due - i.amount_paid) <= 0.005
+    AND i.created_at >= date('now', '-365 days')
+    ORDER BY COALESCE(i.due_date, date(i.created_at)) DESC, i.id DESC LIMIT 60`, today, c.id)
   const invoices = [...open, ...settled]
   const buf = customerStatement({ contact: c, settings: getSettings(), invoices })
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="statement-${(c.company || c.name || 'customer').replace(/[^\w-]+/g, '-').toLowerCase()}.pdf"`)

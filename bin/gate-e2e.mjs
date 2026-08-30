@@ -1918,8 +1918,11 @@ try {
     r = await req('POST', `/api/estimates/${lateEst}/convert`, { body: { due_date: '2026-01-05' } })
     const lateInv = r.json?.invoice_id
     chk('an invoice can be raised already past its due date', String(r.status), '^200$')
-    const raw = await req('GET', `/api/invoices/${lateInv}`)
-    chk('…and its stored status column is stale, as it would be in real life', String(raw.json?.status ?? raw.json?.invoice?.status ?? 'missing'), '^unpaid$')
+    // The stored COLUMN really is stale — read straight off the table through the raw export, so
+    // this is the precondition and not a restatement of the bug.
+    const rawRows = JSON.parse((await req('GET', '/api/export/all.json')).text || '{}')
+    const storedRow = (rawRows.tables?.invoices || []).find((x) => x.id === lateInv)
+    chk('…and the stored status column is stale, as it would be in real life', String(storedRow?.status ?? 'missing'), '^unpaid$')
 
     const list = await req('GET', '/api/v1/invoices', asKey())
     const fromList = (list.json?.data || []).find((x) => x.id === lateInv)
@@ -1929,6 +1932,23 @@ try {
     const cust = await req('GET', `/api/v1/customers/${lateId}`, asKey())
     const embedded = (cust.json?.recent_invoices || []).find((x) => x.id === lateInv)
     chk('…and so does the copy on the customer', String(embedded?.status ?? 'missing'), '^overdue$')
+
+    /* …and now the screens a SHOP OWNER looks at, which is where this was still live.
+     * The Invoices list computed the effective status; the detail page the shop clicks through to
+     * from it returned the stored column. So the list said OVERDUE, the page one click later said
+     * UNPAID, and the statement the shop mails to chase the money printed UNPAID beside its own
+     * red 1-30 DAYS aging bucket. Three readers of one number, on one invoice. */
+    const appList = await req('GET', '/api/invoices?status=overdue')
+    chk('the app’s own list puts it under Overdue',
+      String((appList.json?.invoices || appList.json || []).some?.((x) => x.id === lateInv) ?? false), '^true$')
+    const appDetail = await req('GET', `/api/invoices/${lateInv}`)
+    chk('…and the page it opens does not say something else', String(appDetail.json?.status ?? 'missing'), '^overdue$')
+    const onCustomer = await req('GET', `/api/contacts/${lateId}`)
+    chk('…nor does the copy on the customer’s own record',
+      String((onCustomer.json?.invoices || []).find((x) => x.id === lateInv)?.status ?? 'missing'), '^overdue$')
+    const stmt = await req('GET', `/api/contacts/${lateId}/statement.pdf`)
+    chk('the statement the shop mails out prints OVERDUE, not UNPAID', String(/OVERDUE/.test(stmt.text)), '^true$')
+    chk('…and does not print UNPAID beside its own past-due bucket', String(/UNPAID/.test(stmt.text)), '^false$')
   }
 
   /* ---------- two mutating routes were missing the role check their siblings all have ----------
