@@ -25,6 +25,7 @@ import {
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
   getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants,
+  firstOwnerId,
 } from './lib/tenants.mjs'
 import {
   PLANS, createSubscriptionCheckout, createBillingPortal, verifyWebhook, webhookSecret,
@@ -1829,7 +1830,20 @@ app.post('/api/admin/shops/:id/signin', wrap((req, res) => {
   if (!t) return res.status(404).json({ error: 'No such shop' })
   if (t.status !== 'active') return res.status(400).json({ error: 'Reactivate the shop before signing in as it.' })
   deleteSession(parseCookies(req).psc_session)
-  setSessionCookie(res, createSession(t.id), req) // null member → resolves to the shop's owner
+  /**
+   * Bound to the shop's owner, not left with a null member.
+   *
+   * A null member_id resolves to the first owner and answers `role owner` — but it is invisible
+   * to every `DELETE FROM sessions WHERE member_id = ?` in the product. So the shop's one
+   * self-service lever for ending sessions, changing the owner's password, did not end this one.
+   * Driven: the owner's own cookie went 401 and this one went on 200-ing PUT /api/settings,
+   * GET /api/export/all.json and POST /api/developers/key/rotate. Suspending the shop only gates
+   * it; reactivating revives the same row. The only durable end was the 30-day expiry or sqlite3.
+   *
+   * Binding a real member also puts a name on everything the operator does while impersonating,
+   * which nothing did before.
+   */
+  setSessionCookie(res, createSession(t.id, firstOwnerId(t.id)), req)
   res.json({ ok: true, slug: t.slug })
 }))
 

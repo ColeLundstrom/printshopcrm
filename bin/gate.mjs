@@ -11424,6 +11424,73 @@ await t('a temporary password cannot carry extra paragraphs into the invitation'
   } finally { rmSync(box, { recursive: true, force: true }) }
 })
 
+/* ---------- changing your password ends EVERY session, including the operator's (v28) ----------
+ *
+ * The admin "sign in as this shop" session was created with a null member_id, which getSession
+ * resolves to the shop's first owner and answers `role owner` for — while being invisible to
+ * every `DELETE FROM sessions WHERE member_id = ?` in the product.
+ *
+ * Driven against a live two-shop server: the operator impersonates a shop, the shop's owner
+ * changes their password (the ONE self-service lever the product offers for ending sessions),
+ * the owner's own cookie goes 401 — and the impersonation cookie goes on answering 200 on
+ * PUT /api/settings, GET /api/export/all.json and POST /api/developers/key/rotate. Suspending the
+ * shop only GATES the row: reactivating brings the same session back. The only durable end was
+ * the 30-day expiry or sqlite3.
+ *
+ * Child process, because tenants.mjs resolves control.db from the environment at import time and
+ * this file has already imported db.mjs. */
+await t('changing the owner\'s password ends an admin "sign in as this shop" session', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const box = mkdtempSync(join(tmpdir(), 'psc-imp-'))
+  try {
+    const script = `
+      const tn = await import(${JSON.stringify(join(root, 'lib/tenants.mjs'))})
+      const t = await tn.createTenant({ shop_name: 'Bravo Ink', owner_email: 'owner@bravo.test', password: 'originalpass123' })
+      const owner = tn.listMembers(t.id).find((m) => m.role === 'owner')
+      // The owner's own login, and the operator's impersonation of the same shop.
+      const ownCookie = tn.createSession(t.id, owner.id)
+      const impCookie = tn.createSession(t.id, tn.firstOwnerId(t.id))   // what the signin route now mints
+      const legacy    = tn.createSession(t.id)                          // pre-fix and pre-members shape
+      const role = (tok) => tn.getSession(tok)?.member?.role ?? null
+      const before = { own: role(ownCookie), imp: role(impCookie), legacy: role(legacy) }
+      await tn.setMemberPassword(owner.id, 'brandnewpass456')
+      const after = { own: role(ownCookie), imp: role(impCookie), legacy: role(legacy) }
+      console.log(JSON.stringify({ before, after, firstOwner: tn.firstOwnerId(t.id) === owner.id }))
+      process.exit(0)
+    `
+    const out = execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', script], {
+      env: { ...process.env, PSC_DB: join(box, 'psc.db'), PSC_CONTROL_DB: join(box, 'control.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+      encoding: 'utf8',
+    })
+    const r = JSON.parse(out.trim().split('\n').pop())
+    assert.equal(r.firstOwner, true, 'precondition: a null-member session resolves to this owner')
+    assert.equal(r.before.own, 'owner', 'precondition: the owner was signed in')
+    assert.equal(r.before.imp, 'owner', 'precondition: the impersonation session answered as the owner')
+    assert.equal(r.before.legacy, 'owner', 'precondition: a null-member session answers as the owner too')
+    assert.equal(r.after.own, null, 'the owner\'s own session is ended, as it always was')
+    assert.equal(r.after.imp, null, 'the operator is still signed in as the shop after the shop changed its password')
+    assert.equal(r.after.legacy, null, 'a session with no member_id survives every purge in the product')
+  } finally { rmSync(box, { recursive: true, force: true }) }
+})
+
+await t('…and the signin route binds a real member rather than leaving it null', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("app.post('/api/admin/shops/:id/signin'")
+  assert.ok(i > 0, 'the impersonation route moved — re-point this test')
+  const body = src.slice(i, src.indexOf('\n}))', i)).split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  assert.match(body, /createSession\(t\.id, firstOwnerId\(t\.id\)\)/,
+    'a session with no member is invisible to every member-keyed purge, and answers role owner')
+})
+
 section('one order is one price, whichever panel the shop typed into')
 
 await t('the assistant prices the blank off the shop catalog, like every other quoting path', async () => {
