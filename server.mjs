@@ -6847,8 +6847,8 @@ app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this
 app.get('/embed/gangsheet', (_req, res) => {
   res.send(`<!doctype html><html lang="en"><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1"><title>DTF Gang Sheet Builder</title>
-    <link rel="stylesheet" href="/css/embed.css"></head>
-    <body><div id="gs-root"></div><script type="module" src="/embed/gangsheet.js"></script></body></html>`)
+    <link rel="stylesheet" href="/css/embed.css"><style>${SOURCE_FOOT_CSS}</style></head>
+    <body><div id="gs-root"></div>${sourceFooterHtml()}<script type="module" src="/embed/gangsheet.js"></script></body></html>`)
 })
 
 /* ================= AI RECEPTIONIST — public chat widget (shop's website) ================= */
@@ -6910,7 +6910,8 @@ const CHAT_WIDGET_JS = String.raw`(function(){
       '<button class="x" id="x">&times;</button></div>'+
       '<div class="body" id="body"></div><div class="quick" id="quick"></div>'+
       '<div class="ft"><input id="in" placeholder="Type a message..." autocomplete="off"><button id="send">Send</button></div>'+
-      '<div class="powered">Powered by <a href="https://printshopcrm.com" target="_blank" rel="noopener">PrintShopCRM</a></div></div>';
+      '<div class="powered">Powered by <a href="https://printshopcrm.com" target="_blank" rel="noopener">PrintShopCRM</a>'+
+      ' · <a href="__PSC_SOURCE_URL__" target="_blank" rel="noopener noreferrer" class="source-link">Source · AGPL-3.0</a></div></div>';
 
   var $=function(id){return root.getElementById(id)};
   function api(path,body){return fetch(ORIGIN+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({shop:KEY},body||{}))}).then(function(r){return r.json()})}
@@ -7010,7 +7011,10 @@ app.post('/api/embed/chat/message', embedLimit(60, 'You are sending messages ver
 
 /** The drop-in widget loader. A shop pastes one script tag with their key; this injects the bubble. */
 app.get('/embed/chat.js', (_req, res) => {
-  res.type('application/javascript').send(CHAT_WIDGET_JS)
+  // AGPL §13 again: the widget is the app talking to a stranger on a shop's own website, so the
+  // offer of Corresponding Source rides along in its footer. Resolved here rather than baked into
+  // the string, because PSC_SOURCE_URL is what a modified install has to be able to point at.
+  res.type('application/javascript').send(CHAT_WIDGET_JS.replaceAll('__PSC_SOURCE_URL__', htmlEscape(SOURCE_URL)))
 })
 
 /** A blank demo page so a shop can try the real widget exactly as a visitor would. */
@@ -7021,6 +7025,7 @@ app.get('/embed/chatdemo', (req, res) => {
     <style>body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0b0f0d;color:#cfe;display:grid;place-items:center;height:100vh;text-align:center}
     .b{max-width:440px;padding:24px}h1{font-size:20px}p{color:#7fa;line-height:1.6;font-size:14px}</style></head>
     <body><div class="b"><h1>Your website (demo)</h1><p>This is a blank page standing in for your site. The chat bubble in the bottom-right is your live AI receptionist — click it and have a conversation as a customer would.</p></div>
+    <style>${SOURCE_FOOT_CSS}</style>${sourceFooterHtml()}
     <script src="/embed/chat.js?shop=${key}" defer></` + `script></body></html>`)
 })
 
@@ -7038,9 +7043,11 @@ const docAccentCss = () => {
     + `.btn:hover{background:#1d4ed8}</style>`
 }
 
+// Every customer-facing document goes through here, so the AGPL §13 offer does too — see
+// sourceFooterHtml(). It is appended unconditionally, exactly like the app shell's.
 const page = (title, body) => `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
-<title>${title}</title><link rel="stylesheet" href="/css/public.css">${docAccentCss()}</head><body>${body}</body></html>`
+<title>${title}</title><link rel="stylesheet" href="/css/public.css"><style>${SOURCE_FOOT_CSS}</style>${docAccentCss()}</head><body>${body}${sourceFooterHtml()}</body></html>`
 
 /**
  * The shop's logo for a customer-facing document, or nothing when none is set.
@@ -7749,6 +7756,25 @@ const SOURCE_URL = safeHttpUrl(process.env.PSC_SOURCE_URL) || 'https://github.co
 const sourceLinkHtml = () =>
   `<a class="source-link" href="${htmlEscape(SOURCE_URL)}" target="_blank" rel="noopener noreferrer"
       title="This software is free and open source (AGPL-3.0). Click for the source code.">Source · AGPL-3.0</a>`
+
+/**
+ * The same offer, on the pages that are NOT the app shell.
+ *
+ * §13 is about "all users interacting with it remotely through a computer network", and the
+ * customer opening /p/estimate/:id to approve a quote, /p/pay/:id to pay an invoice or
+ * /p/art/:id to sign off a proof is doing exactly that — as is the visitor using the gang-sheet
+ * builder or the chat widget on a shop's own website. Those users are, on any real install, far
+ * more numerous than the staff who see the app shell. The offer was rendered on two pages out of
+ * eleven, and the gate wrote the gap down as deliberate.
+ *
+ * Styled inline because these pages load public.css / embed.css, neither of which has ever
+ * carried a .source-link rule — the class alone would have rendered an unstyled link that reads
+ * as a mistake, which is not "prominently offer".
+ */
+const sourceFooterHtml = () =>
+  `<div style="text-align:center;padding:18px 12px;font-size:11px;opacity:.55;line-height:1.6">${sourceLinkHtml()}</div>`
+// The class carries no styling on these pages, so give the anchor its own.
+const SOURCE_FOOT_CSS = '.source-link{color:inherit;text-decoration:none;border-bottom:1px dotted currentColor}'
 
 let SHELL_HTML = null
 const shellHtml = () => {

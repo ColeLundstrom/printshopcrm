@@ -1127,8 +1127,33 @@ try {
       chk(`…pointing somewhere a user can actually fetch it`, page.text, 'href="https?://[^"]+"[^>]*class="source-link"|class="source-link" href="https?://[^"]+"')
       chk(`…and no unreplaced placeholder is left on ${what}`, String(page.text.includes('__SOURCE_LINK__')), '^false$')
     }
-    // The customer-facing /p/ pages are served by their own renderer, so they are not asserted here
-    // — §13 applies to users interacting with the software remotely, which is the app itself.
+    /* …and the pages that are NOT the app shell. This carve-out used to read "the /p/ pages are
+     * served by their own renderer, so they are not asserted here — §13 applies to users
+     * interacting with the software remotely, which is the app itself." That is not what §13 says.
+     * It says "all users interacting with it remotely through a computer network", and the
+     * customer opening /p/estimate/:id to approve a quote, /p/pay/:id to pay, or /p/art/:id to
+     * sign off a proof is doing exactly that — as is the visitor using the gang-sheet builder or
+     * the chat widget on a shop's own website. On any real install those users vastly outnumber
+     * the staff who ever see the app shell. The offer was on 2 pages out of 11 and the gate had
+     * written the gap down as deliberate. */
+    for (const [path, what] of [
+      ['/embed/gangsheet', 'the public gang-sheet builder'],
+      ['/embed/chatdemo', 'the receptionist demo page'],
+      ['/p/estimate/999999?k=nope', 'a customer document page'],
+    ]) {
+      const page = await req('GET', path, { cookies: false })
+      chk(`${what} carries the §13 source offer`, page.text, 'class="source-link"')
+      chk(`…pointing at a URL a user can fetch`, page.text, 'href="https?://[^"]+"')
+      chk(`…and styled, since these pages never load app.css`, page.text, '\\.source-link\\{')
+    }
+    {
+      // The widget is the app talking to a stranger on a shop's OWN website. Its offer travels in
+      // the served JavaScript, with PSC_SOURCE_URL resolved at serve time rather than baked in.
+      const widget = await req('GET', '/embed/chat.js', { cookies: false })
+      chk('the chat widget carries the §13 source offer', widget.text, 'class="source-link"')
+      chk('…with the URL resolved, not the placeholder', String(widget.text.includes('__PSC_SOURCE_URL__')), '^false$')
+      chk('…pointing at a URL a user can fetch', widget.text, 'href="https?://[^"]+"[^>]*class="source-link"')
+    }
     for (const [path, what] of [['/Index.html', 'a shadow spelling of the app'], ['/Auth.html', 'a shadow spelling of the auth page'], ['/INDEX.HTML', 'a shouted spelling of the app']]) {
       const page = await req('GET', path, { cookies: false })
       chk(`${what} never ships the raw template`, String(page.text.includes('__SOURCE_LINK__')), '^false$')
@@ -3798,6 +3823,16 @@ try {
     // Re-sending a copy must not reverse a decision the customer already made.
     r = await req('POST', `/api/estimates/${apprEst}/send`, { body: {} })
     chk('re-sending an approved estimate does not un-approve it', String(r.json?.estimate?.status), '^approved$')
+
+    // AGPL §13 on the real thing, not just a 404 through the same renderer: the page the shop's
+    // customer is actually sent, fetched anonymously the way they open it.
+    {
+      const cust = await fetch(`${BASE}${share}`, { headers: {} })
+      const body = await cust.text()
+      chk('the customer document the shop mails out serves the §13 source offer',
+        String(cust.status === 200 && /class="source-link"/.test(body)), '^true$')
+      chk('…with no unreplaced placeholder on it', String(body.includes('__SOURCE_LINK__')), '^false$')
+    }
   }
 
   /* ---------- the page a customer pays from has to add up ----------
