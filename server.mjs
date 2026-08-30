@@ -5306,6 +5306,13 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   //
   // Only the genuinely-not-wired path (pending, with a note explaining it and no error) may claim
   // placed_manually. A real error is 'failed', and says so everywhere a human might look.
+  // …and 'submitted' requires the distributor's own order number, not just an ok. Belt and braces
+  // over the guard in submitPurchaseOrder: 'submitted' is in poAlreadySent(), so writing it for an
+  // order that was never placed shuts the only door back onto the wire. A supplier branch that
+  // legitimately cannot return an id says so with `pending` and no error, which is the
+  // placed_manually path and is unaffected.
+  const claimed = result.ok && !result.order_id
+  if (claimed) result = { ...result, ok: false, error: `${result.supplier || 'The distributor'} answered without an order number, so the order was NOT placed. Check the portal before sending it again.` }
   const status = result.ok ? 'submitted' : (result.pending && !result.error ? 'placed_manually' : 'failed')
   run('UPDATE purchase_orders SET status = ?, order_id = ?, submitted_at = ?, updated_at = ? WHERE id = ?',
     status, result.order_id || null, result.ok ? now() : null, now(), stored.id)

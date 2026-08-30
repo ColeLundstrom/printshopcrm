@@ -4412,6 +4412,68 @@ await t('a non-JSON response becomes something a human can act on', async () => 
   } finally { globalThis.fetch = realFetch }
 })
 
+/* ---------- a 2xx from the distributor is not a placed order (v28) ----------
+ *
+ * The one call in the tree that spends the shop's money used to read `res.ok` and nothing else.
+ * `res.json().catch(() => ({}))` turns any body that is not the expected JSON — a WAF
+ * interstitial, an nginx error page served with 200, a TLS-inspecting corporate proxy — into {},
+ * so it returned ok:true with order_id null. Driven against a stub S&S: 24 aprons never ordered,
+ * the PO pill read `submitted`, the timeline said "recorded for S&S Activewear", board.js toasted
+ * "Order placed" — and every exit was then shut, because 'submitted' and 'closed' are both in
+ * poAlreadySent() and there is no delete.
+ *
+ * lib/gdrive.mjs already carries exactly this guard, in the same words. */
+section('the distributor has to hand back an order number before we say the order was placed')
+{
+  const sup = await import('../lib/suppliers.mjs')
+  const po = { supplier: 'S&S Activewear', job: 'JOB-1', lines: [{ sku: 'PA700', color: 'Black', size: 'OSFA', qty: 24 }] }
+  const creds = { ss_account: '12345', ss_api_key: 'testkey' }
+  const realFetch = globalThis.fetch
+  const answer = (status, body, type) => { globalThis.fetch = async () => new Response(body, { status, headers: { 'content-type': type } }) }
+  const submit = async () => {
+    try { return { resolved: await sup.submitPurchaseOrder(po, creds, { poNumber: 'PSC-JOB-1' }) } }
+    catch (e) { return { threw: e.message } }
+  }
+  try {
+    await t('an HTML error page served with HTTP 200 is not an order', async () => {
+      answer(200, '<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>', 'text/html')
+      const r = await submit()
+      assert.ok(r.threw, `it resolved as a success: ${JSON.stringify(r.resolved)}`)
+      assert.match(r.threw, /NOT placed/, 'the shop has to be told the order did not go')
+      assert.match(r.threw, /portal/, '…and where to check before sending it again')
+    })
+    await t('…nor is a 200 whose JSON carries no order number', async () => {
+      answer(200, JSON.stringify({ status: 'accepted' }), 'application/json')
+      const r = await submit()
+      assert.ok(r.threw, `it resolved as a success: ${JSON.stringify(r.resolved)}`)
+    })
+    await t('…and a real order number still succeeds, in all three spellings S&S uses', async () => {
+      for (const [key, val] of [['orderNumber', 'SS-123456'], ['orderId', 'SS-99'], ['id', 'SS-7']]) {
+        answer(200, JSON.stringify({ [key]: val }), 'application/json')
+        const r = await submit()
+        assert.ok(!r.threw, `${key} was refused: ${r.threw}`)
+        assert.equal(r.resolved.ok, true)
+        assert.equal(r.resolved.order_id, val)
+      }
+    })
+  } finally { globalThis.fetch = realFetch }
+}
+
+await t('…and the route will not write \'submitted\' without one either', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8').split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  const i = src.indexOf("const status = result.ok ? 'submitted'")
+  assert.ok(i > 0, 'the PO submit status expression moved — re-point this test')
+  // The guard has to be ABOVE the status line, or it is decoration: 'submitted' is in
+  // poAlreadySent(), so writing it for an order that was never placed shuts the last door.
+  const before = src.slice(Math.max(0, i - 700), i)
+  assert.match(before, /result\.ok && !result\.order_id/, 'the route still writes submitted on an ok with no order number')
+  assert.match(before, /ok: false/, 'the response the screen reads must not still say ok')
+})
+
 section('the deploy safety rails must not report green when they failed')
 // check-drift.sh is the only monitoring in this repo. Both git reads were
 // `$(git rev-parse … || echo '?')`, so when git REFUSED the repo — dubious ownership, not a clone,
