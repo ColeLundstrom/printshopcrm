@@ -4094,12 +4094,12 @@ try {
     chk('an ordinary reply to a real customer still sends',
       String((await req('POST', `/api/conversations/${reachable.id}/reply`, { body: { channel: 'email', body: 'On it.' } })).status), '^200$')
 
-    // 60 an hour per member. Unbounded before: the loop below never tripped.
-    let last = 200
-    for (let i = 0; i < 70 && last === 200; i++) {
-      last = (await req('POST', `/api/conversations/${reachable.id}/reply`, { body: { channel: 'email', body: `bulk ${i}` } })).status
-    }
-    chk('…but one account cannot send without limit', String(last), '^429$')
+    // The cap itself is proved on its own server further down, where PSC_OUTBOUND_MAX shrinks the
+    // allowance so it binds in six round-trips: one bucket for the whole capability, shared across
+    // every customer-mail route, keyed per member. It is NOT re-proved here on purpose — draining
+    // the real 300/hour allowance on the main server would 429 every send the rest of this suite
+    // makes, which is exactly what a shop would see if the shared ceiling were set at the old
+    // per-route 60. Which routes have to carry the limiter at all is a static rule in bin/gate.mjs.
   }
 
   /* ---------- the widget may only drive a conversation the widget opened ----------
@@ -4705,7 +4705,10 @@ try {
     const P10 = PORT + 15
     const s10 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P10), PSC_DB: join(T10, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P10}` },
+      // PSC_OUTBOUND_MAX shrinks the shared customer-mail allowance to 6 so the cap can be proved
+      // in a handful of round-trips instead of 300. The PROPERTY under test is that the bucket is
+      // one allowance for the whole capability and is keyed per member — not the default number.
+      env: { ...process.env, PORT: String(P10), PSC_DB: join(T10, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_OUTBOUND_MAX: '6', PSC_PUBLIC_URL: `http://127.0.0.1:${P10}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     started.push(s10)
@@ -4806,13 +4809,41 @@ try {
         const a = await mk('a@customer.test')
         const b = await mk('b@customer.test')
         let capped = false
-        for (let i = 0; i < 70 && !capped; i++) {
+        for (let i = 0; i < 8 && !capped; i++) {
           const r = await rawPost(`/api/conversations/${a.id}/reply`, JSON.stringify({ body: `msg ${i}`, channel: 'email' }), oc)
           if (r.status === 429) capped = true
         }
         chk('the outbound relay cap binds on one customer', String(capped), '^true$')
         const other = await rawPost(`/api/conversations/${b.id}/reply`, JSON.stringify({ body: 'and again', channel: 'email' }), oc)
-        chk('…and a second customer does not hand the same member another 60', String(other.status), '^429$')
+        chk('…and a second customer does not hand the same member another allowance', String(other.status), '^429$')
+
+        /* ONE allowance for the whole capability, not one per route.
+         *
+         * The cap landed on 2 of the 12 routes that put customer mail on the shop's relay, and
+         * the ten it missed are the loud ones. Measured before the fix: 60 replies then 429, and
+         * then /api/estimates/:id/send, /api/estimates/:id/nudge, /api/invoices/:id/send,
+         * /api/art/:id/send, /api/mockups/:id/send, /api/reorders/:id/nudge,
+         * /api/invoices/:id/request-payment and /api/outbox/:id/send ALL still 200 on the same
+         * session — From: the shop, with the shop's SPF alignment, to whatever address the caller
+         * chose one uncapped `POST /api/contacts` earlier. On a shop with no SMTP of its own,
+         * lib/notify.mjs relays it through the PLATFORM's account.
+         *
+         * Even adding the same limiter to each route would not have fixed it: the bucket is the
+         * route pattern, so twelve routes is twelve independent 60/hour allowances. The limiter
+         * now names a fixed bucket, so the whole family draws on one. */
+        const est = JSON.parse((await rawPost('/api/estimates',
+          JSON.stringify({ contact_id: b.id, items: [{ description: 'Tees', unit_price: 8.75, sizes: { M: 10 } }] }), oc)).text || '{}')
+        chk('an estimate exists to send from the capped session', String(est.id > 0), '^true$')
+        for (const path of [`/api/estimates/${est.id}/send`, `/api/estimates/${est.id}/nudge`]) {
+          const r = await rawPost(path, '{}', oc)
+          chk(`…and ${path.replace(String(est.id), ':id')} draws on the same allowance`, String(r.status), '^429$')
+        }
+        // The bucket is shared, not global: a different member gets their own 60.
+        const two = await rawPost('/api/auth/signup', JSON.stringify({ shop_name: 'Relay Two', owner_name: 'T', owner_email: 't@relay.test', password: 'GatePass-123456' }))
+        const tc = [].concat(two.headers['set-cookie'] || []).map((c) => String(c).split(';')[0]).join('; ')
+        const tcontact = JSON.parse((await rawPost('/api/contacts', JSON.stringify({ name: 'c', email: 'c@customer.test' }), tc)).text || '{}')
+        const fresh = await rawPost(`/api/conversations/${tcontact.id}/reply`, JSON.stringify({ body: 'hello', channel: 'email' }), tc)
+        chk('…but a different member still has their own allowance', String(fresh.status), '^200$')
       }
       let sawLimit = false
       for (let i = 0; i < 9 && !sawLimit; i++) sawLimit = (await rawPost('/api/auth/signup', signupBody(i))).status === 429

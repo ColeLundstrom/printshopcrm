@@ -1034,7 +1034,7 @@ const clientIp = (req) => req.ip || req.socket?.remoteAddress || 'unknown'
 // keyFn lets a route scope its bucket differently — login keys on the submitted email so one person
 // fumbling their password can't lock out the rest of an office behind the same NAT IP, while the
 // anonymous embed routes key on IP+shop since there is no email to key on.
-function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = null } = {}) {
+function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = null, bucket: fixedBucket = null } = {}) {
   return (req, res, next) => {
     // The bucket is the ROUTE PATTERN, never the concrete path. `req.path` carries whatever the
     // caller put in a path parameter and whatever trailing slash they felt like adding, and both
@@ -1050,7 +1050,11 @@ function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = n
     //
     // Every rateLimit() in this file is route-level middleware, so req.route is always set by the
     // time this runs; baseUrl keeps two identically-named routes under different mounts apart.
-    const bucket = `${req.baseUrl || ''}${req.route?.path || req.path.replace(/\/+$/, '')}`
+    //
+    // `bucket:` overrides that per-route default with one FIXED name shared across every route
+    // that carries the same limiter. A capability spread over ten routes needs one allowance, not
+    // ten: see outboundLimit below, where the per-route default silently multiplied the cap.
+    const bucket = fixedBucket || `${req.baseUrl || ''}${req.route?.path || req.path.replace(/\/+$/, '')}`
     const key = keyFn ? `${bucket}:${keyFn(req)}` : `${bucket}:${clientIp(req)}:${String(req.body?.email || '').toLowerCase().slice(0, RL_EMAIL_MAX)}`
     const now = Date.now()
     let e = rlHits.get(key)
@@ -1084,9 +1088,33 @@ function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = n
  * to an arbitrary external address from the shop's real relay.
  *
  * Keyed per MEMBER, not per IP: the point is to bound what one signed-in account can send.
+ *
+ * It landed on 2 of the 12 routes with that capability, and the other ten were the loud ones:
+ * `POST /api/contacts` (no role check) → `POST /api/estimates` → loop `POST /api/estimates/:id/nudge`
+ * is a mail cannon at any address on earth from a STAFF account, From: the shop, with the shop's
+ * SPF alignment — and on a shop with no SMTP of its own lib/notify.mjs relays it through the
+ * PLATFORM's account, so it is the platform's reputation being spent. Same for /invoices/:id/send,
+ * /art/:id/send, /mockups/:id/send, /reorders/:id/nudge, /invoices/:id/request-payment and
+ * /outbox/:id/send.
+ *
+ * ONE bucket for the lot (`bucket: 'outbound'`). The per-route default would have handed the same
+ * member twelve independent allowances, which is not a cap, it is a speed bump.
+ *
+ * Sharing the bucket means the ceiling has to cover the whole capability, not one route of it —
+ * a shop mailing out a month of invoices does 100+ sends in a sitting, and the old per-route 60
+ * would have turned this fix into a broken Send button. 300/hour is far above any person clicking
+ * Send in a UI and far below anything worth calling a cannon, and a 429 here drains itself: the
+ * message says so, and nothing is lost, because every one of these routes writes its outbox row
+ * before it sends, so the message is sitting in Outbox waiting to be re-sent. `PSC_OUTBOUND_MAX`
+ * moves it for an install that really does mail at volume.
+ *
+ * Deliberately NOT on `/api/notify/test`: that one is allowlisted to the shop's own address and
+ * the caller's own sign-in email, so it cannot reach a stranger, and it is the diagnostic a shop
+ * hammers while wiring SMTP up.
  */
+const OUTBOUND_MAX = Math.max(1, Number(String(process.env.PSC_OUTBOUND_MAX ?? '').trim()) || 300)
 const outboundLimit = rateLimit({
-  windowMs: 60 * 60_000, max: 60,
+  windowMs: 60 * 60_000, max: OUTBOUND_MAX, bucket: 'outbound',
   keyFn: (req) => `member:${req.member?.id || clientIp(req)}`,
   message: 'That is a lot of messages in one hour — give it a moment before sending more.',
 })
@@ -1919,7 +1947,7 @@ app.get('/api/today', wrap((req, res) => {
 app.get('/api/reorders', wrap((_req, res) => res.json(reorderRadar())))
 
 /** Nudge a customer to reorder — respects the shop's follow-up mode (drafts in Manual). */
-app.post('/api/reorders/:id/nudge', wrap((req, res) => {
+app.post('/api/reorders/:id/nudge', outboundLimit, wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', +req.params.id)
   if (!c) return res.status(404).json({ error: 'Customer not found' })
   if (!c.email) return res.status(400).json({ error: 'No email on file for this customer' })
@@ -2497,7 +2525,7 @@ app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
   res.json({ ok: true })
 }))
 
-app.post('/api/estimates/:id/send', wrap((req, res) => {
+app.post('/api/estimates/:id/send', outboundLimit, wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
@@ -2722,7 +2750,7 @@ app.post('/api/estimates/:id/mockups', upload.single('file'), reTenant, wrap((re
 
 /** Send the mockup to the customer for approval. Emails when the shop's email is connected; either
  *  way it returns the link so the shop can send it themselves. */
-app.post('/api/mockups/:id/send', wrap((req, res) => {
+app.post('/api/mockups/:id/send', outboundLimit, wrap((req, res) => {
   if (!mockupGate(req, res)) return
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a || !a.estimate_id) return res.status(404).json({ error: 'Mockup not found' })
@@ -2964,7 +2992,7 @@ app.post('/api/invoices/:id/void', requireRole('manager'), wrap((req, res) => {
   res.json({ ok: true, invoice: get('SELECT * FROM invoices WHERE id = ?', id) })
 }))
 
-app.post('/api/invoices/:id/request-payment', wrap((req, res) => {
+app.post('/api/invoices/:id/request-payment', outboundLimit, wrap((req, res) => {
   const id = +req.params.id
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
@@ -3112,7 +3140,7 @@ const refuseVoided = (inv, res) => {
   return true
 }
 
-app.post('/api/invoices/:id/send', wrap((req, res) => {
+app.post('/api/invoices/:id/send', outboundLimit, wrap((req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
@@ -3574,7 +3602,7 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
   res.json({ ...row, url: artUrl(row), drive: !!driveFileId })
 }))
 
-app.post('/api/art/:id/send', wrap((req, res) => {
+app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Art version not found' })
   // Everything below assumes a job row. An estimate-attached mockup (lite, and the mockup route
@@ -3743,7 +3771,7 @@ app.get('/api/followups', wrap((_req, res) => {
 }))
 
 /** Nudge a quote that went quiet. Logs to the customer timeline like any other touch. */
-app.post('/api/estimates/:id/nudge', wrap((req, res) => {
+app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
@@ -3765,7 +3793,7 @@ app.post('/api/estimates/:id/nudge', wrap((req, res) => {
 }))
 
 /** Nudge an overdue invoice. */
-app.post('/api/invoices/:id/nudge', wrap((req, res) => {
+app.post('/api/invoices/:id/nudge', outboundLimit, wrap((req, res) => {
   const i = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', i.contact_id)
@@ -4084,7 +4112,7 @@ app.post('/api/assistant', async (req, res) => {
  * downstream (the mockup) the client adds as a visual flourish. When a real inbound
  * webhook + Stripe are wired, this same chain runs untouched with nobody clicking.
  */
-app.post('/api/autopilot', async (req, res) => {
+app.post('/api/autopilot', outboundLimit, async (req, res) => {
   try {
     const text = String(req.body?.text || '')
     if (text.trim().length < 8) return res.status(400).json({ error: 'Paste the customer email first' })
@@ -6415,7 +6443,7 @@ app.get('/api/outbox', wrap((_req, res) => {
  *
  * The QuickBooks queue and the automation sequence queue each already ship exactly this button.
  */
-app.post('/api/outbox/:id/send', wrap(async (req, res) => {
+app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   const row = get('SELECT * FROM email_log WHERE id = ?', +req.params.id)
   if (!row) return res.status(404).json({ error: 'Message not found', code: 'not_found' })
   if (row.delivered) return res.status(409).json({ error: 'That message has already gone out.', code: 'already_sent' })

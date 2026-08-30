@@ -8679,6 +8679,82 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- every route that mails a customer draws on ONE allowance ---------- */
+/*
+ * `outboundLimit` was added to close what the product's own comment calls "an authenticated open
+ * relay", and it landed on 2 of the 12 routes with that capability. `POST /api/contacts` has no
+ * role check, so `POST /api/contacts` -> `POST /api/estimates` -> loop `/api/estimates/:id/nudge`
+ * was an uncapped mail cannon at any address on earth from a STAFF account, From: the shop, with
+ * the shop's SPF alignment — and on a shop that has not wired its own SMTP, lib/notify.mjs relays
+ * it through the PLATFORM's account.
+ *
+ * Written as a RULE rather than ten fixtures, because the failure mode is a THIRTEENTH route: any
+ * handler that reaches queueEmail/queueSms puts the shop's relay behind an HTTP verb, and the next
+ * person to write one will not read this comment. The behavioural half — that the bucket really is
+ * one allowance shared across the family and keyed per member — is in bin/gate-e2e.mjs.
+ */
+section('every route that can mail a customer is behind the same allowance')
+await t('no handler reaches the shop’s relay without outboundLimit', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+
+  // Split on EVERY top-of-line app.* registration, and bound each chunk at the next TOP-LEVEL
+  // statement of any kind. Bounding on the next route alone let a handler's chunk run on through
+  // the helper functions that follow it (/unsub swallowed sendWelcomeEmail) and read as a sender.
+  const marks = [...src.matchAll(/^app\.(\w+)\(([^\n]*)/gm)]
+  const tops = [...src.matchAll(/^(?:app\.|export |function |async function |const |let |var |class )/gm)].map((m) => m.index)
+  const endOf = (start) => tops.find((i) => i > start) ?? src.length
+  assert.ok(marks.length > 100, 'precondition: the route table parsed')
+
+  /* Deliberate exceptions, each for a reason that has to still hold:
+   *  · /api/notify/test is allowlisted to the shop's own address and the caller's own sign-in
+   *    email, so it cannot reach a stranger — and it is the diagnostic a shop hammers while
+   *    wiring SMTP up, so capping it would make connecting mail harder, not safer.
+   *  · the three PLATFORM-mail routes (signup welcome, member invite, password reset) send to a
+   *    MEMBER of the install on the platform's own account, never to a customer, and each already
+   *    carries its own tighter per-IP limiter. */
+  const EXEMPT = ['/api/notify/test', '/api/auth/signup', '/api/auth/forgot', '/api/members']
+  const sends = []
+  for (let i = 0; i < marks.length; i++) {
+    const [, method, rest] = marks[i]
+    if (!['get', 'post', 'put', 'delete', 'patch'].includes(method)) continue
+    const path = (rest.match(/^\s*(['`])([^'`]+)\1/) || [])[2]
+    if (!path) continue
+    const body = src.slice(marks[i].index, endOf(marks[i].index))
+    // Four doors to the shop's SMTP and Twilio credentials: the two queueing helpers, and
+    // sendEmail/sendSms called straight (which is how /api/outbox/:id/send re-sends a draft —
+    // it never touches queueEmail, so a queue-only sweep misses the one route whose whole job
+    // is to put a message on the wire).
+    if (!/\b(queueEmail|queueSms|sendEmail|sendSms)\s*\(/.test(body)) continue
+    if (EXEMPT.includes(path)) continue
+    sends.push({ method, path, gated: /outboundLimit/.test(rest) })
+  }
+  // If this drops to nothing the sweep has silently stopped testing anything.
+  assert.ok(sends.length >= 10, `precondition: found ${sends.length} customer-mail routes, expected 10+`)
+
+  const ungated = sends.filter((r) => !r.gated).map((r) => `${r.method.toUpperCase()} ${r.path}`)
+  assert.deepEqual(ungated, [],
+    `these routes put customer mail on the shop’s relay with no cap: ${ungated.join(', ')}`)
+})
+
+await t('…and they share one bucket, so twelve routes are not twelve allowances', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  // rateLimit() buckets on the ROUTE PATTERN by default, so the same limiter on twelve routes is
+  // twelve independent allowances — a speed bump, not a cap. It has to name a fixed bucket.
+  const def = src.slice(src.indexOf('const outboundLimit = rateLimit({'))
+  assert.match(def.slice(0, 300), /bucket:\s*'outbound'/, 'outboundLimit must name a fixed bucket')
+  assert.match(def.slice(0, 300), /keyFn:.*member:/, '…and still key per member, not per IP')
+  // And the ceiling has to cover the whole capability: a shop mailing a month of invoices does
+  // 100+ sends in a sitting, so the old per-route 60 would have turned this into a broken Send.
+  assert.match(src, /const OUTBOUND_MAX = [^\n]*\|\| 300/, 'the shared ceiling must clear a real invoice run')
+  assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
