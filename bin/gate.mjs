@@ -6636,6 +6636,47 @@ section('a paused drip does not wake up about a deleted record')
  * ways to fill that queue: an owner pauses a multi-step rule over the holidays (the code
  * deliberately keeps the queue and resumes it, which is right) and then switches it back on, so
  * every row is due at once; or the process is down for a day. */
+/* ---------- a delivery cannot outlive the subscription it belongs to ----------
+ * Four separate readers INNER JOIN webhook_subscriptions: retryDueWebhooks, the "Recent
+ * deliveries" list, /redeliver, and the aging logic. So a delivery whose subscription is gone
+ * would be unretryable, invisible and — because pruneWebhookDeliveries deliberately refuses
+ * anything not 'delivered' or 'failed' — never swept either. Deleting and re-adding is the ONLY
+ * way to repoint a webhook (PATCH just toggles active), so that shape would grow on every shop
+ * that ever moves one, carrying the full JSON payload of real business events.
+ *
+ * It does not happen, because the schema cascades and initDb turns foreign keys ON. This asserts
+ * that pairing, because it is exactly the kind of thing an ALTER can quietly drop — SQLite cannot
+ * add a REFERENCES clause after the fact, so a table rebuilt without it would never come back. */
+section('a webhook delivery cannot outlive its subscription')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem); dbmod.initDb(mem)
+
+  await t('deleting a subscription takes its in-flight deliveries with it', () => {
+    assert.equal(mem.prepare('PRAGMA foreign_keys').get().foreign_keys, 1,
+      'the cascade is only real while foreign keys are on')
+    dbmod.run("INSERT INTO webhook_subscriptions (id, url, secret, events, active) VALUES (1,'https://a.test','s','*',1)")
+    for (const st of ['pending', 'retrying', 'delivered', 'failed']) {
+      dbmod.run("INSERT INTO webhook_deliveries (subscription_id, event, payload, status, attempts, created_at) VALUES (1,'invoice.paid','{}',?,0,datetime('now'))", st)
+    }
+    assert.equal(dbmod.get('SELECT COUNT(*) AS c FROM webhook_deliveries').c, 4)
+    dbmod.run('DELETE FROM webhook_subscriptions WHERE id = 1')
+    assert.equal(dbmod.get('SELECT COUNT(*) AS c FROM webhook_deliveries').c, 0,
+      'a row nothing can retry, redeliver or display must not survive its parent')
+  })
+
+  await t('…and the retention sweep still never touches something being retried', () => {
+    dbmod.run("INSERT INTO webhook_subscriptions (id, url, secret, events, active) VALUES (2,'https://b.test','s','*',1)")
+    for (const st of ['retrying', 'delivered']) {
+      dbmod.run("INSERT INTO webhook_deliveries (subscription_id, event, payload, status, attempts, created_at) VALUES (2,'invoice.paid','{}',?,0,datetime('now','-90 days'))", st)
+    }
+    assert.equal(dbmod.pruneWebhookDeliveries(30), 1, 'only the terminal one ages out')
+    assert.equal(dbmod.get("SELECT COUNT(*) AS c FROM webhook_deliveries WHERE status = 'retrying'").c, 1)
+  })
+}
+
 section('a queue that came due all at once goes out over several ticks')
 {
   const { DatabaseSync } = await import('node:sqlite')
