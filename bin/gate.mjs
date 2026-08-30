@@ -32,11 +32,65 @@ const QTY_CASES = [
   ['Order 96 Port & Company PC61 navy', 96, 'PC61'],
   ['24 black tees', 24, ''],
   ['Just checking prices, no numbers here', 0, ''],
+  // The gap this pattern allows between a count and its unit noun is exactly the width of the
+  // rest of a phone number, and of the second half of a date pair. "call us at 714-555-1234
+  // about 48 tees" quoted 714 pieces — $4,159.75 against $435.40 — and on /api/autopilot in Full
+  // Auto nothing holds it, because the deterministic parser and the model AGREE: the estimate is
+  // mailed to the customer and a job is booked for 714 shirts. The style-number scrub for this
+  // same class of bug landed; the contact-detail scrub never did.
+  // …and the style scan read the same digits: style "714" is the number a supplier lookup would
+  // then have been sent for the blanks.
+  ['Hi, call us at 714-555-1234 about 48 tees for the team.', 48, ''],
+  ['Hi — reach me at 949.555.0117, we need 24 hoodies.', 24, ''],
+  ['need them by 2026-09-08 2026-10-12 for 200 tees', 200, ''],
+  ['we need 200 shirts by 9/15', 200, ''],
 ]
 for (const [text, qty, style] of QTY_CASES) {
   await t(JSON.stringify(text), () => {
     assert.equal(parseIntakeHeuristic(text).total_pieces, qty, 'quantity')
     assert.equal(parseGarmentText(text).style, style, 'style')
+  })
+}
+
+/* ---------- the receptionist carries a second copy of the same parser ----------
+ * …and it is the one that talks to anonymous strangers on the public widget and drafts a
+ * numbered estimate at whatever it decides the order is. */
+section('the receptionist does not read a phone number as the order quantity')
+{
+  const { extract } = await import('../lib/agent.mjs')
+  const { phoneCandidate } = await import('../lib/ai.mjs')
+
+  await t('a phone number in the message is not the piece count', () => {
+    assert.equal(extract('call us at 714-555-1234 about 48 tees', {}).qty, 48)
+    assert.equal(extract('reach me at 949.555.0117, we need 24 hoodies', {}).qty, 24)
+    assert.equal(extract('need them by 2026-09-08 2026-10-12 for 200 tees', {}).qty, 200)
+  })
+
+  await t('…and it is still read as the phone number', () => {
+    assert.equal(extract('call us at 714-555-1234 about 48 tees', {}).phone, '714-555-1234')
+    assert.equal(extract('call me on (714) 555-1234', {}).phone, '(714) 555-1234')
+    // E.164, because refusing a real number is the other way to lose a lead.
+    assert.equal(extract('my number is +44 20 7946 0958', {}).phone, '+44 20 7946 0958')
+    assert.equal(phoneCandidate('+1 (714) 555-1234'), '+1 (714) 555-1234')
+  })
+
+  await t('a size run and a pair of dates are not a phone number', () => {
+    // Both were stored on contacts.phone, and because nextQuoteGoal treats a phone as "we can
+    // reach them" the bot skipped the contact ask entirely: the shop got a captured lead, a
+    // quoted opportunity and a draft estimate for somebody it has no way to contact, and the
+    // transcript told them the bot had collected the details.
+    assert.equal(extract('sizes are 24 12 36 48 60 72 in tees', {}).phone, undefined)
+    assert.equal(extract('need them by 2026-09-08 2026-10-12 for 200 tees', {}).phone, undefined)
+    assert.equal(phoneCandidate('24 12 36 48 60'), null, 'five two-digit groups is not a number')
+    assert.equal(phoneCandidate('2026-09-08 14:30'), null, 'nor is a date and a time')
+  })
+
+  await t('the counts that already worked still work', () => {
+    assert.equal(extract('200 Gildan 5000 tees', {}).qty, 200, 'the style number is not the count')
+    assert.equal(extract('24 black tees', {}).qty, 24, 'an adjective between them is fine')
+    assert.equal(extract('qty: 1,200 white polos', {}).qty, 1200)
+    assert.equal(extract('we need screen printed tees for our 2026 conference', {}).qty, undefined,
+      'a year is still not an order')
   })
 }
 
