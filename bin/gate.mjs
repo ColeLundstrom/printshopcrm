@@ -7389,6 +7389,54 @@ section('a paused drip does not wake up about a deleted record')
   })
 }
 
+/* ---------- a rule the shop DELETED does not mail the customer three days later ----------
+ * The block above covers the ENTITY pointers. This is the same reused-rowid hazard on the RULE
+ * pointer: `automations.id` is a bare INTEGER PRIMARY KEY, so deleting the newest rule hands its
+ * rowid to the next rule the shop builds, and the resume guard's
+ * `SELECT enabled FROM automations WHERE id = ?` then finds a LIVE rule and runs the deleted
+ * rule's snapshotted steps. automation_runs.automation_id has a real ON DELETE CASCADE; this
+ * column had neither a foreign key nor a trigger. */
+section('a rule the shop deleted stays deleted, whatever rowid SQLite hands out next')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  auto.initAutomations(mem)
+  dbmod.run(`INSERT INTO contacts (id, name, email) VALUES (1, 'Northside Baptist', 'ap@northside.org')`)
+  dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, total) VALUES (1,'EST-1001',1,'sent',2400)`)
+  const ruleId = Number(dbmod.run(`INSERT INTO automations (name, enabled, trigger, params, actions) VALUES (?,1,?,'{}',?)`,
+    'Ask for a Google review', 'estimate.sent',
+    JSON.stringify([{ key: 'note.log', config: { body: 'thanks' } },
+      { key: 'wait', config: { days: 3 } },
+      { key: 'note.log', config: { body: 'How did we do?' } }])).lastInsertRowid)
+  const est = dbmod.get('SELECT * FROM estimates WHERE id = 1')
+  auto.fire('estimate.sent', { estimate: est, contact: dbmod.get('SELECT * FROM contacts WHERE id = 1'), total: est.total }, {})
+  await t('precondition: the sequence is queued and waiting on the rule', () => {
+    assert.equal(dbmod.get('SELECT COUNT(*) c FROM automation_pending WHERE status IS NULL').c, 1)
+  })
+  // The owner deletes the rule after a customer complains, then builds a different one.
+  dbmod.run('DELETE FROM automations WHERE id = ?', ruleId)
+  const reused = Number(dbmod.run(`INSERT INTO automations (name, enabled, trigger, params, actions) VALUES (?,1,?,'{}','[]')`,
+    'Text the customer at QC', 'job.stage').lastInsertRowid)
+  await t('precondition: SQLite really does hand the deleted rule\'s rowid to the new one', () => {
+    assert.equal(reused, ruleId, 'without rowid reuse there is nothing to test')
+  })
+  dbmod.run("UPDATE automation_pending SET due_at = datetime('now','-1 day')")
+  const fired = auto.tick({})
+  await t('the deleted rule does not resume onto the new rule that inherited its id', () => {
+    assert.deepEqual(fired.filter((f) => /resume/.test(f)), [], `tick fired ${JSON.stringify(fired)}`)
+  })
+  await t('…and the abandoned sequence is parked where the Automations screen can show it', () => {
+    const p = dbmod.get('SELECT status, note FROM automation_pending ORDER BY id DESC LIMIT 1')
+    assert.equal(p?.status, 'orphaned', 'the row was resumed instead of parked')
+    assert.match(String(p?.note || ''), /rule was deleted/, 'and it has to say what happened, not just stop')
+  })
+}
+
 /* ---------- switching a paused drip back on does not mail the whole backlog at once ----------
  * TICK_BUDGET exists — its own comment says so — to stop "thousands of real customer emails at
  * once". The pending-resume loop checked neither it nor any LIMIT, and there are two ordinary
