@@ -10514,6 +10514,50 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('a Drive upload that stored nothing does not destroy the artwork')
+
+await t('a 2xx with no file id is not a stored file', async () => {
+  const gd = await import('../lib/gdrive.mjs')
+  // Drive is reached through fetch, which uploadFile takes as an injectable argument. A corporate
+  // TLS-inspecting proxy, or an nginx that answers its own error page with 200, produces a 2xx
+  // whose body is not the expected JSON. `res.json().catch(() => ({}))` turned that into {} and
+  // the function reported ok:true with id undefined — and the caller reads ok and deletes the
+  // shop's only local copy of the customer's artwork.
+  const twoHundredNoJson = async () => ({ ok: true, status: 200, json: async () => { throw new Error('not json') } })
+  const bad = await gd.uploadFile({ accessToken: 't', name: 'proof.png', buffer: Buffer.from('x'), folderId: 'f', fetch: twoHundredNoJson })
+  assert.equal(bad.ok, false, 'a 200 that returned no file id must not report success')
+  assert.match(String(bad.error), /no file id/i, '…and must say what was actually wrong')
+
+  const twoHundredNoId = async () => ({ ok: true, status: 200, json: async () => ({ webViewLink: 'https://drive/x' }) })
+  const bad2 = await gd.uploadFile({ accessToken: 't', name: 'proof.png', buffer: Buffer.from('x'), folderId: 'f', fetch: twoHundredNoId })
+  assert.equal(bad2.ok, false, 'a well-formed JSON body with no id is still not a stored file')
+
+  const good = async () => ({ ok: true, status: 200, json: async () => ({ id: 'drive-123', webContentLink: 'https://drive/dl' }) })
+  const ok = await gd.uploadFile({ accessToken: 't', name: 'proof.png', buffer: Buffer.from('x'), folderId: 'f', fetch: good })
+  assert.equal(ok.ok, true, 'a real upload still succeeds')
+  assert.equal(ok.id, 'drive-123', '…and carries its id')
+})
+
+await t('the local copy is deleted after the record exists, not before', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  const i = src.indexOf("let driveFileId = null, driveLink = null")
+  const region = src.slice(i, src.indexOf('res.json({ ...row', i))
+  const code = region.split('\n').map((l) => l.replace(/\s*\/\/.*$/, '')).join('\n')
+  // The unlink used to sit beside the upload, before the INSERT. Any throw between the two — a
+  // dangling job row, a locked database — destroyed the only copy of the artwork with no row
+  // pointing at anything, and the customer's proof and the press's ticket were both blank.
+  const insert = code.indexOf('INSERT INTO art_versions')
+  const unlink = code.indexOf('unlinkSync')
+  assert.ok(insert > 0 && unlink > 0, 'both the INSERT and the local-copy delete should be in this region')
+  assert.ok(unlink > insert, 'the local copy must not be deleted until the row that replaces it exists')
+  assert.match(code, /if \(driveFileId\) \{ try \{ unlinkSync/,
+    '…and only when Drive really holds the file — an upload that stored nothing must leave the bytes alone')
+  assert.match(code, /out\.ok && out\.id/, 'a 2xx with no id must not be treated as a stored file here either')
+})
+
 section('a new QuickBooks company does not inherit the last one\'s ids')
 
 await t('a realm change clears the mappings, before the new realm overwrites the old one', async () => {

@@ -3706,14 +3706,20 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
           return up
         },
       })
-      if (out.ok) { driveFileId = out.id; driveLink = out.webContentLink || out.webViewLink; try { unlinkSync(req.file.path) } catch {} }
-      else console.error('gdrive upload:', out.error)
+      if (out.ok && out.id) { driveFileId = out.id; driveLink = out.webContentLink || out.webViewLink }
+      else console.error('gdrive upload:', out.error || 'Drive returned no file id')
     } catch (e) { console.error('gdrive upload threw:', e && e.message) }
   }
 
   const version = (get('SELECT COALESCE(MAX(version), 0) AS v FROM art_versions WHERE job_id = ?', jobId).v) + 1
   const id = Number(run('INSERT INTO art_versions (job_id, version, filename, original_name, mime, size, status, notes, drive_file_id, drive_link, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     jobId, version, req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, 'draft', req.body?.notes || '', driveFileId, driveLink, now()).lastInsertRowid)
+  // Only NOW is the local copy safe to drop, and only if Drive really holds the file. Deleting it
+  // beside the upload — before this INSERT — meant any throw between the two (a dangling job row,
+  // a disk hiccup, a locked database) destroyed the only copy of the customer's artwork with no
+  // row pointing at anything. On a Drive shop the deletion IS the feature, so it stays; it just
+  // happens after the record that replaces it exists.
+  if (driveFileId) { try { unlinkSync(req.file.path) } catch { /* best effort */ } }
   logActivity('art', `Art v${version} uploaded${driveFileId ? ' to Google Drive' : ''} — ${req.file.originalname}`, { contact_id: j.contact_id, job_id: jobId })
   const row = get('SELECT * FROM art_versions WHERE id = ?', id)
   res.json({ ...row, url: artUrl(row), drive: !!driveFileId })
