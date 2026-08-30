@@ -4141,7 +4141,7 @@ await t('INSTALL.md clears public/uploads before symlinking it', async () => {
 //
 // This runs the actual script against a fake install with every external command stubbed, because
 // asserting on the text of a deploy script is not the same as watching it deploy.
-const rehearseRelease = async ({ healthy, first = false, gnu = false, seedBackups = false }) => {
+const rehearseRelease = async ({ healthy, first = false, gnu = false, seedBackups = false, restartFails = false }) => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync, chmodSync, existsSync, readlinkSync, readFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
@@ -4194,7 +4194,10 @@ const rehearseRelease = async ({ healthy, first = false, gnu = false, seedBackup
     // Every external the script shells out to. `node` too: release.sh runs the gate against the
     // new release, and this IS the gate.
     stub('sudo', 'exec "$@"')
-    stub('systemctl', 'exit 0')
+    // `restart` returning non-zero is not hypothetical: systemd does it on 203/EXEC, 217/USER,
+    // 200/CHDIR and 226/NAMESPACE — a moved node binary or a reorganised uploads path, both of
+    // which the shipped unit hardcodes. Every other subcommand still succeeds.
+    stub('systemctl', restartFails ? 'case "$1" in restart) exit 1;; esac; exit 0' : 'exit 0')
     stub('rsync', 'for a in "$@"; do last="$a"; done; mkdir -p "$last/public" "$last/bin"; exit 0')
     stub('npm', 'exit 0')
     stub('node', 'exit 0')
@@ -4298,6 +4301,41 @@ await t('a release that will not answer /health is rolled back, not announced as
  * plain /health. So the exact failure its 70-line pre-migration backup exists for, a migration
  * that throws on one shop's real data, printed "✓ is live", exited 0, stayed flipped in, and
  * never restored the snapshot it had just taken. release.sh's own comment asserted the opposite. */
+/* ---------- and `set -e` must not take the diagnosis with it ----------
+ * `sudo systemctl restart "$SERVICE"` sat as a bare simple command under `set -euo pipefail`, one
+ * line after the flip. systemd returns non-zero when the unit fails to START — 203/EXEC when
+ * ExecStart's hardcoded /usr/bin/node has moved to nvm, 226/NAMESPACE when ReadWritePaths no
+ * longer resolves — and the script ended right there. `current` had already been flipped to the
+ * release that will not start; the port lookup, the /health loop, the rollback and the
+ * `journalctl -n 30` dump are all below that line and none of them ran. So the one failure where
+ * the app cannot even be asked whether it is healthy is the one where the health-based rollback
+ * does not fire, and the operator is left with systemd's one-line "Job for … failed" and an
+ * install that is down on an untested release.
+ *
+ * The gate never caught it because the harness's systemctl stub always exited 0. */
+await t('a unit systemd refuses to start still gets the rollback, not a bare systemctl error', async () => {
+  const r = await rehearseRelease({ healthy: false, restartFails: true })
+  assert.notEqual(r.code, 0, `a deploy that could not start must exit non-zero:\n${r.out}`)
+  assert.match(r.current, /releases\/v0\.0\.1$/,
+    `set -e on the restart skipped the rollback and left current on the release that would not start — got ${r.current}`)
+  assert.match(r.out, /rolled back/, 'and the operator has to be told what state the box is in')
+})
+
+await t('…and both deploy scripts keep the restart out of set -e\'s reach', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const f of ['deploy/ship.sh', 'deploy/release.sh']) {
+    for (const line of readFileSync(join(root, f), 'utf8').split('\n')) {
+      if (!/systemctl restart/.test(line)) continue
+      if (/^\s*#/.test(line)) continue
+      assert.match(line, /\|\||if |&&|\brolled back\b/,
+        `${f}: a bare \`systemctl restart\` under set -e skips the rollback below it — ${line.trim()}`)
+    }
+  }
+})
+
 await t("a release that leaves one shop's database dark is rolled back, not announced as live", async () => {
   const r = await rehearseRelease({ healthy: 'degraded' })
   assert.notEqual(r.code, 0, `a deploy that bricked a shop must exit non-zero:\n${r.out}`)

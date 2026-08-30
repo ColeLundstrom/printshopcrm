@@ -95,7 +95,12 @@ rsync -a -e "$RSYNC_E" \
   if [ -n \"\$PREV\" ]; then echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
   else sudo rm -f '$APP_ROOT/.previous-release'; fi
   sudo ln -sfn '$REL' '$APP_ROOT/current'
-  sudo systemctl restart '$SERVICE'
+  # NOT bare. Under the \`set -e\` at the top of this block a non-zero \`systemctl restart\` ended the
+  # remote script right here — after the flip — so the /health loop and the rollback below were
+  # unreachable, and the outer die()'s \"see the output above for whether it rolled back\" had no
+  # answer in it. systemd returns non-zero when the unit fails to START (203/EXEC, 226/NAMESPACE),
+  # which is the one failure where the app cannot be asked whether it is healthy.
+  sudo systemctl restart '$SERVICE' || echo 'systemctl restart exited non-zero — checking /health anyway'
 
   # is-active on a Type=simple unit goes true the moment the process FORKS — before the port is
   # bound and before a single database is opened. It was the whole liveness gate, so a release that
@@ -134,7 +139,7 @@ rsync -a -e "$RSYNC_E" \
     echo
     if [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ]; then
       sudo ln -sfn \"\$PREV\" '$APP_ROOT/current'
-      sudo systemctl restart '$SERVICE'
+      sudo systemctl restart '$SERVICE' || echo \"…and the rollback's own restart exited non-zero — the service may be down\"
       echo 'rolled back to the previous release'
     else
       echo 'NO PREVIOUS RELEASE RECORDED — the service is left stopped/broken, fix it by hand'

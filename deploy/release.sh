@@ -166,7 +166,14 @@ else
   sudo rm -f "$APP_ROOT/.previous-release"
 fi
 
-sudo systemctl restart "$SERVICE"
+# NOT bare. Under `set -e` a non-zero `systemctl restart` ended the script on this line — after
+# `current` had already been flipped — so the port lookup, the /health loop, the rollback and the
+# journalctl dump below were all unreachable. systemd returns non-zero when the unit fails to
+# START: 203/EXEC if ExecStart's hardcoded /usr/bin/node has moved to nvm, 226/NAMESPACE if
+# ReadWritePaths no longer resolves. That is exactly the failure where the app cannot be asked
+# whether it is healthy, and it was the one where the health-based rollback never ran. Let it fail,
+# and let the loop below reach its own conclusion.
+sudo systemctl restart "$SERVICE" || echo "!  systemctl restart exited non-zero — checking whether anything is serving anyway" >&2
 
 # --- is it actually serving? ---------------------------------------------------------------------
 #
@@ -216,7 +223,9 @@ else
   echo >&2
   if [ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ]; then
     sudo ln -sfn "$PREVIOUS" "$APP_ROOT/current"
-    sudo systemctl restart "$SERVICE"
+    # Same reason, and it matters more here: if THIS restart fails the operator must still be told
+    # where the box was left, and still get the journalctl dump below.
+    sudo systemctl restart "$SERVICE" || echo "  …and the rollback's own restart exited non-zero — the service may be down" >&2
     echo "  rolled back to $PREVIOUS" >&2
   else
     echo "  NO PREVIOUS RELEASE RECORDED — the service is left on this one; fix it by hand" >&2
