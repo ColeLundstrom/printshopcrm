@@ -12,6 +12,8 @@
 #   APP_ROOT   /opt/printshopcrm-pro
 #   SERVICE    printshopcrm-pro
 #   DATA_UPLOADS  path the release's public/uploads must symlink to
+#   DATA_ROOT     directory holding control.db + tenants/ (default: dirname of PSC_DB in .env)
+#   PSC_SKIP_BACKUP=1  flip WITHOUT a pre-migration snapshot (you are on your own)
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -24,6 +26,9 @@ APP_ROOT="${APP_ROOT:-/opt/printshopcrm-pro}"
 SERVICE="${SERVICE:-printshopcrm-pro}"
 HEALTH_TRIES="${PSC_HEALTH_TRIES:-10}"
 DATA_UPLOADS="${DATA_UPLOADS:-$APP_ROOT/data/uploads}"
+# The directory holding control.db and tenants/. Derived from PSC_DB in the server's .env when it
+# is not set, because that is where every install actually keeps it — see the snapshot step below.
+DATA_ROOT="${DATA_ROOT:-}"
 
 die() { printf '\n  ✗ %s\n\n' "$1" >&2; exit 1; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
@@ -94,6 +99,49 @@ rsync -a -e "$RSYNC_E" \
   fi
   if [ -n \"\$PREV\" ]; then echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
   else sudo rm -f '$APP_ROOT/.previous-release'; fi
+
+  # ---- pre-migration snapshot -----------------------------------------------------------------
+  # The restart below runs schema migrations against EVERY shop's real data, and some of them are
+  # one-shot data restatements (lib/db.mjs's once(...) blocks) that no rollback can undo. This
+  # script took no backup at all. Measured on a simulated server carrying one representative
+  # dedupe migration: a deploy destroyed 99 of a shop's 600 contacts — 59 of its 60 walk-ins —
+  # printed 'live and answering /health' and a clean verify-sync, and the rollback this script
+  # itself prints put the CODE back and left the data destroyed, with nothing on the box to
+  # restore from.
+  #
+  # deploy/release.sh — the script INSTALL.md points self-hosters at — has refused to deploy
+  # without exactly this since it was written. bin/snapshot.mjs is node-only (VACUUM INTO), needs
+  # no sqlite3 binary, and is already in the release that was just rsynced.
+  #
+  # Before the flip, after the server-side gate: a snapshot of a tree we are then not going to
+  # deploy is wasted, and a flip we cannot undo is the thing being fixed.
+  SNAP_DATA='$DATA_ROOT'
+  if [ -z \"\$SNAP_DATA\" ]; then
+    # sudo, because INSTALL.md mandates a 0600 .env the deploy user cannot read.
+    PSC_DB_PATH=\$(sudo sed -n 's/^[[:space:]]*PSC_DB=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
+    [ -n \"\$PSC_DB_PATH\" ] && SNAP_DATA=\$(dirname \"\$PSC_DB_PATH\")
+  fi
+  if [ \"\${PSC_SKIP_BACKUP:-}\" = '1' ]; then
+    echo '!  PSC_SKIP_BACKUP=1 — flipping with NO pre-migration snapshot'
+  elif [ -z \"\$SNAP_DATA\" ] || [ ! -d \"\$SNAP_DATA\" ]; then
+    echo 'COULD NOT LOCATE THE DATA ROOT — nothing was flipped.'
+    echo \"  Looked for PSC_DB in $APP_ROOT/.env. Set DATA_ROOT=<dir holding control.db and tenants/>\"
+    echo '  when running ship.sh, or PSC_SKIP_BACKUP=1 to flip without a snapshot.'
+    exit 1
+  else
+    SNAP=\"\$SNAP_DATA/backups/predeploy-$TAG-\$(date +%Y%m%d%H%M%S)\"
+    sudo node '$REL/bin/snapshot.mjs' \"\$SNAP_DATA\" \"\$SNAP\" || {
+      echo \"PRE-MIGRATION SNAPSHOT FAILED under \$SNAP_DATA — nothing was flipped.\"
+      echo '  Fix it, or re-run with PSC_SKIP_BACKUP=1 to flip anyway.'
+      exit 1; }
+    echo \"  snapshot: \$SNAP\"
+    echo \"  if a migration eats data, put it back with:\"
+    echo \"    sudo systemctl stop $SERVICE \\\\\"
+    echo \"      && sudo ln -sfn \\\$(cat $APP_ROOT/.previous-release) $APP_ROOT/current \\\\\"
+    echo \"      && sudo node $APP_ROOT/current/bin/restore.mjs '\$SNAP' --data-root '\$SNAP_DATA' --yes \\\\\"
+    echo \"      && sudo systemctl start $SERVICE\"
+  fi
+
   sudo ln -sfn '$REL' '$APP_ROOT/current'
   # NOT bare. Under the \`set -e\` at the top of this block a non-zero \`systemctl restart\` ended the
   # remote script right here — after the flip — so the /health loop and the rollback below were
@@ -165,11 +213,14 @@ cat <<EOF
     · grep the site source, blog posts included, before you call this shipped
     · rewrite stale posts rather than deleting them; the URL is earning traffic
 
-  Then:  bash deploy/release.sh activate <site-release>      (see RELEASING.md)
+  Then:  bash deploy/release.sh activate <release-name>     (see RELEASING.md)
 EOF
 
 step "Shipped $TAG"
 echo "  GitHub:  https://github.com/ColeLundstrom/printshopcrm/releases/tag/$TAG"
 echo "  Server:  $REL_NAME"
-echo "  Roll back: sudo ln -sfn \$(cat $APP_ROOT/.previous-release) $APP_ROOT/current && sudo systemctl restart $SERVICE"
+# release.sh rollback, not the raw one-liner. The one-liner never updated .previous-release, so it
+# was a silent one-shot: run it twice and the second is a no-op with exit 0 and a 200 on /health.
+echo "  Roll back the CODE:  ssh $APP_HOST 'sudo bash $APP_ROOT/current/deploy/release.sh rollback'"
+echo "  That does NOT undo a data migration — the pre-migration snapshot printed above is what does."
 echo

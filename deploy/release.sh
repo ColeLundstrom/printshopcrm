@@ -21,12 +21,86 @@
 set -euo pipefail
 
 TAG="${1:-}"
-[ -n "$TAG" ] || { echo "usage: $0 <tag>   e.g. $0 v1.1.0" >&2; exit 1; }
+[ -n "$TAG" ] || { echo "usage: $0 <tag>   e.g. $0 v1.1.0" >&2; echo "       $0 rollback" >&2; echo "       $0 activate <release-name>" >&2; exit 1; }
 
 APP_ROOT="${APP_ROOT:-/opt/printshopcrm}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/printshopcrm}"
 SERVICE="${SERVICE:-printshopcrm}"
 SRC="${SRC:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+##
+## Subcommands, because RELEASING.md and ship.sh have both been printing two of these for
+## releases and this script had none — every argument was a version tag.
+##
+##   `release.sh rollback` built a NEW release out of $SRC (which, invoked the documented way as
+##   /opt/printshopcrm/current/deploy/release.sh, is the very code you are running away from),
+##   named it `releases/rollback`, ran the gate against it, flipped `current` onto it and exited
+##   0 with "✓ rollback is live". It also burned `predeploy-rollback-<stamp>` into the backup
+##   namespace, and every later attempt is refused for ever because releases/rollback exists.
+##
+##   `release.sh activate <name>` — which ship.sh prints at the end of EVERY successful release —
+##   discarded the name and created a release directory called `activate`.
+##
+## Both measured on a simulated server. A rollback that deploys the bad code again is worse than
+## no rollback command at all.
+##
+list_releases() { ls -1dt "$APP_ROOT/releases/"*/ 2>/dev/null | head -8 | sed 's/^/    /' >&2; }
+
+case "$TAG" in
+  rollback)
+    PREV=$(cat "$APP_ROOT/.previous-release" 2>/dev/null || true)
+    # -L first: GNU readlink -f prints a path whose LAST component is missing and exits 0, so on a
+    # box with no `current` yet this came back as the link itself and we would have recorded a
+    # pointer to nothing. Same guard ship.sh carries, for the same reason.
+    CUR=''
+    if [ -L "$APP_ROOT/current" ]; then
+      CUR=$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)
+      [ -n "$CUR" ] && [ -d "$CUR" ] || CUR=''
+    fi
+    if [ -z "$PREV" ] || [ ! -d "$PREV" ]; then
+      echo "no usable previous release recorded in $APP_ROOT/.previous-release" >&2
+      echo "  pick one by hand:  $0 activate <name>" >&2; list_releases; exit 1
+    fi
+    if [ "$PREV" = "$CUR" ]; then
+      # The old one-liner in ship.sh and RELEASING.md never updated .previous-release, so after one
+      # rollback both pointed at the same release and running it again was a silent no-op: exit 0,
+      # /health 200, nothing changed, nothing said. Say so, and offer the way further back.
+      echo "already on $PREV — .previous-release names the release that is live, so there is nothing to roll back to." >&2
+      echo "  to go back further:  $0 activate <name>" >&2; list_releases; exit 1
+    fi
+    echo "→ rolling back to $PREV"
+    sudo ln -sfn "$PREV" "$APP_ROOT/current"
+    # Record where we came FROM, so a second rollback works instead of being a no-op.
+    [ -n "$CUR" ] && echo "$CUR" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
+    # NOT bare: `set -e` is on, and a unit that fails to START returns non-zero — which would end
+    # the script here, before the line that tells the operator what they are actually looking at.
+    sudo systemctl restart "$SERVICE" || echo "  !  systemctl restart exited non-zero — the service may be down; check: systemctl status $SERVICE"
+    echo "  ✓ $PREV is live. This restored the CODE only — a data migration needs a restore from"
+    echo "    the pre-deploy snapshot under $DATA_ROOT/backups."
+    exit 0 ;;
+  activate)
+    NAME="${2:-}"
+    [ -n "$NAME" ] || { echo "usage: $0 activate <release-name>" >&2; list_releases; exit 1; }
+    [ -d "$APP_ROOT/releases/$NAME" ] || { echo "no release '$NAME' under $APP_ROOT/releases" >&2; list_releases; exit 1; }
+    CUR=''
+    if [ -L "$APP_ROOT/current" ]; then
+      CUR=$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)
+      [ -n "$CUR" ] && [ -d "$CUR" ] || CUR=''
+    fi
+    echo "→ activating $NAME"
+    sudo ln -sfn "$APP_ROOT/releases/$NAME" "$APP_ROOT/current"
+    [ -n "$CUR" ] && echo "$CUR" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
+    sudo systemctl restart "$SERVICE" || echo "  !  systemctl restart exited non-zero — the service may be down; check: systemctl status $SERVICE"
+    echo "  ✓ $NAME is live"
+    exit 0 ;;
+esac
+
+# Anything else has to be a version tag. Without this, one mistyped word silently deploys the
+# current tree under that word's name and flips onto it.
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || {
+  echo "'$TAG' is not a version tag." >&2
+  echo "  usage: $0 v1.2.3 | $0 rollback | $0 activate <release-name>" >&2
+  exit 1; }
 
 RELEASE="$APP_ROOT/releases/$TAG"
 UPLOADS="$DATA_ROOT/uploads"
@@ -111,8 +185,16 @@ else
   # the crash-time log straight over it. Measured: restore a 500-customer backup, get the 1000 rows
   # you were trying to undo, quick_check "ok", exit 0. Which is 28 lines below this script's own
   # warning that a stale -wal is worse than none.
-  echo "  put one back with:  sudo systemctl stop $SERVICE && node $APP_ROOT/current/bin/restore.mjs '$BAK_DIR' --data-root '$DATA_ROOT' && sudo systemctl start $SERVICE"
-  echo "  (it prints the plan and changes nothing until you add --yes)"
+  # The CODE goes back first. Restoring under the release that ate the data just lets it eat the
+  # data again on start — measured: 562 rows restored, 562 rows gone the moment the service came
+  # up, because the once(...) migration re-ran against the restored file. And --yes is on the line
+  # because it prints the plan and changes nothing without it, which the old line said and then
+  # made you work out for yourself.
+  echo "  put one back with:  sudo systemctl stop $SERVICE \\"
+  echo "    && sudo ln -sfn \$(cat $APP_ROOT/.previous-release) $APP_ROOT/current \\"
+  echo "    && node $APP_ROOT/current/bin/restore.mjs '$BAK_DIR' --data-root '$DATA_ROOT' --yes \\"
+  echo "    && sudo systemctl start $SERVICE"
+  echo "  (drop the --yes to see the plan first — it changes nothing without it)"
   # Keep the five most recent DEPLOY snapshots; the rest are just disk, and backup.sh re-archives
   # them.
   #

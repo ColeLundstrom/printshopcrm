@@ -33,15 +33,34 @@ if (OUT === ROOT) die('the snapshot directory must not be the data root itself')
 
 // Never walk into the output directory, or a re-run snapshots its own previous snapshots — the
 // mistake that quietly doubled deploy/backup.sh's archive every night.
+//
+// …and never into `backups/` or `_snapshot/` either, wherever they sit under the root. OUT is a
+// NEW timestamped directory on every deploy, so excluding only OUT excluded nothing: the second
+// pre-deploy snapshot backed up the first one, the third backed up both, and the fourth's archive
+// was mostly copies of itself. release.sh, restore.mjs and backup.sh all prune exactly these two
+// names already; this was the one walker that did not.
+const SKIP_DIRS = new Set(['backups', '_snapshot'])
 const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
   const p = join(dir, e.name)
   if (p === OUT) return []
-  if (e.isDirectory()) return walk(p)
+  if (e.isDirectory()) return SKIP_DIRS.has(e.name) ? [] : walk(p)
   return e.name.endsWith('.db') ? [p] : []
 })
 
 const dbs = walk(ROOT)
 if (!dbs.length) die(`no .db files under ${ROOT} — nothing to back up, which is not a success`)
+
+// Two sources cannot share one destination name. `tenants/acme/printshop.db` flattens to
+// `tenants__acme__printshop.db` — and a botched single-file restore leaves a file of exactly that
+// name sitting in the data root, so both flatten to the same thing. VACUUM INTO refuses an
+// existing file, so the old code died mid-loop with a raw SQLite stack, having ALREADY rm -rf'd
+// the previous snapshot. Detect it before anything is deleted, and name both paths.
+const byName = new Map()
+for (const src of dbs) {
+  const name = src.slice(ROOT.length + 1).replaceAll('/', '__')
+  if (byName.has(name)) die(`two databases would be snapshotted to the same file "${name}":\n      ${byName.get(name)}\n      ${src}\n    Rename or remove one of them — nothing has been changed.`)
+  byName.set(name, src)
+}
 
 rmSync(OUT, { recursive: true, force: true })
 mkdirSync(OUT, { recursive: true })

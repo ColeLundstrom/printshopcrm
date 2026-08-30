@@ -78,8 +78,29 @@ bash deploy/verify-sync.sh user@host /opt/printshopcrm-pro/current
 ## Rolling back
 
 ```bash
-ssh user@host "sudo ln -sfn \$(cat /opt/printshopcrm-pro/.previous-release) /opt/printshopcrm-pro/current && sudo systemctl restart printshopcrm-pro"
-ssh user@host "bash /opt/printshopcrm/current/deploy/release.sh rollback"   # website
+ssh user@host "sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback"   # the app
+ssh user@host "sudo bash /opt/printshopcrm/current/deploy/release.sh rollback"       # the website
 ```
+
+`release.sh rollback` records where it came from, so running it twice takes you back and then
+forward again rather than doing nothing. To go back further than one release:
+
+```bash
+ssh user@host "ls -1dt /opt/printshopcrm-pro/releases/*/ | head"
+ssh user@host "sudo bash /opt/printshopcrm-pro/current/deploy/release.sh activate <release-name>"
+```
+
+**This puts the CODE back and nothing else.** A release whose migrations restated data — the
+`once(...)` blocks in `lib/db.mjs` — is not undone by a symlink. `ship.sh` prints a pre-migration
+snapshot path on every deploy; that is what puts the data back:
+
+```bash
+ssh user@host "sudo systemctl stop printshopcrm-pro \
+  && sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback \
+  && sudo node /opt/printshopcrm-pro/current/bin/restore.mjs <snapshot-dir> --data-root /var/lib/printshopcrm --yes \
+  && sudo systemctl start printshopcrm-pro"
+```
+
+Drop the `--yes` to see the plan first; it changes nothing without it.
 
 A rollback puts the server behind GitHub on purpose. That's an accepted, temporary state — but it is still drift, and the nightly check will say so until you either roll forward or revert the tag. That nagging is the point.

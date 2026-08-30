@@ -4632,6 +4632,160 @@ await t('…and the route will not write \'submitted\' without one either', asyn
   assert.match(before, /ok: false/, 'the response the screen reads must not still say ok')
 })
 
+/* ---------- a deploy has to be undoable, including the migration (v28) ----------
+ *
+ * ship.sh rsyncs, flips and restarts — and the restart runs schema migrations against every
+ * shop's real data, some of them one-shot restatements no symlink can undo. It took no backup at
+ * all. Measured on a simulated server carrying one representative dedupe migration: a deploy
+ * destroyed 99 of a shop's 600 contacts, printed "live and answering /health" and a clean
+ * verify-sync, and the rollback ship.sh itself prints put the code back and left the data
+ * destroyed with nothing on the box to restore from. deploy/release.sh has refused to deploy
+ * without exactly this snapshot since it was written. */
+section('a deploy takes a snapshot it can be put back from')
+await t('ship.sh snapshots before it flips, not after and not never', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const sh = readFileSync(join(root, 'deploy/ship.sh'), 'utf8')
+  const snap = sh.indexOf('bin/snapshot.mjs')
+  assert.ok(snap > 0, 'ship.sh takes no backup at all before running migrations against every shop')
+  const flip = sh.indexOf("sudo ln -sfn '$REL' '$APP_ROOT/current'")
+  assert.ok(flip > 0, 'the flip moved — re-point this test')
+  assert.ok(snap < flip, 'the snapshot has to be taken BEFORE the flip, or it is a snapshot of the damage')
+  // Fail closed, with a documented escape, exactly as release.sh already does.
+  assert.match(sh, /PSC_SKIP_BACKUP/, 'there has to be a deliberate way to flip without one')
+  assert.match(sh, /COULD NOT LOCATE THE DATA ROOT/, 'a data root it cannot find must stop the deploy, not skip the backup')
+})
+
+await t('every recovery line the deploy scripts print actually works', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // Scoped to the DEPLOY path. INSTALL.md's ordinary "restore last night's backup" runs under a
+  // release nobody is trying to get away from, so it needs no symlink flip.
+  for (const f of ['deploy/ship.sh', 'deploy/release.sh', 'RELEASING.md']) {
+    const src = readFileSync(join(root, f), 'utf8')
+    const lines = src.split('\n')
+    lines.forEach((line, i) => {
+      if (!/restore\.mjs/.test(line) || /^\s*#/.test(line)) return
+      // A recovery is printed as a multi-line shell continuation, so read the window it lives in.
+      const win = lines.slice(Math.max(0, i - 4), i + 5).join('\n')
+      // A restore that runs UNDER the release that ate the data lets it eat the data again on
+      // start — measured: 562 rows restored, 562 rows gone the moment the service came up.
+      // Either spelling of "put the code back first" — the raw symlink flip, or the subcommand
+      // that does it and records where it came from.
+      assert.match(win, /previous-release|release\.sh rollback/,
+        `${f}:${i + 1}: this restore runs under the release that caused the damage — put the code back first:\n      ${line.trim()}`)
+      assert.match(win, /--yes/,
+        `${f}:${i + 1}: this restore prints a plan and changes nothing, which is not a recovery:\n      ${line.trim()}`)
+      assert.match(win, /systemctl stop|systemctl start/,
+        `${f}:${i + 1}: a restore over a running service is a restore the app writes back over:\n      ${line.trim()}`)
+    })
+  }
+})
+
+/* ---------- and every rollback the product documents is a command that exists (v28) ----------
+ *
+ * deploy/release.sh had no subcommands: `TAG="${1:-}"`, and every argument was a version tag. So
+ * RELEASING.md's `release.sh rollback` built a NEW release out of the currently-live source,
+ * named it `releases/rollback`, gated it, flipped onto it and exited 0 with "✓ rollback is live"
+ * — it deployed the code you are running away from — and every later attempt is refused for ever
+ * because that directory now exists. `release.sh activate <name>`, which ship.sh prints after
+ * EVERY successful release, discarded the name and created a release called `activate`.
+ *
+ * Driven, not read: a throwaway APP_ROOT with two real release directories, and PATH shims for
+ * sudo and systemctl. */
+section('the rollback commands we hand an operator are commands that exist')
+await t('rollback goes back, twice, and a typo deploys nothing', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, chmodSync, existsSync, readFileSync, realpathSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname, resolve } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const box = mkdtempSync(join(tmpdir(), 'psc-rel-'))
+  try {
+    const bin = join(box, 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'sudo'), '#!/usr/bin/env bash\nexec "$@"\n'); chmodSync(join(bin, 'sudo'), 0o755)
+    writeFileSync(join(bin, 'systemctl'), '#!/usr/bin/env bash\nexit 0\n'); chmodSync(join(bin, 'systemctl'), 0o755)
+    const app = join(box, 'app')
+    for (const r of ['v1.0.0-old', 'v1.1.0-new']) mkdirSync(join(app, 'releases', r), { recursive: true })
+    execFileSync('ln', ['-sfn', join(app, 'releases', 'v1.0.0-old'), join(app, 'current')])
+    const run = (...args) => {
+      try {
+        // A timeout, because the defect this case exists to catch is release.sh DEPLOYING when it
+        // should refuse: on the broken version `release.sh rollback` runs rsync, npm ci and the
+        // whole gate against a new release directory. A gate that hangs is worse than one that
+        // fails, so an over-running invocation is a failure with a name on it.
+        const out = execFileSync('bash', [join(root, 'deploy/release.sh'), ...args], {
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, APP_ROOT: app, SERVICE: 'fake', DATA_ROOT: join(box, 'data') },
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000, killSignal: 'SIGKILL',
+        })
+        return { code: 0, out }
+      } catch (e) {
+        if (e.killed || e.signal) return { code: 'TIMED OUT', out: `release.sh ${args.join(' ')} did not finish in 20s — it is doing work, and none of these arguments should do any work` }
+        return { code: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` }
+      }
+    }
+    // realpath both sides: `readlink -f` in the script resolves /var → /private/var on macOS, and
+    // comparing that against a raw join() is a test that fails for the wrong reason.
+    const live = () => realpathSync(join(app, 'current'))
+    const relDir = (n) => realpathSync(join(app, 'releases', n))
+    const releases = () => readdirSync(join(app, 'releases')).sort()
+
+    // A word that is not a version tag must not become a release directory.
+    const typo = run('oops')
+    assert.equal(typo.code, 1, `'oops' was accepted as a release tag:\n${typo.out}`)
+    assert.deepEqual(releases(), ['v1.0.0-old', 'v1.1.0-new'], 'a typo created a release directory')
+
+    // …and neither must the two words the docs and ship.sh actually print.
+    for (const word of ['rollback', 'activate']) {
+      run(word)
+      assert.ok(!existsSync(join(app, 'releases', word)),
+        `\`release.sh ${word}\` built a release directory literally called "${word}" and flipped onto it`)
+    }
+
+    assert.equal(run('activate', 'v1.1.0-new').code, 0)
+    assert.equal(live(), relDir('v1.1.0-new'), 'activate did not activate the named release')
+
+    assert.equal(run('rollback').code, 0)
+    assert.equal(live(), relDir('v1.0.0-old'), 'rollback did not go back')
+
+    // The one-liner it replaces never updated .previous-release, so the SECOND rollback was a
+    // silent no-op: exit 0, /health 200, nothing changed and nothing said.
+    assert.equal(run('rollback').code, 0)
+    assert.equal(live(), relDir('v1.1.0-new'), 'the second rollback was a silent no-op')
+    assert.match(readFileSync(join(app, '.previous-release'), 'utf8'), /v1\.0\.0-old/,
+      'rollback has to record where it came from, or it only ever works once')
+
+    const missing = run('activate', 'not-a-release')
+    assert.equal(missing.code, 1, 'activating a release that does not exist must fail')
+    assert.match(missing.out, /v1\.1\.0-new/, '…and list the ones that do')
+  } finally { rmSync(box, { recursive: true, force: true }) }
+})
+
+await t('…and nothing still tells an operator to run the one-liner that only works once', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const f of ['deploy/ship.sh', 'RELEASING.md']) {
+    const lines2 = readFileSync(join(root, f), 'utf8').split('\n')
+    lines2.forEach((line, i) => {
+      if (!/ln -sfn.*previous-release/.test(line)) return
+      // The raw one-liner is fine INSIDE the snapshot-recovery sequence, because that stops the
+      // service and puts the data back too. It is not fine on its own as "how you roll back":
+      // it never updates .previous-release, so the second run is a no-op with exit 0 and a 200.
+      const win2 = lines2.slice(Math.max(0, i - 4), i + 5).join('\n')
+      assert.match(win2, /restore\.mjs|systemctl stop/,
+        `${f}:${i + 1}: this is the rollback that silently does nothing the second time — use release.sh rollback:\n      ${line.trim()}`)
+    })
+  }
+})
+
 section('the deploy safety rails must not report green when they failed')
 // check-drift.sh is the only monitoring in this repo. Both git reads were
 // `$(git rev-parse … || echo '?')`, so when git REFUSED the repo — dubious ownership, not a clone,

@@ -129,7 +129,29 @@ function planFor(src) {
   const st = statSync(src)
   if (st.isFile()) {
     if (!isDb(src)) die(`${src} is not a .db file`, 'Unpack the archive first:  tar xzf <archive>.tar.gz')
-    const to = opt('--to') ? resolve(opt('--to')) : join(DATA_ROOT, basename(src))
+    /**
+     * Un-flatten a single file too.
+     *
+     * bin/snapshot.mjs writes `tenants/acme/printshop.db` as `tenants__acme__printshop.db`, and
+     * the directory walk below has always turned that back into a path. This branch did not — it
+     * used basename() — so the documented single-shop restore
+     *
+     *   node bin/restore.mjs backups/…/tenants__acme__printshop.db --yes
+     *
+     * wrote 501 customers to `<data-root>/tenants__acme__printshop.db`, a path the app never
+     * opens, and printed "Restored 1 database(s) … quick_check ok" and exit 0. The shop was still
+     * empty. Exercised end to end; four rounds open.
+     *
+     * The stray file it left behind is the second-order half: the nightly then archives it ("5
+     * database(s)"), and the next FULL restore has two sources landing on one destination — the
+     * stale copy wins silently and the shop loses today's work. bin/snapshot.mjs now refuses that
+     * collision by name rather than dying halfway through.
+     *
+     * --to is unchanged and still wins: it is the escape for a file whose name says nothing.
+     */
+    const flat = basename(src)
+    const rel = flat.includes('__') ? flat.replaceAll('__', '/') : flat
+    const to = opt('--to') ? resolve(opt('--to')) : join(DATA_ROOT, rel)
     return [{ from: src, to }]
   }
   if (opt('--to')) die('--to takes a single .db file; use --data-root for a directory of them')
@@ -328,7 +350,19 @@ if (!APPLY) {
 }
 
 /* ------------------------------------------------------------- do it */
-mkdirSync(SAFETY, { recursive: true })
+/**
+ * The first write is the one that fails, and it used to fail as a raw EACCES stack trace — after
+ * the operator has already stopped the service and typed --yes. That is the worst possible moment
+ * for this file to stop speaking English: the shop is down, the person at the keyboard has no
+ * developer, and the message names a Node internal.
+ *
+ * INSTALL.md's own emergency block gives the command without a `sudo`, so this is the ordinary
+ * path, not an unlucky one.
+ */
+try { mkdirSync(SAFETY, { recursive: true }) } catch (e) {
+  die(`cannot write the safety copy into ${SAFETY} — ${e.code || e.message}`,
+    `Run this as the user that owns the data directory, or with sudo:\n      sudo node ${process.argv[1]} ${process.argv.slice(2).join(' ')}\n    Nothing has been changed.`)
+}
 let restored = 0
 const undo = []
 
