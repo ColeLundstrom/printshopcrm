@@ -10562,6 +10562,53 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('the money a shop bills on a 2XL is a number it can set')
+
+await t('a JSON settings object is stored, not the string "[object Object]"', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db)
+  // PUT /api/settings {"size_upcharges": {"2XL": 4}} is the natural shape and the one docs/API.md's
+  // own settings examples imply. setSetting does String(value), and String({}) is "[object Object]",
+  // which getUpcharges() then throws on and silently replaces with the shipped table — so the route
+  // answered 200 for a change that did not happen and the shop went on billing +$2.00.
+  dbm.applySettingsPatch({ size_upcharges: { '2XL': 4, '3XL': 6 } })
+  assert.notEqual(dbm.getSettings().size_upcharges, '[object Object]',
+    'an object setting was stringified into a value every reader throws on')
+  assert.equal(dbm.getUpcharges()['2XL'], 4, 'the only writable door for the upcharge table silently reverted it')
+  assert.equal(dbm.getUpcharges()['3XL'], 6, '…and dropped the second size with it')
+  // The string form, which is what the Settings card posts, must keep working unchanged.
+  dbm.applySettingsPatch({ size_upcharges: JSON.stringify({ '2XL': 9 }) })
+  assert.equal(dbm.getUpcharges()['2XL'], 9, 'the string form is what the screen posts and must be unaffected')
+  // A malformed value still falls back rather than blanking the table.
+  dbm.applySettingsPatch({ size_upcharges: 'not json' })
+  assert.equal(dbm.getUpcharges()['2XL'], 2, 'a malformed value still falls back to the shipped table')
+})
+
+await t('the per-size upcharge is settable from a screen, and reaches the setting it bills from', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const card = readFileSync(join(root, 'public/js/views/misc.js'), 'utf8')
+  const css = readFileSync(join(root, 'public/css/app.css'), 'utf8')
+  // Every estimate, invoice, PDF, pay page and CSV export bills this table, README sells "real
+  // per-size upcharges" and docs/API.md says "your configured per-size upcharge" — and no screen
+  // in the product could change it. A number that bills money with no way to set it is the
+  // failure this project's standard names.
+  assert.match(card, /data-up=/, 'the Costing card must render an input per extended size')
+  assert.match(card, /payload\.size_upcharges/, '…and the save has to put them in the setting that is actually billed')
+  for (const sz of ['2XL', '3XL', '4XL', '5XL']) {
+    assert.ok(card.includes(sz), `the card needs a box for ${sz} — the shipped table prices it`)
+  }
+  // Each box needs a label joined to it, like every other field on this card.
+  assert.match(card, /for="fs-up-\$\{sz\}"/, 'each upcharge box needs its own label')
+  assert.match(card, /aria-labelledby="up-lbl"/, 'and the group needs a name a screen reader reads')
+  // …and the layout has to exist: .grid4 was scoped to .dtf-controls, so four boxes had no columns.
+  assert.match(css, /^\.grid4 \{/m, 'a general .grid4 rule has to exist or the four boxes do not lay out')
+})
+
 section('a Drive upload that stored nothing does not destroy the artwork')
 
 await t('a 2xx with no file id is not a stored file', async () => {

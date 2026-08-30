@@ -250,11 +250,18 @@ a.host-badge:hover { color: var(--accent); }
 textarea.input { resize: vertical; min-height: 76px; line-height: 1.55; }
 select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239aa5b6' fill='none' stroke-width='1.5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 11px center; background-size: 10px; padding-right: var(--sp-9); }
 .field { margin-bottom: var(--sp-5); }
+/* A GROUP heading is not a <label>: it names a set of controls, not one control, so it carries
+   aria-labelledby from the group instead of `for`. Styled identically so the card reads the same. */
+.field > .lbl { display: block; font-size: var(--fs-2xs); font-weight: 600; color: var(--txt-2); margin-bottom: var(--sp-3); text-transform: uppercase; letter-spacing: .5px; }
 .field label { display: block; font-size: var(--fs-2xs); font-weight: 600; color: var(--txt-2); margin-bottom: var(--sp-3); text-transform: uppercase; letter-spacing: .5px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-5); }
 /* Must live beside .grid2, ABOVE the mobile block that stacks them — a later base rule would
    override the media query and the three fields would stay side by side at 375px. */
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-5); }
+/* Same rule, same reason: a general .grid4 existed only as `.dtf-controls .grid4`, so the four
+   extended-size upcharge boxes on the Costing card had no layout at all. Declared here, above the
+   mobile block, so the media query below still wins. */
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-5); }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); }
 .card-h { padding: var(--sp-5) var(--sp-6); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-5); }
@@ -821,6 +828,8 @@ kbd { background: var(--panel-2); border: 1px solid var(--line-2); border-bottom
   .grid2 { grid-template-columns: 1fr; }
   .grid2 > .field { margin-bottom: 0; }
   .grid3 { grid-template-columns: 1fr; }
+  .grid4 { grid-template-columns: 1fr 1fr; }
+  .grid4 > .field { margin-bottom: 0; }
   .grid3 > .field { margin-bottom: 0; }
   .view { padding: var(--sp-6); }
   .items .ih { display: none; }

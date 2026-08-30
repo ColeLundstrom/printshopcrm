@@ -1,4 +1,5 @@
 import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce } from '../core.js'
+import { DEFAULT_UPCHARGES } from '../shared/pricing.js'
 
 /* ---------- art queue ---------- */
 
@@ -332,6 +333,14 @@ export async function settingsView() {
   // what the advanced numbers are set to without opening the drawer — otherwise "folded away" reads
   // as "unknown", and the first thing an owner does is open every drawer to check.
   const cv = (name, dflt) => { const v = s[name]; return v === 0 || (v && String(v).trim() !== '') ? String(v) : dflt }
+  // The per-size upcharge table bills real money on every document, and until now no screen in the
+  // product could set it — README and docs/API.md both advertise it as configurable. Parsed with
+  // the same fallback getUpcharges() uses server-side, so a malformed value shows the shipped table
+  // rather than blanking the card.
+  const upNow = (() => {
+    try { const v = JSON.parse(s.size_upcharges); return v && typeof v === 'object' && !Array.isArray(v) ? v : DEFAULT_UPCHARGES }
+    catch { return DEFAULT_UPCHARGES }
+  })()
 
   $('#view').innerHTML = `<div style="max-width:820px" class="stack">
     <div class="card"><div class="card-h"><h3>Shop</h3></div><div class="card-b" id="shop">
@@ -360,6 +369,16 @@ export async function settingsView() {
         <div class="grid2">
           ${f('shop_hourly_rate', 'Shop rate ($/hr)', 'Wages + rent + equipment ÷ productive hours', 'number')}
           ${f('screen_fee', 'Screen fee charged ($)', 'What you bill per screen', 'number')}
+        </div>
+        <div class="field">
+          <div class="lbl" id="up-lbl">Extended-size upcharges ($ per piece)</div>
+          <div class="dim" style="font-size:11px;margin-bottom:6px">Added on top of the base rate for big garments. Every estimate, invoice, PDF and export bills these.</div>
+          <div class="grid4" role="group" aria-labelledby="up-lbl">
+            ${['2XL', '3XL', '4XL', '5XL'].map((sz) => `<div class="field" style="margin:0">
+              <label for="fs-up-${sz}">${sz}</label>
+              <input class="input" id="fs-up-${sz}" data-up="${sz}" type="number" step="0.25" min="0" value="${esc(String(upNow[sz] ?? 0))}">
+            </div>`).join('')}
+          </div>
         </div>
         <div class="field"><label>Default press</label><select class="input" name="press_type">
           <option value="auto" ${s.press_type === 'auto' ? 'selected' : ''}>Automatic</option>
@@ -728,6 +747,12 @@ export async function settingsView() {
     // missing container is skipped rather than throwing.
     const CARDS = ['#shop', '#costing', '#ai', '#slack', '#online', '#suppliers', '#gdrive', '#modes', '#delivery', '#terms', '#tpl']
     const payload = Object.assign({}, ...CARDS.map((sel) => ($(sel) ? formData($(sel)) : {})))
+    // The upcharge inputs deliberately carry no `name`, so formData ignores them: they are one
+    // setting, not four. applySettingsPatch serialises a JSON-shaped setting given as an object.
+    const upBoxes = $$('[data-up]')
+    if (upBoxes.length) {
+      payload.size_upcharges = Object.fromEntries(upBoxes.map((el) => [el.dataset.up, Math.max(0, Number(el.value) || 0)]))
+    }
     const err = $('#stripe-err')
     if (err) err.textContent = ''
     const bad = stripeKeyProblem(payload)
