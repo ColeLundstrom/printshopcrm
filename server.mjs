@@ -4022,7 +4022,7 @@ const sanitizeAutoParams = (p) => {
  * Same posture as missingTriggerParam: refuse the shape at the route, so no client — the builder,
  * a script, an integration — can store a rule that cannot work.
  */
-const invalidAction = (actions) => {
+const invalidAction = async (actions) => {
   for (const [i, a] of (actions || []).entries()) {
     const n = i + 1
     if (!a || typeof a !== 'object' || Array.isArray(a)) return `Step ${n} is not an action.`
@@ -4031,6 +4031,20 @@ const invalidAction = (actions) => {
     if (a.config != null && (typeof a.config !== 'object' || Array.isArray(a.config))) return `Step ${n}'s settings are not readable.`
     if (a.key === 'job.move' && !JOB_STAGE_KEYS.includes(a.config?.stage)) {
       return `Step ${n}: choose which stage to move the job to.`
+    }
+    /* job.move was the only action whose config anything looked at, and a webhook URL is exactly
+     * as unrunnable when it is wrong. A rule pointed at the n8n box on the shop's own LAN, or
+     * pasted without a scheme, saved 200 and rendered enabled and green — needsSetup() only
+     * inspects the TRIGGER's param — and then wrote "webhook sent to 192.168.1.50:5678" into the
+     * run log on every fire while assertPublicUrl refused the delivery every single time.
+     *
+     * createWebhook, one API surface away, has always done this at subscribe time, and its comment
+     * says why: accepting a URL we will always refuse to call teaches the integrator that their
+     * setup works when it never will. */
+    if (a.key === 'webhook.post') {
+      const u = String(a.config?.url ?? '').trim()
+      if (!u) return `Step ${n}: paste the URL this rule should post to.`
+      try { await assertPublicUrl(u) } catch (e) { return `Step ${n}: ${e.message}` }
     }
   }
   return null
@@ -4042,14 +4056,14 @@ const missingTriggerParam = (trigger, params) => {
   return String(params?.[t.param.key] ?? '').trim() ? null : t.param
 }
 
-app.post('/api/automations', requireRole('manager'), wrap((req, res) => {
+app.post('/api/automations', requireRole('manager'), wrap(async (req, res) => {
   const b = req.body || {}
   if (!b.name?.trim()) return res.status(400).json({ error: 'Give the automation a name' })
   if (!TRIGGERS.some((t) => t.key === b.trigger)) return res.status(400).json({ error: 'Pick a trigger' })
   const missing = missingTriggerParam(b.trigger, b.params)
   if (missing) return res.status(400).json({ error: `Choose which ${String(missing.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
   if (!Array.isArray(b.actions) || !b.actions.length) return res.status(400).json({ error: 'Add at least one action' })
-  const badAction = invalidAction(b.actions)
+  const badAction = await invalidAction(b.actions)
   if (badAction) return res.status(400).json({ error: badAction, code: 'invalid_action' })
   const id = Number(run('INSERT INTO automations (name, enabled, trigger, params, conditions, actions, created_at) VALUES (?,?,?,?,?,?,?)',
     b.name.trim(), b.enabled === false ? 0 : 1, b.trigger, JSON.stringify(sanitizeAutoParams(b.params)),
@@ -4057,7 +4071,7 @@ app.post('/api/automations', requireRole('manager'), wrap((req, res) => {
   res.json(get('SELECT * FROM automations WHERE id = ?', id))
 }))
 
-app.put('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
+app.put('/api/automations/:id', requireRole('manager'), wrap(async (req, res) => {
   const a = get('SELECT * FROM automations WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Automation not found' })
   const b = req.body || {}
@@ -4077,7 +4091,7 @@ app.put('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
   if (!TRIGGERS.some((t) => t.key === trigger)) return res.status(400).json({ error: 'Pick a trigger' })
   const actions = b.actions === undefined ? parse(a.actions, []) : b.actions
   if (!Array.isArray(actions) || !actions.length) return res.status(400).json({ error: 'Add at least one action' })
-  const badAction = invalidAction(actions)
+  const badAction = await invalidAction(actions)
   if (badAction) return res.status(400).json({ error: badAction, code: 'invalid_action' })
   const missingOnSave = missingTriggerParam(trigger, b.params ?? parse(a.params, {}))
   if (missingOnSave) return res.status(400).json({ error: `Choose which ${String(missingOnSave.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })

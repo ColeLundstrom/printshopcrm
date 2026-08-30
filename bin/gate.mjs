@@ -2665,6 +2665,22 @@ section('the app does not discard what the shop has typed')
     assert.match(router, /runRouter\(\)/, '…that actually re-runs the route')
   })
 
+  /* ---------- a run log does not claim a delivery it has not attempted ----------
+   * runAction returns the literal string "webhook sent to <host>" with no reference to the
+   * delivery result — fireWebhook is deliberately detached, so at that point nothing has been
+   * attempted at all. That string goes straight into automation_runs.detail with status 'ran',
+   * which the screen renders with no pill and no Try again. The only contrary evidence is one
+   * activity note on a different screen, written asynchronously, with no retry on it. */
+  await t('the automation run log does not say "sent" before anything was attempted', async () => {
+    const auto = code(await readFile('lib/automations.mjs'))
+    const arm = auto.slice(auto.indexOf("case 'webhook.post':"), auto.indexOf("case 'webhook.post':") + 900)
+    assert.ok(arm.length > 100, 'the webhook action moved')
+    assert.match(arm, /fireWebhook\(/, 'precondition: the call is still fire-and-forget')
+    assert.doesNotMatch(arm, /webhook sent to/,
+      'fireWebhook is detached — at the moment this string is written nothing has been attempted, let alone delivered')
+    assert.match(arm, /queued/, 'say what actually happened')
+  })
+
   /* ---------- Snooze on the Reorder Radar was a one-way door ----------
    * The card carries two adjacent buttons with no confirm on either: `Send nudge` and `Snooze`.
    * Snooze POSTs 30 days, and reorderRadar `continue`s past any snoozed contact BEFORE

@@ -2124,6 +2124,27 @@ try {
     const acts = typeof kept?.actions === 'string' ? JSON.parse(kept.actions || '[]') : (kept?.actions || [])
     chk('…and the rule the shop already had is untouched', String(acts[0]?.config?.stage), '^shipping$')
     await req('DELETE', `/api/automations/${ruleId}`)
+
+    /* ---------- and a webhook URL is an action config too ----------
+     * `job.move` was the only action whose config anything checked. A rule built as "When an
+     * invoice is paid → Send a webhook", pointed at the n8n box on the shop's own LAN or pasted
+     * with no scheme, saved 200 and rendered enabled and green. Every fire then wrote
+     * "webhook sent to 192.168.1.50:5678" into the run log with status 'ran' — no pill, no Try
+     * again — while deliverWebhook's assertPublicUrl refused it every single time. The sibling
+     * feature one API surface away, createWebhook, already refuses this at SUBSCRIBE time, and its
+     * comment says why: accepting a URL we will always refuse to call teaches the integrator their
+     * setup works when it never will. */
+    g = await mkRule([{ key: 'webhook.post', config: { url: 'http://192.168.1.50:5678/webhook/paid' } }])
+    chk('an automation webhook aimed at a private address is refused where it is typed', String(g.status), '^400$')
+    chk('…with a code the screen can act on', String(g.json?.code), '^invalid_action$')
+    chk('…naming the step', String(g.json?.error || ''), 'Step 1')
+    g = await mkRule([{ key: 'webhook.post', config: { url: 'hooks.zapier.com/hooks/catch/8821/abc' } }])
+    chk('…and so is one with no scheme, which is the ordinary typo', String(g.status), '^400$')
+    g = await mkRule([{ key: 'webhook.post', config: {} }])
+    chk('…and so is one with no URL at all', String(g.status), '^400$')
+    g = await mkRule([{ key: 'webhook.post', config: { url: 'https://example.com/zap' } }])
+    chk('…while a real endpoint saves', String(g.status), '^200$')
+    if (g.json?.id) await req('DELETE', `/api/automations/${g.json.id}`)
   }
 
   /* ---------- "quotes gone quiet" is what the shop KEEPS, not what it collects for the state ----
