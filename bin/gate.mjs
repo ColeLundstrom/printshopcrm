@@ -6630,6 +6630,66 @@ section('a paused drip does not wake up about a deleted record')
   })
 }
 
+/* ---------- switching a paused drip back on does not mail the whole backlog at once ----------
+ * TICK_BUDGET exists — its own comment says so — to stop "thousands of real customer emails at
+ * once". The pending-resume loop checked neither it nor any LIMIT, and there are two ordinary
+ * ways to fill that queue: an owner pauses a multi-step rule over the holidays (the code
+ * deliberately keeps the queue and resumes it, which is right) and then switches it back on, so
+ * every row is due at once; or the process is down for a day. */
+section('a queue that came due all at once goes out over several ticks')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbmod.setDefaultDb(mem); dbmod.initDb(mem); auto.initAutomations(mem)
+  dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (1,?,1,?,'{}',?)`,
+    'Three-touch nurture', 'estimate.sent',
+    JSON.stringify([{ key: 'wait', config: { days: 2 } }, { key: 'email.customer', config: { subject: 'Still interested?', body: 'hello' } }]))
+  dbmod.run(`INSERT INTO contacts (id, name, email) VALUES (1, 'Casey', 'casey@example.com')`)
+  // 250 customers mid-sequence — a shop that paused a drip for a month.
+  for (let i = 1; i <= 250; i++) {
+    dbmod.run(`INSERT INTO automation_pending (automation_id, automation_name, trigger, label, ctx, actions, next_index, due_at, attempts)
+      VALUES (1, 'Three-touch nurture', 'estimate.sent', ?, ?, ?, 0, datetime('now','-1 day'), 0)`,
+      `EST-${1000 + i}`, JSON.stringify({ contact: { id: 1, name: 'Casey', email: 'casey@example.com' } }),
+      JSON.stringify([{ key: 'email.customer', config: { subject: 'Still interested?', body: 'hello' } }]))
+  }
+  let sent = 0
+  const deps = { queueEmail: () => { sent++; return { delivered: true } }, queueSms: () => ({ delivered: true }) }
+
+  await t('one tick does not mail 250 customers in a single pass', () => {
+    auto.tick(deps)
+    const budget = Number(process.env.PSC_TICK_BUDGET) || 100
+    assert.ok(sent <= budget, `${sent} messages went out in one five-minute tick (budget ${budget})`)
+    assert.ok(sent > 0, 'the queue must still drain — this is a cap, not a stall')
+  })
+
+  await t('…and the rest is still queued, not dropped', () => {
+    const left = dbmod.get("SELECT COUNT(*) AS c FROM automation_pending WHERE status IS NULL").c
+    assert.ok(left >= 100, `${left} left in the queue — work we will not do now must not be lost`)
+  })
+
+  await t('a step that throws before its counter is written still parks', () => {
+    // The counter used to be incremented INSIDE the try, after JSON.parse(ctx) and four exists()
+    // probes — so a throw upstream of that line left attempts at its stored value for ever. The
+    // row never reached 3, park was never called, the claim re-armed it, and the Automations
+    // screen went on showing a live "in a sequence" row with no Resume button, because Resume is
+    // only offered on a stopped one.
+    const m2 = new DatabaseSync(':memory:')
+    dbmod.setDefaultDb(m2); dbmod.initDb(m2); auto.initAutomations(m2)
+    dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (1,'R',1,'estimate.sent','{}','[]')`)
+    dbmod.run(`INSERT INTO automation_pending (automation_id, automation_name, trigger, label, ctx, actions, next_index, due_at, attempts)
+      VALUES (1,'R','estimate.sent','EST-1','not json','[]',0, datetime('now','-1 day'), 0)`)
+    for (let i = 0; i < 3; i++) {
+      dbmod.run("UPDATE automation_pending SET due_at = datetime('now','-1 day') WHERE status IS NULL")
+      auto.tick({})
+    }
+    const row = dbmod.get('SELECT status, attempts FROM automation_pending WHERE label = ?', 'EST-1')
+    assert.equal(row?.attempts, 3, 'the attempt counter has to survive a throw')
+    assert.equal(row?.status, 'failed', 'and three failures park the row instead of looping for ever')
+  })
+}
+
 /* ---------- a refusal the UI can act on, not just print (v10) ----------
  * The API answers a two-garment size edit with 409 {code:'multi_garment_quantities', lines:[…]} —
  * the exact structure the caller needs to send back. api.req threw away everything but `error`,
