@@ -148,8 +148,23 @@ function wire(d) {
     const out = $('#promise-out')
     if (!pieces) { out.innerHTML = '<div class="dim" style="font-size:12.5px">Enter a piece count.</div>'; return }
     api.post('/api/capacity/promise', { pieces, colors, due_date: due }).then((r) => {
-      const shipStr = r.earliestFinish ? fmtDate(r.earliestFinish) : '—'
-      const cushion = r.slackDays
+      /* The engine has two returns that carry no finish date and a human `reason` instead: the
+       * piece-count guard, and the five-year horizon guard. Neither carries slackDays as a number
+       * — one omits it, the other sets it null — and `Math.abs(null)` is 0, `Math.abs(undefined)`
+       * is NaN. So the one screen in this product that gives a yes/no verdict on a date the shop
+       * is about to promise rendered "Not by Fri Sep 11 — earliest is — — 0 working days short.
+       * Quote a later date, add a press, or run overtime." for a run that does not fit in five
+       * years, and announce() spoke that same sentence to a screen reader. The advice is wrong
+       * for the state the engine is actually in, and `r.reason` was read nowhere at all. */
+      if (!r.earliestFinish) {
+        const why = r.reason || 'The scheduler could not place this run.'
+        const head = r.beyondHorizon ? 'Not schedulable' : 'Cannot check yet'
+        out.innerHTML = `<div class="promise-verdict no"><div class="pv-main">${esc(head)}</div><div class="pv-note">${esc(why)}</div></div>`
+        announce(`${head}. ${why}`)
+        return
+      }
+      const shipStr = fmtDate(r.earliestFinish)
+      const cushion = Number(r.slackDays) || 0
       let verdict, cls, note
       if (!due) { verdict = `Earliest ship: ${shipStr}`; cls = 'ok'; note = `${r.hours}h of press time · ${r.workingDaysOut} working day${r.workingDaysOut === 1 ? '' : 's'} out` }
       else if (r.feasible) { verdict = `Yes — ships by ${shipStr}`; cls = 'ok'; note = cushion > 0 ? `${cushion} working day${cushion === 1 ? '' : 's'} of cushion before ${fmtDate(due)}` : `lands exactly on ${fmtDate(due)} — no slack` }

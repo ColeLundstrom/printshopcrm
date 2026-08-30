@@ -6654,6 +6654,50 @@ section('a paused drip does not wake up about a deleted record')
  * order. On the receptionist path the model's entire input is the visitor's own 4,000 characters,
  * so the string is not merely model-authored — it is attacker-influenced, on a customer-facing
  * priced document, with the price unchanged and needs_review empty. */
+/* ---------- the promise tool says what the engine actually told it ----------
+ * lib/capacity.mjs promise() has two returns with no finish date and a human `reason`: the
+ * piece-count guard and the five-year horizon guard. Neither carries slackDays as a number, and
+ * Math.abs(null) is 0 — so the one screen in this product that gives a yes/no verdict on a date
+ * the shop is about to promise read "earliest is — — 0 working days short. Quote a later date,
+ * add a press, or run overtime." for a run that does not fit in five years. announce() spoke the
+ * same sentence to a screen reader, and r.reason was read nowhere at all. */
+section('the promise tool does not render a no-answer as a one-day miss')
+await t('a run that cannot be scheduled says so, in the engine\'s own words', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const cap = readFileSync(join(root, 'public/js/views/capacity.js'), 'utf8')
+
+  // The engine really does answer that way — read it out of the shipped module, not a copy.
+  const capacity = await import('../lib/capacity.mjs')
+  // Both settings are inside the capacity form's own min/max — a one-press shop on short hours.
+  for (const [label, S, opts] of [
+    ['no piece count yet', { capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }, { pieces: 0 }],
+    ['more press time than five years holds', { capacity_hours_per_day: 1, utilization_pct: 5, press_type: 'manual' },
+      { pieces: 1000000, colors: 6, dueDate: '2026-12-01' }],
+  ]) {
+    const r = capacity.promise([], S, opts)
+    assert.equal(r.earliestFinish, null, `${label}: no finish date`)
+    assert.ok(r.reason, `${label}: the engine hands the screen a sentence to print`)
+    assert.ok(!Number.isFinite(r.slackDays), `${label}: and no number of days — Math.abs made it 0`)
+    // Math.abs(null) is 0 and Math.abs(undefined) is NaN — neither is a number of days, and both
+    // were rendered straight into "N working days short".
+    assert.ok(!(Math.abs(r.slackDays) > 0), `${label}: which is where "0 working days short" came from`)
+  }
+
+  // The view must take the no-answer branch before it can reach Math.abs.
+  const handler = cap.slice(cap.indexOf("api.post('/api/capacity/promise'"), cap.indexOf('.catch((e) =>'))
+  assert.ok(handler.length > 60, 'found the promise handler')
+  assert.match(handler, /if \(!r\.earliestFinish\)/, 'a missing finish date is its own branch')
+  assert.match(handler, /r\.reason/, "…and it prints the engine's reason")
+  assert.ok(handler.indexOf('if (!r.earliestFinish)') < handler.indexOf('Math.abs(cushion)'),
+    'the branch has to come before the arithmetic that produced "0 working days short"')
+  assert.match(handler, /announce\(`\$\{head\}\. \$\{why\}`\)/, 'and a screen reader hears the same thing')
+  // Nothing may reach Math.abs as null again.
+  assert.match(handler, /const cushion = Number\(r\.slackDays\) \|\| 0/, 'the cushion is a number by then')
+})
+
 section('a garment name is a garment name, not 80 characters of model prose')
 {
   const { parseIntakeHeuristic: P, mergeIntake } = await import('../lib/ai.mjs')
