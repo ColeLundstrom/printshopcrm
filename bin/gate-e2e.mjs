@@ -3136,6 +3136,42 @@ try {
     chk('…and one job cannot delete another job\'s art',
       String((await req('DELETE', `/api/jobs/${aj.id}/art/${oart.id}`)).status), '^404$')
     chk('…leaving that one where it was', String(((await req('GET', `/api/jobs/${oj.id}`)).json?.art || []).length), '^1$')
+
+    /* ---------- …and it still renders once the shop turns on Drive art storage ----------
+     * POST /api/jobs/:id/art uploads to the shop's Drive, stores drive_file_id + drive_link, and
+     * then unlinkSync()s the local copy — that deletion IS the feature. artUrl() knows this and is
+     * why every STAFF screen looks fine. The customer's proof page and the shop floor's pick
+     * ticket both went straight to uploadUrl(a.filename), which resolves to a /uploads/ path that
+     * no longer exists. So the two surfaces an owner never looks at were the only broken ones: the
+     * customer approving a proof they cannot see, and the ticket whose empty state reads
+     * "⚠ NO APPROVED ART — do not print". The Drive upload's own comment at makeAnyoneReader()
+     * says "so the proof page can show it". */
+    const drv = new FormData()
+    drv.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'drive-proof.svg')
+    const dup = await fetch(`${BASE}/api/jobs/${oj.id}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: drv })
+    const dart = await dup.json().catch(() => ({}))
+    chk('a second proof uploads', String(dup.status), '^200$')
+    // What the Drive branch leaves behind: the row carries the link, the local file is gone.
+    const DRIVE_LINK = 'https://drive.google.com/uc?id=1AbCdEfGate&export=download'
+    shopDb('gate-shop', (db) => db.prepare(
+      "UPDATE art_versions SET drive_file_id='1AbCdEfGate', drive_link=? WHERE id = ?").run(DRIVE_LINK, dart.id))
+    try { rmSync(join(TMP, 'uploads', String(dart.filename)), { force: true }) } catch { /* best effort */ }
+    try { rmSync(join(ROOT, 'public', 'uploads', String(dart.filename)), { force: true }) } catch { /* best effort */ }
+
+    const dsent = await req('POST', `/api/art/${dart.id}/send`)
+    const dlink = String(dsent.json?.share_url || '')
+    chk('…and the customer gets a link to it', String(dlink.startsWith('/p/art/')), '^true$')
+    const proof = await (await fetch(`${BASE}${dlink}`)).text()
+    chk('a Drive-stored proof renders from Drive on the customer\'s page', proof, 'drive\\.google\\.com')
+    chk('…and not from a local path the upload already deleted', String(/src="\/uploads\//.test(proof)), '^false$')
+
+    // The press's copy of the same picture. /p/ticket is token-gated, so ask the app for its link.
+    shopDb('gate-shop', (db) => db.prepare("UPDATE art_versions SET status='approved' WHERE id = ?").run(dart.id))
+    const tlink = String((await req('GET', `/api/jobs/${oj.id}`)).json?.ticket_url || '')
+    chk('…and the shop has a ticket link to print', String(tlink.startsWith('/p/ticket/')), '^true$')
+    const ticket = await (await fetch(`${BASE}${tlink}`)).text()
+    chk('…and the pick ticket the press prints shows it too', ticket, 'drive\\.google\\.com')
+    chk('…rather than the "do not print" empty state', String(/NO APPROVED ART/.test(ticket)), '^false$')
   }
 
   /* ---------- a 6XL is quoted, printed and picked, not deleted on the way through ----------

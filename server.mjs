@@ -2763,6 +2763,23 @@ const mockupGate = () => true
 
 /** Art lives in the shop's Google Drive when connected, else on our disk. Prefer the Drive link. */
 const artUrl = (a) => a.drive_link || `/uploads/${a.filename}`
+/**
+ * The same rule, for the pages served to somebody with no session: the customer's proof page and
+ * the shop floor's pick ticket.
+ *
+ * It cannot just call artUrl(), because artUrl's local branch omits the ?t= file token that the
+ * public /uploads route requires — the two differ only in that.
+ *
+ * This existing separately is what the bug was. POST /api/jobs/:id/art uploads to the shop's Drive
+ * and then unlinkSync()s the local copy — that deletion IS the feature — so a Drive shop's
+ * art_versions row has a filename pointing at nothing. Every STAFF screen went through artUrl()
+ * and looked perfect; /p/art and /p/ticket went straight to uploadUrl(filename) and rendered a
+ * broken image. The two surfaces an owner never looks at were the only ones that broke: the
+ * customer approving a proof they cannot see, and the ticket whose empty state says
+ * "⚠ NO APPROVED ART — do not print". The Drive upload calls makeAnyoneReader() with the comment
+ * "so the proof page can show it", which is exactly the page that did not.
+ */
+const proofSrc = (a) => a.drive_link || uploadUrl(a.filename)
 const mockupRow = (a) => ({
   id: a.id, version: a.version, filename: a.filename, original_name: a.original_name, mime: a.mime,
   status: a.status, notes: a.notes, sent_at: a.sent_at, decided_at: a.decided_at, decided_by: a.decided_by,
@@ -7636,7 +7653,7 @@ app.get('/p/ticket/:id', pPage((req, res) => {
       <div class="tk-cols">
         <div><h2>Notes</h2><div class="tk-notes">${esc(j.notes || 'None.')}</div></div>
         <div><h2>Approved Art</h2>
-          ${approved ? `<div class="tk-art"><img src="${esc(uploadUrl(approved.filename))}" alt="v${esc(approved.version)}">
+          ${approved ? `<div class="tk-art"><img src="${esc(proofSrc(approved))}" alt="v${esc(approved.version)}">
             <div class="cap">v${esc(approved.version)} — approved ${esc((approved.decided_at || '').slice(0, 10))} by ${esc(approved.decided_by || '')}</div></div>`
             : '<div class="warnbox">⚠ NO APPROVED ART — do not print.</div>'}
         </div>
@@ -7671,8 +7688,8 @@ app.get('/p/art/:id', pPage((req, res) => {
     <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">Artwork for approval</div></div>
       <div class="right"><div class="doc">PROOF</div><div class="num2">v${esc(a.version)}</div></div></div>
     <div class="to">${subject}</div>
-    <div class="proof">${isImg ? `<img src="${esc(uploadUrl(a.filename))}" alt="Proof v${esc(a.version)}">`
-      : `<a class="btn ghost" href="${esc(uploadUrl(a.filename))}" target="_blank">Open ${esc(a.original_name)}</a>`}</div>
+    <div class="proof">${isImg ? `<img src="${esc(proofSrc(a))}" alt="Proof v${esc(a.version)}">`
+      : `<a class="btn ghost" href="${esc(proofSrc(a))}" target="_blank">Open ${esc(a.original_name)}</a>`}</div>
     <div class="check"><strong>Check before approving:</strong> spelling, placement, size, colors, and garment. Once approved, this is exactly what we print.</div>
     ${decided ? `<div class="${a.status === 'approved' ? 'ok' : 'warn'}">${a.status === 'approved'
         // "Moving this to production" is only true when a job exists. On an estimate-attached mockup
