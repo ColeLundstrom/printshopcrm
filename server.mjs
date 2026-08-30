@@ -1941,8 +1941,12 @@ app.post('/api/reorders/:id/unsnooze', wrap((req, res) => { unsnoozeReorder(+req
 /* ================= CONTACTS ================= */
 
 app.get('/api/contacts', wrap((req, res) => {
-  const q = `%${(req.query.q || '').toLowerCase()}%`
-  const tag = req.query.tag || ''
+  // String(), because Express 5's query parser answers a REPEATED key with an ARRAY, and
+  // `?q=a&q=b` is something a client, a bookmark or a back-button produces by appending a filter
+  // twice. .toLowerCase() on an array threw, and this list — Customers — is one of the three
+  // busiest screens in the app. Every /api/v1 twin has done this all along.
+  const q = `%${String(req.query.q ?? '').toLowerCase()}%`
+  const tag = String(req.query.tag ?? '')
   let sql = `SELECT c.*,
       (SELECT COUNT(*) FROM jobs j WHERE j.contact_id = c.id) AS job_count,
       (SELECT COALESCE(SUM(i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id) AS lifetime_value,
@@ -2182,7 +2186,7 @@ const estimateView = (e) => ({ ...e, items: parse(e.items, []) })
 const rushDaysIn = (v) => Math.max(0, Math.min(30, Math.trunc(Number(v) || 0)))
 
 app.get('/api/estimates', wrap((req, res) => {
-  const status = req.query.status
+  const status = String(req.query.status ?? '') // a repeated ?status= is an array, and node:sqlite refuses to bind one
   let sql = `SELECT e.*, c.name AS contact_name, c.company FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id`
   const params = []
   if (status && status !== 'all') { sql += ' WHERE e.status = ?'; params.push(status) }
@@ -2840,7 +2844,7 @@ app.get('/api/estimates/:id/pdf', wrap((req, res) => {
 /* ================= INVOICES ================= */
 
 app.get('/api/invoices', wrap((req, res) => {
-  const status = req.query.status
+  const status = String(req.query.status ?? '') // a repeated ?status= is an array, and node:sqlite refuses to bind one
   // Report and filter on the EFFECTIVE status so this list agrees with the dashboard's
   // money-at-risk figure, which has always been computed live from due_date.
   const today = todayIso()
@@ -4482,7 +4486,12 @@ app.get('/api/pricebook', wrap((_req, res) => {
 /** The editable price matrix for one service (qty rows x unit cols), with custom-cell flags. */
 app.get('/api/pricebook/matrix', wrap((req, res) => {
   const book = resolveBook(getSettings().price_book)
-  const service = book.services[req.query.service] ? req.query.service : serviceNames(book)[0]
+  // hasOwn, not a bare lookup: book.services is a plain {}, so `?service=constructor`,
+  // `__proto__`, `toString` and `valueOf` were all "found" as services and then threw inside
+  // serviceMatrix reading s.setup.fee — a 500 on junk instead of a clean fallback. GET
+  // /api/export/:table.csv carries this fix and this reasoning already; these two never got it.
+  const asked = String(req.query.service ?? '')
+  const service = Object.hasOwn(book.services, asked) ? asked : serviceNames(book)[0]
   const maxColors = req.query.colors ? Number(req.query.colors) : 8
   const m = serviceMatrix({ book, service, maxColors })
   if (!m) return res.status(404).json({ error: 'No such service' })
@@ -4493,7 +4502,7 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV or paste your price grid.' })
   const book = resolveBook(getSettings().price_book)
-  const service = book.services[req.body?.service] ? req.body.service : null
+  const service = Object.hasOwn(book.services, String(req.body?.service ?? '')) ? String(req.body.service) : null
   if (!service) return res.status(400).json({ error: 'Pick which service this price sheet is for.' })
   // Split rows/cols on comma or tab; tolerate $ and commas in numbers.
   const money = (v) => { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null }

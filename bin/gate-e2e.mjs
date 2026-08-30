@@ -1190,6 +1190,39 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- a URL a bookmark can produce does not 500 the screen ----------
+   * Express 5's default query parser answers a REPEATED key with an array. Three of the busiest
+   * screens in the app read those values raw: Customers called .toLowerCase() on it, Estimates and
+   * Invoices pushed it straight into a bound parameter that node:sqlite refuses. All three became
+   * a 500 with the generic "Something went wrong on our end." — from a URL a client, a bookmark or
+   * a back-button can produce by appending a filter twice. Every /api/v1 twin already String()s.
+   *
+   * The pricebook lookup is the same class from the other side: a bare property read on a plain
+   * object finds Object.prototype's members, so ?service=constructor was "found" and then threw
+   * inside serviceMatrix. GET /api/export/:table.csv carries this fix and its reasoning verbatim;
+   * the two pricebook lookups were never brought along. */
+  {
+    for (const [label, path] of [
+      ['Customers', '/api/contacts?q=a&q=b'],
+      ['Customers by tag', '/api/contacts?tag=x&tag=y'],
+      ['Estimates', '/api/estimates?status=draft&status=sent'],
+      ['Invoices', '/api/invoices?status=unpaid&status=paid'],
+      ['the price-book matrix', '/api/pricebook/matrix?service=a&service=b'],
+    ]) {
+      r = await req('GET', path)
+      chk(`${label} survives a filter given twice`, String(r.status), '^200$')
+    }
+    for (const junk of ['constructor', '__proto__', 'toString', 'valueOf']) {
+      r = await req('GET', `/api/pricebook/matrix?service=${junk}`)
+      chk(`the price book does not treat ?service=${junk} as a service`, String(r.status), '^200$')
+      chk(`…and falls back to a real one`, String(r.json?.matrix?.service !== junk && !!r.json?.matrix?.service), '^true$')
+    }
+    // …while the filters themselves still filter.
+    r = await req('GET', '/api/invoices?status=paid')
+    chk('a single status still filters', String(r.status), '^200$')
+    chk('…to that status only', String((r.json?.invoices || []).every((i) => i.status === 'paid')), '^true$')
+  }
+
   /* ---------- deleting a quote does not strand the job that is already on the floor ----------
    * DELETE /api/estimates/:id guarded on invoices and cleaned up the deal, and never looked at
    * jobs. /api/autopilot and the Slack quick-quote both open a production job the MOMENT they
