@@ -9263,6 +9263,65 @@ section('a backup can actually be put back')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
+  /* ---------- the DOCUMENTED cron entry has to reach the credentials the docs put in .env ------
+   * INSTALL.md step 5 says to put the refresh token in the app's .env, and `npm run drive --
+   * status` works because `npm run` passes --env-file-if-exists. Cron does not. The documented
+   * crontab line runs this script with exactly DATA_ROOT, BACKUP_ROOT and KEEP_DAYS in its
+   * environment, and nothing sources .env for a bash script — so the token was empty on every
+   * real nightly run and the upload was skipped in silence. The existing case above passes the
+   * token in via env:, which is the one way the real cron never does. */
+  await t('the documented cron entry reaches the Drive credentials the docs put in .env', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psc-bk-env-'))
+    try {
+      mkdirSync(join(dir, 'app', 'bin'), { recursive: true })
+      writeFileSync(join(dir, 'app', 'bin', 'backup-drive.mjs'), 'process.exit(0)')
+      // A trailing comment too: .env.example uses them, and this must not import one as a value.
+      writeFileSync(join(dir, 'app', '.env'), 'PSC_BACKUP_GDRIVE_REFRESH_TOKEN=pretend-token   # the token\nSMTP_PASS=not-ours\n')
+      const data = join(dir, 'data'); mkdirSync(data, { recursive: true })
+      execFileSync('sqlite3', [join(data, 'control.db'), 'CREATE TABLE t(a);'])
+      let out = ''
+      try {
+        out = execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          // EXACTLY what INSTALL.md's cron entry passes, and nothing else.
+          env: { PATH: process.env.PATH, DATA_ROOT: data, BACKUP_ROOT: join(dir, 'backups'), KEEP_DAYS: '30', APP_DIR: join(dir, 'app') },
+        })
+      } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}` }
+      assert.match(out, /copied off-site|ONLY on this machine|OFF-SITE/i,
+        'the documented cron entry produced a backup that never mentions Drive at all — INSTALL.md promises it uploads')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  /* ---------- the nightly must not back up its own safety copies ----------
+   * restore.mjs writes pre-restore-<stamp>/ and release.sh writes predeploy-<tag>/ under
+   * $DATA_ROOT/backups. Both of those skip that subtree when they walk for databases; this script
+   * did not, so every nightly re-archived them, growing without bound — and a snapshot captured
+   * mid-write counts as "FAILED to back up", which sets failed>0, which DISABLES RETENTION. Since
+   * nothing ever deletes pre-restore-*, the first restore a shop performs turns retention off for
+   * good and every later night reports failure. */
+  await t('the nightly skips the backups directory it and its siblings write into', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psc-bk-self-'))
+    try {
+      const data = join(dir, 'data')
+      mkdirSync(join(data, 'tenants', 'acme'), { recursive: true })
+      mkdirSync(join(data, 'backups', 'pre-restore-20260830'), { recursive: true })
+      for (const f of [join(data, 'control.db'), join(data, 'tenants', 'acme', 'printshop.db'),
+        join(data, 'backups', 'pre-restore-20260830', 'printshop.db')]) {
+        execFileSync('sqlite3', [f, 'CREATE TABLE t(a);'])
+      }
+      const out = execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { PATH: process.env.PATH, DATA_ROOT: data, BACKUP_ROOT: join(dir, 'backups'), KEEP_DAYS: '30', APP_DIR: join(dir, 'nowhere') },
+      })
+      assert.match(out, /backup ok — 2 database\(s\)/,
+        `the nightly counted its own safety copies as shop databases: ${out.trim().split('\n').pop()}`)
+      const tarball = readdirSync(join(dir, 'backups')).find((f) => f.endsWith('.tar.gz'))
+      const listed = execFileSync('tar', ['tzf', join(dir, 'backups', tarball)], { encoding: 'utf8' })
+      assert.doesNotMatch(listed, /pre-restore/,
+        'a pre-restore safety copy must not be re-archived every night for ever')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   /* ---------- a night that failed must not be the night that deletes the ones that worked ----
    * Retention ran unconditionally, 44 lines above the failure check that exits 1. So an unmounted
    * volume — still present as an empty mountpoint, so both the -d and the free-space guards pass —

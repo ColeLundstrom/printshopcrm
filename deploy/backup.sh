@@ -50,7 +50,7 @@ while IFS= read -r db; do
     echo "FAILED to back up $db" >&2
     failed=$((failed + 1))
   fi
-done < <(find "$DATA_ROOT" -name '*.db' -not -name '*-wal' -not -name '*-shm')
+done < <(find "$DATA_ROOT" -path "$DATA_ROOT/backups" -prune -o -name '*.db' -not -name '*-wal' -not -name '*-shm' -type f -print)
 
 # A backup of nothing is not a backup. With count=0 and failed=0 this script printed
 # "backup ok - 0 database(s)" and exited 0, so a typo'd DATA_ROOT, a moved PSC_DB or an unmounted
@@ -144,6 +144,31 @@ if [ ! -f "$APP_DIR/bin/backup-drive.mjs" ]; then
   for candidate in /opt/printshopcrm-pro/current /opt/printshopcrm/current /opt/printshopcrm; do
     if [ -f "$candidate/bin/backup-drive.mjs" ]; then APP_DIR="$candidate"; break; fi
   done
+fi
+# The off-site credentials live in the app's .env — INSTALL.md step 5 says to put the refresh
+# token there, and `npm run drive -- status` works because `npm run` passes --env-file-if-exists.
+# CRON DOES NOT. The documented crontab line runs this script with exactly DATA_ROOT, BACKUP_ROOT
+# and KEEP_DAYS in its environment, and nothing sources .env for a bash script — so the token was
+# empty on every real nightly run, the upload below was skipped in silence, and the script printed
+# "backup ok" having sent nothing off the box. The loud warning underneath could not fire either:
+# it was gated on the token being set, and the token is exactly what was missing.
+#
+# Read ONLY the PSC_BACKUP_GDRIVE_* assignments: the rest of .env is not ours to import into a
+# process that runs as root out of cron.
+if [ -f "$APP_DIR/.env" ]; then
+  while IFS= read -r line; do
+    [ -n "$line" ] && export "${line?}"
+  done <<EOF
+$(sed -n 's/^[[:space:]]*\(PSC_BACKUP_GDRIVE_[A-Z_]*=[^#[:space:]].*\)$/\1/p' "$APP_DIR/.env" 2>/dev/null)
+EOF
+fi
+
+# Configured-but-unreachable must never be silent. Two distinct failures: the uploader is missing,
+# or the token is on disk but did not reach this process.
+if [ -z "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && grep -q '^[[:space:]]*PSC_BACKUP_GDRIVE_REFRESH_TOKEN=[^[:space:]#]' "$APP_DIR/.env" 2>/dev/null; then
+  echo "WARNING: a Drive refresh token is in $APP_DIR/.env but was not readable from this run." >&2
+  echo "         THIS BACKUP EXISTS ONLY ON THIS MACHINE." >&2
+  failed=$((failed + 1))
 fi
 if [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ ! -f "$APP_DIR/bin/backup-drive.mjs" ]; then
   echo "WARNING: off-site backup is configured, but bin/backup-drive.mjs was not found under $APP_DIR." >&2

@@ -325,6 +325,11 @@ Google Cloud.
 From then on `backup.sh` uploads every nightly archive automatically and keeps the most recent 30
 in Drive. Check it any time with `npm run drive -- status`.
 
+`backup.sh` reads the `PSC_BACKUP_GDRIVE_*` lines straight out of `/opt/printshopcrm/.env`, because
+cron does not load that file the way `npm run` does. If your app lives somewhere else, add
+`APP_DIR=/path/to/printshopcrm` to the cron entry. If the token is in `.env` but the script cannot
+read it, the run says so and exits non-zero rather than reporting a backup that never left the box.
+
 **This is your Drive and your Google account.** The credentials live in your own environment; there
 is no shared account and no default destination. Two things worth knowing:
 
