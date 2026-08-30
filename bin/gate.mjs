@@ -10514,6 +10514,41 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('one order is one price, whichever panel the shop typed into')
+
+await t('the assistant prices the blank off the shop catalog, like every other quoting path', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const qq = await import('../lib/quickquote.mjs')
+  const ai = await import('../lib/ai.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  const s = dbm.getSettings()
+  // Comfort Colors 1717 is in the catalog every install ships with ($6.50) and is one of the
+  // most-quoted garments in the trade. ai.mjs's ten-row shortlist has no row for it, so it falls
+  // through to the bare /tee|shirt/ rule and hands back a Gildan's $3.20 — and priceIntake with
+  // no `blank` believes it. Autopilot, the Slack quick-quote and "Read from email" all call
+  // priceIntakeLive and get the catalog. The assistant is the one that writes an estimate to the
+  // books with a number spent, so it is the one that must not be $1,980 out.
+  const order = await ai.parseIntake('300 Comfort Colors 1717 tees, 2 color front')
+  assert.equal(sup.costFor(order.garment)?.cost, 6.5, 'precondition: CC1717 is $6.50 in the shipped catalog')
+  assert.equal(order.garment_cost, 3.2, "precondition: ai.mjs's shortlist guesses a Gildan's $3.20 for it")
+  const live = await qq.priceIntakeLive({ ...order, total_pieces: 300, sizes: { M: 300 } }, s, { taxRate: 0 })
+  const guess = qq.priceIntake({ ...order, total_pieces: 300, sizes: { M: 300 } }, s, { taxRate: 0 })
+  assert.equal(live.totals.total, 4850, 'the catalog price of this order')
+  assert.equal(guess.totals.total, 2870, 'and what the shortlist would have billed')
+  // The fix itself: the assistant has to be on the live side of that gap.
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib/assistant.mjs'), 'utf8')
+  const call = src.slice(src.indexOf('const rate = taxRateFor('), src.indexOf('const q = priced.quote'))
+  assert.match(call, /await priceIntakeLive\(/,
+    'the assistant must resolve the blank against the shop catalog, not ai.mjs\'s ten-row shortlist')
+  assert.doesNotMatch(call, /[^a-zA-Z]priceIntake\(/, 'and must not still call the guessing twin')
+})
+
 section('pressing Send twice does not mail the customer twice')
 
 await t('the outbox claims a row before it awaits the relay, not after', async () => {
