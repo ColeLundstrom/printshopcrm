@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { WebSocket } from 'ws'
 import { request as rawHttp } from 'node:http'
+import { gunzipSync } from 'node:zlib'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
@@ -4737,6 +4738,34 @@ try {
       // and it is still the FIRST thing in the file.
       chk('…starting with the header row the shop\'s spreadsheet needs',
         head.split('\n')[0], '^id,contact_id,job_id,type,description,created_at$')
+
+      /* …and it is STILL streamed when the caller is a browser.
+       *
+       * Every check above sends no Accept-Encoding, because node:http does not add one. Every
+       * real browser does. Response compression that buffered the body to gzip it would rebuild
+       * exactly the whole-file-in-memory behaviour this export was rewritten to remove — 8 MB and
+       * up held in the process, first byte after the last row — and it would do it invisibly,
+       * because the case above would keep passing. That is why the compressor only ever touches a
+       * response whose Content-Length is already set. */
+      let gzTtfb = null, gzBytes = 0, gzLen, gzTe, gzEnc
+      const gzT0 = Date.now()
+      await new Promise((resolve, reject) => {
+        const rq = rawHttp(`http://127.0.0.1:${P7}/api/export/activities.csv`,
+          { headers: { Cookie: cookie, 'Accept-Encoding': 'gzip, deflate, br' } }, (res) => {
+            gzLen = res.headers['content-length']; gzTe = res.headers['transfer-encoding']; gzEnc = res.headers['content-encoding']
+            res.on('data', (c) => { if (gzTtfb === null) gzTtfb = Date.now() - gzT0; gzBytes += c.length })
+            res.on('end', resolve)
+          })
+        rq.on('error', reject)
+        rq.end()
+      })
+      const gzTotal = Date.now() - gzT0
+      chk('a browser asking for gzip does not turn the streamed export into a buffered one', String(gzLen ?? 'none'), '^none$')
+      chk('…it is still chunked', String(gzTe), '^chunked$')
+      chk('…and not compressed, because compressing it would mean holding all of it', String(gzEnc ?? 'none'), '^none$')
+      chk(`…so the first byte still arrives early (${gzTtfb}ms of ${gzTotal}ms)`,
+        String(gzTtfb < Math.max(25, gzTotal * 0.5)), '^true$')
+      chk('…and the whole file still arrives', String(gzBytes > 8_000_000), '^true$')
     } finally {
       try { csvSrv.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T7, { recursive: true, force: true }) } catch { /* best effort */ }
@@ -5779,6 +5808,76 @@ try {
     } finally {
       try { s16.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T16, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+  /* ---------- nothing this app serves has ever been compressed ----------
+   *
+   * Not by the app, and not by the shipped deploy/nginx.conf either, which has no gzip block at
+   * all — so every shop has paid full uncompressed bytes for everything, on every deployment
+   * shape the project documents. Measured on this tree: 866 KB of JS/CSS/HTML on a cold load
+   * against 250 KB gzipped, css/app.css alone 121,235 → 25,164, and a board fetch that ran to
+   * 3.66 MB on a three-year shop against 267 KB. On the counter tablet over the shop's phone
+   * hotspot that is a screen that paints against one that does not.
+   *
+   * Driven end to end, over the wire, with node:http rather than fetch — fetch decodes and drops
+   * the header, so it cannot see whether anything was compressed at all. */
+  {
+    const rawGet = (path, headers = {}, method = 'GET') => new Promise((resolve, reject) => {
+      const rq = rawHttp({ host: '127.0.0.1', port: PORT, method, path, headers: { Cookie: cookieHeader(), ...headers } }, (resp) => {
+        const parts = []
+        resp.on('data', (c) => parts.push(c))
+        resp.on('end', () => resolve({ status: resp.statusCode, headers: resp.headers, body: Buffer.concat(parts) }))
+      })
+      rq.on('error', reject)
+      rq.end()
+    })
+
+    const plain = await rawGet('/css/app.css')
+    const zipped = await rawGet('/css/app.css', { 'Accept-Encoding': 'gzip' })
+    chk('the stylesheet is compressed for a browser that asks', String(zipped.headers['content-encoding']), '^gzip$')
+    chk('…and it is meaningfully smaller', String(zipped.body.length < plain.body.length * 0.5), '^true$')
+    // The saving is the point, so measure it rather than asserting a boolean nobody can read.
+    say('·', `    css/app.css ${plain.body.length} → ${zipped.body.length} bytes`)
+    // Unpacked in a try: on a regression the body is not gzip at all, and an exception here would
+    // abort the rest of this block instead of naming which assertion failed.
+    let unpacked = 'NOT GZIP'
+    try { unpacked = gunzipSync(zipped.body).equals(plain.body) ? 'same' : 'DIFFERENT' } catch (e) { unpacked = `NOT GZIP (${e.code || e.message})` }
+    chk('…and the bytes are the same bytes once unpacked', unpacked, '^same$')
+    chk('…and Content-Length describes what was actually sent',
+      String(Number(zipped.headers['content-length'])), `^${zipped.body.length}$`)
+    chk('…and a shared cache is told the body depends on the encoding',
+      String(zipped.headers.vary || ''), 'Accept-Encoding')
+
+    const q0 = await rawGet('/css/app.css', { 'Accept-Encoding': 'gzip;q=0, deflate' })
+    chk('a client that says gzip;q=0 is not sent gzip', String(q0.headers['content-encoding'] ?? 'none'), '^none$')
+    chk('…and still gets the whole file', String(q0.body.length), `^${plain.body.length}$`)
+
+    const noAe = await rawGet('/css/app.css', { 'Accept-Encoding': 'br' })
+    chk('a client that asks for an encoding we do not have gets identity', String(noAe.headers['content-encoding'] ?? 'none'), '^none$')
+
+    const head = await rawGet('/css/app.css', { 'Accept-Encoding': 'gzip' }, 'HEAD')
+    chk('HEAD still describes the identity representation', String(head.headers['content-length']), `^${plain.body.length}$`)
+    chk('…and does not claim an encoding', String(head.headers['content-encoding'] ?? 'none'), '^none$')
+
+    const api = await rawGet('/api/board', { 'Accept-Encoding': 'gzip' })
+    chk('the board is compressed too', String(api.headers['content-encoding']), '^gzip$')
+    let boardOk = 'no'
+    try { boardOk = JSON.parse(gunzipSync(api.body).toString()).columns ? 'yes' : 'no' } catch (e) { boardOk = `unreadable (${e.code || e.message})` }
+    chk('…and still parses as the board', boardOk, '^yes$')
+
+    // Below the floor, the gzip header costs more than it saves.
+    const tiny = await rawGet('/health', { 'Accept-Encoding': 'gzip' })
+    chk('a tiny response is not compressed for the sake of it', String(tiny.headers['content-encoding'] ?? 'none'), '^none$')
+
+    /* AGPL §13 is not a style choice. The source link is written into these pages by
+     * shellHtml()/authHtml(), and every one of them now goes out through the compressor. */
+    for (const path of ['/', '/index.html', '/auth.html']) {
+      const r = await rawGet(path, { 'Accept-Encoding': 'gzip' })
+      const html = (r.headers['content-encoding'] === 'gzip' ? gunzipSync(r.body) : r.body).toString()
+      chk(`${path} still carries exactly one source link through the compressor`,
+        String((html.match(/class="source-link"/g) || []).length), '^1$')
+      chk(`…and no unrendered placeholder`, String(html.includes('__SOURCE_LINK__')), '^false$')
     }
   }
 

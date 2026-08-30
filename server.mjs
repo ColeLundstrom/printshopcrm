@@ -4,6 +4,7 @@ import crypto from 'node:crypto'
 import { mkdirSync, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { join, dirname, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { gzip } from 'node:zlib'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   freezeUpcharges,
@@ -152,6 +153,117 @@ app.disable('x-powered-by')
  * segment, or an encoded slash/dot/backslash. `%20` and every other ordinary escape pass
  * untouched, so a path parameter like /api/pricebook/Screen%20Print still works.
  */
+/**
+ * Gzip every text response worth gzipping.
+ *
+ * Nothing this app has ever served has been compressed — not by the app, and not by the shipped
+ * deploy/nginx.conf either, which has no gzip block at all. So every shop pays full uncompressed
+ * bytes for everything. Measured on this tree: **866 KB of JS/CSS/HTML on a cold load, which
+ * gzips to 250 KB**; css/app.css alone is 121,235 → 25,164; and a board fetch that measured
+ * 3.66 MB on a three-year shop against 267 KB compressed. On the counter tablet over the shop's
+ * phone hotspot that is the difference between a screen that paints and one that does not.
+ *
+ * node:zlib is built in, so this costs no dependency.
+ *
+ * **It only ever touches a response whose length is already known.** That is the whole safety
+ * argument, and it is not a shortcut — it is the rule that keeps this from undoing a fix that is
+ * already in the gate. `GET /api/export/*.csv` deliberately streams: it sets no Content-Length,
+ * answers chunked, and gets its first byte out in milliseconds on a file that runs to 8 MB and
+ * up. A compressor that buffered it would rebuild exactly the whole-file-in-memory behaviour that
+ * export was rewritten to remove, and it would do it silently, because the gate case that proves
+ * the streaming sends no Accept-Encoding while every real browser does. So: Content-Length
+ * present and under MAX_BYTES, or we do not touch the response at all. Everything worth
+ * compressing sets one — res.send/res.json set it for every string and Buffer body, and
+ * express.static sets it before it pipes.
+ *
+ * Also left alone: anything already encoded; any 204/304 or partial (Content-Range) response;
+ * HEAD, whose Content-Length must keep describing the identity representation; every media type
+ * outside COMPRESSIBLE, because PDFs, PNGs and the JPEGs of customer art are compressed already
+ * and gzip only spends CPU to add bytes; and anything under MIN_BYTES, where the gzip header
+ * costs more than the saving (`/api/jobs` on an empty shop is 93 bytes raw and 100 gzipped).
+ *
+ * BREACH: the session cookie is SameSite=Lax, so a cross-site request carries no session and an
+ * attacker has no compressed authenticated response to measure. Same reasoning the CSRF note
+ * further down gives, and it is why turning compression on here is not the trade it would be on
+ * a cookie-anywhere app.
+ */
+const COMPRESSIBLE = /^(?:text\/|application\/(?:json|javascript|xml|manifest\+json)|image\/svg\+xml)/i
+const MIN_BYTES = 1024
+const MAX_BYTES = 4 * 1024 * 1024
+app.use((req, res, next) => {
+  // `gzip;q=0` means "do not send me gzip". Reading it with a bare /gzip/ test would compress for
+  // exactly the client that asked us not to.
+  const wantsGzip = String(req.headers['accept-encoding'] || '').split(',').some((part) => {
+    const [name, ...params] = part.trim().split(';')
+    if (name.toLowerCase() !== 'gzip') return false
+    const q = params.map((x) => x.trim()).find((x) => x.toLowerCase().startsWith('q='))
+    return !q || Number(q.slice(2)) > 0
+  })
+  if (!wantsGzip || req.method === 'HEAD') return next()
+
+  const rawWrite = res.write.bind(res)
+  const rawEnd = res.end.bind(res)
+  let chunks = []
+  let decided = false
+  let compress = false
+
+  const buf = (chunk, enc) => (Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), typeof enc === 'string' ? enc : 'utf8'))
+
+  /**
+   * Decided once, at the first body byte — by then the handler has set its status, its
+   * Content-Type and its Content-Length, and none of it has gone out on the wire yet.
+   */
+  const decide = () => {
+    if (decided) return compress
+    decided = true
+    if (res.headersSent || res.statusCode === 204 || res.statusCode === 304) return compress
+    if (res.getHeader('Content-Encoding') || res.getHeader('Content-Range')) return compress
+    if (!COMPRESSIBLE.test(String(res.getHeader('Content-Type') || ''))) return compress
+    const len = Number(res.getHeader('Content-Length'))
+    // No length means it is being streamed. See the note above: buffering it is the bug.
+    if (!Number.isFinite(len) || len < MIN_BYTES || len > MAX_BYTES) return compress
+    // Vary goes on even in the cases below that decline, because a shared cache must not hand
+    // this body to a client that asked for a different encoding.
+    const vary = String(res.getHeader('Vary') || '')
+    if (!/\bAccept-Encoding\b/i.test(vary)) res.setHeader('Vary', vary ? `${vary}, Accept-Encoding` : 'Accept-Encoding')
+    compress = true
+    return compress
+  }
+
+  res.write = function (chunk, enc, cb) {
+    if (!decide()) return rawWrite(chunk, enc, cb)
+    if (chunk !== undefined && chunk !== null && chunk !== '') chunks.push(buf(chunk, enc))
+    const done = typeof enc === 'function' ? enc : cb
+    if (typeof done === 'function') done()
+    return true
+  }
+
+  res.end = function (chunk, enc, cb) {
+    if (typeof chunk === 'function') { cb = chunk; chunk = undefined; enc = undefined }
+    else if (typeof enc === 'function') { cb = enc; enc = undefined }
+    if (!decide()) return rawEnd(chunk, enc, cb)
+    if (chunk !== undefined && chunk !== null && chunk !== '') chunks.push(buf(chunk, enc))
+    const body = Buffer.concat(chunks)
+    chunks = []
+    // Async, not gzipSync: a multi-megabyte board is ~60-100 ms of gzip, and blocking the event
+    // loop for that long on every board load trades one measured defect for another.
+    gzip(body, { level: 6 }, (err, out) => {
+      if (res.writableEnded || res.destroyed) return
+      // Nothing is lost on a failure — the identity body is still in hand and no header has gone
+      // out, so the response goes out exactly as it would have without this middleware.
+      if (err) { rawWrite(body); return rawEnd(undefined, undefined, cb) }
+      if (!res.headersSent) {
+        res.setHeader('Content-Encoding', 'gzip')
+        res.setHeader('Content-Length', String(out.length))
+      }
+      rawWrite(out)
+      rawEnd(undefined, undefined, cb)
+    })
+    return res
+  }
+  next()
+})
+
 const NON_CANONICAL_PATH = /\/\/|(^|\/)\.\.?(\/|$)|%2f|%5c|%2e/i
 app.use((req, res, next) => {
   if (!NON_CANONICAL_PATH.test(req.path)) return next()
