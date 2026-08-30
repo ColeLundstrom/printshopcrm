@@ -2378,8 +2378,17 @@ app.post('/api/estimates', wrap((req, res) => {
   // default: $5,175.00 billed against a $3,450.00 standard price, job due ten working days out, no
   // RUSH badge on the board, and ?filter=rush empty. Round 15 taught the automated paths to carry
   // it; this is the one a person types into. Clamped like every other write.
+  /* 'draft', not `b.status || 'draft'`, which bound whatever the caller sent. `{"status":
+   * "approved"}` minted a quote born customer-approved with approved_at NULL, and then nothing
+   * could leave that state: /approve short-circuits on it with {already:true} so estimate.approved
+   * and its webhook can never fire, /send treats approved as settled and refuses to reset it, and
+   * PUT never writes the status column at all — while /p/estimate/:id told the CUSTOMER "✓
+   * Approved — thank you, the shop has been notified" for an approval nobody gave. "invoiced" and
+   * any junk string were equally writable. POST /api/v1/estimates has hardcoded 'draft' all along,
+   * docs/API.md promises "writes reject bad input rather than coercing it", and the estimate
+   * editor has never sent the field — so refusing it costs the product nothing. */
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    contactId, num, b.status || 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now())
+    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now())
   const id = Number(r.lastInsertRowid)
   logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
@@ -2411,7 +2420,20 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // customer-facing PDF and the invoice's amount_due at convert.
   // ...and it must go through the same door POST does, or retargeting an estimate onto a
   // tax-exempt buyer keeps the taxable rate: PUT never consulted tax_exempt at all.
-  const rate = taxRateFor(b.contact_id ?? e.contact_id, b.tax_rate ?? e.tax_rate ?? s.tax_rate,
+  /* The customer has to go through the same door POST does. This is the ONLY route that can
+   * RETARGET a quote onto a different buyer, and it was the one binding the value raw:
+   * estimates.contact_id REFERENCES contacts(id) with foreign keys ON, so naming a customer who
+   * has since been deleted — the ordinary case this screen leaves open for minutes at a time —
+   * threw FOREIGN KEY constraint failed and reached the shop as 500 "Something went wrong on our
+   * end.", which names no field and offers nothing to do. POST /api/estimates, POST /api/jobs and
+   * POST /api/opportunities all run it through resolveContactId and answer 404 customer_not_found
+   * with copy that says to reload and pick again. */
+  let contactId = e.contact_id
+  if (b.contact_id !== undefined && b.contact_id !== null) {
+    contactId = resolveContactId(b.contact_id, res, 'quote')
+    if (contactId == null) return
+  }
+  const rate = taxRateFor(contactId, b.tax_rate ?? e.tax_rate ?? s.tax_rate,
     { allowExemptOverride: b.tax_exempt_override === true })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
@@ -2419,7 +2441,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // `?? e.rush_days`, so an edit that does not mention the rush cannot silently clear one — the
   // same rule every other column on this route already follows.
   run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
-    b.contact_id ?? e.contact_id, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
+    contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
     rushDaysIn(b.rush_days ?? e.rush_days), id)
   // The three sibling routes (create, send, approve) all sync; this one never did, so a quote
   // edited from $8,000 down to $4,000 left the deal in Open Pipeline at $8,000. One /api/dashboard
@@ -2627,7 +2649,17 @@ app.put('/api/orders/:id/tracking', wrap((req, res) => {
 app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
   const src = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!src) return res.status(404).json({ error: 'Estimate not found' })
-  const contactId = Number(req.body?.contact_id) || src.contact_id
+  /* `Number(x) || src.contact_id` turned any non-numeric or zero value into the SOURCE
+   * estimate's customer — so `{"contact_id":"acme-wholesale"}` returned 200 with a fresh estimate
+   * number, silently written on the original buyer at the original rate, which is the exact
+   * opposite of what the parameter is for (see the tax note below). A well-formed id naming a
+   * deleted customer hit the raw foreign key and 500'd. */
+  let contactId = src.contact_id
+  const askedFor = req.body?.contact_id
+  if (askedFor !== undefined && askedFor !== null && askedFor !== '') {
+    contactId = resolveContactId(askedFor, res, 'quote')
+    if (contactId == null) return
+  }
   const items = freezeUpcharges(parse(src.items, []))
   // Copying a taxed estimate onto a DIFFERENT buyer must re-derive the rate against that buyer —
   // otherwise "duplicate this for the wholesale account" carries the taxable rate across.

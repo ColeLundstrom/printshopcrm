@@ -1190,6 +1190,51 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- the estimate write doors agree about what a customer is ----------
+   * Three of them did not. PUT /api/estimates/:id is the only route that can RETARGET a quote
+   * onto a different buyer and it was the one binding contact_id RAW — foreign keys are ON, so a
+   * customer deleted while this screen sat open (it sits open for minutes) threw FOREIGN KEY
+   * constraint failed and reached the shop as an unactionable 500. /duplicate did
+   * `Number(x) || src.contact_id`, so any non-numeric value silently copied the quote onto the
+   * SOURCE customer at the source rate — a 200, a fresh estimate number, and the wholesale account
+   * gets a quote addressed to somebody else. And POST bound `b.status || 'draft'`, minting a quote
+   * born customer-approved that no route could ever leave. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Doorway Dora', email: 'doorway@e2e.test' } })
+    const doorC = r.json?.id
+    const line = [{ description: 'Tees', sizes: { M: 10 }, unit_price: 10 }]
+    r = await req('POST', '/api/estimates', { body: { contact_id: doorC, items: line } })
+    const doorE = r.json?.id
+
+    r = await req('PUT', `/api/estimates/${doorE}`, { body: { contact_id: 99999999, items: line } })
+    chk('retargeting a quote onto a customer who is gone is a 404, not a 500', String(r.status), '^404$')
+    chk('…and it says which thing is missing', String(r.json?.code), '^customer_not_found$')
+    r = await req('PUT', `/api/estimates/${doorE}`, { body: { contact_id: 'acme', items: line } })
+    chk('…and a non-numeric customer is a 400, not a 500', String(r.status), '^400$')
+    r = await req('GET', `/api/estimates/${doorE}`)
+    chk('…and the quote is still on the customer it started on', String(r.json?.contact_id), `^${doorC}$`)
+
+    r = await req('POST', `/api/estimates/${doorE}/duplicate`, { body: { contact_id: 'acme-wholesale' } })
+    chk('duplicating onto a junk customer is refused', String(r.status), '^400$')
+    r = await req('POST', `/api/estimates/${doorE}/duplicate`, { body: { contact_id: 99999999 } })
+    chk('…and onto a deleted one is a 404, not a 500', String(r.status), '^404$')
+    // …while the thing the parameter exists for still works.
+    r = await req('POST', '/api/contacts', { body: { name: 'Wholesale Wanda', email: 'wanda@e2e.test', tax_exempt: 1 } })
+    const wholesaleC = r.json?.id
+    r = await req('POST', `/api/estimates/${doorE}/duplicate`, { body: { contact_id: wholesaleC } })
+    chk('duplicating onto a real customer still works', String(r.status), '^200$')
+    const copyId = r.json?.id
+    chk('…and it really lands on them', String((await req('GET', `/api/estimates/${copyId}`)).json?.contact_id), `^${wholesaleC}$`)
+    // And a plain duplicate with no contact_id at all stays where it was.
+    r = await req('POST', `/api/estimates/${doorE}/duplicate`, { body: {} })
+    chk('…and a plain copy stays on the same customer', String((await req('GET', `/api/estimates/${r.json?.id}`)).json?.contact_id), `^${doorC}$`)
+
+    r = await req('POST', '/api/estimates', { body: { contact_id: doorC, items: line, status: 'approved' } })
+    chk('a quote cannot be born customer-approved', String((await req('GET', `/api/estimates/${r.json?.id}`)).json?.status), '^draft$')
+    r = await req('POST', '/api/estimates', { body: { contact_id: doorC, items: line, status: 'nonsense' } })
+    chk('…nor in a status the product has never heard of', String((await req('GET', `/api/estimates/${r.json?.id}`)).json?.status), '^draft$')
+  }
+
   /* ---------- a URL a bookmark can produce does not 500 the screen ----------
    * Express 5's default query parser answers a REPEATED key with an array. Three of the busiest
    * screens in the app read those values raw: Customers called .toLowerCase() on it, Estimates and
