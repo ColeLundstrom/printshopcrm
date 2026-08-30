@@ -3892,12 +3892,28 @@ app.put('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
   const a = get('SELECT * FROM automations WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Automation not found' })
   const b = req.body || {}
-  const missingOnSave = missingTriggerParam(b.trigger ?? a.trigger, b.params ?? parse(a.params, {}))
+  /* An EDIT has to clear the same three bars a create does. It cleared none of them, and
+   * missingTriggerParam does not stand in for any: it looks the trigger up in TRIGGERS and
+   * returns null for one it cannot find, so an unknown trigger sailed through.
+   *
+   * Each of the three stores a rule that can never do anything while every screen calls it
+   * healthy. fire() matches on `a.trigger !== trigger`, so a typo'd trigger never fires; an
+   * empty actions array runs a loop with no body and LOGS THE RUN AS SUCCESSFUL; needsSetup()
+   * only inspects the trigger's param, so GET /api/automations reports needs_setup:false and the
+   * Automations list renders the rule switched on and green. The shop believes its overdue-invoice
+   * chase is running. Nothing runs, and no screen anywhere says so. */
+  const name = b.name === undefined ? a.name : String(b.name ?? '').trim()
+  if (!name) return res.status(400).json({ error: 'Give the automation a name' })
+  const trigger = b.trigger === undefined ? a.trigger : b.trigger
+  if (!TRIGGERS.some((t) => t.key === trigger)) return res.status(400).json({ error: 'Pick a trigger' })
+  const actions = b.actions === undefined ? parse(a.actions, []) : b.actions
+  if (!Array.isArray(actions) || !actions.length) return res.status(400).json({ error: 'Add at least one action' })
+  const missingOnSave = missingTriggerParam(trigger, b.params ?? parse(a.params, {}))
   if (missingOnSave) return res.status(400).json({ error: `Choose which ${String(missingOnSave.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
   run('UPDATE automations SET name=?, enabled=?, trigger=?, params=?, conditions=?, actions=? WHERE id=?',
-    b.name ?? a.name, b.enabled === undefined ? a.enabled : (b.enabled ? 1 : 0), b.trigger ?? a.trigger,
+    name, b.enabled === undefined ? a.enabled : (b.enabled ? 1 : 0), trigger,
     JSON.stringify(sanitizeAutoParams(b.params ?? parse(a.params, {}))), JSON.stringify(b.conditions ?? parse(a.conditions, [])),
-    JSON.stringify(b.actions ?? parse(a.actions, [])), a.id)
+    JSON.stringify(actions), a.id)
   res.json(get('SELECT * FROM automations WHERE id = ?', a.id))
 }))
 

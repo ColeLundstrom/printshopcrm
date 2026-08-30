@@ -1190,6 +1190,43 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- an EDIT clears the same bars a create does ----------
+   * PUT /api/automations/:id checked only missingTriggerParam, which returns null for a trigger it
+   * cannot FIND — so an unknown trigger, an empty name and a zero-action rule all stored happily.
+   * Each stores a rule that can never do anything while every screen calls it healthy: fire()
+   * matches on `a.trigger !== trigger`, so a typo'd trigger never fires; an empty actions array
+   * runs a loop with no body and logs the run as SUCCESSFUL; and needsSetup() only inspects the
+   * trigger's param, so the list renders the rule switched on and green. The shop believes its
+   * overdue-invoice chase is running. */
+  {
+    r = await req('POST', '/api/automations', { body: {
+      name: 'Chase money the day it goes late', trigger: 'invoice.overdue', params: {},
+      actions: [{ key: 'notify.staff', config: { body: 'late' } }],
+    } })
+    chk('a rule can be created', String(r.status), '^200$')
+    const autoId = r.json?.id
+
+    r = await req('PUT', `/api/automations/${autoId}`, { body: { trigger: 'invoice.overdeu' } })
+    chk('an edit cannot store a trigger that will never fire', String(r.status), '^400$')
+    r = await req('PUT', `/api/automations/${autoId}`, { body: { actions: [] } })
+    chk('…nor a rule with nothing to do', String(r.status), '^400$')
+    r = await req('PUT', `/api/automations/${autoId}`, { body: { name: '   ' } })
+    chk('…nor one with no name', String(r.status), '^400$')
+
+    r = await req('GET', '/api/automations')
+    const still = (r.json?.automations || r.json || []).find((a) => a.id === autoId)
+    chk('…and the rule is exactly as it was', String(still?.trigger), '^invoice\\.overdue$')
+    chk('…still named', String(still?.name), '^Chase money the day it goes late$')
+    const acts = typeof still?.actions === 'string' ? JSON.parse(still.actions) : (still?.actions || [])
+    chk('…and still has its action', String(acts.length), '^1$')
+
+    // A real edit still goes through.
+    r = await req('PUT', `/api/automations/${autoId}`, { body: { name: 'Chase money on day one', enabled: false } })
+    chk('a real edit still saves', String(r.status), '^200$')
+    chk('…and takes effect', String(r.json?.name), '^Chase money on day one$')
+    chk('…including switching it off', String(r.json?.enabled), '^0$')
+  }
+
   /* ---------- the estimate write doors agree about what a customer is ----------
    * Three of them did not. PUT /api/estimates/:id is the only route that can RETARGET a quote
    * onto a different buyer and it was the one binding contact_id RAW — foreign keys are ON, so a
