@@ -2572,6 +2572,33 @@ section('the app does not discard what the shop has typed')
  * estimates.js's Create has been guarded since round 14 ("two clicks made two estimates, with two
  * estimate numbers, and the shop then has to work out which one the customer was sent"), and four
  * controls with exactly that shape never got it. */
+/* ---------- no screen may end in a state with no control on it ---------- */
+section('a failed Autopilot run is not a dead end')
+await t('the error branch puts the Run button back and keeps the pasted email', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/autopilot.js'), 'utf8')
+
+  // run() replaces #ap-stage.innerHTML at the top, and the only Run button in the product lives
+  // in the block it replaces. The catch used to APPEND an error line, leaving the screen the
+  // product is named for with no control at all: "Run another" exists only on the two success
+  // paths, and the sidebar's Autopilot link sets the hash it is already on, which fires no
+  // hashchange and repaints nothing. The one escape was F5 — which re-runs autopilotView() and
+  // draws #ap-text empty, taking the customer's pasted email with it.
+  const catchBlock = src.slice(src.indexOf('} catch (e) {', src.indexOf('async function run()')), src.indexOf('/** Review mode'))
+  assert.ok(catchBlock.length > 40, 'found run()\'s catch')
+  assert.doesNotMatch(catchBlock, /innerHTML \+=/, 'appending an error leaves a screen with no control on it')
+  assert.match(catchBlock, /id="ap-run"/, 'the error state has to carry a Run button')
+  assert.match(catchBlock, /\$\('#ap-run'\)\.onclick = run/, '…and it has to be bound')
+  assert.doesNotMatch(catchBlock, /\$\('#ap-text'\)/, 'and it must not touch the paste')
+  assert.match(catchBlock, /role="alert"/, 'the message is announced, not just drawn')
+  // The paste really does live outside the block run() replaces, or none of the above helps.
+  const stage = src.slice(src.indexOf('id="ap-stage"'), src.indexOf('id="ap-run"'))
+  assert.doesNotMatch(stage, /ap-text/, '#ap-text must not be inside #ap-stage')
+})
+
 section('a second click does not make a second record')
 {
   await t('the shared guard really runs its handler once', async () => {

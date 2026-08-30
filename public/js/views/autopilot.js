@@ -176,8 +176,23 @@ async function run() {
     await sleep(300)
     doneReveal(r, mockUrl)
   } catch (e) {
+    /* run() replaced #ap-stage.innerHTML at the top, and the ONLY Run button in the product lives
+     * in the block it replaced — so appending an error message here left the screen the product is
+     * named for with no control on it at all. "Run another" exists only on the two success paths.
+     * Clicking Autopilot in the sidebar sets the hash it is already on, which fires no hashchange
+     * and repaints nothing, so the sole escape was F5 — and a reload re-runs autopilotView(), which
+     * draws #ap-text empty and takes the pasted customer email with it. Often the shop's only copy.
+     *
+     * Every transient failure lands here: no AI key, a 429 from the model, the 502/503 restart
+     * window httpMessage() exists for, a failed mockup upload. Put the button back, keep the
+     * paste. */
     toast(e.message, true)
-    $('#ap-stage').innerHTML += `<div class="ap-err">${esc(e.message)}</div>`
+    $('#ap-stage').innerHTML = `<div class="ap-empty">
+      <div class="ap-orbit"><span>◆</span></div>
+      <p class="ap-err" role="alert">${esc(e.message)}</p>
+      <button class="btn ap-go" id="ap-run">Try again →</button>
+    </div>`
+    $('#ap-run').onclick = run // #ap-text is in the other card and still holds what was pasted
   }
 }
 
