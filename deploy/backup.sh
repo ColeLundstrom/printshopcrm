@@ -103,10 +103,24 @@ else
   rm -rf "$DEST" "$DEST.tar.gz"
 fi
 
-# Retention. Sweep stray snapshot DIRECTORIES too, not just archives — a night that failed before
-# the tar leaves one behind, and without this they accumulate forever.
-find "$BACKUP_ROOT" -maxdepth 1 -name '*.tar.gz' -mtime "+$KEEP_DAYS" -delete 2>/dev/null
-find "$BACKUP_ROOT" -maxdepth 1 -mindepth 1 -type d -mtime "+$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null
+# Retention — but ONLY after a run that worked, and this is the whole point of the guard.
+#
+# It used to run unconditionally, 44 lines above the check that exits 1. So a volume that failed to
+# mount — still present as an empty mountpoint, so both the -d guard and the free-space guard pass —
+# printed "FAILED: no databases found", exited 1, and pruned everything older than KEEP_DAYS on the
+# way out. INSTALL.md's cron line sends stdout and stderr to a log file, and cron mails on OUTPUT
+# rather than on exit status, so nobody was told. Thirty of those nights and the one archive that
+# actually held the shop has aged out; what is left is thirty 363-byte tarballs, and you find out on
+# the day the disk dies.
+#
+# Sweeps stray snapshot DIRECTORIES too, not just archives — a night that failed before the tar
+# leaves one behind, and without this they accumulate forever.
+if [ "$failed" -eq 0 ]; then
+  find "$BACKUP_ROOT" -maxdepth 1 -name '*.tar.gz' -mtime "+$KEEP_DAYS" -delete 2>/dev/null
+  find "$BACKUP_ROOT" -maxdepth 1 -mindepth 1 -type d -mtime "+$KEEP_DAYS" -exec rm -rf {} + 2>/dev/null
+else
+  echo "not pruning old backups: this run failed, and what is already on disk may be the only good copy left" >&2
+fi
 
 SIZE="$(du -h "$DEST.tar.gz" 2>/dev/null | cut -f1)"
 

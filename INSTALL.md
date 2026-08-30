@@ -258,8 +258,12 @@ sudo DATA_ROOT=/var/lib/printshopcrm BACKUP_ROOT=/var/backups/printshopcrm print
 Then nightly, via `/etc/cron.d/printshopcrm-backup`:
 
 ```cron
-0 3 * * * root DATA_ROOT=/var/lib/printshopcrm BACKUP_ROOT=/var/backups/printshopcrm KEEP_DAYS=30 /usr/local/bin/printshopcrm-backup >> /var/log/printshopcrm-backup.log 2>&1
+0 3 * * * root DATA_ROOT=/var/lib/printshopcrm BACKUP_ROOT=/var/backups/printshopcrm KEEP_DAYS=30 /usr/local/bin/printshopcrm-backup >> /var/log/printshopcrm-backup.log 2>&1 || echo "PrintShopCRM backup FAILED $(date) — see /var/log/printshopcrm-backup.log"
 ```
+
+The `|| echo` is load-bearing. **cron mails you on OUTPUT, not on exit status** — with the
+redirect alone, a night that failed is a line in a log file nobody reads. The `echo` fires only on
+a non-zero exit, so a failure becomes mail and a good night stays silent.
 
 Three things that script does which a naive `cp` does not, and which all matter:
 

@@ -8521,6 +8521,60 @@ section('a backup can actually be put back')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
+  /* ---------- a night that failed must not be the night that deletes the ones that worked ----
+   * Retention ran unconditionally, 44 lines above the failure check that exits 1. So an unmounted
+   * volume — still present as an empty mountpoint, so both the -d and the free-space guards pass —
+   * produced `FAILED: no databases found`, exit 1, AND pruned everything older than KEEP_DAYS.
+   * INSTALL.md's own cron line redirects stdout and stderr to a log file, and cron mails on
+   * OUTPUT rather than on exit status, so nobody is told. Thirty of those nights and the archive
+   * that actually held the shop has aged out; what is left is thirty 363-byte tarballs. */
+  await t('a backup run that failed does not prune the backups that worked', async () => {
+    const { utimesSync } = await import('node:fs')
+    const dir = mkdtempSync(join(tmpdir(), 'psc-bk-'))
+    try {
+      const backups = join(dir, 'backups'); mkdirSync(backups, { recursive: true })
+      const data = join(dir, 'data'); mkdirSync(data, { recursive: true })  // an unmounted volume: present, empty
+      const good = join(backups, '20260701-030000.tar.gz')
+      writeFileSync(good, 'the last archive that actually held the shop')
+      const old = new Date(Date.now() - 60 * 864e5)
+      utimesSync(good, old, old)
+      let out = ''
+      try {
+        out = execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, DATA_ROOT: data, BACKUP_ROOT: backups, KEEP_DAYS: '30', PSC_BACKUP_GDRIVE_REFRESH_TOKEN: '' },
+        })
+        assert.fail('a run that found no databases must exit non-zero')
+      } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}` }
+      assert.match(out, /no databases found/, 'precondition: this run failed, loudly')
+      assert.ok(existsSync(good),
+        'the failed run pruned the only archive with data in it — thirty of these and the shop has nothing left')
+      assert.match(out, /not pruning/i, '…and it has to say why it kept them')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  await t('a clean backup run still prunes', async () => {
+    const { utimesSync } = await import('node:fs')
+    const dir = mkdtempSync(join(tmpdir(), 'psc-bk-'))
+    try {
+      const backups = join(dir, 'backups'); mkdirSync(backups, { recursive: true })
+      const data = join(dir, 'data'); mkdirSync(data, { recursive: true })
+      const d = new DatabaseSync(join(data, 'printshop.db'))
+      d.exec('CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)')
+      d.exec("INSERT INTO customers (name) VALUES ('Rebel Ink')")
+      d.close()
+      const stale = join(backups, '20260101-030000.tar.gz')
+      writeFileSync(stale, 'older than KEEP_DAYS')
+      const old = new Date(Date.now() - 60 * 864e5)
+      utimesSync(stale, old, old)
+      execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, DATA_ROOT: data, BACKUP_ROOT: backups, KEEP_DAYS: '30', PSC_BACKUP_GDRIVE_REFRESH_TOKEN: '' },
+      })
+      assert.equal(existsSync(stale), false, 'a run that worked must still age out what it is meant to')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
   await t('the documented Docker restore clears every stale write-ahead log, not most of them', async () => {
     const { readFileSync } = await import('node:fs')
     const text = readFileSync(join(ROOT, 'deploy/DEPLOY.md'), 'utf8')
