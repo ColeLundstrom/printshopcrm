@@ -10658,6 +10658,115 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('four small things that were quietly wrong')
+
+await t('a carriage return inside an exported field does not start a new record', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db)
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  // Excel and Google Sheets both treat a LONE \r as a record terminator. Free text reaches the
+  // exports unfiltered — str() passes control characters through — and a CR whose LF was stripped
+  // is an ordinary paste out of an older tool or a Windows field. Unquoted, that customer's row
+  // ends mid-notes and every remaining column starts a NEW row shifted left, so from there down
+  // the bookkeeper reads email addresses under "phone".
+  const fn = src.slice(src.indexOf('const csvCell = (v) =>'), src.indexOf('const csvCell = (v) =>') + 1400)
+  const test = fn.slice(fn.indexOf('return /'), fn.indexOf('return /') + 40)
+  assert.ok(test.includes('\\r'),
+    `csvCell quotes on newline but not carriage return: ${test.split('\n')[0]}`)
+  assert.ok(test.includes('\\n') && test.includes('","'.slice(0, 1)), 'and it still quotes the two it always did')
+})
+
+await t('the receptionist bills a screen setup the way every other quoting path does', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const ag = readFileSync(join(root, 'lib/agent.mjs'), 'utf8')
+  const qq = readFileSync(join(root, 'lib/quickquote.mjs'), 'utf8')
+  // A one-time service charge is not taxable goods. priceIntake, the manual Price Calculator, the
+  // estimate editor's "+ Fee / setup line" and the seed shop all mark it exempt; the receptionist
+  // was the only outlier — on a document it writes to the books itself.
+  const line = ag.slice(ag.indexOf('unit_price: round2(Number(q.screens) / colors)'))
+  assert.match(line.slice(0, 120), /taxable: false/,
+    'the receptionist charged sales tax on a screen-setup line; no other quoting path does')
+  assert.match(qq, /taxable: false/, 'precondition: priceIntake exempts its setup line')
+})
+
+await t('the two foreign keys that had no index behind them have one', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const mem = new DatabaseSync(':memory:')
+  dbm.initDb(mem)
+  // jobs.invoice_id: invoices CASCADE from contacts, so deleting a customer ran ON DELETE SET NULL
+  // over the whole jobs table once per invoice, and every invoice void scanned it too.
+  const plan = mem.prepare('EXPLAIN QUERY PLAN UPDATE jobs SET invoice_id = NULL WHERE invoice_id = ?').all(1)
+  assert.ok(!plan.some((r) => /^SCAN jobs\b/.test(String(r.detail))),
+    `voiding an invoice must not scan every job in the shop: ${plan.map((r) => r.detail).join(' | ')}`)
+  // email_log: append-only, no retention, and the Outbox full-scanned it twice per load.
+  // A partial index still reports as SCAN ... USING INDEX; what matters is that it reads the
+  // index rather than every row of the table, so assert on the index by name.
+  const plan2 = mem.prepare('EXPLAIN QUERY PLAN SELECT * FROM email_log WHERE delivered = 0 ORDER BY id DESC').all()
+  const detail2 = plan2.map((r) => String(r.detail)).join(' | ')
+  assert.match(detail2, /idx_email_undelivered/,
+    `the Outbox full-scanned an append-only table with no retention: ${detail2}`)
+})
+
+section('a disk that is full says so, on the screen the shop is looking at')
+
+await t('node:sqlite really reports the three write failures the way the handler reads them', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const { mkdtempSync, rmSync, chmodSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  // The handler keys off err.errcode. This proves the shape rather than assuming it — a mapping
+  // written against an error that does not exist is worse than no mapping.
+  const box = mkdtempSync(join(tmpdir(), 'psc-ro-'))
+  try {
+    const f = join(box, 't.db')
+    const seed = new DatabaseSync(f)
+    seed.exec('CREATE TABLE t(a)')
+    seed.close()
+    chmodSync(f, 0o444); chmodSync(box, 0o555)
+    let caught = null
+    try { const db = new DatabaseSync(f); db.prepare('INSERT INTO t VALUES(1)').run() } catch (e) { caught = e }
+    assert.ok(caught, 'writing a read-only database must throw')
+    assert.equal(caught.errcode, 8, 'SQLITE_READONLY is errcode 8 — this is what the handler matches on')
+    assert.match(String(caught.message), /readonly database/, '…and the message the handler also matches')
+  } finally { chmodSync(box, 0o755); rmSync(box, { recursive: true, force: true }) }
+})
+
+await t('the terminal handler names the three failures /health already names', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  const i = src.indexOf('app.use((err, req, res, _next) => {')
+  assert.ok(i > 0, 'the terminal handler should still be findable')
+  const handler = src.slice(i, src.indexOf('\nserver.listen', i))
+  // A full disk, an unwritable data directory and a locked database all reached the shop as
+  // "Something went wrong on our end." Reads keep working through all three, so nothing looks
+  // wrong until someone saves — then an estimate will not save and a recorded cheque disappears,
+  // with no message naming a thing the operator could go and fix.
+  for (const [code, why] of [['disk_full', 'a full disk'], ['db_readonly', 'a read-only data directory'], ['db_busy', 'a locked database']]) {
+    assert.ok(handler.includes(code), `${why} must reach the shop as something it can act on, not the generic 500`)
+  }
+  assert.match(handler, /errcode === 13/, 'SQLITE_FULL')
+  assert.match(handler, /errcode === 8/, 'SQLITE_READONLY')
+  assert.match(handler, /errcode === 5/, 'SQLITE_BUSY')
+  assert.match(handler, /ENOSPC/, 'and the fs side — multer writes an upload with plain fs, not sqlite')
+  // The mapping must not be able to swallow a deliberate 4xx: EACCES in particular has many
+  // sources that are not an unwritable data directory.
+  assert.match(handler, /if \(status0 >= 500\) \{/,
+    'the write-failure mapping has to be gated on an unexpected 5xx')
+  assert.ok(handler.indexOf('status0 >= 500') < handler.indexOf("err?.code === 'EACCES'"),
+    '…and the gate has to come first')
+})
+
 section('cancelling "Mark as lost" leaves the deal where it was')
 
 await t('the card is not moved into Lost before the question is answered', async () => {

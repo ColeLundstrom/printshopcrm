@@ -6387,7 +6387,12 @@ const csvCell = (v) => {
   // shape money actually takes here — round2 writes plain decimals. Everything else that starts
   // with a formula character, including `-2+3+cmd|…`, still gets quoted.
   if (/^[=+\-@\t\r]/.test(s) && !CSV_NUMBER.test(s)) s = `'${s}`
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  // \r is quoted for the same reason \n is: Excel and Google Sheets both treat a LONE carriage
+  // return as a record terminator, so an unquoted one ends the row mid-field and every remaining
+  // column starts a new row shifted left. The injection guard one line up already lists \r as
+  // dangerous; it just did not also quote it. Free text reaches these exports unfiltered (str()
+  // passes control characters through), and a CR with its LF stripped is an ordinary paste.
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 /**
  * Each export is a CURSOR, not an array.
@@ -8368,7 +8373,34 @@ app.use((err, req, res, _next) => {
       error: 'This shop\'s database is not on disk. Nothing has been overwritten — restore it from a snapshot with `npm run restore`, then reload.',
     })
   }
-  const status = Number(err?.status || err?.statusCode) || 500
+  // The three write failures that stop a shop saving ANYTHING are each one specific thing with one
+  // specific fix, and the person reading the message is the owner of the shop that is down. /health
+  // and canWrite() have named all three for releases; every route answered "Something went wrong on
+  // our end.", which names nothing and offers nothing. Same rule as tenant_db_missing above.
+  //
+  // Reads keep working through all three, so nothing looks wrong until someone saves: the board
+  // paints, the dashboard paints, sign-in works, and then an estimate will not save and a recorded
+  // cheque disappears. node:sqlite reports these as ERR_SQLITE_ERROR carrying an errcode — 13
+  // SQLITE_FULL, 8 SQLITE_READONLY, 5 SQLITE_BUSY — and multer's disk storage and every fs write
+  // report ENOSPC / EACCES / EROFS directly. 503 rather than 500: it is the server's condition,
+  // and it is expected to change once the operator acts.
+  const status0 = Number(err?.status || err?.statusCode) || 500
+  const m = String(err?.message || '')
+  // Only for an UNEXPECTED failure. A deliberate 4xx carries its own actionable message, and
+  // EACCES in particular has many sources that are not this — gating on 5xx keeps the mapping to
+  // the case it was written for: a write that threw where nothing expected one to.
+  if (status0 >= 500) {
+    if (err?.errcode === 13 || err?.code === 'ENOSPC' || /disk is full|database or disk is full|no space/i.test(m)) {
+      return res.status(503).json({ code: 'disk_full', error: 'The disk holding this shop\u2019s data is full, so nothing was saved. Free space on the server \u2014 old files under data/backups are the usual cause \u2014 then try again.' })
+    }
+    if (err?.errcode === 8 || err?.code === 'EROFS' || err?.code === 'EACCES' || /readonly database|read-only file system/i.test(m)) {
+      return res.status(503).json({ code: 'db_readonly', error: 'This shop\u2019s data directory is read-only, so nothing was saved. Check that it still belongs to the account the service runs as, then try again.' })
+    }
+    if (err?.errcode === 5 || /database is locked|database is busy/i.test(m)) {
+      return res.status(503).json({ code: 'db_busy', error: 'The database was busy and this change was not saved. Try again in a moment \u2014 if it keeps happening, another process is holding it open.' })
+    }
+  }
+  const status = status0
   // Deliberate 4xx errors carry a message the caller needs to act on ("url must be http(s)",
   // "unknown event"). Only 5xx gets the generic text — those can leak internals.
   if (status < 500 && err?.expose && err.message) return res.status(status).json({ error: String(err.message).slice(0, 300) })
