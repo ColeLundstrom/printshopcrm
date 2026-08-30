@@ -3443,7 +3443,11 @@ await t('no glyph-only button is left for a screen reader to guess at', async ()
   const { fileURLToPath } = await import('node:url')
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const files = fs.readdirSync(join(root, 'public/js/views')).map((n) => `public/js/views/${n}`)
+    // …and public/embed/, which neither this scan nor the file-input one below ever looked in.
+    // It is the ONE surface that runs on a member of the public's browser, on the shop's own
+    // website, and the rule already here catches its unnamed ✕ the moment the path is added.
     .concat(['public/js/keys.js', 'public/js/core.js', 'public/js/app.js'])
+    .concat(fs.readdirSync(join(root, 'public/embed')).filter((n) => n.endsWith('.js')).map((n) => `public/embed/${n}`))
   // The rule caught the five glyphs that were in the file when it was written. Two more had been
   // added since and were announced as "plus, button": the estimate size grid renders one PER LINE
   // ITEM, so a five-line quote reads out as five identical "plus" controls with no clue which line
@@ -9118,22 +9122,85 @@ await t('…and no file input is left as the only route to itself', async () => 
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const dir = join(root, 'public/js/views')
+  // public/embed/ was never scanned, and it is the one surface that runs on a member of the
+  // public's browser. Its builder had ZERO focusable elements until a design was added: a hidden
+  // <input type=file> behind a <div class="gs-drop"> with an onclick.
+  const files = [
+    ...readdirSync(join(root, 'public/js/views')).filter((n) => n.endsWith('.js')).map((n) => ['public/js/views', n]),
+    ...readdirSync(join(root, 'public/embed')).filter((n) => n.endsWith('.js')).map((n) => ['public/embed', n]),
+  ]
   const offenders = []
-  for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
-    const src = readFileSync(join(dir, f), 'utf8')
+  for (const [dir, f] of files) {
+    const src = readFileSync(join(root, dir, f), 'utf8')
     src.split('\n').forEach((line, i) => {
       for (const m of line.matchAll(/<input[^>]*type="file"[^>]*>/g)) {
         if (!/\bhidden\b|display:\s*none/.test(m[0])) return          // visible and focusable already
         // A hidden input needs a visible, keyboard-operable trigger: a <button>, or a zone that
-        // core.js upgrades (.drop / .csv-drop), or a <label> the input sits inside.
-        const around = src.slice(Math.max(0, src.indexOf(m[0]) - 400), src.indexOf(m[0]) + 400)
-        if (/class="(btn|drop|csv-drop)|class="[^"]*\b(drop|csv-drop)\b|<button/.test(around)) return
-        offenders.push(`${f}:${i + 1}`)
+        // core.js upgrades, or a <label> the input sits inside, or — for a file outside the app
+        // that cannot import core.js — a zone that carries role/tabindex itself.
+        //
+        // The old heuristic was a bare \b(drop|csv-drop)\b, which `class="gs-drop"` satisfied by
+        // accident: .gs-drop is not in CLICKABLE_ROWS and gangsheet.js never loads core.js, so
+        // nothing upgraded it and the scan passed a zone the keyboard could not reach.
+        const around = src.slice(Math.max(0, src.indexOf(m[0]) - 600), src.indexOf(m[0]) + 600)
+        if (/<button/.test(around)) return
+        if (/class="btn\b|class="(?:[^"]*\s)?(?:drop|csv-drop)(?:\s[^"]*)?"/.test(around)) return
+        if (/role="button"[^>]*tabindex="0"|tabindex="0"[^>]*role="button"/.test(around)) return
+        offenders.push(`${dir}/${f}:${i + 1}`)
       }
     })
   }
   assert.deepEqual(offenders, [], `a hidden file input with no keyboard-operable trigger: ${offenders.join(', ')}`)
+})
+
+/* ---------- the widget on the shop's OWN website is usable, and can say why it refused (v28) ----
+ *
+ * public/embed/gangsheet.js runs on a member of the public's browser, inside an iframe on the
+ * shop's site — the only shape it ever ships in. Two things followed from nothing ever scanning
+ * that directory:
+ *
+ *   · An empty builder had ZERO focusable elements. One hidden <input type=file> behind a <div>
+ *     with an onclick, and this file never loads core.js so upgradeClickableRows() cannot reach
+ *     it. There was no keyboard route into the product at all.
+ *   · Every checkout refusal went to alert() — which Chrome and Edge ignore outright from a
+ *     cross-origin subframe. Driven with the order route answering 400: alert() fired with "Add
+ *     at least one design" and nothing was written to any DOM node. The customer saw a button
+ *     that said "Try again" and no reason. */
+section('the gang-sheet builder on the shop\'s own website')
+await t('it can be used without a mouse', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const gs = readFileSync(join(root, 'public/embed/gangsheet.js'), 'utf8')
+  assert.match(gs, /id="gs-drop"[^>]*role="button"[^>]*tabindex="0"/,
+    'the only way into the builder is a <div> with an onclick')
+  assert.match(gs, /id="gs-drop"[^>]*aria-label=/, '…and it has no name')
+  assert.match(gs, /drop\.onkeydown =/, 'Enter and Space on the zone have to open the file chooser')
+  assert.match(gs, /id="gs-name"[^>]*aria-label=/, 'the customer-name field is placeholder-only')
+  assert.match(gs, /id="gs-email"[^>]*aria-label=/, '…so is the email field')
+  assert.doesNotMatch(gs, /<img(?![^>]*\balt=)[^>]*>/, 'the design thumbnail has no alt')
+  const css = readFileSync(join(root, 'public/css/embed.css'), 'utf8')
+  assert.match(css, /\.gs-drop:focus-visible/, 'a focusable div with no focus ring is still unusable')
+})
+
+await t('…and it can tell the customer why checkout failed', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const gs = readFileSync(join(root, 'public/embed/gangsheet.js'), 'utf8')
+  // Comments stripped: this file's own docstring explains the alert() hazard by name.
+  const code = gs.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  assert.doesNotMatch(code, /\balert\(/,
+    "the only message a failed checkout gives the shop's customer is one the browser throws away")
+  assert.match(code, /setAttribute\('role', 'alert'\)/, 'the refusal has to be announced, not only drawn')
+  assert.match(code.slice(code.indexOf('async function checkout()')), /gsError\(e\.message\)/,
+    'the catch has to put the message on the page')
+  assert.match(code, /getElementById\('gs-err'\)\?\.remove\(\)/,
+    'a stale refusal must not sit under the next attempt')
+  const css = readFileSync(join(root, 'public/css/embed.css'), 'utf8')
+  assert.match(css, /^\.gs-err \{/m, 'an unstyled error node is not a message')
 })
 
 /* ---------- the licence offer is legible (v11) ----------

@@ -18,7 +18,8 @@ const shopQ = SHOP ? `?shop=${encodeURIComponent(SHOP)}` : ''
 /**
  * This runs on the SHOP'S OWN WEBSITE and never loads core.js, so it carries its own honest
  * reader. `r.json()` on nginx's 502 during a deploy raised `Unexpected token '<'` — shown to the
- * shop's customer, mid-checkout, in an alert().
+ * shop's customer, mid-checkout — and in an alert(), which the browser discarded, so the
+ * customer saw nothing at all. See gsError() below.
  */
 function httpMsg(status) {
   if (status === 502 || status === 503 || status === 504) return 'The shop\u2019s server is restarting \u2014 try that again in a moment.'
@@ -62,8 +63,8 @@ function render() {
       </div>
       <div class="gs-body">
         <div class="gs-left">
-          <div class="gs-drop" id="gs-drop">
-            <div class="gs-drop-ic">⬆</div>
+          <div class="gs-drop" id="gs-drop" role="button" tabindex="0" aria-label="Add designs — choose image files">
+            <div class="gs-drop-ic" aria-hidden="true">⬆</div>
             <div><strong>Drop your designs here</strong><span>or click to upload — PNG with transparency works best</span></div>
           </div>
           <input type="file" id="gs-file" accept="image/*" multiple hidden>
@@ -80,6 +81,12 @@ function render() {
   const drop = document.getElementById('gs-drop')
   const file = document.getElementById('gs-file')
   drop.onclick = () => file.click()
+  // An empty builder had ZERO focusable elements: one hidden <input type=file> behind a <div>
+  // with an onclick. This file never loads core.js, so upgradeClickableRows() cannot reach it —
+  // the three things it grants (role, tabindex, Enter/Space) are written out by hand.
+  drop.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); file.click() }
+  }
   file.onchange = (e) => addFiles(e.target.files)
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over') }
   drop.ondragleave = () => drop.classList.remove('over')
@@ -98,13 +105,13 @@ function addFiles(files) {
 function list() {
   document.getElementById('gs-list').innerHTML = designs.map((d, i) => `
     <div class="gs-item">
-      <div class="gs-thumb"><img src="${d.url}"></div>
+      <div class="gs-thumb"><img src="${d.url}" alt=""></div>
       <div class="gs-item-b">
         <div class="gs-item-n">${esc(d.name || 'design')}</div>
         <div class="gs-item-ctl">
           <label>Width <input type="number" min="1" max="${cfg.dtf.sheetWidth}" step="0.5" value="${d.wIn}" data-w="${i}">in</label>
           <label>Qty <input type="number" min="1" max="200" value="${d.qty}" data-q="${i}"></label>
-          <button class="gs-del" data-del="${i}">✕</button>
+          <button class="gs-del" data-del="${i}" aria-label="Remove ${esc(d.name || 'design')}">✕</button>
         </div>
       </div>
     </div>`).join('')
@@ -145,8 +152,8 @@ function foot(price) {
   if (!designs.length) { foot.innerHTML = '<div class="gs-hint">Add designs to build your sheet.</div>'; return }
   foot.innerHTML = `
     <div class="gs-fields">
-      <input class="gs-in" id="gs-name" placeholder="Your name">
-      <input class="gs-in" id="gs-email" type="email" placeholder="Email for your proof & receipt">
+      <input class="gs-in" id="gs-name" placeholder="Your name" aria-label="Your name">
+      <input class="gs-in" id="gs-email" type="email" placeholder="Email for your proof &amp; receipt" aria-label="Email for your proof and receipt">
     </div>
     <button class="gs-cta" id="gs-checkout">${cfg.checkout === 'stripe' ? `Check out — ${money(price.subtotal)}` : `Request this sheet — ${money(price.subtotal)}`}</button>
     <div class="gs-secure">${cfg.checkout === 'stripe' ? '🔒 Secure checkout by Stripe' : 'The shop will confirm and send a payment link'}</div>`
@@ -155,6 +162,7 @@ function foot(price) {
 
 async function checkout() {
   const { items, price } = computed()
+  document.getElementById('gs-err')?.remove()   // a stale refusal must not sit under a new attempt
   const btn = document.getElementById('gs-checkout'); btn.disabled = true; btn.textContent = 'Working…'
   try {
     const r = await fetch(`/api/embed/gangsheet/order${shopQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -164,7 +172,33 @@ async function checkout() {
     if (!r.ok) throw new Error(d?.error || httpMsg(r.status))
     if (d.mode === 'stripe' && d.checkout_url) { location.href = d.checkout_url; return }
     done('quote', d)
-  } catch (e) { btn.disabled = false; btn.textContent = 'Try again'; alert(e.message) }
+  } catch (e) { btn.disabled = false; btn.textContent = 'Try again'; gsError(e.message) }
+}
+
+/**
+ * Say why, where the customer is looking.
+ *
+ * alert() is not a channel here. Chrome and Edge ignore it outright from a cross-origin subframe,
+ * and an <iframe> on the shop's own website is the ONLY way this file is ever loaded — the
+ * snippet the Settings screen hands the shop builds one. So every checkout refusal the server
+ * gave ("Add at least one design", a declined card, a 500) was thrown away by the browser and
+ * the customer saw a button that said "Try again" and nothing else.
+ *
+ * foot() rebuilds #gs-foot on every draw(), which removes this node — correct: adding or
+ * resizing a design invalidates the old refusal.
+ */
+function gsError(msg) {
+  const foot = document.getElementById('gs-foot')
+  if (!foot) return
+  let box = document.getElementById('gs-err')
+  if (!box) {
+    box = document.createElement('div')
+    box.id = 'gs-err'
+    box.className = 'gs-err'
+    box.setAttribute('role', 'alert')
+    foot.appendChild(box)
+  }
+  box.textContent = msg
 }
 
 function done(kind, d) {
