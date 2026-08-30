@@ -3396,6 +3396,36 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   // from a converted estimate (which is already structured) with an empty parse of an untouched
   // free-text field. Only overwrite when the parse actually yields sizes.
   const nextQuantities = explicitLines ? sizeSummary(rollupSizes(explicitLines)) : (b.quantities ?? j.quantities)
+  // …and never re-read a grid the flat box CANNOT express. There are two size vocabularies here:
+  // writes are validated with SIZE_KEY, which passes the names caps and bags are really ordered in
+  // — 'SM' and 'LXL' on a fitted cap, 'OS' on a tote (lib/pdf.mjs says so, and the gate holds a
+  // {SM:60,LXL:60} cap order as a legitimate job) — while parseSizeRun's vocabulary is only SIZES,
+  // which contains none of them. So sizeSummary({SM:60,LXL:60,OSFA:24}) is "24 OSFA / 60 SM / 60
+  // LXL" and parseSizeRun reads {OSFA:24} back out of it: 144 pieces become 24.
+  //
+  // The job form posts the prefilled Quantities box untouched on EVERY save, so a shop changing
+  // only the due date sent b.quantities and the short grid overwrote jobs.sizes AND line_sizes —
+  // what the purchase order buys, what the pick ticket pulls, what the packing slip the customer
+  // signs lists, what the work ticket prints and what Capacity books press time for. Toast said
+  // "Job saved". Nothing was logged, because the timeline entry below only fires for an explicit
+  // line_sizes write. And a pure-SM/LXL job parsed to {} instead, so the shop's correction was
+  // silently discarded and its grid could not be edited from any screen at all.
+  //
+  // Never guess at a size the box cannot round-trip: refuse with the code board.js already opens
+  // the per-garment split editor on, which writes the full SIZE_KEY vocabulary losslessly.
+  if (!explicitLines && b.quantities !== undefined) {
+    const cur = (Array.isArray(jobLines(j)) ? jobLines(j) : []).filter((l) => l && sizeTotal(l.sizes || {}) > 0)
+    const keys = [...new Set([...cur.flatMap((l) => Object.keys(l.sizes || {})), ...Object.keys(parse(j.sizes, {}))])]
+    const offGrid = keys.filter((k) => !SIZES.includes(k))
+    if (offGrid.length) {
+      return res.status(409).json({
+        error: `${j.job_number} is sized in ${offGrid.join(', ')}, which the combined quantities box cannot re-read — edit the size grid per garment.`,
+        code: 'multi_garment_quantities',
+        lines: (cur.length ? cur : [{ garment: j.garment || '', sizes: parse(j.sizes, {}) }])
+          .map((l) => ({ garment: l.garment || l.description || '', sizes: l.sizes })),
+      })
+    }
+  }
   const reparsed = !explicitLines && b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
   const nextSizes = explicitLines ? JSON.stringify(rollupSizes(explicitLines)) : (reparsed || j.sizes || '{}')
   // jobs.line_sizes is the per-garment grid the PO, the pick ticket, the work ticket and the print

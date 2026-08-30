@@ -3239,6 +3239,36 @@ try {
     chk('…and refuses a key that is not a size, rather than storing 12 characters of it',
       String((await req('PUT', `/api/jobs/${wj.id}`, { body: { line_sizes: [{ garment: 'X', sizes: { '<script>ale': 5 } }] } })).json?.code), '^unknown_size$')
 
+    /* ---------- a cap job survives an edit that never touched its sizes ----------
+     * Writes are validated with SIZE_KEY, which passes 'SM' and 'LXL' — the names fitted caps are
+     * really ordered in. parseSizeRun's vocabulary is only SIZES, which has neither. So the flat
+     * Quantities box round-trips {SM:60,LXL:60,OSFA:24} into {OSFA:24}, and the job form posts
+     * that box untouched on EVERY save: changing only the due date deleted 120 of 144 pieces from
+     * jobs.sizes AND line_sizes — the PO, the pick ticket, the packing slip and Capacity all read
+     * one of those two. PUT must refuse rather than guess. */
+    const capJ = (await req('POST', '/api/jobs', { body: { contact_id: wc.id, title: 'Cap program' } })).json.id
+    await req('PUT', `/api/jobs/${capJ}`, { body: { line_sizes: [{ garment: 'Flexfit 6277 — Black', sizes: { SM: 60, LXL: 60, OSFA: 24 } }] } })
+    chk('a cap job can be sized in the names caps are ordered in',
+      String(sizeSum(JSON.parse((await req('GET', `/api/jobs/${capJ}`)).json?.sizes || '{}'))), '^144$')
+    const capQ = (await req('GET', `/api/jobs/${capJ}`)).json?.quantities
+    const capEdit = await req('PUT', `/api/jobs/${capJ}`, { body: { quantities: capQ, due_date: '2026-09-30' } })
+    chk('…and changing only the due date does not delete 120 of its 144 pieces',
+      String(sizeSum(JSON.parse((await req('GET', `/api/jobs/${capJ}`)).json?.sizes || '{}'))), '^144$')
+    chk('…the refusal names the sizes the box cannot read', String(capEdit.status) + String(capEdit.json?.code),
+      '^409multi_garment_quantities$')
+    chk('…and hands back the grid the split editor needs to repair it',
+      String(sizeSum(capEdit.json?.lines?.[0]?.sizes)), '^144$')
+    // The per-garment editor is the way out, and it still writes losslessly.
+    await req('PUT', `/api/jobs/${capJ}`, { body: { line_sizes: [{ garment: 'Flexfit 6277 — Black', sizes: { SM: 60, LXL: 72, OSFA: 24 } }] } })
+    chk('…so the shop can still correct a cap grid from the screen', 
+      String(sizeSum(JSON.parse((await req('GET', `/api/jobs/${capJ}`)).json?.sizes || '{}'))), '^156$')
+    // An ordinary all-SIZES job is untouched: the box can express it, so it still re-reads.
+    const teeJ = (await req('POST', '/api/jobs', { body: { contact_id: wc.id, title: 'Tee run' } })).json.id
+    await req('PUT', `/api/jobs/${teeJ}`, { body: { line_sizes: [{ garment: 'Gildan 5000', sizes: { S: 10, M: 20, L: 30 } }] } })
+    chk('an ordinary tee job still re-reads its quantities box',
+      String((await req('PUT', `/api/jobs/${teeJ}`, { body: { quantities: '10 S / 20 M / 40 L' } })).status), '^200$')
+    chk('…and the edit landed', String(sizeSum(JSON.parse((await req('GET', `/api/jobs/${teeJ}`)).json?.sizes || '{}'))), '^70$')
+
     // The pick ticket used to print rows for known sizes only, under a TOTAL that counted them all:
     // rows summing to 70 under its own "SUBTOTAL 80", on a job of 105.
     const pick = await fetch(`${BASE}/api/jobs/${wj.id}/pick-ticket.pdf`, { headers: { Cookie: cookieHeader() } })
