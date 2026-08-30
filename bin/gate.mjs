@@ -2561,6 +2561,47 @@ section('the app does not discard what the shop has typed')
  * every restart and every deploy. A shop that switched the starter rules off by deleting them had
  * all eleven back, enabled, at the next deploy. Seven of them send something to a real customer,
  * and one of those is SMS on the shop's own Twilio token. */
+/* ---------- editing a job does not silently rewrite what it is ----------
+ * jobs.decoration is not limited to board.js's eight built-ins: convert writes the price-matrix
+ * NAME when a line was priced off one of the shop's own sheets, because estimates.js deliberately
+ * blanks that line's decoration. The edit form's select listed only the eight, so the browser
+ * selected the first option, the field read "Screen Print", and formData() sent it on every save.
+ * Changing a due date rewrote what the job IS — on the work ticket, the pick ticket, the packing
+ * slip and Floor Mode — with no warning and no undo. */
+section('the job form does not lie about what a job is')
+await t('a decoration outside the eight built-ins survives an edit', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
+
+  // Run the shipped helper, not a copy of it.
+  const body = src.slice(src.indexOf('const decoOptions = (cur) =>'), src.indexOf('\nconst boardState'))
+  assert.ok(body.length > 40, 'the job form must build its options through a helper')
+  const DECORATIONS = ['Screen Print', 'DTF Transfer', 'Embroidery', 'UV DTF', 'Vinyl', 'Patch', 'Laser', 'Promo']
+  const decoOptions = new Function('DECORATIONS', 'esc', `${body}; return decoOptions`)(
+    DECORATIONS, (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])))
+
+  // What convert actually stores for a matrix-priced job.
+  const mug = decoOptions('Mug Printing')
+  assert.match(mug, /<option selected>Mug Printing<\/option>/, 'the stored value has to be an option, and the selected one')
+  assert.equal((mug.match(/selected/g) || []).length, 1, 'exactly one option is selected')
+  // The eight are all still offered, so the shop can still change it.
+  for (const d of DECORATIONS) assert.ok(mug.includes(`>${d}</option>`), `${d} is still offered`)
+
+  // The ordinary cases are unchanged.
+  assert.match(decoOptions('Embroidery'), /<option selected>Embroidery<\/option>/)
+  assert.match(decoOptions(''), /<option selected>Screen Print<\/option>/, 'a new job still defaults')
+  assert.match(decoOptions(undefined), /<option selected>Screen Print<\/option>/)
+  // A matrix name is shop-typed text on a screen that renders with innerHTML.
+  assert.ok(!decoOptions('<img src=x onerror=alert(1)>').includes('<img'), 'the stored value is escaped')
+
+  // And the form really uses it.
+  assert.match(src, /name="decoration">\s*\$\{decoOptions\(job\?\.decoration\)\}/,
+    'the select must be built from the helper')
+})
+
 section('a rule the shop deleted does not come back on the next deploy')
 {
   const setupShop = async () => {

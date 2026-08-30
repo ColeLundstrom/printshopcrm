@@ -5,6 +5,27 @@ import { contactForm } from './contacts.js'
 const STAGE_COLOR = { new: '#5f6b7d', art_approval: '#f7b955', prepress: '#7c6cff', production: '#4aa8ff', qc: '#10d39a', shipping: '#10d39a', complete: '#333b49' }
 const DECORATIONS = ['Screen Print', 'DTF Transfer', 'Embroidery', 'UV DTF', 'Vinyl', 'Patch', 'Laser', 'Promo']
 
+/**
+ * The decoration options for a job, INCLUDING whatever this job already says.
+ *
+ * jobs.decoration is not limited to the eight above. Convert writes the matrix NAME when a line
+ * was priced off one of the shop's own sheets — estimates.js deliberately blanks the line's
+ * decoration there, because "a line priced off the shop's own sheet says what it is in the matrix
+ * headings" — so a mug job carries "Mug Printing". The select listed only the eight, so the
+ * browser fell back to the first option and the field silently read "Screen Print"; formData()
+ * always sends it, and PUT /api/jobs/:id takes it. Changing only the due date rewrote the
+ * decoration, and the work ticket, the pick ticket, the packing slip and Floor Mode then all told
+ * the floor to screen print a job that is not screen printed. No warning, no undo, and the true
+ * value was left on no screen anywhere.
+ *
+ * misc.js already ships this shape for a custom AI model: carry the stored value as its own
+ * selected option rather than pretending the list is exhaustive.
+ */
+const decoOptions = (cur) => {
+  const list = cur && !DECORATIONS.includes(cur) ? [cur, ...DECORATIONS] : DECORATIONS
+  return list.map((d) => `<option ${d === (cur || 'Screen Print') ? 'selected' : ''}>${esc(d)}</option>`).join('')
+}
+
 const boardState = { filter: 'all', assignee: 'all' }
 
 export async function boardView() {
@@ -203,7 +224,7 @@ export async function jobForm(job, after) {
       <div class="field"><label>Job title *</label><input class="input" name="title" value="${esc(job?.title || '')}" placeholder="200 tees — 2 color front"></div>
       <div class="grid2">
         <div class="field"><label>Decoration</label><select class="input" name="decoration">
-          ${DECORATIONS.map((d) => `<option ${d === job?.decoration ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+          ${decoOptions(job?.decoration)}</select></div>
         <div class="field"><label>Quantities</label><input class="input" name="quantities" value="${esc(job?.quantities || '')}" placeholder="24 S / 60 M / 80 L / 36 XL"></div>
       </div>
       <div class="field"><label>Garment</label>
