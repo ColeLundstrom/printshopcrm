@@ -1998,7 +1998,9 @@ app.post('/api/reorders/:id/nudge', outboundLimit, wrap((req, res) => {
 }))
 
 app.post('/api/reorders/:id/snooze', wrap((req, res) => {
-  snoozeReorder(+req.params.id, Number(req.body?.days) || 30)
+  // Bounded. `Number(days) || 30` with no ceiling made 3650 a ten-year snooze from any integration,
+  // on a setting no screen could clear.
+  snoozeReorder(+req.params.id, Math.min(365, Math.max(1, Number(req.body?.days) || 30)))
   res.json({ ok: true })
 }))
 app.post('/api/reorders/:id/unsnooze', wrap((req, res) => { unsnoozeReorder(+req.params.id); res.json({ ok: true }) }))

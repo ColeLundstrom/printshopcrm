@@ -2665,6 +2665,35 @@ section('the app does not discard what the shop has typed')
     assert.match(router, /runRouter\(\)/, '…that actually re-runs the route')
   })
 
+  /* ---------- Snooze on the Reorder Radar was a one-way door ----------
+   * The card carries two adjacent buttons with no confirm on either: `Send nudge` and `Snooze`.
+   * Snooze POSTs 30 days, and reorderRadar `continue`s past any snoozed contact BEFORE
+   * candidates.push — so the customer leaves the list, leaves stats.actionable and leaves
+   * potential_value. There is no snoozed section, no undo on the toast, and nothing the browser
+   * receives even NAMES a snoozed customer, so the screen had no data to draw an undo with.
+   *
+   * POST /api/reorders/:id/unsnooze exists, one line below the route the button calls, and
+   * `grep -rn unsnooze public/` returned nothing: dead code in the shipped product. A mis-tap on
+   * the shop's biggest repeat account silenced the one screen whose entire purpose is "call this
+   * customer today" for 30 days, and the exit was a sqlite3 UPDATE on settings. */
+  await t('a snoozed customer can be brought back from the screen that hid them', async () => {
+    const ro = code(await readFile('lib/reorder.mjs'))
+    assert.match(ro, /snoozed/, 'reorderRadar drops snoozed contacts silently — nothing it returns names one')
+    // reorderRadar's own return, not whichever `return {` happens to be last in the file.
+    const fn = ro.slice(ro.indexOf('export function reorderRadar'))
+    const ret = fn.slice(fn.indexOf('return {'), fn.indexOf('return {') + 700)
+    assert.match(ret, /snoozed:/, 'the payload has to carry them, or the screen cannot draw an undo')
+    const view = code(await readFile('public/js/views/reorder.js'))
+    assert.match(view, /data-unsnooze=/, 'there is no control anywhere that calls the unsnooze route')
+    assert.match(view, /\/unsnooze`/, '…and it has to actually call it')
+    assert.match(view, /d\.snoozed/, 'the screen has to render who is snoozed, or the button has nothing to sit on')
+    // …and the window itself is bounded. `Number(days) || 30` with no ceiling makes 3650 a
+    // ten-year snooze from any integration.
+    const src = await readFile('server.mjs')
+    const snooze = src.slice(src.indexOf("app.post('/api/reorders/:id/snooze'"), src.indexOf("app.post('/api/reorders/:id/unsnooze'"))
+    assert.match(snooze, /Math\.min\(/, 'an unbounded days makes 3650 a ten-year snooze')
+  })
+
   /* ---------- the screen's rule has to be the SERVER's rule ----------
    * estimates.js hid the only Edit and the only Delete in the product on `status !== 'approved'`.
    * Both routes object to something else entirely: PUT refuses only when a live invoice exists,

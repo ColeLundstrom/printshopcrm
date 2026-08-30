@@ -67,6 +67,17 @@ function render(d) {
           : empty('⊛', 'Nobody\'s due just yet', 'As customers build up order history, the ones due for a reorder surface here automatically, ranked by what they\'re worth. Nothing to chase today.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
       </div>
     </div>
+    ${d.snoozed?.length ? `<div class="card" style="margin-top:16px">
+      <div class="card-h"><h3>Snoozed</h3><div class="spacer"></div>
+        <span class="dim" style="font-size:11.5px">hidden from the list above — bring one back any time</span></div>
+      <div class="card-b" id="ro-snoozed">${d.snoozed.map((sz) => `<div class="row" style="gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${esc(sz.name || 'Customer')}${sz.company ? ` <span class="dim" style="font-weight:400">· ${esc(sz.company)}</span>` : ''}</div>
+          <div class="dim" style="font-size:11.5px">back on the radar ${esc(sz.until)}${sz.lifetime_value ? ` · ${money0(sz.lifetime_value)} lifetime` : ''}</div>
+        </div>
+        <button class="btn ghost sm" data-unsnooze="${sz.contact_id}">Bring back</button>
+      </div>`).join('')}</div>
+    </div>` : ''}
     ${d.candidates.length ? '<p class="dim" style="font-size:11.5px;text-align:center;margin-top:12px">Dates are predicted from each customer\'s own order intervals. A customer who reorders every 90 days shows up around day 90, not on a fixed schedule.</p>' : ''}`
 
   // #view outlives every render, so delegations hang off #ro-body, rebuilt each pass so listeners die with it
@@ -81,6 +92,15 @@ function render(d) {
   on($('#ro-body'), '[data-snooze]', async (_e, t) => {
     t.disabled = true
     try { await api.post(`/api/reorders/${t.dataset.snooze}/snooze`, { days: 30 }); toast('Snoozed for 30 days'); reorderView() }
+    catch (e) { toast(e.message, true); t.disabled = false }
+  })
+  // The way back. POST /api/reorders/:id/unsnooze has existed since the snooze route beside it and
+  // had no caller anywhere in public/ — so a mis-tap on the ghost button next to Send nudge, with
+  // no confirm on either, hid the shop's biggest repeat account for 30 days and the only exit was
+  // a sqlite3 UPDATE on settings.
+  on($('#ro-snoozed'), '[data-unsnooze]', async (_e, t) => {
+    t.disabled = true
+    try { await api.post(`/api/reorders/${t.dataset.unsnooze}/unsnooze`, {}); toast('Back on the radar'); reorderView() }
     catch (e) { toast(e.message, true); t.disabled = false }
   })
 }
