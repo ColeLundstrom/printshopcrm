@@ -44,6 +44,22 @@ const QTY_CASES = [
   ['Hi — reach me at 949.555.0117, we need 24 hoodies.', 24, ''],
   ['need them by 2026-09-08 2026-10-12 for 200 tees', 200, ''],
   ['we need 200 shirts by 9/15', 200, ''],
+  // One colour word between the count and the brand and the STYLE NUMBER became the quantity.
+  // The gap between a count and its unit noun was 22 characters and this branch did not scrub the
+  // style first, so a colour adjective pushed the real count out of range and the scan restarted
+  // on the style digits sitting next to the noun. Driven through POST /api/autopilot, each of
+  // these wrote a real estimate and a real job — the first at $90,357.21 for 6,210 pieces against
+  // $2,119.66 for the 144 that were asked for, and in Full Auto the parser and the model AGREE so
+  // needs_review is empty and the customer is mailed it.
+  //
+  // Every case above puts the colour AFTER the style ("200 Gildan 5000 tees in Black"), which
+  // keeps the gap at 13 and never exercises the class. agent.mjs has carried the scrub all along
+  // and its comment says this file already does; it did not.
+  ['Looking for 144 white Next Level 6210 tees, one color left chest', 144, '6210'],
+  ['Hi, we need 300 black Comfort Colors 1717 tees for the fall festival', 300, '1717'],
+  ['quote for 200 heather grey Bella Canvas 3001 shirts', 200, '3001'],
+  ['96 forest green Richardson 112 trucker hats', 96, '112'],
+  ['Can you quote 250 navy Port & Company PC61 t-shirts?', 250, 'PC61'],
 ]
 for (const [text, qty, style] of QTY_CASES) {
   await t(JSON.stringify(text), () => {
