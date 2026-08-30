@@ -7080,7 +7080,13 @@ const slackError = (code) => SLACK_ERRORS[code] || `Slack rejected the connectio
  * handshake with the stored secret and post it to this shop's own events URL: if the secret is
  * wrong, our own endpoint rejects it and we say so specifically.
  */
-app.post('/api/slack-test', requireRole('manager'), wrap(async (req, res) => {
+/**
+ * Ten a minute. The reachability half makes TWO outbound fetches per call, one of them to an
+ * address that used to come off the Host header, so an unlimited version was an internal port
+ * scanner with a signed payload attached. A human pressing "Test connection" presses it once.
+ */
+const slackTestLimit = rateLimit({ windowMs: 60_000, max: 10, message: 'Too many connection tests — wait a minute and try again.' })
+app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (req, res) => {
   const s = getSettings()
   const token = String(req.body?.token || '').trim() || String(s.slack_bot_token || '').trim()
   const secret = String(s.slack_signing_secret || '').trim()
@@ -7097,12 +7103,30 @@ app.post('/api/slack-test', requireRole('manager'), wrap(async (req, res) => {
   // Round-trip a signed handshake through our own public URL, exactly as Slack would.
   let reachable = false, why = ''
   try {
-    const origin = `${req.protocol}://${req.get('host')}`
+    /**
+     * The target is NOT built from the Host header.
+     *
+     * It used to be, and that made this route a blind SSRF with a signature on it. Driven: a
+     * manager POSTing with a forged `Host: 127.0.0.1:39099` made the app server POST to that
+     * loopback listener, signed with the shop's own Slack secret. A second run pointed Host at a
+     * public host the caller controlled which answered 302 to
+     * `http://127.0.0.1:.../latest/meta-data/iam` — Node's fetch followed it and downgraded POST
+     * to GET, which is exactly the request a real 169.254.169.254 metadata read needs. So an
+     * allowlist on the first hop alone would not have closed it.
+     *
+     * Three locks, because each one alone has a hole. trustedOrigin() prefers PSC_PUBLIC_URL and
+     * then the origin an OWNER of this shop actually signed in on, falling back to Host only on
+     * an install that has neither — the same ladder the password-reset link uses, for the same
+     * reason. assertPublicUrl() then refuses a loopback, private or link-local target even in
+     * that fallback case. And redirect:'error' stops a public first hop bouncing us inward.
+     */
+    const origin = trustedOrigin(req)
     const url = `${origin}/api/slack/${req.tenant?.embed_key || s.embed_key}/events`
+    await assertPublicUrl(url)
     const payload = JSON.stringify({ type: 'url_verification', challenge: `psc-${Date.now()}` })
     const ts = Math.floor(Date.now() / 1000).toString()
     const sig = 'v0=' + crypto.createHmac('sha256', secret).update(`v0:${ts}:${payload}`).digest('hex')
-    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-slack-request-timestamp': ts, 'x-slack-signature': sig }, body: payload, signal: AbortSignal.timeout(8000) })
+    const r = await fetch(url, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', 'x-slack-request-timestamp': ts, 'x-slack-signature': sig }, body: payload, signal: AbortSignal.timeout(8000) })
     const text = await r.text()
     reachable = r.status === 200 && text === JSON.parse(payload).challenge
     if (!reachable) why = r.status === 401 ? 'signature' : `http_${r.status}`

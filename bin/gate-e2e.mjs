@@ -5811,6 +5811,21 @@ try {
     }
   }
 
+  /* ---------- the Slack connection test is not an unlimited outbound fetch ----------
+   * Its reachability half makes two outbound requests per call, one of them to a URL that used to
+   * be built from the caller's own Host header. Unlimited, that is an internal port scanner with
+   * a signed payload on it. Ten a minute; a human pressing "Test connection" presses it once. */
+  {
+    let last = 0, hit429 = 0
+    for (let i = 0; i < 12; i++) {
+      const r = await req('POST', '/api/slack-test', { body: {} })
+      last = r.status
+      if (r.status === 429) hit429++
+    }
+    chk('the Slack connection test is rate limited', String(hit429 > 0), '^true$')
+    chk('…and the last of twelve is refused, not served', String(last), '^429$')
+  }
+
   /* ---------- nothing this app serves has ever been compressed ----------
    *
    * Not by the app, and not by the shipped deploy/nginx.conf either, which has no gzip block at

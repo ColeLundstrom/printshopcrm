@@ -11491,6 +11491,51 @@ await t('…and the signin route binds a real member rather than leaving it null
     'a session with no member is invisible to every member-keyed purge, and answers role owner')
 })
 
+/* ---------- the Slack self-test does not fetch a URL the caller chose (v28) ----------
+ *
+ * The reachability half built its target as `${req.protocol}://${req.get('host')}` and POSTed to
+ * it. Driven: a manager forging `Host: 127.0.0.1:39099` made the app server POST to that loopback
+ * listener, signed with the shop's own Slack secret. Forging Host to a public host the caller
+ * controlled, which answered 302 to `http://127.0.0.1:.../latest/meta-data/iam`, got Node's fetch
+ * to follow it and downgrade POST to GET — the exact request a real cloud-metadata read needs, so
+ * vetting the first hop alone would not close it. And the route had no rate limit, so it doubled
+ * as an internal port scanner at two outbound fetches a call. */
+section('the Slack connection test cannot be pointed at the inside of the network')
+await t('it builds its target from the shop\'s own address, not the Host header', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("app.post('/api/slack-test'")
+  assert.ok(i > 0, 'the slack-test route moved — re-point this test')
+  const route = src.slice(i, src.indexOf('\n}))', i))
+  const code = route.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  assert.doesNotMatch(code, /req\.get\('host'\)/, 'the outbound target is still whatever the caller put in Host')
+  assert.match(code, /trustedOrigin\(req\)/, 'use the ladder the password-reset link already uses')
+  assert.match(code, /await assertPublicUrl\(url\)/,
+    'trustedOrigin still falls back to Host on an install with no PSC_PUBLIC_URL and no learned origin')
+  assert.ok(code.indexOf('assertPublicUrl(url)') < code.indexOf('await fetch(url'),
+    'the check has to run BEFORE the fetch, or it is a log line')
+  assert.match(code, /redirect: 'error'/, 'a public first hop can 302 the request straight back inside')
+  assert.match(code, /slackTestLimit/, 'two outbound fetches per call with no limit is a port scanner')
+})
+
+await t('…and the private-address check really refuses the addresses that matter', async () => {
+  const { assertPublicUrl } = await import('../lib/webhook.mjs')
+  const refused = async (u) => { try { await assertPublicUrl(u); return null } catch (e) { return e.message } }
+  for (const u of [
+    'http://127.0.0.1:39099/api/slack/k/events',
+    'http://localhost:3000/api/slack/k/events',
+    'http://169.254.169.254/api/slack/k/events',
+    'http://10.0.0.5/api/slack/k/events',
+    'http://192.168.1.9/api/slack/k/events',
+    'http://[::1]/api/slack/k/events',
+  ]) {
+    assert.ok(await refused(u), `${u} was accepted as a public address`)
+  }
+})
+
 section('one order is one price, whichever panel the shop typed into')
 
 await t('the assistant prices the blank off the shop catalog, like every other quoting path', async () => {
