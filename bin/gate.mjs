@@ -2702,6 +2702,28 @@ section('the app does not discard what the shop has typed')
     }
   })
 
+  /* ---------- a dialog belongs to the screen that opened it ----------
+   * navigate() closes the drawer and the command palette — the palette's comment says "otherwise
+   * it lingers over the new page on back/forward" — and never the modal. So Back with the Record
+   * Payment dialog up repaints #view underneath an aria-modal dialog that now covers a page it
+   * knows nothing about. Two harms follow. Escape: closeModal() restores focus only when
+   * document.contains(the opener), and the opener was the '+ Add' button runRouter() just
+   * destroyed — so focus falls to <body>, which is exactly what core.js's focus-return exists to
+   * prevent. Or they finish the payment: the handler repaints the OLD view while the URL, the
+   * page title, the crumb and the sidebar's aria-current all say the new one. */
+  await t('a dialog does not outlive the screen that opened it', async () => {
+    const app = code(await readFile('public/js/app.js'))
+    const nav = app.slice(app.indexOf('async function navigate()'), app.indexOf("window.addEventListener('hashchange', navigate)"))
+    assert.match(nav, /closeSearch\(\)/, 'precondition: the palette is closed on navigation')
+    assert.match(nav, /closeModal\(\)/, 'an open dialog is left over the next page, and its opener is repainted away before it closes')
+    // Order is load-bearing. A guardLeave predicate opens its "Leave without saving?" confirm from
+    // inside acceptRoute() and then reverts the URL, which fires a second hashchange — closing
+    // before the guard ran would tear down the question the shop is being asked.
+    assert.ok(nav.indexOf('acceptRoute(') < nav.indexOf('closeModal()'),
+      'closeModal() must come after the leave guard, or the confirm closes itself')
+    assert.match(app, /^import \{[^}]*closeModal/m, '…and it has to be imported')
+  })
+
   await t('clicking the screen you are already on repaints it', async () => {
     const app = code(await readFile('public/js/app.js'))
     // location.hash = '#/estimates' while already on '#/estimates' fires no hashchange, so

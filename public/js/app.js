@@ -1,4 +1,4 @@
-import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, store } from './core.js'
+import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, closeModal, store } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
@@ -284,6 +284,18 @@ async function navigate() {
   // Cancel, a sidebar click, a `g e` shortcut and the browser's Back button all land here.
   // Returning false means the URL has been put back and this screen must NOT be redrawn.
   if (!acceptRoute(location.hash || '#/')) return
+  // A dialog belongs to the screen that opened it. Left up across a navigation it covers a page it
+  // knows nothing about, and when it finally closes its opener has been repainted away — so
+  // closeModal()'s document.contains() guard fails and focus falls to <body>, which is the exact
+  // failure core.js's focus-return was written to prevent. Or the shop finishes what the dialog
+  // was for, and its handler repaints the OLD view while the URL, the title, the crumb and the
+  // sidebar's aria-current all name the new one.
+  //
+  // Closed HERE and not beside closeSearch() above: a guardLeave predicate opens its "Leave
+  // without saving?" confirm from inside acceptRoute() and then reverts the URL, and that revert
+  // fires a second hashchange. Closing before the guard ran would tear down the question the shop
+  // is in the middle of being asked.
+  closeModal()
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
   if (!allowedRoute(path)) { location.hash = '#/'; return }
   drawNav()
