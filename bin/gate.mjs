@@ -2684,6 +2684,46 @@ section('every PDF this product prints stays on the paper')
     }
   })
 
+  await t('the terms block never lands in the footer, at any note length', () => {
+    // `ty += 48` was a FIXED reservation for a block that renders one to three lines, and TERMS
+    // then needs 11 + 3 x 9.5 = 39.5 more. With a note present and a real three-line terms block,
+    // the third clause landed at page-y 752 — below the footer rule at 748 and inside the footer
+    // text band. The clause that lands there is the LAST one: on a real terms block, the spoilage
+    // allowance and the rush surcharge. On the document the customer approves.
+    const TERMS = 'Net 30 from the date of invoice. A 3% spoilage allowance applies to every run and is not credited. Rush orders carry a surcharge quoted at the time of order. Artwork remains the property of the customer; screens and separations remain ours. Cancellations after blanks are ordered are billed at cost.'
+    const NOTE = 'Ship to the district warehouse, not the school. Deliver between 8am and 11am and ask for Marcus at the loading dock on the north side of the building. Call ahead.'
+    // Sweep the axis, because the failure is a boundary: a short note fits and a long one does not.
+    for (const note of ['', 'Ship to the warehouse.', NOTE.slice(0, 90), NOTE]) {
+      for (const terms of [TERMS.slice(0, 40), TERMS.slice(0, 150), TERMS]) {
+        const buf = pdf.renderDocument('ESTIMATE', {
+          doc: { estimate_number: 'EST-1', subtotal: 100, tax: 8.25, total: 108.25, status: 'sent', created_at: '2026-08-01', notes: note },
+          contact: { name: 'X', email: 'x@y.test' },
+          settings: { ...SETTINGS, estimate_terms: terms },
+          items: [{ description: 'Tee', qty: 10, unit_price: 10 }],
+        })
+        // Everything except the two footer strings must sit above the footer rule.
+        const body = ops(buf).filter((o) => !/^(Ink & Iron|Page \d+ of)/.test(o.str))
+        const below = body.filter((o) => 792 - o.y > 748 - 0.5)
+        assert.equal(below.length, 0,
+          `note ${note.length} / terms ${terms.length}: "${below[0]?.str?.slice(0, 40)}" at page-y ${(792 - (below[0]?.y ?? 0)).toFixed(1)}, under the footer rule at 748`)
+        assert.match(String(buf), /\(TERMS\) Tj/, 'TERMS must still print')
+        if (note) assert.match(String(buf), /\(NOTES\) Tj/, 'and so must NOTES')
+      }
+    }
+  })
+
+  await t('…and whatever had to be dropped says it was dropped', () => {
+    // Both halves were .slice(0, 3) with no ellipsis, so a longer note or a longer terms block
+    // lost its tail with nothing on the page saying so — a document that reads as complete.
+    const LONG = 'Net 30. ' + 'A three per cent spoilage allowance applies to every run and is not credited to the order. '.repeat(6)
+    const buf = pdf.renderDocument('ESTIMATE', {
+      doc: { estimate_number: 'EST-1', subtotal: 100, tax: 8.25, total: 108.25, status: 'sent', created_at: '2026-08-01' },
+      contact: { name: 'X', email: 'x@y.test' }, settings: { ...SETTINGS, estimate_terms: LONG },
+      items: [{ description: 'Tee', qty: 10, unit_price: 10 }],
+    })
+    assert.match(String(buf), /\.\.\.\) Tj/, 'a terms block that was cut short has to say so')
+  })
+
   await t('a payment reference does not print through the amount beside it', () => {
     const buf = pdf.renderDocument('INVOICE', {
       doc: { invoice_number: 'INV-2', subtotal: 2000, tax: 0, amount_due: 2000, amount_paid: 1500, created_at: '2026-08-01', status: 'partial' },
