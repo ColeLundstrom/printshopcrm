@@ -8729,6 +8729,64 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- what a quote is worth to the shop has ONE definition ---------- */
+/*
+ * `estimates.total` is subtotal + sales tax. The tax is the state's money passing through, not
+ * revenue the shop keeps or is chasing — which is why the dashboard's "open estimates" KPI, the
+ * pipeline board and per-job profitability were all corrected to read the subtotal.
+ *
+ * Two more readers of the SAME population were missed: the Follow-ups screen's "quotes gone quiet"
+ * headline and the in-app assistant's answer to the same question, both `reduce((s, e) => s +
+ * e.total, 0)`. Measured on the seeded shop: $10,089.70 against dealValue's $9,572.00 — $517.70
+ * high, and it grows with the tax rate, on the number a shop uses to decide who to phone first.
+ * The "Follow up: $X quote" card on the landing screen read the same way.
+ *
+ * lib/pipeline.mjs now EXPORTS dealValue and everyone imports it, so the rule can be enforced
+ * rather than restated: nothing sums an estimate's `.total`.
+ */
+section('one definition of what a quote is worth')
+{
+  const { dealValue } = await import('../lib/pipeline.mjs')
+
+  await t('the subtotal is the deal, and total is only a fallback for a row that has none', () => {
+    assert.equal(dealValue({ subtotal: 9572, tax: 517.7, total: 10089.7 }), 9572)
+    assert.equal(dealValue({ subtotal: null, total: 400 }), 400, 'a legacy row with no subtotal still counts')
+    assert.equal(dealValue({ subtotal: 0, total: 0 }), 0)
+    assert.equal(dealValue(null), 0, 'and a missing row is worth nothing, not NaN')
+  })
+
+  await t('nothing anywhere sums an estimate’s tax-inclusive total', async () => {
+    const { readFileSync, readdirSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const files = ['server.mjs', ...readdirSync(join(root, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`)]
+    const offenders = []
+    for (const f of files) {
+      const src = readFileSync(join(root, f), 'utf8')
+      // `s + e.total` / `sum + est.total` inside a reduce — the shape this bug takes every time.
+      for (const m of src.matchAll(/reduce\(\([^)]*\)\s*=>\s*\w+\s*\+\s*\w+\.total\b/g)) {
+        offenders.push(`${f}:${src.slice(0, m.index).split('\n').length}`)
+      }
+    }
+    assert.deepEqual(offenders, [], `an estimate total summed tax-inclusive at ${offenders.join(', ')}`)
+  })
+
+  await t('…and the four readers of that number all import the one definition', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const srv = readFileSync(join(root, 'server.mjs'), 'utf8')
+    const followups = srv.slice(srv.indexOf("app.get('/api/followups'"))
+    assert.match(followups.slice(0, 3000), /dealValue\(/, '/api/followups totals must use it')
+    const today = srv.slice(srv.indexOf("kind: 'followup'") - 600, srv.indexOf("kind: 'followup'") + 400)
+    assert.match(today, /dealValue\(/, 'the landing screen’s follow-up card must use it')
+    assert.match(readFileSync(join(root, 'lib/assistant.mjs'), 'utf8'), /dealValue\(/, 'the assistant must use it')
+    assert.match(readFileSync(join(root, 'lib/pipeline.mjs'), 'utf8'), /export const dealValue/, '…and it must be exported from one place')
+  })
+}
+
 /* ---------- a settings scan does not belong inside a row loop ---------- */
 /*
  * getUpcharges() is `SELECT key, value FROM settings` + an object build + a JSON.parse, and the

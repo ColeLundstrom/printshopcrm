@@ -1919,9 +1919,11 @@ app.get('/api/today', wrap((req, res) => {
   if (unread) add({ kind: 'reply', icon: '💬', priority: production ? 55 : 74, title: `${unread} unread customer message${unread === 1 ? '' : 's'}`, sub: 'Reply from the inbox', href: '#/conversations' })
   // Quiet estimates worth chasing (sent, not yet approved, aging).
   for (const e of all(`SELECT e.*, c.name AS cn FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id
-      WHERE e.status='sent' AND e.total > 0 AND e.created_at < datetime('now','-3 day') ORDER BY e.total DESC LIMIT 4`)) {
-    add({ kind: 'followup', icon: '📨', priority: (production ? 30 : 60) + Math.min(15, e.total / 300),
-      title: `Follow up: ${money(e.total)} quote to ${e.cn || 'customer'}`, sub: `${e.estimate_number} · sent, gone quiet`, href: `#/estimates/${e.id}`, amount: round2(e.total) })
+      WHERE e.status='sent' AND e.total > 0 AND e.created_at < datetime('now','-3 day')
+      ORDER BY COALESCE(e.subtotal, e.total) DESC LIMIT 4`)) {
+    const worth = pipeline.dealValue(e)
+    add({ kind: 'followup', icon: '📨', priority: (production ? 30 : 60) + Math.min(15, worth / 300),
+      title: `Follow up: ${money(worth)} quote to ${e.cn || 'customer'}`, sub: `${e.estimate_number} · sent, gone quiet`, href: `#/estimates/${e.id}`, amount: worth })
   }
 
   actions.sort((a, b) => b.priority - a.priority)
@@ -3789,7 +3791,10 @@ app.get('/api/followups', wrap((_req, res) => {
   res.json({
     stale, overdue, proofs, reorder,
     totals: {
-      stale: round2(stale.reduce((s, e) => s + e.total, 0)),
+      // dealValue, not SUM(total): total is subtotal + sales tax, and the tax is the state's money,
+      // not revenue the shop is chasing. The dashboard KPI and the pipeline were corrected for
+      // exactly this; these two readers of the same population were not.
+      stale: round2(stale.reduce((s, e) => s + pipeline.dealValue(e), 0)),
       overdue: round2(overdue.reduce((s, i) => s + i.balance, 0)),
     },
   })

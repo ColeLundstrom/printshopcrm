@@ -1951,6 +1951,44 @@ try {
     chk('…and does not print UNPAID beside its own past-due bucket', String(/UNPAID/.test(stmt.text)), '^false$')
   }
 
+  /* ---------- "quotes gone quiet" is what the shop KEEPS, not what it collects for the state ----
+   * estimates.total is subtotal + sales tax. The dashboard KPI, the pipeline board and per-job
+   * profitability were all corrected to read the subtotal; the Follow-ups screen's headline total
+   * and the in-app assistant's answer to the same question were still summing `.total`, a tenth
+   * high at a 10% rate, on the number a shop uses to decide who to phone first. */
+  {
+    await req('PUT', '/api/settings', { body: { tax_rate: '10' } })
+    const qc = (await req('POST', '/api/contacts', { body: { name: 'Quiet Quotes Co', email: 'quiet@e2e.test' } })).json
+    const mk = async (amount) => {
+      const e = (await req('POST', '/api/estimates', { body: { contact_id: qc.id, items: [{ description: 'Tees', qty: 1, unit_price: amount }] } })).json
+      await req('POST', `/api/estimates/${e.id}/send`, { body: {} })
+      return e
+    }
+    const a = await mk(1000)
+    const b2 = await mk(500)
+    chk('a sent quote stores tax on top of its subtotal', String(a.total), '^1100$')
+    chk('…and its subtotal is what the shop actually keeps', String(a.subtotal), '^1000$')
+
+    const fu = (await req('GET', '/api/followups')).json
+    const mine = (fu.stale || []).filter((e) => e.id === a.id || e.id === b2.id)
+    chk('both quotes are on the follow-up list', String(mine.length), '^2$')
+    // The two of them are $1,500 of work and $1,650 of invoice. The headline must say $1,500.
+    const staleTotal = Number(fu.totals?.stale || 0)
+    const others = (fu.stale || []).filter((e) => e.id !== a.id && e.id !== b2.id)
+      .reduce((s, e) => s + (Number(e.subtotal) || Number(e.total) || 0), 0)
+    chk('the headline totals what the shop keeps, not the tax it collects',
+      String(Math.round((staleTotal - others) * 100) / 100), '^1500$')
+
+    // The assistant answers the same question in the same shop and must not give a different
+    // number. Its headline is money0() — whole dollars — so compare on that.
+    const ask = (await req('POST', '/api/assistant', { body: { message: 'what has gone quiet' } })).json
+    const said = String(ask?.reply || ask?.text || JSON.stringify(ask))
+    const expectDollars = Math.round(others + 1500).toLocaleString('en-US')
+    chk('the assistant answers the same question with the same number',
+      String(said.includes(`$${expectDollars}`)), '^true$')
+    await req('PUT', '/api/settings', { body: { tax_rate: '0' } })
+  }
+
   /* ---------- two mutating routes were missing the role check their siblings all have ----------
    * POST /api/automations/tick fires the whole shop's automation sweep — real customer email
    * through the shop's SMTP credentials and SMS through its Twilio token — and was reachable by
