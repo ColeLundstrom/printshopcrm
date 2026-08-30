@@ -1160,6 +1160,51 @@ await t('quote → email → "no" advances to a closed reply, never re-quotes', 
   assert.ok(!isQuote(r5), 'final turn must not re-quote')
 })
 
+/* ---------- the bot answers its own buttons ----------
+ * "The assistant drew four buttons its own router could not answer" was fixed in the in-app
+ * assistant. The receptionist — the one talking to strangers on the shop's public website — has
+ * the same shape and it costs money. After a ballpark it ends with "Anything you want to change?"
+ * and offers three chips, the middle one "Change the quantity". That phrase matches none of
+ * `another|new|start over|different order|restart`, so the one reset the router has never fires;
+ * nextQuoteGoal then finds every slot filled, returns 'done', and the visitor is told "You are all
+ * set". "make it 200 tees" gets the same answer, because extract() only writes st.qty when it is
+ * empty. The draft on the shop's books stays 48 pieces at $544.92 for an order the customer asked
+ * to make 200. */
+section('the receptionist can answer the chips it draws')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); ag.initAgent(db)
+  ag.saveBotConfig({ shop_name: 'Northgate Ink', name: 'Ari', greeting: 'Hi', capabilities: { quote: true, faq: true, handoff: true } })
+  const sess = ag.startSession({ channel: 'web' })
+  const cur = () => ag.sessionByPublicId(sess.public_id)
+
+  await t('“Change the quantity” reopens the count instead of saying “You are all set”', async () => {
+    const first = await ag.respond(cur(), '48 gildan 5000 tees, screen print, 3 color front, dana@example.test', ag.getBotConfig())
+    assert.ok((first.quick || []).includes('Change the quantity'),
+      `precondition: the bot still offers that chip — got ${JSON.stringify(first.quick)}`)
+    const r = await ag.respond(cur(), 'Change the quantity', ag.getBotConfig())
+    assert.doesNotMatch(String(r.reply), /all set/i,
+      `the bot offered the chip and its own router answered "You are all set": ${r.reply}`)
+    assert.match(String(r.reply), /how many/i, 'clicking it has to land on the quantity question')
+  })
+
+  await t('…and the corrected count actually reaches the quote', async () => {
+    const r2 = await ag.respond(cur(), '200 pieces', ag.getBotConfig())
+    assert.equal(r2.state?.qty, 200, `the correction never lands — the shop books 48: ${r2.reply}`)
+    // The garment and decoration they already gave are NOT re-asked: this is a correction, not a
+    // restart, and making them retype it is how a visitor leaves.
+    assert.equal(r2.state?.product, 'Gildan 5000 Tee', 'the garment must survive a quantity change')
+    assert.equal(r2.state?.decoration, 'Screen Print', 'and so must the decoration')
+    assert.match(String(r2.reply), /For 200 /, `the bot has to re-quote at the corrected count: ${r2.reply}`)
+    // And a correction is not a second order: the shop must end up with ONE draft, at 200.
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM estimates').c, 1,
+      'a quantity change minted a second estimate number against the same customer')
+  })
+}
+
 /* ---------- a website visitor cannot write on a customer who already exists ----------
  * captureLead matches a typed email to an existing contact — useful, it keeps the thread on the
  * right file — and then ran its enrichment UPDATEs, its opportunity INSERT and its estimate
