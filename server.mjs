@@ -4108,7 +4108,10 @@ app.post('/api/automations/pending/:id/resume', requireRole('manager'), wrap((re
   if (!rule.enabled) return res.status(409).json({ error: 'That rule is switched off. Turn it back on and the sequence picks up where it stopped.', code: 'rule_disabled' })
   run("UPDATE automation_pending SET status = NULL, note = NULL, attempts = 0, due_at = datetime('now') WHERE id = ?", p.id)
   logActivity('note', `Automation sequence resumed — ${p.automation_name}${p.label ? ` · ${p.label}` : ''}`, {})
-  res.json({ ok: true })
+  // attempts = 0 is only safe because next_index is now honest: the sequence records each step as
+  // it completes, so resuming buys three more goes at the step that FAILED rather than three more
+  // copies of the customer email two steps back.
+  res.json({ ok: true, resume_at: Number(p.next_index) || 0 })
 }))
 
 /**
@@ -4124,7 +4127,10 @@ app.post('/api/automations/runs/:id/retry', requireRole('manager'), wrap((req, r
   if (r.status !== 'error') return res.status(409).json({ error: 'That run did not fail, so there is nothing to retry.', code: 'not_failed' })
   run("UPDATE automation_runs SET status = 'retry' WHERE id = ?", r.id)
   logActivity('note', `Automation retry queued — ${r.automation_name}${r.entity_label ? ` · ${r.entity_label}` : ''}`, {})
-  res.json({ ok: true })
+  // Where it will pick up, so the toast can say it. The run stores the step that threw; a retry
+  // re-attempts that step and everything after it, and does NOT re-do the ones that succeeded —
+  // which for step 1 of a chase is a second copy of the same email to the same customer.
+  res.json({ ok: true, resume_at: Number(r.next_index) || 0 })
 }))
 
 app.delete('/api/automations/pending/:id', requireRole('manager'), wrap((req, res) => {

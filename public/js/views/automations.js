@@ -130,14 +130,22 @@ export async function automationsView() {
 
   on($('#au-body'), '[data-retry-run]', async (e, t) => {
     e.stopPropagation()
-    try { await api.post(`/api/automations/runs/${t.dataset.retryRun}/retry`); toast('Queued — it will go again on the next sweep') }
+    try {
+      const out = await api.post(`/api/automations/runs/${t.dataset.retryRun}/retry`)
+      // Naming the step matters: a retry no longer re-runs the whole rule, and an owner who is
+      // about to press this on a chase that already emailed the customer deserves to be told so.
+      toast(`Queued — it picks up at step ${(out?.resume_at || 0) + 1} on the next sweep`)
+    }
     catch (err) { toast(err.message, true) }
     automationsView()
   })
 
   on($('#au-body'), '[data-resume]', async (e, t) => {
     e.stopPropagation()
-    try { await api.post(`/api/automations/pending/${t.dataset.resume}/resume`); toast('Sequence resumed') }
+    try {
+      const out = await api.post(`/api/automations/pending/${t.dataset.resume}/resume`)
+      toast(`Sequence resumed — picking up at step ${(out?.resume_at || 0) + 1}`)
+    }
     catch (err) { toast(err.message, true) }
     automationsView()
   })

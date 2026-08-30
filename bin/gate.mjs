@@ -7346,6 +7346,86 @@ section('an automation that fails halfway is not logged as a success')
     assert.match(String(row?.detail || ''), /then failed:/)
     assert.match(String(row?.detail || ''), /SMTP refused the connection/, 'the shop needs the actual reason, not just "failed"')
   })
+
+  /* ---------- …and Try again does not re-send what already went out ----------
+   *
+   * The row above knows where it stopped — as the SENTENCE "1 of 3 step(s) ran", in a free-text
+   * column nothing reads back. runAutomation hard-coded startIdx 0, so the one button the screen
+   * offers on a red row re-entered the rule at step 0. Driven against a real SMTP listener: a
+   * three-step chase whose step 2 failed mailed sam@example.com the identical quote follow-up a
+   * second time fourteen seconds later, and the customer's conversation thread carried both.
+   *
+   * The fixture here is the same rule with the order swapped, so the step that succeeds first is
+   * the IRREVERSIBLE one: the email goes out, the tag throws. Re-entering at 0 sends it twice. */
+  await t('the failed run records WHERE it stopped, not just how far it got', () => {
+    const r2 = dbmod.get('SELECT next_index FROM automation_runs ORDER BY id DESC LIMIT 1')
+    assert.equal(r2?.next_index, 1, 'the resume index has to be a column, not only a sentence in detail')
+  })
+
+  await t('…so a retry does not re-send the customer email step 1 already sent', () => {
+    const emailFirst = {
+      id: 1, name: 'BrokenRule', trigger: 'job.stage', conditions: [],
+      actions: [
+        { key: 'email.customer', config: { subject: 'Still good?', body: 'Checking in' } },
+        { key: 'contact.tag', config: { tag: 'chased' } },
+        { key: 'contact.tag', config: { tag: 'chased-twice' } },
+      ],
+    }
+    const ctx = { contact: { id: 1, name: 'Casey', email: 'casey@example.test' }, job: { id: 1, job_number: 'JOB-1027' } }
+    let sends = 0
+    // Step 2 fails the way a real shop's step 2 fails — a write the database refuses.
+    mem.exec("CREATE TRIGGER gate_tag_fails BEFORE UPDATE OF tags ON contacts BEGIN SELECT RAISE(ABORT,'disk I/O error'); END")
+    auto.runAutomation(emailFirst, 'job.stage', ctx, { queueEmail: () => { sends++ } })
+    assert.equal(sends, 1, 'precondition: the first attempt sends once')
+    const failed = dbmod.get('SELECT id, status, next_index FROM automation_runs ORDER BY id DESC LIMIT 1')
+    assert.equal(failed.status, 'error', 'precondition: the run failed')
+    assert.equal(failed.next_index, 1, 'the resume index must point AT the step that threw, not past it')
+
+    // The transient failure clears and the owner presses Try again, which stamps 'retry'.
+    mem.exec('DROP TRIGGER gate_tag_fails')
+    dbmod.run("UPDATE automation_runs SET status = 'retry' WHERE id = ?", failed.id)
+    auto.runAutomation(emailFirst, 'job.stage', ctx, { queueEmail: () => { sends++ } }, failed.next_index)
+    assert.equal(sends, 1, 'the customer email must go out exactly once across the failure and the retry')
+    const ok = dbmod.get('SELECT status, detail, next_index FROM automation_runs ORDER BY id DESC LIMIT 1')
+    assert.equal(ok.status, 'ran', 'the resumed run finished')
+    assert.equal(ok.next_index, null, 'a run that completed carries no resume index')
+    assert.match(String(ok.detail), /contact\.tag/, 'the step that failed did run on the retry')
+    assert.doesNotMatch(String(ok.detail), /email\.customer/, 'the step that already succeeded must not appear again')
+  })
+
+  await t('…and a rule shortened between the failure and the retry does not resume past its end', () => {
+    // The shop can edit the rule while the row is red. A stored index past the end would run
+    // nothing at all and log it green; the clamp makes it start over instead.
+    const shortened = { id: 1, name: 'BrokenRule', trigger: 'job.stage', conditions: [], actions: [{ key: 'contact.tag', config: { tag: 'only-step' } }] }
+    const ctx = { contact: { id: 1, name: 'Casey', email: 'casey@example.test' }, job: { id: 1, job_number: 'JOB-1027' } }
+    auto.runAutomation(shortened, 'job.stage', ctx, { queueEmail: () => {} }, 7)
+    const r = dbmod.get('SELECT status, detail FROM automation_runs ORDER BY id DESC LIMIT 1')
+    assert.equal(r.status, 'ran')
+    assert.match(String(r.detail), /contact\.tag/, 'a resume index outside the rule must start over, not silently run nothing and log it green')
+    // …and the boundary case: exactly one past the last valid index is just as stale.
+    auto.runAutomation(shortened, 'job.stage', ctx, { queueEmail: () => {} }, 1)
+    const r2 = dbmod.get('SELECT status, detail FROM automation_runs ORDER BY id DESC LIMIT 1')
+    assert.match(String(r2.detail), /contact\.tag/, 'an index equal to the rule length runs nothing and reports success')
+  })
+
+  await t('the timed sweep passes the resume index — otherwise the column is decoration', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    // Comments strip first: the docstring above resumeAt explains the hazard by naming every
+    // trigger, and an assertion that matches prose passes on a fix that never wired it up.
+    const src = readFileSync(join(root, 'lib/automations.mjs'), 'utf8')
+      .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+    assert.match(src, /const resumeAt = /, 'there is no resume lookup beside already()')
+    // Every timed trigger that can reach runAutomation through a released latch.
+    for (const trig of ['estimate.stale', 'invoice.overdue', 'art.waiting', 'job.due_soon', 'job.at_risk']) {
+      const i = src.indexOf(`runAutomation(a, '${trig}'`)
+      assert.ok(i > 0, `${trig} no longer calls runAutomation here — re-point this test`)
+      const call = src.slice(i, src.indexOf('\n', i))
+      assert.match(call, new RegExp(`resumeAt\\('${trig.replace('.', '\\.')}'`), `${trig} re-enters a retried rule at step 0`)
+    }
+  })
 }
 
 /* ---------- a reused rowid does not silence an automation (v10) ----------
@@ -7391,6 +7471,73 @@ section('a quote that inherits a deleted quote\'s rowid still gets chased')
   await t('…and the deleted quote\'s run stays in the log as history', () => {
     const hist = dbmod.get(`SELECT entity_label, status FROM automation_runs WHERE entity_label = 'EST-1007'`)
     assert.equal(hist?.status, 'ran')
+  })
+}
+
+/* ---------- a drip whose step fails does not re-send the step before it (v28) ----------
+ *
+ * automation_pending has carried a next_index column since it was written — and the ONLY thing
+ * that ever wrote it was the `wait` branch of executeActions. So a sequence whose step 3 failed
+ * sat at the index of step 2's predecessor through the whole three-attempt ladder, and the ladder
+ * re-ran step 2 every time. Driven against a real SMTP listener: three identical "DRIP followup"
+ * emails to one customer across three ticks, and a fourth when the owner pressed the Resume
+ * button the parked row offers — which also resets attempts to 0 and so buys three more.
+ *
+ * No timing and no concurrency here: the ladder is driven by calling tick() three times. */
+section('a drip sequence retried three times does not send the customer email three times')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  auto.initAutomations(mem)
+  const steps = [{ key: 'email.customer', config: { subject: 'DRIP followup', body: 'still good?' } },
+    { key: 'contact.tag', config: { tag: 'dripped' } }]
+  dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (1,?,1,?,'{}',?)`,
+    'Drip', 'estimate.stale', JSON.stringify(steps))
+  dbmod.run(`INSERT INTO contacts (id, name, email) VALUES (1, 'Alexis', 'alexis@example.test')`)
+  dbmod.run(`INSERT INTO automation_pending (id, automation_id, automation_name, trigger, ctx, actions, next_index, due_at, label, created_at)
+             VALUES (1,1,'Drip','estimate.stale',?,?,0,datetime('now','-1 minute'),'EST-1006',datetime('now'))`,
+    JSON.stringify({ contact: { id: 1, name: 'Alexis', email: 'alexis@example.test' } }), JSON.stringify(steps))
+  // Step 2 fails the way a real shop's step 2 fails — a write the database refuses.
+  mem.exec("CREATE TRIGGER gate_drip_tag_fails BEFORE UPDATE OF tags ON contacts BEGIN SELECT RAISE(ABORT,'disk I/O error'); END")
+
+  let sends = 0
+  const deps = { queueEmail: () => { sends++ } }
+  let lastFired = []
+  for (let i = 0; i < 3; i++) {
+    dbmod.run("UPDATE automation_pending SET due_at = datetime('now','-1 minute') WHERE status IS NULL")
+    lastFired = auto.tick(deps)
+  }
+
+  await t('the customer gets the follow-up once, not once per retry attempt', () => {
+    assert.equal(sends, 1, `the drip mailed the same follow-up ${sends} time(s) across three attempts`)
+  })
+  await t('…because the queue records each step as it completes', () => {
+    assert.equal(dbmod.get('SELECT next_index FROM automation_pending WHERE id = 1').next_index, 1,
+      'next_index is only ever written at a `wait`, so the ladder restarts at the step before the failure')
+  })
+  await t('…and after three goes it is parked with the reason, not retried forever', () => {
+    const p = dbmod.get('SELECT status, attempts, note FROM automation_pending WHERE id = 1')
+    assert.equal(p.status, 'failed')
+    assert.equal(p.attempts, 3)
+    assert.match(String(p.note), /disk I\/O error/)
+  })
+  await t('…and the tick says so, instead of reporting an empty sweep three times', () => {
+    assert.ok(lastFired.some((f) => /FAILED/.test(String(f))),
+      `the shop's only signal that anything happened is this list, and it was ${JSON.stringify(lastFired)}`)
+  })
+  await t('Resume then re-tries the step that failed, not the email two steps back', () => {
+    mem.exec('DROP TRIGGER gate_drip_tag_fails')
+    // Exactly what POST /api/automations/pending/:id/resume does.
+    dbmod.run("UPDATE automation_pending SET status = NULL, note = NULL, attempts = 0, due_at = datetime('now') WHERE id = 1")
+    auto.tick(deps)
+    assert.equal(sends, 1, 'Resume sent the customer a fourth copy of a message they already have')
+    assert.equal(dbmod.get('SELECT COUNT(*) AS c FROM automation_pending WHERE id = 1').c, 0, 'the finished sequence is off the queue')
+    assert.match(String(dbmod.get('SELECT tags FROM contacts WHERE id = 1').tags), /dripped/, 'the step that had been failing did run')
   })
 }
 
