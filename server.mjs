@@ -6294,7 +6294,32 @@ app.post('/api/qbo/queue/:id/retry', requireRole('manager'), wrap(async (req, re
   res.status(r.ok ? 200 : 502).json(r.ok ? { ok: true, qbo_id: r.qbo_id } : { error: r.error })
 }))
 app.post('/api/qbo/queue/:id/dismiss', requireRole('manager'), wrap((req, res) => {
-  run("UPDATE qbo_sync SET status = 'dismissed', updated_at = ? WHERE id = ?", now(), +req.params.id)
+  const row = get('SELECT * FROM qbo_sync WHERE id = ?', +req.params.id)
+  if (!row) return res.status(404).json({ error: 'That queue row is no longer there.', code: 'not_found' })
+  run("UPDATE qbo_sync SET status = 'dismissed', updated_at = ? WHERE id = ?", now(), row.id)
+  res.json({ ok: true })
+}))
+
+/**
+ * Un-dismiss — the way back onto the queue.
+ *
+ * Dismiss exists so a bookkeeper who has re-keyed an invoice into QuickBooks by hand can clear the
+ * red row. It was written as a TERMINAL state: books.js draws no buttons at all on a dismissed row,
+ * processQboQueue only ever claims 'pending'/'retrying', and the only two enqueueQbo call sites
+ * both need ANOTHER payment on an invoice that is already paid in full. So one mis-click on a
+ * ghost-styled button with no confirmation left collected money permanently marked as dealt-with by
+ * the queue whose whole job is to prove the books were told — $2,850.00 of a real cheque, with the
+ * only exit an UPDATE typed into sqlite3.
+ *
+ * Nothing here changes what is sent to or inferred from QuickBooks: it puts a row of our own table
+ * back into the state the sweep already knows how to process.
+ */
+app.post('/api/qbo/queue/:id/requeue', requireRole('manager'), wrap((req, res) => {
+  const row = get('SELECT * FROM qbo_sync WHERE id = ?', +req.params.id)
+  if (!row) return res.status(404).json({ error: 'That queue row is no longer there.', code: 'not_found' })
+  run("UPDATE qbo_sync SET status = 'pending', error = NULL, attempts = 0, next_attempt_at = ?, updated_at = ? WHERE id = ?",
+    now(), now(), row.id)
+  logActivity('note', `QuickBooks sync re-queued for #${row.entity_id}`, {})
   res.json({ ok: true })
 }))
 

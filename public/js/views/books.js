@@ -41,7 +41,9 @@ function render(aging, qbo) {
       <td class="r">${money(r.amount_due || 0)}</td>
       <td><span class="pill ${r.status === 'ok' ? 'green' : r.status === 'failed' ? 'red' : 'amber'}">${esc(r.status)}</span></td>
       <td class="dim" style="max-width:260px;font-size:11.5px">${esc(r.error || (r.qbo_id ? `QBO #${r.qbo_id}` : ''))}</td>
-      <td class="r">${r.status !== 'ok' && r.status !== 'dismissed' ? `<button class="btn sm" data-qbo-retry="${r.id}">Retry</button> <button class="btn ghost sm" data-qbo-dismiss="${r.id}">Dismiss</button>` : ''}</td>
+      <td class="r">${r.status === 'dismissed'
+        ? `<button class="btn ghost sm" data-qbo-requeue="${r.id}">Send to QuickBooks</button>`
+        : r.status !== 'ok' ? `<button class="btn sm" data-qbo-retry="${r.id}">Retry</button> <button class="btn ghost sm" data-qbo-dismiss="${r.id}">Dismiss</button>` : ''}</td>
     </tr>`
 
   $('#view').innerHTML = `
@@ -101,5 +103,14 @@ function render(aging, qbo) {
     const btn = e.target.closest('[data-qbo-dismiss]')
     try { await api.post(`/api/qbo/queue/${btn.dataset.qboDismiss}/dismiss`); booksView() }
     catch (err) { toast(err.message, true) }
+  })
+  // Dismiss used to be a one-way door: a dismissed row rendered no buttons, the sweep only ever
+  // claims 'pending'/'retrying', and enqueueQbo needs another payment on an already-paid invoice.
+  // One mis-click marked collected money as dealt-with for good, escapable only with sqlite3.
+  onOnce($('#view'), '[data-qbo-requeue]', async (e) => {
+    const btn = e.target.closest('[data-qbo-requeue]')
+    btn.disabled = true
+    try { await api.post(`/api/qbo/queue/${btn.dataset.qboRequeue}/requeue`); toast('Queued — it will go on the next sweep'); booksView() }
+    catch (err) { toast(err.message, true); btn.disabled = false }
   })
 }

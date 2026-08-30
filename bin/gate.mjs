@@ -10514,6 +10514,33 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('a dismissed QuickBooks sync is not the end of the money')
+
+await t('a dismissed row still has a way back onto the queue, from the screen that dismissed it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const books = readFileSync(join(root, 'public/js/views/books.js'), 'utf8')
+  // Dismiss is a ghost-styled button with no confirmation, beside Retry, on a row that represents
+  // money the shop has already collected. Nothing moved a row off 'dismissed': processQboQueue
+  // claims only 'pending'/'retrying', and both enqueueQbo call sites need ANOTHER payment on an
+  // invoice that is already paid in full. The only exit was sqlite3.
+  assert.match(src, /qbo\/queue\/:id\/requeue/,
+    "nothing moved a qbo_sync row off 'dismissed' — collected money was marked dealt-with for ever")
+  assert.match(books, /data-qbo-requeue/,
+    'the Books card drew no button at all on a dismissed row, so Dismiss was a one-way door')
+  assert.match(books, /qbo\/queue\/\$\{[^}]+\}\/requeue/, '…and the button has to reach the route')
+  // The state it goes back to must be one the sweep actually claims, or the button is decoration.
+  const route = src.slice(src.indexOf("app.post('/api/qbo/queue/:id/requeue'"))
+  assert.match(route.slice(0, 700), /status = 'pending'/, "requeue must return the row to a state the sweep claims")
+  assert.match(route.slice(0, 700), /attempts = 0/, '…and clear the attempt count, or the ladder refuses it immediately')
+  // Both halves of the pair answer 404 for a row that is gone, rather than 200 having done nothing.
+  const dis = src.slice(src.indexOf("app.post('/api/qbo/queue/:id/dismiss'"))
+  assert.match(dis.slice(0, 500), /not_found/, 'dismiss answered 200 for a row that no longer exists')
+})
+
 section('the staff invite is a mail door like every other mail door')
 
 await t('POST /api/members draws on the shared outbound cap and does not trust Host', async () => {
