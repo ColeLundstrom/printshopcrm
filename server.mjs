@@ -2430,6 +2430,28 @@ app.put('/api/estimates/:id', wrap((req, res) => {
 app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
   const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", +req.params.id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — can't delete a converted estimate.` })
+  /* …and the same refusal for a job that is on the floor against this quote but has not been
+   * invoiced yet. That is not a rare shape: /api/autopilot and the Slack quick-quote both open a
+   * production job the moment they write the estimate, and both stop at a SENT quote with no
+   * invoice — the convert route says so in as many words a few hundred lines below.
+   *
+   * jobs.estimate_id is ON DELETE SET NULL, so the job SURVIVED the quote holding a null pointer.
+   * lib/roi.mjs reads the revenue through estimate_id, so from that moment the job books $0
+   * against real scanned labour and drags the shop-wide margin down for good; convert's adoption
+   * query (estimate_id = ? AND invoice_id IS NULL) can never find it, so the order can never be
+   * invoiced; and no route in the product writes jobs.estimate_id — only the five INSERTs do — so
+   * there is no screen and no API that can put it back. The two sibling deletes both guard: a job
+   * refuses while a PO is still out, a customer refuses on open POs and on financials.
+   *
+   * Like the PO guard, this is a step to take rather than a wall to hit: cancel or complete the
+   * job and the delete goes through. */
+  const job = get("SELECT job_number FROM jobs WHERE estimate_id = ? AND status = 'active' ORDER BY id LIMIT 1", +req.params.id)
+  if (job) {
+    return res.status(409).json({
+      code: 'has_active_job',
+      error: `${job.job_number} is in production against this quote. Deleting it now would leave the job on the board with no price, no way to invoice it and $0 against its labour in Profitability — and nothing can re-link it. Cancel or complete ${job.job_number} first.`,
+    })
+  }
   // One transaction with its artwork. The migration's trigger already handles the cascade, but
   // doing both writes atomically means a failure cannot leave mockups pointing at an id that is
   // about to be handed to the next estimate.

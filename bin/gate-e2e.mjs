@@ -1190,6 +1190,39 @@ try {
     chk('…so the job can finally leave the board', String(r.status), '^200$')
   }
 
+  /* ---------- deleting a quote does not strand the job that is already on the floor ----------
+   * DELETE /api/estimates/:id guarded on invoices and cleaned up the deal, and never looked at
+   * jobs. /api/autopilot and the Slack quick-quote both open a production job the MOMENT they
+   * write the estimate, and both stop at a sent quote with no invoice — so "estimate + active
+   * job + no invoice" is the ordinary shape, not an edge case.
+   *
+   * jobs.estimate_id is ON DELETE SET NULL, so the job survived the quote holding a null pointer:
+   * lib/roi.mjs reads revenue through estimate_id, so the job booked $0 forever against real
+   * scanned labour; convert's adoption query could never find it, so the order could never be
+   * invoiced; and nothing in the product writes jobs.estimate_id — only the INSERTs — so no
+   * screen and no API could put it back. */
+  {
+    r = await req('POST', '/api/contacts', { body: { name: 'Stranded Stan', email: 'stranded@e2e.test' } })
+    const strandC = r.json?.id
+    r = await req('POST', '/api/estimates', { body: { contact_id: strandC, items: [{ description: 'Gildan 5000 Tee', sizes: { M: 100 }, unit_price: 9.5 }] } })
+    const strandE = r.json?.id
+    r = await req('POST', '/api/jobs', { body: { contact_id: strandC, estimate_id: strandE, title: 'Stranded job', quantities: '100 M' } })
+    const strandJ = r.json?.id
+    chk('the job was opened against the quote', String((await req('GET', `/api/jobs/${strandJ}`)).json?.job?.estimate_id ?? (await req('GET', `/api/jobs/${strandJ}`)).json?.estimate_id), `^${strandE}$`)
+
+    r = await req('DELETE', `/api/estimates/${strandE}`)
+    chk('the quote cannot be deleted out from under a job in production', String(r.status), '^409$')
+    chk('…and the refusal is machine-readable', String(r.json?.code), '^has_active_job$')
+    chk('…and it names the job and what to do', r.text, 'Cancel or complete')
+
+    // The way out exists and is in the UI: finish the job, then the quote deletes.
+    await req('PATCH', `/api/jobs/${strandJ}/stage`, { body: { stage: 'complete' } })
+    r = await req('DELETE', `/api/jobs/${strandJ}`)
+    chk('…the job can be taken off the board', String(r.status), '^200$')
+    r = await req('DELETE', `/api/estimates/${strandE}`)
+    chk('…and then the quote deletes', String(r.status), '^200$')
+  }
+
   /* ---------- a partial update does not quietly clear what it did not mention ----------
    * PUT /api/jobs/:id read every field with `??` — keep what is there unless told otherwise — and
    * `rush` with `b.rush ? 1 : 0`, which reads an absent field as false. So saving a note took the
