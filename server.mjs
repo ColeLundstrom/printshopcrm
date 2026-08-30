@@ -3829,7 +3829,14 @@ function decideArt(a, approved, notes, by) {
     return
   }
 
-  run(`UPDATE jobs SET stage='prepress', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
+  // status, not just stage. This is the fifth writer of jobs.stage and the only one that left
+  // status alone — PATCH /api/jobs/:id/stage, the floor scan, the board drag and the order
+  // advancer all derive it. Approving a proof on a job already marked complete (a reorder, a
+  // late-arriving customer approval on a job the shop finished and closed) therefore produced
+  // stage='prepress' with status='complete': GET /api/board is WHERE j.status = 'active', so the
+  // job was on NO board, out of Capacity, off Today and booking zero press time, while its own
+  // page said Prepress. Nothing could put it back — every screen that moves a job reads the board.
+  run(`UPDATE jobs SET stage='prepress', status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
   logActivity('art', `Proof v${a.version} APPROVED by ${by} — released to prepress`, { contact_id: j.contact_id, job_id: j.id })
   fireAuto('art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
 
@@ -7029,7 +7036,7 @@ app.post('/api/members', outboundLimit, wrap(async (req, res) => {
     // "Web address:" line of a mail the platform sent.
     sendStaffInviteEmail({ tenant: req.tenant, member, tempPassword: b.password, inviterName: req.member?.name, origin: trustedOrigin(req) })
     res.json(member)
-  } catch (e) { res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message }) }
+  } catch (e) { res.status(e.code === 'dupe_email' ? 409 : e.code === 'reserved_email' ? 403 : 400).json({ error: e.message }) }
 }))
 
 app.patch('/api/members/:id', wrap((req, res) => {

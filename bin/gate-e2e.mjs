@@ -3118,6 +3118,31 @@ try {
     chk('a DTF job whose art IS approved is print-ready', String(pkg.ready), '^true$')
     chk('…and its package does not claim the art is missing', String(pkg.note || ''), '^Ready for the RIP')
     chk('…and it still carries the approved art it is talking about', String(pkg.approved_art?.version ?? ''), '^1$')
+
+    /* ---------- approving a proof on a FINISHED job does not take it off every board ----------
+     * decideArt is the fifth writer of jobs.stage and was the only one that left jobs.status
+     * alone. GET /api/board is `WHERE j.status = 'active'`, so a job already marked complete — a
+     * reorder, or a customer approving late on a job the shop had closed — came back as
+     * stage='prepress' with status='complete': on no board, out of Capacity, off Today, booking
+     * zero press time, while its own page said Prepress. No screen could put it back, because
+     * every screen that moves a job reads the board. */
+    // The board answers { stages, columns, ... }, and columns carry the jobs — a `.jobs` lookup
+    // would be undefined and make this precondition vacuously true.
+    const onBoard = async () => {
+      const b = (await req('GET', '/api/board')).json || {}
+      return Object.values(b.columns || {}).flatMap((c) => (Array.isArray(c) ? c : c?.jobs || [])).some((j) => j.id === ripJ)
+    }
+    await req('PATCH', `/api/jobs/${ripJ}/stage`, { body: { stage: 'complete' } })
+    chk('precondition: a completed job is off the board', String(await onBoard()), '^false$')
+    const form2 = new FormData()
+    form2.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'proof2.svg')
+    const up2 = await fetch(`${BASE}/api/jobs/${ripJ}/art`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form2 })
+    const art2 = await up2.json().catch(() => ({}))
+    await req('POST', `/api/art/${art2?.art?.id ?? art2?.id}/decide`, { body: { decision: 'approved', by: 'Rita' } })
+    const back = (await req('GET', `/api/jobs/${ripJ}`)).json || {}
+    chk('approving a proof releases the job to prepress', String(back.stage), '^prepress$')
+    chk('…and it is a live job again, not stranded off every board', String(back.status), '^active$')
+    chk('…so the shop can actually see it', String(await onBoard()), '^true$')
   }
 
   /* ---------- the wrong customer's artwork can be taken back off a job ----------

@@ -11024,6 +11024,7 @@ await t('a temporary password cannot carry extra paragraphs into the invitation'
         catch (e) { return e.code || 'threw' }
       }
       console.log(JSON.stringify({
+        squat:    await tryAdd(process.env.PSC_ADMIN_EMAIL, 'GatePass-123456'),
         injected: await tryAdd('a@gate.test', 'aaaaaaaa\\n\\nACTION REQUIRED: update your card at http://evil.example'),
         spaced:   await tryAdd('b@gate.test', 'aaaaaaaa bbbbbbbb'),
         cr:       await tryAdd('c@gate.test', 'aaaaaaaa\\rbbbb'),
@@ -11033,10 +11034,15 @@ await t('a temporary password cannot carry extra paragraphs into the invitation'
       process.exit(0)
     `
     const out = execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', script], {
-      env: { ...process.env, PSC_DB: join(box, 'psc.db'), PSC_CONTROL_DB: join(box, 'control.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+      env: { ...process.env, PSC_DB: join(box, 'psc.db'), PSC_CONTROL_DB: join(box, 'control.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_ADMIN_EMAIL: 'operator@example.com' },
       encoding: 'utf8',
     })
     const r = JSON.parse(out.trim().split('\n').pop())
+    // The signup form reserves the operator's address; a staff invite must too. members.email is
+    // globally UNIQUE and no CLI command frees it, so one POST from any trial shop took the
+    // Control Room off the install for ever — `admin -- create-shop` then answers "already has an
+    // account" and `reset-password` signs the operator into the SQUATTER's shop as staff.
+    assert.equal(r.squat, 'reserved_email', 'any shop could claim the operator address as a staff login')
     assert.equal(r.injected, 'weak_password', 'a password carrying its own paragraph must be refused, not mailed')
     assert.equal(r.spaced, 'weak_password', '…and one with a space, which no invite needs and a header line cannot hold')
     assert.equal(r.cr, 'weak_password', '…and a bare carriage return')
