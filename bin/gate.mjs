@@ -4963,6 +4963,44 @@ await t('the handler that catches every unexpected throw logs a stack, like its 
     assert.match(l || '', /\.stack/, `${other} must keep its stack too`)
   }
 })
+/* ---------- the tuning block does not describe a knob that does something else ----------
+ * `PSC_TICK_BUDGET=  # max milliseconds one tick may spend before yielding`. It is not a
+ * millisecond budget — lib/automations.mjs compares it against `fired.length`, a count of MESSAGES
+ * SENT, and its own comment says it exists to stop "thousands of real customer emails at once". An
+ * operator who reads the docs and sets it to 2000 "so a tick can take two seconds" has authorised
+ * one tick to send two thousand real emails, which is exactly what an imported backlog or a
+ * multi-step rule switched back on after a holiday will do.
+ *
+ * PSC_MAX_OPEN_DBS on the next line is the same shape: documented as an "LRU cap", while
+ * lib/tenants.mjs deliberately never evicts and its comment says in as many words that "the
+ * counter is a tripwire, not a limit" — closing a handle another request holds through
+ * AsyncLocalStorage would be a use-after-close crash. */
+await t('the tuning knobs are documented as the thing they actually control', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const env = readFileSync(join(root, '.env.example'), 'utf8')
+  const line = (k) => env.split('\n').find((l) => l.startsWith(`${k}=`)) || ''
+
+  // Precondition: the code really does read it as a count of sends, not a duration.
+  const auto = readFileSync(join(root, 'lib/automations.mjs'), 'utf8')
+  assert.match(auto, /const overBudget = \(\) => fired\.length >= TICK_BUDGET/,
+    'PSC_TICK_BUDGET is a message count — if that changed, this whole case needs rewriting')
+  const budget = line('PSC_TICK_BUDGET')
+  assert.ok(budget, 'PSC_TICK_BUDGET should still be documented')
+  assert.doesNotMatch(budget, /millisecond|\bms\b|second/i,
+    `"${budget.trim()}" — it caps how many messages one pass may SEND. Read as a duration, "2000 for two seconds" authorises two thousand real customer emails in one tick.`)
+  assert.match(budget, /messag|email|send/i, 'say what it actually caps')
+
+  // …and the one beneath it.
+  const ten = readFileSync(join(root, 'lib/tenants.mjs'), 'utf8')
+  assert.match(ten, /tripwire, not a limit/, 'MAX_OPEN_DBS never evicts — if that changed, rewrite this')
+  const dbs = line('PSC_MAX_OPEN_DBS')
+  assert.doesNotMatch(dbs, /LRU cap|\bcap\b/i,
+    `"${dbs.trim()}" — nothing evicts, so calling it a cap promises a bound the code does not enforce`)
+})
+
 await t('cp .env.example .env does not switch webhook retention to forever', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')
