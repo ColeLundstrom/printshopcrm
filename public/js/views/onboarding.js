@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, on, go, toast, announce } from '../core.js'
+import { api, $, $$, esc, setPage, on, go, toast, announce, empty, confirmModal, guardLeave, onOnce } from '../core.js'
 import { importContacts } from './contacts.js'
 
 /**
@@ -23,8 +23,23 @@ export async function onboardingView() {
   // The lite edition sells "sign in and invoice" — no distributor/AI/Stripe steps to wade through.
   // One screen, two numbers (already sensible), then straight into the app. Pricing is pre-built.
   if (window.__EDITION === 'lite') return liteOnboarding()
-  state.data = await api.get('/api/onboarding').catch(() => null)
-  if (!state.data) { $('#view').innerHTML = '<div class="dim">Could not load setup.</div>'; return }
+  /* app.js sends every shop whose onboarding is unfinished here on boot, so this is the first
+   * screen a brand-new shop ever sees — and `.catch(() => null)` swallowed the Error, so
+   * httpMessage()'s "The server is restarting — try that again in a moment" never reached it and
+   * the router's own catch never ran either. What was left was the grey words "Could not load
+   * setup." with an empty header, no reason, no retry and no link. Two escapes, because the two
+   * failures are different: a 502 during a deploy wants Try again, and a persistent 500 wants a
+   * way into the product regardless — the app works fine without the wizard. */
+  let bootErr = null
+  state.data = await api.get('/api/onboarding').catch((e) => { bootErr = e; return null })
+  if (!state.data) {
+    setPage('Welcome', '<button class="btn" id="ob-retry" type="button">Try again</button>')
+    $('#view').innerHTML = empty('⚠', 'Setup could not load', bootErr?.message || 'The server did not answer.',
+      '<a class="btn ghost" href="#/">Skip setup and go to the dashboard</a>')
+    const again = $('#ob-retry')
+    if (again) again.onclick = () => { again.disabled = true; again.textContent = 'Trying…'; onboardingView() }
+    return
+  }
   state.ai = await api.get('/api/ai/providers').catch(() => null)
   // A brand-new shop starts at the welcome/describe hero. A shop that's already made some progress
   // resumes at its first unfinished step, so "finish later" drops them exactly where they left off.
@@ -126,10 +141,46 @@ function render() {
   </div>`
 
   wire(key)
+  // A fresh panel is clean. Delegated on #view through onOnce because #view is repainted and
+  // never replaced, so one binding covers every step the wizard will ever draw.
+  stepDirty = false
+  onOnce($('#view'), '#ob-form input, #ob-form select, #ob-form textarea', markStepDirty, 'input')
+  onOnce($('#view'), '#ob-form input, #ob-form select, #ob-form textarea', markStepDirty, 'change')
   // Bound to the rail this render just wrote, not to the persistent #view — a #view binding would
   // double the live listeners on every rail click and freeze the wizard after a dozen of them.
-  on($('.ob-rail-list'), '[data-goto]', (_e, t) => { const idx = FLOW.indexOf(t.dataset.goto); if (idx >= 0) { state.i = idx; render() } })
-  $('#ob-later').onclick = finishLater
+  on($('.ob-rail-list'), '[data-goto]', (_e, t) => { const idx = FLOW.indexOf(t.dataset.goto); if (idx >= 0) leaveStep(() => { state.i = idx; render() }) })
+  $('#ob-later').onclick = () => leaveStep(finishLater)
+  // And the paths this screen does not own: the sidebar, the tabbar, the `g` shortcuts, Back.
+  guardLeave((to) => { if (!stepDirty) return true; leaveStep(() => go(to)); return false })
+}
+
+/* -------------------------------------------------------------------------------------------------
+ * A step's form exists only in the browser until "Save & continue" — saveSettings() is wired to
+ * that button and to nothing else. The nine-item rail beside the form, "Back", and
+ * "Finish later — take me in →" all repainted straight over it. A shop copying a Twilio SID, auth
+ * token and number across from another tab, who then clicks a rail item — which is what a rail is
+ * for — lost all three, and Twilio only shows an auth token once, so that is a real second trip.
+ * The newest possible user, on the first screen of the product, being taught that this app loses
+ * work.
+ *
+ * The offer is to SAVE rather than to discard, because that is this wizard's own promise: every
+ * step is optional and saves as you go. saveSettings() here is the exact write the Next button
+ * performs.
+ * ---------------------------------------------------------------------------------------------- */
+let stepDirty = false
+const markStepDirty = () => { stepDirty = true }
+
+/** Run `then` — but not over a step the shop has typed into and not saved. */
+async function leaveStep(then) {
+  const form = $('#ob-form')
+  if (!stepDirty || !form || !$$('[name]', form).length) { stepDirty = false; return then() }
+  confirmModal('Save this step first?',
+    'What you typed on this screen has not been saved yet.',
+    async () => {
+      try { await saveSettings(form); await markStep(FLOW[state.i], 'done') } catch (e) { toast(e.message, true) }
+      stepDirty = false
+      then()
+    }, 'Save and continue')
 }
 
 /* ---------- field helpers ---------- */
@@ -345,7 +396,7 @@ function saveSettings(root) {
 async function advance() { state.i = Math.min(state.i + 1, FLOW.length - 1); state.data = await api.get('/api/onboarding').catch(() => state.data); render() }
 
 function wire(key) {
-  $('#ob-back') && ($('#ob-back').onclick = () => { state.i = Math.max(0, state.i - 1); render() })
+  $('#ob-back') && ($('#ob-back').onclick = () => leaveStep(() => { state.i = Math.max(0, state.i - 1); render() }))
   $('#ob-skip') && ($('#ob-skip').onclick = async () => { await markStep(key, 'skipped'); advance() })
 
   if (key === 'welcome') {

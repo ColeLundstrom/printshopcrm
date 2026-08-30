@@ -2665,6 +2665,48 @@ section('the app does not discard what the shop has typed')
     assert.match(router, /runRouter\(\)/, '…that actually re-runs the route')
   })
 
+  /* ---------- the fifth, and it is the FIRST screen a shop ever sees ----------
+   * The setup wizard is not fe-22-02's shape (a tracked flag nobody acts on) — it has no unsaved
+   * work concept at all. saveSettings() is wired to `Save & continue` and nothing else, while the
+   * nine-item rail beside the form, `Back`, and `Finish later — take me in →` all call render()
+   * or go('/') straight over #ob-form. A shop typing a Twilio SID, auth token and number, who
+   * then clicks a rail item — which is what a rail is for — loses all three, and Twilio only
+   * shows an auth token once, so that is a real second trip.
+   *
+   * The honest answer here is Save, not Discard: this wizard's own docstring says every step is
+   * optional and saves as you go, and saveSettings() is the exact write the Next button performs. */
+  await t('the setup wizard does not throw away the step being typed', async () => {
+    const ob = code(await readFile('public/js/views/onboarding.js'))
+    assert.match(ob, /guardLeave\(/, 'the sidebar, the tabbar and Back all leave through the router unguarded')
+    assert.match(ob, /import \{[^}]*\bguardLeave\b/, 'and it has to be imported')
+    assert.match(ob, /let stepDirty = false/, 'the wizard has no unsaved-work concept at all')
+    // Every one of the three in-screen exits, not just the router.
+    for (const [exit, why] of [
+      [/\[data-goto\][\s\S]{0,220}leaveStep\(/, 'the rail — the wizard\'s own invitation to move around'],
+      [/#ob-later'\)\.onclick = \(\) => leaveStep\(/, '"Finish later", which is the button the wizard points at'],
+      [/#ob-back'\)\.onclick = \(\) => leaveStep\(/, 'Back, offered on every step from basics onward'],
+    ]) assert.match(ob, exit, `${why} still repaints over the form`)
+    // …and it offers to SAVE, because that is what this screen's own promise is.
+    const g = ob.slice(ob.indexOf('async function leaveStep'), ob.indexOf('async function leaveStep') + 900)
+    assert.match(g, /saveSettings\(/, 'the wizard saves as you go — the offer must be to save, not to discard')
+    assert.match(g, /confirmModal\(/, 'and the shop gets asked')
+  })
+
+  await t("…and the wizard's own load failure is escapable", async () => {
+    const ob = code(await readFile('public/js/views/onboarding.js'))
+    // app.js redirects every shop whose onboarding is unfinished here on boot. `.catch(() => null)`
+    // swallowed the Error, so httpMessage()'s "The server is restarting — try that again in a
+    // moment" never reached the screen, the router's own catch never ran (the throw was already
+    // eaten), and a brand-new shop's first screen was the grey words "Could not load setup." with
+    // an empty header, no reason, no retry and no link.
+    assert.doesNotMatch(ob, /api\.get\('\/api\/onboarding'\)\.catch\(\(\) => null\)/,
+      'swallowing the error is what leaves the screen with nothing to say')
+    const boot = ob.slice(ob.indexOf("api.get('/api/onboarding')"), ob.indexOf("api.get('/api/ai/providers')"))
+    assert.match(boot, /empty\(/, 'give it the shape every other load failure in the product has')
+    assert.match(boot, /id="ob-retry"/, 'a 502 during a deploy wants Try again')
+    assert.match(boot, /href="#\/"/, '…and a persistent 500 wants a way into the product regardless')
+  })
+
   /* ---------- the OTHER four screens that type for ten minutes and save once ----------
    * estimates.js registers guardLeave and is the only one. The price-matrix editor, the price
    * book's grid, Settings and the receptionist config each track a dirty flag, each show it, and
