@@ -143,8 +143,17 @@ suite before flipping `current`, and rolls back automatically if the service fai
 
 ```bash
 sudo -u printshopcrm cp .env.example .env
+sudo chmod 600 /opt/printshopcrm/.env    # see below — this one is not optional
 node -e "console.log('PSC_SECRET=' + require('crypto').randomBytes(32).toString('hex'))"
 ```
+
+`cp` leaves the copy at the mode your umask gives it — usually `0644` — and
+`/opt/printshopcrm` is `0755`, so without the `chmod` every account on the box can read this
+file. **`PSC_SECRET` signs every customer link the product issues**: estimate approval, payment,
+proof, work ticket. Anyone who can read that one line can mint a valid link to any customer's
+documents on any shop on this install, with nothing in any log to distinguish it from a real one.
+Your SMTP password, Stripe secret, QuickBooks refresh token and Drive backup token are on the
+lines beneath it.
 
 Edit `.env`. The minimum for a production install:
 

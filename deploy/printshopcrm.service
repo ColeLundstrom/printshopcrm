@@ -11,8 +11,10 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now printshopcrm
 #
-# Configuration comes from the EnvironmentFile below — copy .env.example to /opt/printshopcrm/.env
-# and edit it. PSC_SECRET is required; see INSTALL.md.
+# Configuration comes from the EnvironmentFile below — copy .env.example to /opt/printshopcrm/.env,
+# then `sudo chmod 600` it before you put anything in it, and edit. PSC_SECRET is required; see
+# INSTALL.md. The chmod matters: `cp` leaves the file world-readable, and PSC_SECRET signs every
+# customer share link this product issues — reading it is enough to forge one.
 
 [Unit]
 Description=PrintShopCRM

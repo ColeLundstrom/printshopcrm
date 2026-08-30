@@ -33,6 +33,7 @@ Also back it up somewhere off the machine. A volume is not a backup.
 git clone https://github.com/ColeLundstrom/printshopcrm.git
 cd printshopcrm
 cp .env.example .env
+chmod 600 .env        # it will hold PSC_SECRET, which signs every customer link
 ```
 
 Generate a secret and put it in `.env` as `PSC_SECRET`:

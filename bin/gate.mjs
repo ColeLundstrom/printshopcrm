@@ -3308,6 +3308,35 @@ await t('a compose install still answers after the operator changes PORT', async
 })
 
 section('the install the docs describe can be followed to the end')
+/* ---------- …and the file it reads its credentials from is not world-readable ----------
+ * INSTALL.md step 5 is `sudo -u printshopcrm cp .env.example .env`. .env.example is tracked 0644,
+ * so under the default umask the copy is 0644 too, and /opt/printshopcrm is 0755. Nothing in the
+ * distribution ever narrows it: no chmod in INSTALL.md, none in the unit file's own setup comment,
+ * none in SECURITY.md, and no boot warning — while the app warns about PSC_SECRET being the dev
+ * value, about PSC_TRUST_PROXY and about PSC_PUBLIC_URL.
+ *
+ * That file holds PSC_SECRET, which signs every /p/ share link in the product. Any second local
+ * principal — the operator's own login, a CI deploy user, another vhost's www-data, a compromised
+ * unrelated service — can read it and then mint a valid estimate, pay, proof or work-ticket link
+ * for any customer of any shop on the install, with nothing in any log to tell it apart from a
+ * real one. The SMTP password, the Stripe secret, the QuickBooks refresh token and the Drive
+ * backup token are on the lines beneath it. */
+await t('the install locks down the file that holds every credential', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const install = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+  const made = install.indexOf('cp .env.example .env')
+  assert.ok(made > 0, 'INSTALL.md should still create the .env')
+  assert.match(install.slice(made, made + 400), /chmod\s+0?600[^\n]*\.env/,
+    'PSC_SECRET signs every customer share link and `cp` leaves the file 0644 — the install has to narrow it')
+  const unit = readFileSync(join(root, 'deploy/printshopcrm.service'), 'utf8')
+  assert.match(unit, /^EnvironmentFile=/m, 'the unit still reads an EnvironmentFile')
+  assert.match(unit, /chmod\s+0?600/,
+    'the unit names that file in its own setup comment, which is where an operator copying it will read it')
+})
+
 await t('the account the unit runs as is one the docs tell you to create', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')

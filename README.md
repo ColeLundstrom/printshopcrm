@@ -211,6 +211,7 @@ git clone https://github.com/ColeLundstrom/printshopcrm.git /opt/printshopcrm
 cd /opt/printshopcrm
 npm ci --omit=dev
 cp .env.example .env        # then edit it — PSC_SECRET is required
+chmod 600 .env              # it holds PSC_SECRET and every API key; cp leaves it world-readable
 npm start                   # reads .env; `node server.mjs` does NOT
 ```
 
