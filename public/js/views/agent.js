@@ -1,4 +1,4 @@
-import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText, onOnce, go, confirmModal, guardLeave } from '../core.js'
+import { api, $, $$, esc, relTime, pill, setPage, empty, toast, on, modal, closeModal, copyText, onOnce, go, confirmModal, guardLeave, announce } from '../core.js'
 
 /* The AI Receptionist — configure the bot, preview it live, and work the leads it captures. */
 
@@ -72,7 +72,7 @@ export async function agentView() {
       </div>
 
       <div class="row" style="justify-content:flex-end;gap:8px">
-        <span class="dim" id="save-note" style="font-size:12px"></span>
+        <span class="dim" id="save-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:12px"></span>
         <button class="btn" id="save">Save receptionist</button>
       </div>
     </div>
@@ -216,6 +216,10 @@ function bindConfig() {
     try {
       const r = await api.put('/api/agent/config', body)
       cfg = r.config; cfgDirty = false; $('#save-note').textContent = 'Saved ✓'
+      // The failure path below toasts, and a toast announces. Success wrote "Saved ✓" into a silent
+      // span — told when it fails, never told when it worked, which is the shape that produces a
+      // second save.
+      announce('Receptionist settings saved.')
       toast('Receptionist updated')
       updateEmbed(); resetPreview()
       setTimeout(() => { $('#save-note').textContent = '' }, 2500)

@@ -3155,6 +3155,53 @@ await t('no glyph-only button is left for a screen reader to guess at', async ()
     assert.doesNotMatch(src, GLYPH, `${f} has a glyph-only button with no aria-label — a screen reader calls it "times"`)
   }
 })
+/* ---------- the answer to "will my customer actually receive this?" is spoken ----------
+ * Every connection test in Settings and in the setup wizard writes its result into a bare
+ * `<span class="dim">` beside the button, deliberately — the answer belongs next to the control it
+ * answers for, not in a toast. But none of them carried role/aria-live and none called announce(),
+ * so to a screen-reader user pressing "Verify SMTP" the entire exchange is silence: silence on
+ * "Checking…", silence on "SMTP connection OK ✓", and silence on
+ * "Failed: 535-5.7.8 Username and Password not accepted". Nothing else in the product answers that
+ * question — the Outbox card says whether SMTP is CONFIGURED, not whether it works.
+ *
+ * The receptionist's Save is worse in kind: the failure path toasts (which announces) and the
+ * SUCCESS path writes "Saved ✓" into the silent span. Told when it fails, never told when it
+ * worked, which is the shape that reliably produces a second save.
+ *
+ * pricing.js has done this correctly since round 20 and is the idiom being copied. */
+await t('the tests that answer "does my email actually work" say so out loud', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => fs.readFileSync(join(root, f), 'utf8')
+  for (const [f, id, what] of [
+    ['public/js/views/misc.js', 'email-test-note', 'Verify SMTP / Send test email'],
+    ['public/js/views/misc.js', 'sms-test-note', 'Send test SMS'],
+    ['public/js/views/misc.js', 'ai-note', 'the AI connection test'],
+    ['public/js/views/misc.js', 'slack-note', 'the Slack test ping'],
+    ['public/js/views/misc.js', 'gdrive-note', 'Google Drive art storage'],
+    ['public/js/views/misc.js', 'sup-test-note', "the distributor's Check connection"],
+    ['public/js/views/misc.js', 'mail-note', 'the lite Send a test'],
+    ['public/js/views/agent.js', 'save-note', 'the receptionist Save'],
+    ['public/js/views/onboarding.js', 'ob-drive-note', "the wizard's Drive step"],
+    ['public/js/views/onboarding.js', 'email-note', "the wizard's email test"],
+    ['public/js/views/onboarding.js', 'sms-note', "the wizard's SMS test"],
+    ['public/js/views/onboarding.js', 'ai-note', "the wizard's AI test"],
+    ['public/js/views/onboarding.js', 'dist-note', "the wizard's distributor check"],
+  ]) {
+    assert.match(read(f), new RegExp(`id="${id}"[^>]*aria-live="polite"`),
+      `${f}: #${id} is the only answer the shop gets for ${what}, and it is a silent span`)
+  }
+  // A live region is not enough where a re-render replaces the node, and never enough for a
+  // refusal the shop has to act on — so the settled outcome is spoken too, assertively on failure.
+  for (const f of ['public/js/views/misc.js', 'public/js/views/onboarding.js', 'public/js/views/agent.js']) {
+    assert.match(read(f), /announce\(/, `${f} never speaks a settled result`)
+  }
+  assert.match(read('public/js/views/misc.js'), /announce\([^\n]*, *true\)/,
+    'a failed SMTP check is the thing a shop most needs to hear, and it has to interrupt')
+})
+
 /* ---------- and neither is a switch or a picker ----------
  * The glyph rule above covers <button>. It does not cover the controls that carry no text at all.
  *

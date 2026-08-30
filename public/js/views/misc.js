@@ -1,4 +1,4 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave } from '../core.js'
+import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce } from '../core.js'
 
 /* ---------- art queue ---------- */
 
@@ -225,7 +225,7 @@ function aiCard(aiInfo, esc) {
       <div class="row" style="gap:10px;align-items:center">
         <button class="btn ghost sm" id="ai-test" type="button">Test connection</button>
         ${disconnectBtn('ai', 'AI model')}
-        <span class="dim" id="ai-note" style="font-size:11.5px">${statusNote}</span>
+        <span class="dim" id="ai-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px">${statusNote}</span>
       </div>
       <details class="disc"><summary>${configured ? 'Change provider, model or API key' : 'Set up AI — pick a provider and paste your key'}</summary>
         <div class="disc-b">
@@ -284,7 +284,7 @@ function slackCard(esc) {
           <div class="row" style="gap:10px;align-items:center">
             <button class="btn ghost sm" id="slack-test" type="button">Test connection</button>
             ${disconnectBtn('slack', 'Slack')}
-            <span class="dim" id="slack-note" style="font-size:11.5px">Checks both values and sends a test ping to your Slack app.</span>
+            <span class="dim" id="slack-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px">Checks both values and sends a test ping to your Slack app.</span>
           </div>
         </li>
       </ol>
@@ -425,14 +425,14 @@ export async function settingsView() {
             <div class="grid2">${f('smtp_host', 'SMTP host', 'e.g. smtp.postmarkapp.com, email-smtp.us-east-1.amazonaws.com')}${f('smtp_port', 'Port', '587 (TLS) or 465 (SSL)', 'number')}</div>
             <div class="grid2">${f('smtp_user', 'SMTP username')}${sf('smtp_pass', 'SMTP password / API token')}</div>
             ${f('smtp_from', 'From address', 'The address customers see. Defaults to your shop email.')}
-            <div class="row" style="gap:8px"><button class="btn ghost sm" id="verify-email">Verify SMTP</button><button class="btn ghost sm" id="test-email">Send test email</button>${disconnectBtn('smtp', 'email sending')}<span class="dim" id="email-test-note" style="font-size:11.5px"></span></div>
+            <div class="row" style="gap:8px"><button class="btn ghost sm" id="verify-email">Verify SMTP</button><button class="btn ghost sm" id="test-email">Send test email</button>${disconnectBtn('smtp', 'email sending')}<span class="dim" id="email-test-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span></div>
           </div></details>
 
         <details class="disc"><summary>Text-message settings — ${notif.sms ? `texting from ${esc(notif.sms_from || 'your number')}` : 'not connected, add your Twilio details'}</summary>
           <div class="disc-b">
             <div class="grid2">${f('twilio_sid', 'Twilio Account SID', 'ACxxxxxxxx')}${sf('twilio_token', 'Twilio Auth Token')}</div>
             ${f('twilio_from', 'From number or Messaging Service SID', '+1XXXXXXXXXX or MGxxxxxxxx')}
-            <div class="row" style="gap:8px"><button class="btn ghost sm" id="test-sms">Send test SMS</button>${disconnectBtn('twilio', 'text messaging')}<span class="dim" id="sms-test-note" style="font-size:11.5px"></span></div>
+            <div class="row" style="gap:8px"><button class="btn ghost sm" id="test-sms">Send test SMS</button>${disconnectBtn('twilio', 'text messaging')}<span class="dim" id="sms-test-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span></div>
           </div></details>
       </div>
     </div>`}
@@ -494,7 +494,7 @@ export async function settingsView() {
         <div class="row" style="gap:10px;align-items:center;margin-top:10px">
           <button class="btn sm" type="button" id="gdrive-connect" ${s.gdrive_client_id && s.gdrive_client_secret_set ? '' : 'disabled title="Save your Client ID and secret first"'}>${s.gdrive_connected ? 'Reconnect Drive' : 'Connect Drive'}</button>
           ${s.gdrive_connected ? '<button class="btn ghost sm" type="button" id="gdrive-disconnect">Disconnect</button>' : ''}
-          <span class="dim" id="gdrive-note" style="font-size:11.5px">${s.gdrive_connected ? '<span style="color:var(--accent)">✓ Art saves to your Drive</span>' : ''}</span>
+          <span class="dim" id="gdrive-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px">${s.gdrive_connected ? '<span style="color:var(--accent)">✓ Art saves to your Drive</span>' : ''}</span>
         </div>
       </div>
     </div>
@@ -522,7 +522,7 @@ export async function settingsView() {
         <div class="row" style="gap:10px;align-items:center;margin-top:10px">
           <button class="btn sm ghost" type="button" id="sup-test">Test with a real style</button>
           <input class="input" id="sup-style" placeholder="Gildan 5000" style="max-width:180px">
-          <span class="dim" id="sup-test-note" style="font-size:11.5px"></span>
+          <span class="dim" id="sup-test-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span>
         </div>
       </div>
     </div>
@@ -691,7 +691,8 @@ export async function settingsView() {
         note.innerHTML = r.delivered
           ? `✓ Sent to ${esc(to)} — check your inbox.`
           : `Couldn't send: ${esc(r.error || 'check the address and password')}`
-      } catch (e) { note.textContent = e.message }
+        announce(r.delivered ? `Test email sent to ${to}.` : `Could not send. ${r.error || 'check the address and password'}`, !r.delivered)
+      } catch (e) { note.textContent = e.message; announce(e.message, true) }
     }
   }
 
@@ -762,7 +763,8 @@ export async function settingsView() {
       note.innerHTML = r.available
         ? `<span style="color:var(--accent)">✓ Connected — ${esc(r.via || '')} · ${esc(r.model || '')}</span>`
         : `<span style="color:var(--red)">✕ ${esc(r.reason || 'Failed')}</span>`
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>` }
+      announce(r.available ? `AI connected — ${r.via || ''} ${r.model || ''}` : `AI test failed. ${r.reason || 'Failed'}`, !r.available)
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
   }
 
   // Slack card: fetch the ready-to-paste manifest, and let the owner verify the token themselves.
@@ -793,7 +795,8 @@ export async function settingsView() {
       note.innerHTML = r.ok
         ? `<span style="color:var(--accent)">✓ Connected to ${esc(r.team || 'your workspace')} as ${esc(r.bot || 'the bot')}</span>`
         : `<span style="color:var(--red)">✕ ${esc(r.error || 'Failed')}</span>`
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>` }
+      announce(r.ok ? `Slack connected to ${r.team || 'your workspace'}.` : `Slack test failed. ${r.error || 'Failed'}`, !r.ok)
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
   }
 
   if ($('#gdrive-connect')) $('#gdrive-connect').onclick = async () => {
@@ -802,8 +805,8 @@ export async function settingsView() {
       // save any freshly-typed keys first, then start OAuth
       await api.put('/api/settings', { ...formData($('#gdrive')) })
       const r = await api.get('/api/gdrive/connect')
-      if (r?.url) { window.open(r.url, '_blank', 'noopener'); note.innerHTML = 'Finish on the Google tab, then reload this page.' }
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+      if (r?.url) { window.open(r.url, '_blank', 'noopener'); note.innerHTML = 'Finish on the Google tab, then reload this page.'; announce('Finish on the Google tab, then reload this page.') }
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; announce(e.message, true) }
   }
   if ($('#gdrive-disconnect')) $('#gdrive-disconnect').onclick = async () => {
     try { await api.post('/api/gdrive/disconnect', {}); toast('Google Drive disconnected'); repaintChrome() } catch (e) { toast(e.message, true) }
@@ -831,7 +834,8 @@ export async function settingsView() {
       note.innerHTML = r.ok
         ? `<span style="color:var(--accent)">✓ ${esc(r.label)}</span>`
         : `<span style="color:var(--red)">✕ ${esc(r.reason || 'No live price came back')}</span>`
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>` }
+      announce(r.ok ? `Distributor connected. ${r.label}` : `Distributor check failed. ${r.reason || 'No live price came back'}`, !r.ok)
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
   }
 
   // Delivery: verify + test buttons. These save first so the just-typed credentials are used.
@@ -842,18 +846,24 @@ export async function settingsView() {
     $('#email-test-note').textContent = 'Checking…'; await saveDelivery()
     const r = await api.post('/api/notify/verify-email').catch((e) => ({ ok: false, error: e.message }))
     $('#email-test-note').textContent = r.ok ? 'SMTP connection OK ✓' : `Failed: ${r.error || 'check credentials'}`
+    // Spoken as well as shown. These spans sit beside the button they answer for, deliberately —
+    // the fix is to make them audible, not to move them into a toast. A refusal interrupts,
+    // because "will my customer actually receive this estimate?" has no other answer in the app.
+    announce(r.ok ? 'SMTP connection OK.' : `SMTP check failed. ${r.error || 'check credentials'}`, !r.ok)
   }
   if ($('#test-email')) $('#test-email').onclick = async () => {
     const to = prompt('Send a test email to:', s.shop_email || me.owner_email || ''); if (!to) return
     $('#email-test-note').textContent = 'Sending…'; await saveDelivery()
     const r = await api.post('/api/notify/test', { to, channel: 'email' }).catch((e) => ({ delivered: false, error: e.message }))
     $('#email-test-note').textContent = r.delivered ? 'Sent ✓ check the inbox' : `Not sent: ${r.error || 'add SMTP credentials'}`
+    announce(r.delivered ? 'Test email sent — check the inbox.' : `Test email not sent. ${r.error || 'add SMTP credentials'}`, !r.delivered)
   }
   if ($('#test-sms')) $('#test-sms').onclick = async () => {
     const to = prompt('Send a test SMS to (E.164, e.g. +17145551234):', s.shop_phone || ''); if (!to) return
     $('#sms-test-note').textContent = 'Sending…'; await saveDelivery()
     const r = await api.post('/api/notify/test', { to, channel: 'sms' }).catch((e) => ({ delivered: false, error: e.message }))
     $('#sms-test-note').textContent = r.delivered ? 'Sent ✓' : `Not sent: ${r.error || 'add Twilio credentials'}`
+    announce(r.delivered ? 'Test text sent.' : `Test text not sent. ${r.error || 'add Twilio credentials'}`, !r.delivered)
   }
 
   // Change your own password.
@@ -1013,7 +1023,7 @@ function emailCard(s, notif, esc) {
       <div class="row" style="gap:8px;margin-top:16px;align-items:center">
         <button class="btn" id="mail-save">${live ? 'Save changes' : 'Connect email'}</button>
         <button class="btn ghost sm" id="mail-test">Send myself a test</button>
-        <span class="dim" id="mail-note" style="font-size:11.5px"></span>
+        <span class="dim" id="mail-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span>
       </div>
     </div>
   </div>`

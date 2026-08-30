@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, on, go, toast } from '../core.js'
+import { api, $, $$, esc, setPage, on, go, toast, announce } from '../core.js'
 import { importContacts } from './contacts.js'
 
 /**
@@ -227,7 +227,7 @@ function panel(key) {
         <div class="row" style="gap:10px;align-items:center;margin-top:6px">
           <button class="btn ghost sm" id="ob-drive-save" type="button">Save Google keys</button>
           <button class="btn" id="ob-drive-connect" type="button" ${haveCreds ? '' : 'disabled title="Save your Client ID and secret first"'}>${connected ? 'Reconnect Google Drive' : 'Connect Google Drive'}</button>
-          <span class="ob-hint" id="ob-drive-note">${connected ? '<span style="color:var(--accent)">✓ Connected — art saves to your Drive</span>' : ''}</span>
+          <span class="ob-hint" id="ob-drive-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">✓ Connected — art saves to your Drive</span>' : ''}</span>
         </div>
         ${connected ? '' : '<div class="ob-note">Until you connect, art uploads fall back to limited local storage on our server. Add your Google keys above and connect so nothing gets capped.</div>'}
       </div>${foot()}`
@@ -245,7 +245,7 @@ function panel(key) {
           <div class="field"><label>Encryption</label><select class="input" name="smtp_secure">
             <option value="true" ${String(s.smtp_secure) === 'true' ? 'selected' : ''}>SSL/TLS (port 465)</option>
             <option value="false" ${String(s.smtp_secure) !== 'true' ? 'selected' : ''}>STARTTLS (port 587)</option></select></div></div>
-        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="email-test" type="button">Send test email</button><span class="ob-hint" id="email-note">${connected ? '<span style="color:var(--accent)">✓ Email connected — messages will actually send</span>' : ''}</span></div>
+        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="email-test" type="button">Send test email</button><span class="ob-hint" id="email-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">✓ Email connected — messages will actually send</span>' : ''}</span></div>
       </div>${foot()}`
   }
 
@@ -257,7 +257,7 @@ function panel(key) {
         ${f('twilio_sid', 'Twilio Account SID', s.twilio_sid, { ph: 'AC…' })}
         ${sf('twilio_token', 'Auth token', s.twilio_token_set, { hint: 'From your Twilio console.' })}
         ${f('twilio_from', 'Your Twilio number', s.twilio_from, { ph: '+15551234567', hint: 'The number texts are sent from.' })}
-        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="sms-test" type="button">Send test text</button><span class="ob-hint" id="sms-note">${connected ? '<span style="color:var(--accent)">✓ SMS connected — conversations can text</span>' : ''}</span></div>
+        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="sms-test" type="button">Send test text</button><span class="ob-hint" id="sms-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">✓ SMS connected — conversations can text</span>' : ''}</span></div>
       </div>${foot()}`
   }
 
@@ -284,7 +284,7 @@ function panel(key) {
           <div class="field"><label>Model</label><select class="input" name="ai_model" id="ai-model">${modelOpts(cur.provider, cur.model)}</select></div>
         </div>
         ${sf('ai_api_key', 'API key', cur.key_set, { hint: 'console.anthropic.com or platform.openai.com' })}
-        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="ai-test" type="button">Test connection</button><span class="ob-hint" id="ai-note"></span></div>
+        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="ai-test" type="button">Test connection</button><span class="ob-hint" id="ai-note" role="status" aria-live="polite" aria-atomic="true"></span></div>
       </div>${foot()}`
   }
 
@@ -296,7 +296,7 @@ function panel(key) {
       <div class="ob-svc-h" style="margin-top:14px">SanMar</div>
       <div class="grid2">${f('sanmar_user', 'Username', s.sanmar_user)}${sf('sanmar_pass', 'Password', s.sanmar_pass_set)}</div>
       ${f('sanmar_cust', 'Customer #', s.sanmar_cust, { hint: 'For customer-specific pricing.' })}
-      <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="dist-check" type="button">Check connection</button><span class="ob-hint" id="dist-note"></span></div>
+      <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="dist-check" type="button">Check connection</button><span class="ob-hint" id="dist-note" role="status" aria-live="polite" aria-atomic="true"></span></div>
     </div>${foot()}`
 
   if (key === 'import') return `<div class="ob-head"><h2>◉ Bring your customers over</h2>
@@ -453,13 +453,20 @@ function wire(key) {
       note.textContent = 'Sending…'
       try {
         const r = await api.post('/api/notify/test', { channel, to: to.trim() })
+        const failed = !r || r.error || r.delivered === false
         note.innerHTML = !r || r.error
           ? `<span style="color:var(--red)">✕ ${esc((r && r.error) || 'Send failed')}</span>`
           : r.delivered === false
             ? `<span style="color:var(--amber)">Saved, but not delivered yet (${esc(r.via || 'no mail transport')}). Finish your ${channel === 'email' ? 'SMTP' : 'Twilio'} details to actually send.</span>`
             : `<span style="color:var(--accent)">✓ Test ${channel === 'email' ? 'email' : 'text'} sent — check it arrived</span>`
+        // This is the first screen a new shop ever sees, and this span is the only answer it gives
+        // to "will my customers actually receive anything". Say it, and interrupt on a refusal.
+        announce(failed
+          ? `Test ${channel === 'email' ? 'email' : 'text'} not sent. ${(r && r.error) || `finish your ${channel === 'email' ? 'SMTP' : 'Twilio'} details`}`
+          : `Test ${channel === 'email' ? 'email' : 'text'} sent — check it arrived.`, failed)
       } catch (e) {
         note.innerHTML = `<span style="color:var(--amber)">Couldn't send a test (${esc(e.message)}). Your settings saved — try again once ${channel === 'email' ? 'SMTP' : 'Twilio'} is set.</span>`
+        announce(`Could not send a test. ${e.message}`, true)
       }
     })
     // The main Save & continue button still persists the form and advances (handled below).
@@ -478,7 +485,8 @@ function wire(key) {
       try {
         const r = await api.post('/api/ai/test', { provider, model: $('#ai-model').value, api_key: $('#ai-key,[name=ai_api_key]', $('#ob-form')).value?.trim?.() || $('[name=ai_api_key]').value.trim(), use_saved: !$('[name=ai_api_key]').value.trim() })
         note.innerHTML = r.available ? `<span style="color:var(--accent)">✓ Connected — ${esc(r.model || '')}</span>` : `<span style="color:var(--red)">✕ ${esc(r.reason || 'Failed')}</span>`
-      } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>` }
+        announce(r.available ? `AI connected — ${r.model || ''}` : `AI test failed. ${r.reason || 'Failed'}`, !r.available)
+      } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
     }
   }
 
@@ -487,7 +495,10 @@ function wire(key) {
       const note = $('#dist-note'); note.textContent = 'Saving & checking…'
       try { await saveSettings($('#ob-form')); const st = await api.get('/api/suppliers/status')
         note.innerHTML = st.connected ? `<span style="color:var(--accent)">✓ Connected: ${[st.ss && 'S&S', st.sanmar && 'SanMar', st.alpha && 'AlphaBroder'].filter(Boolean).join(', ')}</span>` : '<span style="color:var(--amber)">No distributor connected yet — check the credentials.</span>'
-      } catch (e) { note.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+        announce(st.connected
+          ? `Distributor connected: ${[st.ss && 'S&S', st.sanmar && 'SanMar', st.alpha && 'AlphaBroder'].filter(Boolean).join(', ')}`
+          : 'No distributor connected yet — check the credentials.', !st.connected)
+      } catch (e) { note.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; announce(e.message, true) }
     }
   }
 
