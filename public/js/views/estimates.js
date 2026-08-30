@@ -486,8 +486,16 @@ export async function estimateDetailView(id) {
   const canConvert = e.status === 'approved' && !e.invoice
   const pieces = e.items.reduce((s, i) => s + (i.sizes ? sizeTotal(i.sizes) : 0), 0)
 
+  // The server's rule for both PUT and DELETE is "has this become an invoice?", and neither route
+  // reads e.status at all. Gating these two on `approved` meant that a CUSTOMER clicking the public
+  // approval link — which the shop does not control, and which lands on the wrong one of two quotes
+  // emailed the same afternoon — removed the only Edit and the only Delete in the product, on a
+  // quote with no invoice and no job. Nothing writes an estimate back to 'draft', and Resend
+  // deliberately refuses to un-settle one, so the correction the server would have accepted had no
+  // button anywhere. `e.invoice` is on the payload already, selected with the same status != 'void'
+  // filter both routes use.
   setPage(e.estimate_number, `
-    ${e.status !== 'approved' ? `<button class="btn ghost" id="edit">Edit</button>` : ''}
+    ${!e.invoice ? `<button class="btn ghost" id="edit">Edit</button>` : ''}
     ${e.status === 'draft' || e.status === 'sent' ? `<button class="btn ghost" id="send">${e.status === 'sent' ? 'Resend' : 'Send to Customer'}</button>` : ''}
     ${e.status === 'sent' ? `<button class="btn ghost" id="approve">Mark Approved</button>` : ''}
     ${canConvert ? `<button class="btn" id="convert">${window.__EDITION === 'lite' ? 'Convert to Invoice' : 'Convert to Invoice + Job'}</button>` : ''}
@@ -548,7 +556,7 @@ export async function estimateDetailView(id) {
         <div class="copy" id="share" aria-label="Copy the customer approval link">${esc(location.origin + e.share_url)}</div>
         <div class="row" style="margin-top:10px">
           <a class="btn ghost sm" href="${esc(e.share_url)}" target="_blank">Open customer view</a>
-          ${e.status !== 'approved' ? `<button class="btn danger sm" id="del">Delete</button>` : ''}
+          ${!e.invoice ? `<button class="btn danger sm" id="del">Delete</button>` : ''}
         </div>
       </div></div>
     </div>
@@ -611,10 +619,15 @@ export async function estimateDetailView(id) {
       go(`/estimates/${r.id}/edit`)
     } catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = 'Duplicate' }
   })
+  // Duplicate eight lines above has always had this; Delete never did. Now that Delete is offered
+  // on a quote that may carry a job, the active-job 409 is a message the shop has to READ — without
+  // a catch it throws uncaught inside confirmModal and the dialog just sits there.
   $('#del')?.addEventListener('click', () => confirmModal('Delete estimate?', `${e.estimate_number} will be permanently removed.`, async () => {
-    await api.del(`/api/estimates/${id}`)
-    toast('Estimate deleted')
-    go('/estimates')
+    try {
+      await api.del(`/api/estimates/${id}`)
+      toast('Estimate deleted')
+      go('/estimates')
+    } catch (ex) { toast(ex.message, true) }
   }))
 }
 

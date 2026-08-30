@@ -2665,6 +2665,41 @@ section('the app does not discard what the shop has typed')
     assert.match(router, /runRouter\(\)/, '…that actually re-runs the route')
   })
 
+  /* ---------- the screen's rule has to be the SERVER's rule ----------
+   * estimates.js hid the only Edit and the only Delete in the product on `status !== 'approved'`.
+   * Both routes object to something else entirely: PUT refuses only when a live invoice exists,
+   * DELETE only on a live invoice or a job. Neither reads e.status at all.
+   *
+   * So a customer clicking Approve on the public link — which the shop does not control, and which
+   * happens on the wrong one of two quotes emailed the same afternoon — removed both corrections
+   * the server would have accepted, on a quote with no invoice and no job. Nothing anywhere writes
+   * an estimate back to 'draft' (five writers, all 'sent' or 'approved'), and Resend deliberately
+   * refuses to un-settle one. The route /estimates/:id/edit is still registered, so the escape was
+   * "type a URL you were never shown". The shop's real answer was to Duplicate, burning a new
+   * estimate number and leaving the phantom behind for ever. */
+  await t("the estimate screen offers the corrections the server would accept", async () => {
+    const est = code(await readFile('public/js/views/estimates.js'))
+    const head = est.slice(est.indexOf('setPage(e.estimate_number'), est.indexOf('setPage(e.estimate_number') + 700)
+    assert.doesNotMatch(head, /e\.status !== 'approved' \? `<button[^`]*id="edit"/,
+      'Edit must be gated on whether it became an invoice, not on whether the CUSTOMER approved it')
+    assert.match(head, /!e\.invoice \? `<button[^`]*id="edit"/, 'Edit is gated on the server\'s own rule')
+    assert.match(est, /!e\.invoice \? `<button[^`]*id="del"/, '…and so is Delete')
+    // `e.invoice` really is on the payload, selected with the same status != 'void' filter both
+    // routes use — canConvert already reads it.
+    assert.match(est, /const canConvert = e\.status === 'approved' && !e\.invoice/, 'precondition: e.invoice is already in scope')
+    const src = await readFile('server.mjs')
+    for (const [route, why] of [["app.put('/api/estimates/:id'", 'PUT'], ["app.delete('/api/estimates/:id'", 'DELETE']]) {
+      const i = src.indexOf(route)
+      assert.ok(i > 0, `${route} moved`)
+      const body = src.slice(i, src.indexOf('\napp.', i + 1))
+      assert.doesNotMatch(body, /status === 'approved'/, `${why} does not object to an approved estimate — the screen must not either`)
+    }
+    // And once Delete is offered again, the active-job 409 has to reach the shop as words.
+    const del = est.slice(est.indexOf("$('#del')?"), est.indexOf("$('#del')?") + 420)
+    assert.match(del, /catch/, "the delete handler had no catch — the active-job 409 would throw uncaught inside confirmModal")
+    assert.match(del, /toast\(ex\.message, true\)/, '…and it has to say what the server said')
+  })
+
   /* ---------- the fifth, and it is the FIRST screen a shop ever sees ----------
    * The setup wizard is not fe-22-02's shape (a tracked flag nobody acts on) — it has no unsaved
    * work concept at all. saveSettings() is wired to `Save & continue` and nothing else, while the
