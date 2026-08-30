@@ -8,6 +8,10 @@ let sortBy = 'margin'
 
 export async function roiView() {
   setPage('Profitability', `<a class="btn ghost" href="/api/export/quickbooks.iif" download>Export to QuickBooks</a>`)
+  // The sort tabs are inside the #view repaint their own click triggers, so pressing one dropped
+  // focus on <body>. Same shape board.js already uses, and the gate already asserts it there.
+  const active = document.activeElement
+  const keepSort = active && $('#view')?.contains(active) && active.dataset?.s ? active.dataset.s : null
   $('#view').innerHTML = '<div class="dim">Costing every job…</div>'
   const d = await api.get('/api/roi')
   const t = d.totals
@@ -63,6 +67,7 @@ export async function roiView() {
 
   on($('#roi-sort'), '[data-s]', (_e, el) => { sortBy = el.dataset.s; roiView() })
   onOnce($('#view'), '[data-job]', (_e, el) => go(`/jobs/${el.dataset.job}`))
+  if (keepSort) $(`#roi-sort [data-s="${CSS.escape(keepSort)}"]`)?.focus?.()
 }
 
 const roiList = (rows) => rows.length ? `<table class="tbl"><tbody>${rows.map((r) => `

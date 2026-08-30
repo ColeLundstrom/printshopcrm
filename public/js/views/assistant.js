@@ -95,6 +95,18 @@ export function closeAssistant() {
 
 function render() {
   const log = $('#asst-log', panel); if (!log) return
+  /**
+   * The two controls this function is fired FROM — a followup chip and "Undo that" — live inside
+   * #asst-log, and this innerHTML replaces it. So pressing either dropped focus on <body>, outside
+   * a NON-modal panel, with the skip link, the sidebar and the whole page to Tab back through.
+   * board.js and scan.js already carry this rule and the gate asserts it for both.
+   *
+   * `log.contains(activeElement)` is deliberately narrow: focus only moves when it was inside the
+   * node about to be destroyed, so someone typing in the compose box while an answer arrives is
+   * not interrupted, and neither is anyone reading the page behind this panel. The compose box is
+   * the control that does the next thing here, and unlike a chip it is outside the log.
+   */
+  const hadFocus = log.contains(document.activeElement)
   log.innerHTML = history.map((m, i) => m.role === 'user'
     ? `<div class="asst-msg user"><div class="asst-bub">${fmt(m.reply)}</div></div>`
     : `<div class="asst-msg bot">
@@ -105,6 +117,7 @@ function render() {
         ${(m.followups || []).length ? `<div class="asst-chips">${m.followups.map((f) => `<button class="asst-chip" data-chip="${esc(f)}">${esc(f)}</button>`).join('')}</div>` : ''}
       </div>`).join('')
   log.scrollTop = log.scrollHeight
+  if (hadFocus) $('#asst-input', panel)?.focus?.()
 }
 
 const pushBot = (payload) => { history.push({ role: 'bot', ...payload }); render() }

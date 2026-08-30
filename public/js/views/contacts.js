@@ -24,8 +24,14 @@ export async function contactsView() {
     // persistent #list and #tags elements — binding them inside render() added a new listener on
     // every render, and since the tag handler calls render(), one tag click fired 1→2→4→8… fetches.
     // Ten clicks meant a thousand concurrent GET /api/contacts and a locked tab.
+    // The tag chips are inside the node their own click replaces, so pressing one destroyed the
+    // button that was pressed and dropped focus on <body> — back to the top of the document, past
+    // the skip link and the whole sidebar. board.js carries this rule for the board's filter chips
+    // and the gate asserts it there; this is the same control one screen over.
+    const wasTag = document.activeElement?.dataset?.tag
     $('#list').innerHTML = body
     $('#tags').innerHTML = ['', ...d.tags].map((t) => `<button class="${filterTag === t ? 'on' : ''}" data-tag="${esc(t)}">${t ? esc(t) : 'All'}</button>`).join('')
+    if (wasTag !== undefined) $(`#tags [data-tag="${CSS.escape(wasTag)}"]`)?.focus?.()
   }
 
   $('#view').innerHTML = `<div class="searchbar">

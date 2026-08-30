@@ -19,11 +19,17 @@ async function loadChart(which) {
   // "Your matrices" is a screen of its own (list + editor + deep links), not a tab body.
   if (which === 'matrices') return go('/matrices')
   chart = which
-  if (which === 'book') return loadBook()
+  // Every branch below re-emits chartTabs(), which is the control that was just pressed — so the
+  // press destroyed its own button and dropped focus on <body>. board.js carries this rule for
+  // the board's filter chips and the gate asserts it there.
+  const wasTab = document.activeElement?.dataset?.c
+  const keepTab = () => { if (wasTab) $(`#pm-tabs [data-c="${CSS.escape(wasTab)}"]`)?.focus?.() }
+  if (which === 'book') { await loadBook(); return keepTab() }
   const qs = which === 'screen' ? '' : `?chart=${which}`
   const r = await api.get(`/api/pricing/matrix${qs}`)
   if (which === 'screen') { state = { ...r.defaults, deco: 'Screen Print' }; render(r.matrix, r.defaults) }
   else { state = { ...r.defaults }; renderChart(r.matrix) }
+  keepTab()
 }
 
 const chartTabs = () => `<div class="tabs" id="pm-tabs" style="margin-bottom:14px">

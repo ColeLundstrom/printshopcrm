@@ -3672,6 +3672,65 @@ await t('a board repaint puts the keyboard back where it was, and says why it mo
     'a screen that repaints itself under a screen-reader user has to say why')
 })
 
+/* ---------- …and so does every other control that repaints itself away (v28) ----------
+ *
+ * The board's filter chips are covered above and the gate has asserted them for rounds. Four more
+ * controls render themselves INSIDE the node their own click replaces, so every press destroys
+ * the button that was pressed and drops focus on <body> — back past the skip link, the sidebar
+ * and the whole page. Same defect, same fix, four screens over. */
+await t('four more segmented controls hand the keyboard back after they repaint', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => fs.readFileSync(join(root, f), 'utf8')
+  for (const [f, why] of [
+    ['public/js/views/contacts.js', 'the customer tag filter rebuilds #tags, destroying the tag that was pressed'],
+    ['public/js/views/roi.js', 'the Profitability sort tabs are inside the #view repaint they trigger'],
+    ['public/js/views/pricing.js', 'chartTabs() is re-emitted by every branch of loadChart()'],
+    ['public/js/views/assistant.js', 'the followup chips and "Undo that" live inside the #asst-log this innerHTML replaces'],
+  ]) {
+    const src = read(f)
+    assert.match(src, /document\.activeElement/, `${f}: ${why}`)
+    assert.match(src, /\.focus\?\.\(\)/, `${f}: …and nothing hands the keyboard back`)
+  }
+  // The Assistant is the sharpest of the four: its panel is NOT modal, so <body> is not even
+  // inside it. Check the ordering there specifically.
+  const a = read('public/js/views/assistant.js')
+  const r = a.slice(a.indexOf('function render()'), a.indexOf('const pushBot ='))
+  assert.ok(r.length > 100, 'assistant render() moved — re-point this test')
+  assert.ok(r.indexOf('document.activeElement') < r.indexOf('log.innerHTML'),
+    'the check has to run before the innerHTML — after it, focus is already on <body>')
+  assert.match(r, /\$\('#asst-input', panel\)\?\.focus\?\.\(\)/,
+    'hand it to the one control in the panel that survives a repaint')
+})
+
+/* ---------- a screen that fails to load says so (v28) ----------
+ * #view is a plain <main>, not a live region, so the router's "Something broke" panel and its 404
+ * panel both appeared in total silence: the screen a shop asked for did not load, and nothing said
+ * so and nothing took focus. app.js's bootFailed() does all three things for the identical failure
+ * one file away. */
+await t('the router\'s failure and 404 panels are announced and take focus', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const core = fs.readFileSync(join(root, 'public/js/core.js'), 'utf8')
+  const rr = core.slice(core.indexOf('export async function runRouter()'), core.indexOf('export function setPage('))
+  assert.ok(rr.length > 200, 'runRouter moved — re-point this test')
+  assert.match(rr, /announce\(`That screen did not load\./, 'the failure panel is silent')
+  assert.match(rr, /setAttribute\('role', 'alert'\)/, '…and is not a live region')
+  assert.match(rr, /again\.focus\?\.\(\)/, 'the one control that gets the shop off it never gets the keyboard')
+  assert.match(rr, /announce\(`Page not found: \$\{path\}`, true\)/, 'the 404 panel is silent too')
+  assert.match(rr, /querySelector\('a\.btn'\)\?\.focus\?\.\(\)/, '…and its way out never gets the keyboard')
+  // The role must come OFF again, or the whole app becomes one live region and every navigation
+  // reads the entire screen out.
+  assert.match(rr, /removeAttribute\('role'\)/,
+    'role=alert is set on #view and never cleared, so every subsequent screen is read out in full')
+  assert.ok(rr.indexOf("removeAttribute('role')") < rr.indexOf("setAttribute('role', 'alert')"),
+    'the clear has to happen at the top of every route, before the branch that sets it')
+})
+
 /* ---------- Floor Mode confirms a scan out loud (v20) ----------
  * Every tap on this page stamps a labour timestamp the profitability report is built from, with no
  * undo. It confirmed by swapping innerHTML — visible if you can see it, and completely silent

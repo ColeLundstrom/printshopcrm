@@ -535,6 +535,10 @@ export async function runRouter() {
   // Match against the path only; a `?query` (e.g. ?new=1, ?sep=1) shouldn't break routes
   // that end in `$`. Handlers read the full location.hash themselves for their params.
   const path = (location.hash.replace(/^#/, '') || '/').split('?')[0] || '/'
+  // The failure panel below marks #view as an alert region. Clearing it here, on every route, is
+  // what keeps that from turning the WHOLE APP into one — a live #view would read every screen
+  // out in full on every navigation, which is worse than the silence being fixed.
+  $('#view')?.removeAttribute('role')
   for (const r of routes) {
     const m = path.match(r.re)
     if (m) {
@@ -549,14 +553,23 @@ export async function runRouter() {
         setPage('Something broke')
         $('#view').innerHTML = empty('⚠', 'Something broke', e.message,
           '<button class="btn" type="button" id="route-retry">Try again</button>')
+        // …and say it. #view is a plain <main>, not a live region, so this whole panel appeared
+        // in total silence: the screen a shop asked for did not load and nothing said so.
+        // app.js's bootFailed() does exactly these three things for the identical failure one
+        // file away — role=alert on the panel, an announcement, and the keyboard on the one
+        // control that gets you off it.
+        $('#view').setAttribute('role', 'alert')
+        announce(`That screen did not load. ${e.message}`, true)
         const again = $('#route-retry')
-        if (again) again.onclick = () => { again.disabled = true; again.textContent = 'Trying…'; runRouter() }
+        if (again) { again.onclick = () => { again.disabled = true; again.textContent = 'Trying…'; runRouter() }; again.focus?.() }
       }
       return
     }
   }
   setPage('Not found')
   $('#view').innerHTML = empty('⌕', 'Page not found', path, '<a class="btn ghost" href="#/">Back to dashboard</a>')
+  announce(`Page not found: ${path}`, true)
+  $('#view').querySelector('a.btn')?.focus?.()
 }
 
 export function setPage(title, actions = '', crumb = '') {
