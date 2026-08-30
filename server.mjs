@@ -2540,13 +2540,25 @@ app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
    * there is no screen and no API that can put it back. The two sibling deletes both guard: a job
    * refuses while a PO is still out, a customer refuses on open POs and on financials.
    *
-   * Like the PO guard, this is a step to take rather than a wall to hit: cancel or complete the
-   * job and the delete goes through. */
-  const job = get("SELECT job_number FROM jobs WHERE estimate_id = ? AND status = 'active' ORDER BY id LIMIT 1", +req.params.id)
+   * Like the PO guard, this is a step to take rather than a wall to hit — but the step has to be
+   * one that actually makes the quote safe to delete, and "complete the job" is not it.
+   *
+   * The guard used to match `status = 'active'` only, and dragging a card into the board's
+   * Complete column writes `status = 'complete'`. So the 409's own advice was the way past it: the
+   * delete went through and left a FINISHED order holding estimate_id NULL. That order keeps its
+   * pieces and its scanned labour and loses its price; the only routes that raise an invoice
+   * (convert, and the CSV import) both need an estimate, so it can never be billed; and shopRoi()
+   * filters out rows with revenue 0, so it does not read $0 in Profitability — it vanishes, and
+   * takes its real labour cost out of the shop's numbers with it. Nothing writes jobs.estimate_id
+   * outside the five INSERTs, so no screen and no API can put it back.
+   *
+   * Any job, then, not just an active one. The real exit is deleting the job, which is one click
+   * on the same board. */
+  const job = get('SELECT job_number FROM jobs WHERE estimate_id = ? ORDER BY id LIMIT 1', +req.params.id)
   if (job) {
     return res.status(409).json({
       code: 'has_active_job',
-      error: `${job.job_number} is in production against this quote. Deleting it now would leave the job on the board with no price, no way to invoice it and $0 against its labour in Profitability — and nothing can re-link it. Cancel or complete ${job.job_number} first.`,
+      error: `${job.job_number} was opened against this quote. Deleting it now would leave the job with no price, no way to invoice it and nothing at all in Profitability — and nothing can re-link it. Delete ${job.job_number} from the board first if the order is not happening.`,
     })
   }
   // One transaction with its artwork. The migration's trigger already handles the cascade, but

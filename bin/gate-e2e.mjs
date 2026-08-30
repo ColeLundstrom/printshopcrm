@@ -1423,10 +1423,23 @@ try {
     r = await req('DELETE', `/api/estimates/${strandE}`)
     chk('the quote cannot be deleted out from under a job in production', String(r.status), '^409$')
     chk('…and the refusal is machine-readable', String(r.json?.code), '^has_active_job$')
-    chk('…and it names the job and what to do', r.text, 'Cancel or complete')
+    chk('…and it names the job and what to do', r.text, 'Delete JOB-')
 
-    // The way out exists and is in the UI: finish the job, then the quote deletes.
+    /* …and the exit the message USED to name was the way in. The guard matched only
+     * `status='active'`, and dragging a card to the board's Complete column writes
+     * `status='complete'` — so "complete JOB-1001 first" made the delete go through, and left the
+     * finished 300-piece order with estimate_id NULL. Nothing in the product writes
+     * jobs.estimate_id outside the five INSERTs, so no screen and no API can put it back; the only
+     * routes that raise an invoice need an estimate, so it can never be billed; and shopRoi()
+     * drops rows with revenue 0, so the order does not show $0 in Profitability — it disappears,
+     * taking its real scanned labour cost with it. */
     await req('PATCH', `/api/jobs/${strandJ}/stage`, { body: { stage: 'complete' } })
+    r = await req('DELETE', `/api/estimates/${strandE}`)
+    chk('completing a job is not a door to stranding it', String(r.status), '^409$')
+    chk('…and the finished order still knows what it was worth',
+      String((await req('GET', `/api/jobs/${strandJ}`)).json?.job?.estimate_id ?? (await req('GET', `/api/jobs/${strandJ}`)).json?.estimate_id), `^${strandE}$`)
+
+    // The way out exists and is one click on the same screen: take the job off the board.
     r = await req('DELETE', `/api/jobs/${strandJ}`)
     chk('…the job can be taken off the board', String(r.status), '^200$')
     r = await req('DELETE', `/api/estimates/${strandE}`)
