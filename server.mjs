@@ -4943,8 +4943,29 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
   const money = (v) => { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null }
   const cellsIn = text.replace(/\r/g, '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.split(/[\t,]/).map((c) => c.trim()))
   if (cellsIn.length < 2) return res.status(400).json({ error: 'Need a header row of colours/units and at least one quantity row.' })
-  const header = cellsIn[0].slice(1).map((h) => Math.round(Number(String(h).replace(/[^0-9.]/g, '')) || 0)).filter((n) => n > 0)
-  if (!header.length) return res.status(400).json({ error: 'The first row should list the colours / stitch counts / sizes.' })
+  /**
+   * NOT compacted. The header array is read POSITIONALLY against each data row, so removing a
+   * heading shifts every price after it one column to the left and drops the last.
+   *
+   * A real screen-print card has an underbase column ("White Base") between the colour columns —
+   * ordinary, not exotic — and a garment-price or spacer column is just as common. That heading
+   * strips to '' → Number('')||0 → 0 → removed, and [1,2,0,3,4] became [1,2,3,4]. Measured on a
+   * real multipart upload of an eight-row sheet: of the 32 cells stored, 16 held the wrong price
+   * and the entire 4-colour column was dropped. The 144-piece 3-colour cell held the $0.45
+   * underbase upcharge, so quoteService answered $64.80 on a run the shop's own sheet prices at
+   * $590.40 — 89% under — while 5-colour fell silently back to the built-in calculator.
+   *
+   * The response said `filled: 32` and the screen said "Imported 32 price(s) from your sheet",
+   * which is the count of cells WRITTEN and was therefore green.
+   *
+   * Keeping the zeros in makes the loop below skip that one column — `if (units && price != null)`
+   * was already the right test — instead of shifting everything after it.
+   */
+  const header = cellsIn[0].slice(1).map((h) => Math.round(Number(String(h).replace(/[^0-9.]/g, '')) || 0))
+  if (!header.some((n) => n > 0)) return res.status(400).json({ error: 'The first row should list the colours / stitch counts / sizes.' })
+  // The headings we could not read, named, so the shop is told what was left out rather than
+  // being handed a green count over a sheet that is missing a column.
+  const unnamed = cellsIn[0].slice(1).filter((h, i) => !header[i] && String(h || '').trim())
   // A row label is a quantity BAND, and every real price card writes them as ranges. Stripping the
   // non-digits read "288-499" as the number 288,499 and "500-999" as 500,999, so bandMinFor put
   // eight ordinary rows onto the single 500+ band where each overwrote the last and the 1000+ row
@@ -4961,6 +4982,7 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
   // today and only stops two different rows sharing one cell key.
   const bands = [...book.bands]
   const cells = {}
+  let skipped = 0
   for (const row of cellsIn.slice(1)) {
     const qty = bandMinOf(row[0])
     if (!(qty > 0)) continue
@@ -4969,13 +4991,16 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
       const units = header[i]
       const price = money(raw)
       if (units && price != null) cells[`${qty}|${units}`] = price
+      else if (!units && price != null) skipped++
     })
   }
   // Report what was STORED, never what was read. That count is the shop's only evidence that its
-  // own price sheet is the one the app will quote from.
+  // own price sheet is the one the app will quote from — and now also what was NOT stored, which
+  // is the half that used to be invisible.
   const filled = Object.keys(cells).length
   if (!filled) return res.status(400).json({ error: 'No prices found. Use plain numbers like 4.25.' })
-  res.json({ ok: true, service, cells, filled, cols: header, bands: bands.sort((a, b) => a.min - b.min) })
+  res.json({ ok: true, service, cells, filled, skipped, unnamed_columns: unnamed,
+    cols: header.filter((n) => n > 0), bands: bands.sort((a, b) => a.min - b.min) })
 }))
 
 /** A plain JSON object — not an array, not a string, not null. */

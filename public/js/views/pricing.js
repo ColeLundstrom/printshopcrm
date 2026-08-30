@@ -220,8 +220,20 @@ function wireBook(b) {
       // The sheet's own price breaks travel with its prices. Without them the cells are keyed to
       // rows the book does not have, and every break the stock list lacks reads as the calculator.
       await api.put('/api/pricebook', { matrices: { [mxState.service]: r.cells }, ...(r.bands ? { bands: r.bands } : {}) })
-      note.innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price(s) from your sheet.</span>`
-      announce(`Imported ${r.filled} price${r.filled === 1 ? '' : 's'} from your sheet.`)
+      // A column whose heading is not a number — an underbase, a garment price, a spacer — is
+      // skipped, and the shop has to be told BEFORE it quotes off the sheet. Until the import was
+      // fixed those prices did not go missing, they landed one column to the left and this line
+      // said "Imported 32 price(s)" over a grid where half of them were the wrong price.
+      const cols = (r.unnamed_columns || []).filter(Boolean)
+      if (r.skipped > 0) {
+        const which = cols.length ? ` under ${cols.map(esc).join(', ')}` : ''
+        const msg = `Imported ${r.filled} price(s). ${r.skipped}${which} were skipped — that column heading is not a number of colours, stitches or sizes.`
+        note.innerHTML = `<span style="color:var(--amber)">${msg}</span>`
+        announce(msg, true)
+      } else {
+        note.innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price(s) from your sheet.</span>`
+        announce(`Imported ${r.filled} price${r.filled === 1 ? '' : 's'} from your sheet.`)
+      }
       reloadMatrixUnlessTyping()
     } catch (err) {
       note.innerHTML = `<span style="color:var(--red)">${esc(err.message)}</span>`

@@ -3538,8 +3538,10 @@ await t('…and it says out loud whether the shop\'s prices were saved', async (
   assert.match(pb, /id="mx-note"[^>]*aria-live="polite"/, 'and so was the matrix note')
   // A live region is not enough where the node itself is replaced by the re-render — and it is
   // never enough for an error the shop has to act on, which needs to interrupt.
-  assert.equal((pb.match(/announce\(/g) || []).length, 6,
-    'three outcomes, each with its success and its failure, must all be spoken')
+  assert.equal((pb.match(/announce\(/g) || []).length, 7,
+    'every outcome on this screen must be spoken — save, matrix save, import (clean AND partial), '
+    + 'and each of their failures. If you added an outcome, announce it and bump this number; '
+    + 'if this dropped, a note went back to being a silent span.')
   assert.match(pb, /announce\(`\$\{name\} was not saved\. \$\{err\.message\}`, true\)/,
     "the server's rejection is the one thing the shop most needs to hear, and it must interrupt")
 })
@@ -8516,7 +8518,7 @@ section('three screens that threw away the shop’s work')
     assert.ok(i > 0, 'the price-sheet input moved — re-point this test')
     // onOnce(root, sel, fn, evt = 'click'), and a display:none input inside a <label> gets a
     // synthetic click with no file on it. The handler has to be bound to 'change'.
-    assert.match(src.slice(i, i + 1800), /\},\s*'change'\)/, "#mx-file is still bound on click, so the import never runs")
+    assert.match(src.slice(i, i + 3000), /\},\s*'change'\)/, "#mx-file is still bound on click, so the import never runs")
   })
 }
 
@@ -11516,6 +11518,23 @@ await t('…and the signin route binds a real member rather than leaving it null
  * to follow it and downgrade POST to GET — the exact request a real cloud-metadata read needs, so
  * vetting the first hop alone would not close it. And the route had no rate limit, so it doubled
  * as an internal port scanner at two outbound fetches a call. */
+await t('the price-sheet import tells the shop when it skipped a column', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'public/js/views/pricing.js'), 'utf8')
+  const i = src.indexOf("'/api/pricebook/import'")
+  assert.ok(i > 0, 'the import handler moved — re-point this test')
+  const handler = src.slice(i, i + 1800)
+  // "Imported 32 price(s) from your sheet" over a grid missing a whole colour column was the
+  // shop's only signal, and it was green. The count of cells written is not the whole truth.
+  assert.match(handler, /r\.skipped/, 'the screen still reports only what was stored')
+  assert.match(handler, /unnamed_columns/, '…without naming the column that was left out')
+  assert.match(handler, /--amber/, 'a partial import must not read like a clean one')
+  assert.match(handler, /announce\(msg, true\)/, 'and it has to be announced, like every other warning here')
+})
+
 section('the Slack connection test cannot be pointed at the inside of the network')
 await t('it builds its target from the shop\'s own address, not the Host header', async () => {
   const { readFileSync } = await import('node:fs')

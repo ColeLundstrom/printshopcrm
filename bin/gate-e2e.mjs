@@ -4169,6 +4169,46 @@ try {
     chk('…so a 300-piece order quotes the shop\'s own 288 price, not the calculator', JSON.stringify(row288 || {}), '4\\.4')
   }
 
+  /* ---------- …and a column the sheet has that we cannot read does not shift the rest ----------
+   * A real screen-print card carries an underbase column between the colour columns. That heading
+   * strips to nothing, and the header array was COMPACTED while the data rows were read
+   * positionally against it — so [1,2,0,3,4] became [1,2,3,4] and every price after the underbase
+   * moved one column left, with the last dropped entirely.
+   *
+   * Measured on an eight-row sheet: of 32 cells stored, 16 held the wrong price and the whole
+   * 4-colour column was gone. quoteService then answered $64.80 on a 144-piece 3-colour run the
+   * shop's own sheet prices at $590.40 — 89% under — because that cell held the $0.45 underbase
+   * upcharge. The response said filled: 32 and the screen said "Imported 32 price(s) from your
+   * sheet", which is the count of cells written and was therefore green. */
+  {
+    const sheet = [
+      'Qty,1 Color,2 Color,White Base,3 Color,4 Color',
+      '144,2.60,3.35,0.45,4.10,4.85',
+      '288,2.35,3.05,0.45,3.75,4.45',
+    ].join('\n')
+    const fd = new FormData()
+    fd.append('service', 'Screen Print')
+    fd.append('file', new Blob([sheet], { type: 'text/csv' }), 'underbase.csv')
+    const up = await fetch(`${BASE}/api/pricebook/import`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: fd })
+    const imp = await up.json().catch(() => ({}))
+    chk('a sheet with an underbase column imports', String(up.status), '^200$')
+    chk('…the 3-colour price is the sheet\'s 3-colour price', String(imp.cells?.['144|3']), '^4.1$')
+    chk('…the 4-colour price is the sheet\'s 4-colour price', String(imp.cells?.['144|4']), '^4.85$')
+    chk('…and the underbase upcharge is not stored as anything\'s price',
+      JSON.stringify(Object.values(imp.cells || {})), '^(?!.*0\\.45).*$')
+    chk('…on every row, not just the first', String(imp.cells?.['288|4']), '^4.45$')
+    chk('…and the shop is TOLD a column was skipped, not handed a green count', String(imp.skipped), '^2$')
+    chk('…and told which one', JSON.stringify(imp.unnamed_columns || []), 'White Base')
+    chk('…while the columns it reports are only the ones it read', JSON.stringify(imp.cols || []), '^\\[1,2,3,4\\]$')
+
+    r = await req('PUT', '/api/pricebook', { body: { matrices: { 'Screen Print': imp.cells }, ...(imp.bands ? { bands: imp.bands } : {}) } })
+    r = await req('GET', '/api/pricebook/matrix?service=Screen%20Print&colors=3')
+    const row144 = (r.json?.matrix?.rows || []).find((x) => Number(x.qty ?? x.min ?? x.band) === 144)
+    chk('…so a 144-piece 3-colour run quotes the sheet, not the underbase upcharge',
+      JSON.stringify(row144 || {}), '4\\.1')
+    chk('…and never $0.45', JSON.stringify(row144 || {}), '^(?!.*0\\.45).*$')
+  }
+
   /* ---------- the customer's decision is theirs, and it is made once ----------
    * Two halves of the same story, both on the estimate a customer actually looks at.
    *
