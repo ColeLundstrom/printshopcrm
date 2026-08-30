@@ -2568,6 +2568,64 @@ section('the app does not discard what the shop has typed')
  * selected the first option, the field read "Screen Print", and formData() sent it on every save.
  * Changing a due date rewrote what the job IS — on the work ticket, the pick ticket, the packing
  * slip and Floor Mode — with no warning and no undo. */
+/* ---------- one click, one record ----------
+ * estimates.js's Create has been guarded since round 14 ("two clicks made two estimates, with two
+ * estimate numbers, and the shop then has to work out which one the customer was sent"), and four
+ * controls with exactly that shape never got it. */
+section('a second click does not make a second record')
+{
+  await t('the shared guard really runs its handler once', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const core = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+    const body = core.slice(core.indexOf('export function onceClick('), core.indexOf('export function formData('))
+    assert.ok(body.length > 60, 'core.js must export the guard')
+    const onceClick = new Function(`${body.replace('export function', 'function')}; return onceClick`)()
+
+    // A fake button, and a request that has not come back yet.
+    const btn = { disabled: false, textContent: 'Create Job', onclick: null }
+    let calls = 0
+    let settle
+    onceClick(btn, 'Creating…', () => { calls++; return new Promise((r) => { settle = r }) })
+    btn.onclick(); btn.onclick(); btn.onclick()
+    assert.equal(calls, 1, 'three clicks on shop wifi must make one record')
+    assert.equal(btn.disabled, true, 'and the button says so')
+    assert.equal(btn.textContent, 'Creating…', '…and shows progress, which is why it was clicked twice')
+    settle()
+    await new Promise((r) => setTimeout(r, 0))
+    assert.equal(btn.disabled, false, 'a refused save must still be editable')
+    assert.equal(btn.textContent, 'Create Job', 'and the label the shop was reading comes back')
+
+    // A handler that throws must not leave the button dead — that is a dead end with no way out.
+    const b2 = { disabled: false, textContent: 'Send', onclick: null }
+    onceClick(b2, 'Sending…', async () => { throw new Error('smtp refused') })
+    await b2.onclick().catch(() => {})
+    await new Promise((r) => setTimeout(r, 0))
+    assert.equal(b2.disabled, false, 'a thrown handler re-enables the button')
+    assert.equal(b2.textContent, 'Send')
+    assert.equal(onceClick(null, 'x', () => {}), null, 'a control that is not rendered is not an error')
+  })
+
+  await t('…and the four controls that create or send are wired to it', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const read = (f) => readFileSync(join(root, f), 'utf8')
+    // A second job number means a second purchase order, print package, work ticket and capacity
+    // claim, with nothing on the board saying they are the same order.
+    assert.match(read('public/js/views/board.js'), /onceClick\(\$\('#save', bg\)/, 'New Job')
+    // A second customer splits that customer's job history, lifetime value and A/R balance across
+    // two rows, and there is no merge anywhere in the product.
+    assert.match(read('public/js/views/contacts.js'), /onceClick\(\$\('#save', bg\)/, 'New Customer')
+    // These two mail a live customer.
+    assert.match(read('public/js/views/invoices.js'), /onceClick\(\$\('#send'\)/, 'Send Invoice')
+    assert.match(read('public/js/views/estimates.js'), /onceClick\(\$\('#send'\)/, 'Send Estimate')
+  })
+}
+
 section('the job form does not lie about what a job is')
 await t('a decoration outside the eight built-ins survives an edit', async () => {
   const { readFileSync } = await import('node:fs')

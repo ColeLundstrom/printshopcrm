@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce } from '../core.js'
+import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
@@ -574,7 +574,7 @@ export async function estimateDetailView(id) {
     }
   }
   $('#edit')?.addEventListener('click', () => go(`/estimates/${id}/edit`))
-  $('#send')?.addEventListener('click', async () => {
+  onceClick($('#send'), 'Sending…', async () => {
     const r = await api.post(`/api/estimates/${id}/send`)
     // Tell the truth: with no email connected, nothing was sent, so the shop hands over the link.
     toast(r.email_live && r.emailed_to ? `Emailed to ${r.emailed_to}` : 'Marked sent. No email connected yet, copy the customer link to send it')

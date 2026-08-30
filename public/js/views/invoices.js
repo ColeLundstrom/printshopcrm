@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 
 let filter = 'all'
@@ -207,14 +207,12 @@ export async function invoiceDetailView(id) {
   }))
   // Optional now: the button is not rendered on a voided invoice. And it reports what the server
   // says happened rather than announcing a delivery it has not been told about.
-  if ($('#send')) {
-    $('#send').onclick = async () => {
-      try {
-        const out = await api.post(`/api/invoices/${id}/send`)
-        toast(out?.emailed_to ? `Invoice emailed to ${out.emailed_to}. Check the Outbox` : 'Invoice queued. Check the Outbox')
-      } catch (e) { toast(e.message, true) }
-    }
-  }
+  onceClick($('#send'), 'Sending…', async () => {
+    try {
+      const out = await api.post(`/api/invoices/${id}/send`)
+      toast(out?.emailed_to ? `Invoice emailed to ${out.emailed_to}. Check the Outbox` : 'Invoice queued. Check the Outbox')
+    } catch (e) { toast(e.message, true) }
+  })
   // The way back from an invoice raised against the wrong customer or for the wrong amount. Until
   // this existed the only fix was sqlite3 on the server, so the mistake counted toward money owed
   // and chased the wrong customer for as long as the shop kept using the software.

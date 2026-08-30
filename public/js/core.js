@@ -440,6 +440,39 @@ export function confirmModal(title, msg, onYes, yesLabel = 'Delete') {
 }
 
 /** Reads every [name] control inside a container into a plain object. */
+/**
+ * A button whose handler cannot be run twice at once.
+ *
+ * The estimate editor's Create has guarded this since round 14 — "two clicks made two estimates,
+ * with two estimate numbers, and the shop then has to work out which one the customer was sent" —
+ * and four more controls with exactly that shape never got it. On shop wifi the round trip is
+ * long enough to click again, and a UI that shows no progress invites it:
+ *
+ *   New Job      two job numbers for one order, each with its own purchase order, print package,
+ *                work ticket and capacity claim, and nothing on the board says they are the same job
+ *   New Customer two customer records with one name, splitting that customer's job history,
+ *                lifetime value and A/R balance across two rows, with no merge anywhere
+ *   Send         a live customer gets the quote, or the invoice, twice
+ *
+ * The button is re-enabled in a `finally`, so a refused save is still editable and the label the
+ * shop was reading comes back. On the success paths the node has usually been detached by a close
+ * or a repaint, and touching a detached node is harmless.
+ */
+export function onceClick(btn, busyLabel, fn) {
+  if (!btn) return null
+  btn.onclick = async () => {
+    if (btn.disabled) return
+    const was = btn.textContent
+    btn.disabled = true
+    if (busyLabel) btn.textContent = busyLabel
+    try { await fn() } finally {
+      btn.disabled = false
+      if (busyLabel) btn.textContent = was
+    }
+  }
+  return btn
+}
+
 export function formData(root) {
   const out = {}
   for (const f of $$('[name]', root)) {

@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce} from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick } from '../core.js'
 
 let filterTag = ''
 
@@ -176,7 +176,7 @@ export function contactForm(c, after) {
       // Only ask for the certificate number once the box is ticked.
       const box = $('#tax-exempt', bg)
       box.onchange = () => { $('#exempt-id-wrap', bg).style.display = box.checked ? '' : 'none' }
-      $('#save', bg).onclick = async () => {
+      onceClick($('#save', bg), c ? 'Saving…' : 'Creating…', async () => {
         const d = formData(bg)
         if (!d.name?.trim()) return toast('Name is required', true)
         d.tags = d.tags.split(',').map((s) => s.trim()).filter(Boolean)
@@ -187,7 +187,7 @@ export function contactForm(c, after) {
           toast(c ? 'Customer saved' : 'Customer created')
           after?.(saved)
         } catch (e) { toast(e.message, true) }
-      }
+      })
     },
   })
 }

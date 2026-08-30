@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials } from '../core.js'
+import { api, $, $$, el, esc, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
 
@@ -243,7 +243,7 @@ export async function jobForm(job, after) {
       // Opening the customer form closes this modal, so reopen the job form once it saves —
       // it refetches contacts, which now includes the one just created.
       $('#add-contact', bg)?.addEventListener('click', () => contactForm(null, () => jobForm(job, after)))
-      $('#save', bg).onclick = async () => {
+      onceClick($('#save', bg), job ? 'Saving…' : 'Creating…', async () => {
         const d = formData(bg)
         if (!d.title?.trim()) return toast('Job title is required', true)
         if (!job && !d.contact_id) return toast(contacts.length ? 'Choose a customer for this job first' : 'Add a customer first', true)
@@ -262,7 +262,7 @@ export async function jobForm(job, after) {
           if (e.data?.code === 'multi_garment_quantities') return splitForm(job, e.data.lines || [], d, after)
           toast(e.message, true)
         }
-      }
+      })
     },
   })
 }
