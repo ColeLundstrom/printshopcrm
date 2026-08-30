@@ -10514,6 +10514,69 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('the staff invite is a mail door like every other mail door')
+
+await t('POST /api/members draws on the shared outbound cap and does not trust Host', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  // This route mails a caller-chosen address on the PLATFORM's relay (sendStaffInviteEmail passes
+  // platform:true), and the outboundLimit sweep that enumerated the mailing routes missed it. With
+  // open signup, anyone is an owner in seconds, and addMember's unique-email check — the only
+  // thing that would stop a repeat — is cleared by DELETE /api/members/:id.
+  assert.match(src, /app\.post\('\/api\/members', outboundLimit, wrap/,
+    'POST /api/members mails a stranger on the platform relay and had no cap at all')
+  const handler = src.slice(src.indexOf("app.post('/api/members'"), src.indexOf("app.post('/api/members'") + 2000)
+  assert.match(handler, /sendStaffInviteEmail\(\{[^}]*origin: trustedOrigin\(req\)/,
+    'the recipient is an address the caller named, so a forged Host must not choose the sign-in URL')
+})
+
+// Driven in a CHILD PROCESS for the same reason the reset case above is: tenants.mjs resolves
+// control.db from the environment at import time, and this file has already imported db.mjs.
+await t('a temporary password cannot carry extra paragraphs into the invitation', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const box = mkdtempSync(join(tmpdir(), 'psc-invite-'))
+  try {
+    // The password is interpolated verbatim into the body of a mail the PLATFORM sends to an
+    // address the caller chose. Nothing downstream escapes it, because a password legitimately
+    // contains punctuation — so it is refused at the door, the way oneRecipient() refuses list
+    // separators. addMember is the shared door every invite path goes through.
+    const script = `
+      const tn = await import(${JSON.stringify(join(root, 'lib/tenants.mjs'))})
+      const t = await tn.createTenant({ shop_name: 'Invite Co', owner_email: 'owner@gate.test', password: 'originalpass123' })
+      const tryAdd = async (email, password) => {
+        try { await tn.addMember(t.id, { name: 'Ops Team', email, password, role: 'staff' }); return 'accepted' }
+        catch (e) { return e.code || 'threw' }
+      }
+      console.log(JSON.stringify({
+        injected: await tryAdd('a@gate.test', 'aaaaaaaa\\n\\nACTION REQUIRED: update your card at http://evil.example'),
+        spaced:   await tryAdd('b@gate.test', 'aaaaaaaa bbbbbbbb'),
+        cr:       await tryAdd('c@gate.test', 'aaaaaaaa\\rbbbb'),
+        ordinary: await tryAdd('d@gate.test', 'GatePass-123456'),
+        tooShort: await tryAdd('e@gate.test', 'short'),
+      }))
+      process.exit(0)
+    `
+    const out = execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', script], {
+      env: { ...process.env, PSC_DB: join(box, 'psc.db'), PSC_CONTROL_DB: join(box, 'control.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+      encoding: 'utf8',
+    })
+    const r = JSON.parse(out.trim().split('\n').pop())
+    assert.equal(r.injected, 'weak_password', 'a password carrying its own paragraph must be refused, not mailed')
+    assert.equal(r.spaced, 'weak_password', '…and one with a space, which no invite needs and a header line cannot hold')
+    assert.equal(r.cr, 'weak_password', '…and a bare carriage return')
+    assert.equal(r.ordinary, 'accepted', 'an ordinary temporary password still works')
+    assert.equal(r.tooShort, 'weak_password', 'and the length rule is untouched')
+  } finally { rmSync(box, { recursive: true, force: true }) }
+})
+
 section('one order is one price, whichever panel the shop typed into')
 
 await t('the assistant prices the blank off the shop catalog, like every other quoting path', async () => {

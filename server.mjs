@@ -6936,7 +6936,14 @@ app.get('/api/members', wrap((req, res) => {
   res.json({ members: listMembers(req.tenant.id) })
 }))
 
-app.post('/api/members', wrap(async (req, res) => {
+// outboundLimit: this route MAILS, and it is the only mailing route in the file that spends the
+// PLATFORM's sending reputation rather than the shop's — sendStaffInviteEmail passes
+// `platform: true`, so lib/notify.mjs uses the platform relay, not the shop's own SMTP. It had no
+// limiter of any kind. Signup is open, so anyone is an owner five seconds after arriving, and
+// addMember's globally-unique-email check (the only thing that would stop a repeat) is cleared by
+// DELETE /api/members/:id — 40 add-and-delete cycles against one stranger's address all answered
+// 200. Joining the existing shared 'outbound' bucket rather than minting a fourteenth allowance.
+app.post('/api/members', outboundLimit, wrap(async (req, res) => {
   if (!staffGuard(req, res)) return
   const b = req.body || {}
   const role = ROLES.includes(b.role) ? b.role : 'staff'
@@ -6945,7 +6952,12 @@ app.post('/api/members', wrap(async (req, res) => {
     const member = await addMember(req.tenant.id, { name: b.name, email: b.email, password: b.password, role })
     // Fire-and-forget: hand the new member their own login. Uses the plaintext temp password the owner
     // just set (addMember only returns the hashed record), so send it before the response, not after.
-    sendStaffInviteEmail({ tenant: req.tenant, member, tempPassword: b.password, inviterName: req.member?.name, origin: publicOrigin(req) })
+    // trustedOrigin, not publicOrigin: the rule this file states at the Host-header helpers is that
+    // Host may choose the link only when the recipient is the shop's own staff looking at their own
+    // URL. The recipient here is an address the CALLER named, which is the password-reset case
+    // trustedOrigin() was written for — otherwise a forged Host puts an attacker's domain in the
+    // "Web address:" line of a mail the platform sent.
+    sendStaffInviteEmail({ tenant: req.tenant, member, tempPassword: b.password, inviterName: req.member?.name, origin: trustedOrigin(req) })
     res.json(member)
   } catch (e) { res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message }) }
 }))
