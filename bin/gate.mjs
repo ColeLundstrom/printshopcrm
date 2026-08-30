@@ -11840,6 +11840,73 @@ await t('the assistant prices the blank off the shop catalog, like every other q
   assert.doesNotMatch(call, /[^a-zA-Z]priceIntake\(/, 'and must not still call the guessing twin')
 })
 
+/* ---------- …and so does the receptionist, which is the panel a STRANGER sees (v28) ----------
+ *
+ * Round 24 removed a second pricing engine from lib/assistant.mjs and left the copy in
+ * lib/agent.mjs — on the surface that runs on the shop's own website, in front of the public.
+ * Driven, one sentence, one shop: "300 Comfort Colors 1717 tees, screen print, 2 color front"
+ *
+ *   Read-an-email / Autopilot / Assistant / Slack   $16.00/pc   $4,850.00
+ *   the AI receptionist                              $7.99/pc   $2,447.00
+ *
+ * It said the low number out loud to the visitor and then wrote a real numbered estimate for
+ * $2,632.77 against a canonical $5,222.00 — a bigger gap than the $1,980 round 24 fixed, on the
+ * more visible surface. Three compounding causes, each measured: quoteScreenPrint instead of the
+ * shop's price book, the ten-row shortlist's blank instead of the catalog's, and locations, rush,
+ * stitches and print area all thrown away by extract(). A three-day rush quoted CHEAPER than the
+ * standard run, and "2 colour front and 1 colour back" lost the back print out of the price, the
+ * screen count AND the line description. */
+await t('the receptionist quotes what every other panel quotes', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const qq = await import('../lib/quickquote.mjs')
+  const ag = await import('../lib/agent.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db); ag.initAgent(db)
+  const s = dbm.getSettings()
+
+  const canonical = async (order) => (await qq.priceIntakeLive({ ...order, sizes: {} }, s, { taxRate: 0 })).quote.perPiece
+  const receptionist = async (msg) => {
+    const sess = ag.startSession({ channel: 'preview' })
+    let r = await ag.respond(sess, msg, ag.getBotConfig())
+    // The bot asks for contact details before it will settle; the quote itself is on the state
+    // the moment it is priced.
+    return r.state?.quoted ?? null
+  }
+
+  for (const [msg, order, why] of [
+    ['300 Comfort Colors 1717 tees, screen print, 2 color front',
+      { garment: 'Comfort Colors 1717', decoration: 'Screen Print', total_pieces: 300, locations: [{ name: 'Front', colors: 2 }] },
+      'the ten-row shortlist prices a Comfort Colors like a Gildan'],
+    ['300 Gildan 5000 tees, screen print, 2 color front and 1 color back',
+      { garment: 'Gildan 5000 Tee', decoration: 'Screen Print', total_pieces: 300, locations: [{ name: 'Front', colors: 2 }, { name: 'Back', colors: 1 }] },
+      'the back print is dropped out of the price and the screen count entirely'],
+  ]) {
+    const got = await receptionist(msg)
+    assert.ok(got, `the receptionist produced no quote at all for: ${msg}`)
+    const want = await canonical(order)
+    assert.equal(got.perPiece, want, `${why} — receptionist $${got.perPiece} vs $${want} everywhere else`)
+  }
+
+  // A rush must never come out cheaper than the same order without one.
+  const standard = await receptionist('300 Gildan 5000 tees, screen print, 1 color front')
+  const rushed = await receptionist('300 Gildan 5000 tees, screen print, 1 color front, rush we need them in 3 days')
+  assert.ok(rushed && standard, 'both quotes must exist')
+  assert.ok(rushed.perPiece > standard.perPiece,
+    `a three-day rush quoted $${rushed.perPiece} against $${standard.perPiece} standard — the surcharge is dropped on the floor`)
+
+  // And the engine itself, by name: no second copy left behind.
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib/agent.mjs'), 'utf8')
+    .split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  assert.match(src, /await priceIntakeLive\(/, 'the receptionist must go through the one canonical engine')
+  assert.doesNotMatch(src, /quoteScreenPrint\(/, 'the second pricing engine is still in this file')
+  assert.doesNotMatch(src, /DECO_MULT/, 'the service multiplier is applied inside the price book already — twice is double-counting')
+})
+
 section('pressing Send twice does not mail the customer twice')
 
 await t('the outbox claims a row before it awaits the relay, not after', async () => {
