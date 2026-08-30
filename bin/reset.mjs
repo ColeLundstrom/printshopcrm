@@ -58,10 +58,22 @@ const survey = () => {
 const { records, shop } = survey()
 // A shop that has named itself and has records is a real one. The demo shop is fair game — that
 // is the whole point of the script — and so is a blank database.
-if (records > 0 && shop && shop !== 'Rebel Ink Press' && process.env.PSC_SEED_FORCE !== '1') {
+/**
+ * A blank shop_name does NOT mean "this is the demo".
+ *
+ * lib/db.mjs's own default for shop_name is '', and no screen in the product forces it — a shop
+ * can take orders for a year without ever typing its own name into Settings. Treating that as the
+ * demo meant a database with 13 real records and a blank name was deleted, `removed 1 file(s)`,
+ * exit 0, and reseeded as Rebel Ink Press. INSTALL.md promises the opposite in as many words.
+ *
+ * Records are what make a shop real. The demo is identified by the exact name the demo writes,
+ * and by nothing else. A genuinely blank database still seeds and resets freely, because it has
+ * no records.
+ */
+if (records > 0 && shop !== 'Rebel Ink Press' && process.env.PSC_SEED_FORCE !== '1') {
   console.error(`\n  Refusing to reset: that database belongs to a real shop.\n`)
   console.error(`    database   ${target}`)
-  console.error(`    shop       ${shop}`)
+  console.error(`    shop       ${shop || '(unnamed — a shop that never filled in Settings is still a real shop)'}`)
   console.error(`    records    ${records} across contacts, estimates, invoices, jobs and payments\n`)
   console.error(`  Resetting DELETES the file and everything in it. There is no undo.`)
   console.error(`  If you want a demo database, point PSC_DB somewhere else:`)

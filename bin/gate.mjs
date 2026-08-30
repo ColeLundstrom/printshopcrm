@@ -685,6 +685,51 @@ section('reset/seed: a demo script may not overwrite a real shop')
       assert.equal(existsSync(demo), false)
       assert.equal(resetOf(join(tmp, 'never-existed.db')).code, 0, 'nothing to protect, nothing to say')
     })
+
+    /* ---------- …and a shop that never typed its own name is still a real shop (v28) ----------
+     *
+     * Both guards read `!shopName || shopName === 'Rebel Ink Press'` as "this is the demo".
+     * lib/db.mjs's default for shop_name is '', and no screen in the product ever forces it — a
+     * shop can take orders for a year without filling in Settings. Measured: a database with 13
+     * real records and a blank name was deleted, `removed 1 file(s)`, exit 0, and reseeded as the
+     * demo. INSTALL.md promises the opposite in as many words, and the two cases above only ever
+     * exercise the NAMED shop. */
+    const unnamedPath = join(tmp, 'unnamed.db')
+    await t('a shop with records and no name in Settings survives seed and reset', () => {
+      seedInto(unnamedPath, { PSC_SEED_FORCE: '1' })
+      execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', `
+        const { DatabaseSync } = await import('node:sqlite')
+        const d = new DatabaseSync(${JSON.stringify(unnamedPath)})
+        d.prepare("UPDATE settings SET value = '' WHERE key = 'shop_name'").run()
+      `], { encoding: 'utf8' })
+      const before = countIn(unnamedPath)
+      assert.ok(before > 0, 'precondition: the shop has records')
+
+      const rs = seedInto(unnamedPath)
+      assert.equal(rs.code, 1, 'seeding wiped a real shop because it had never named itself')
+      assert.match(rs.out, /Refusing to seed/)
+      assert.match(rs.out, /unnamed/i, 'the refusal has to say WHY it could not name the shop')
+
+      const rr = resetOf(unnamedPath)
+      assert.equal(rr.code, 1, 'reset deleted the file of a real shop that had never named itself')
+      assert.match(rr.out, /Refusing to reset/)
+      assert.equal(existsSync(unnamedPath), true, 'the database is gone')
+      assert.equal(countIn(unnamedPath), before, 'not one row gone')
+
+      // Still not a dead end, and the escape still works.
+      assert.match(rr.out, /PSC_SEED_FORCE=1/)
+      assert.equal(resetOf(unnamedPath, { PSC_SEED_FORCE: '1' }).code, 0)
+    })
+    await t('…and the promise INSTALL.md makes is the promise the code keeps', async () => {
+      const { readFileSync } = await import('node:fs')
+      const md = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+      const i = md.indexOf('`seed` and `reset` are **demo** scripts')
+      assert.ok(i > 0, 'the seed/reset promise moved in INSTALL.md — re-point this test')
+      const para = md.slice(i, i + 500)
+      assert.doesNotMatch(para, /has named itself/,
+        'the docs still say the guard turns on the shop having a name, which is not what protects it')
+      assert.match(para, /records/, 'records are what make a shop real; say so')
+    })
   } finally { rmSync(tmp, { recursive: true, force: true }) }
 }
 

@@ -51,9 +51,9 @@ across the production board — so nothing is empty while you look around. Skip 
 blank shop; the database creates itself on first start either way.
 
 `seed` and `reset` are **demo** scripts. They print the database they are about to write to, and
-they refuse to run against a shop that has named itself and has records in it — so pointing
-`PSC_DB` at a live install and typing `npm run reset` by mistake stops with a message instead of
-deleting the shop. If you really do mean to wipe a named shop, back it up and use
+they refuse to run against any database that has records in it and is not the demo shop — whether
+or not that shop ever filled its name in under Settings. So pointing `PSC_DB` at a live install
+and typing `npm run reset` by mistake stops with a message instead of deleting the shop. If you really do mean to wipe a named shop, back it up and use
 `PSC_SEED_FORCE=1 npm run seed`.
 
 ```bash

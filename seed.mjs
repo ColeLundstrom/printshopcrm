@@ -31,12 +31,24 @@ mkdirSync(UPLOADS, { recursive: true })
 const rows = (t) => { try { return get(`SELECT COUNT(*) AS n FROM ${t}`)?.n || 0 } catch { return 0 } }
 const existing = ['contacts', 'estimates', 'invoices', 'jobs', 'payments'].reduce((n, t) => n + rows(t), 0)
 const shopName = String(getSettings()?.shop_name || '').trim()
-const isDemo = !shopName || shopName === 'Rebel Ink Press'
+/**
+ * A blank shop_name does NOT mean "this is the demo".
+ *
+ * lib/db.mjs's own default for shop_name is '', and no screen in the product forces it — a shop
+ * can take orders for a year without ever typing its own name into Settings. Treating that as the
+ * demo meant a database with 13 real records and a blank name was deleted, `removed 1 file(s)`,
+ * exit 0, and reseeded as Rebel Ink Press. INSTALL.md promises the opposite in as many words.
+ *
+ * Records are what make a shop real. The demo is identified by the exact name the demo writes,
+ * and by nothing else. A genuinely blank database still seeds and resets freely, because it has
+ * no records.
+ */
+const isDemo = shopName === 'Rebel Ink Press'
 console.log(`  seeding ${DB_PATH}`)
 if (existing > 0 && !isDemo && process.env.PSC_SEED_FORCE !== '1') {
   console.error(`\n  Refusing to seed: that database belongs to a real shop.\n`)
   console.error(`    database   ${DB_PATH}`)
-  console.error(`    shop       ${shopName}`)
+  console.error(`    shop       ${shopName || '(unnamed — a shop that never filled in Settings is still a real shop)'}`)
   console.error(`    records    ${existing} across contacts, estimates, invoices, jobs and payments\n`)
   console.error(`  Seeding DELETES all of them and replaces the shop with the "Rebel Ink Press" demo.`)
   console.error(`  If you want a demo database, point PSC_DB somewhere else:`)
