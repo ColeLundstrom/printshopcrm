@@ -2555,6 +2555,66 @@ section('the app does not discard what the shop has typed')
   })
 }
 
+/* ---------- the starter automations stay deleted ----------
+ * seedAutomations() guarded on "are there any rows?" rather than "have we ever done this?", and
+ * bootstrapDb calls it on every tenant-database open — the first request for each shop after
+ * every restart and every deploy. A shop that switched the starter rules off by deleting them had
+ * all eleven back, enabled, at the next deploy. Seven of them send something to a real customer,
+ * and one of those is SMS on the shop's own Twilio token. */
+section('a rule the shop deleted does not come back on the next deploy')
+{
+  const setupShop = async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const au = await import('../lib/automations.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db); dbm.setDefaultDb(db); au.initAutomations(db)
+    return { dbm, au }
+  }
+
+  await t('a brand-new shop is still seeded with the starter rules', async () => {
+    const { dbm, au } = await setupShop()
+    assert.equal(au.seedAutomations(), 11, 'eleven rules on a fresh shop')
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM automations').c, 11)
+  })
+
+  await t('…and once deleted they stay deleted, restart after restart', async () => {
+    const { dbm, au } = await setupShop()
+    au.seedAutomations()
+    // Seven of the eleven mail or text a live customer. Name them, so a future edit to
+    // STARTER_AUTOMATIONS that adds an eighth is measured against the same standard.
+    const billable = dbm.all("SELECT name FROM automations WHERE actions LIKE '%sms.customer%' OR actions LIKE '%email.customer%'")
+    assert.ok(billable.length >= 5, 'the starter set really does send to customers')
+    dbm.run('DELETE FROM automations')
+    assert.equal(au.seedAutomations(), 0, 'a restart must not re-seed')
+    assert.equal(au.seedAutomations(), 0, 'nor a deploy after it')
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM automations').c, 0, 'the shop\'s decision holds')
+    assert.equal(dbm.get('SELECT COUNT(*) AS c FROM automations WHERE enabled = 1').c, 0,
+      'and nothing came back switched on')
+  })
+
+  await t('an existing install upgrading is latched without being re-seeded', async () => {
+    // Two shapes, both of which must be left exactly as they are: rules intact, and rules the
+    // shop had already deleted before this latch existed.
+    const withRules = await setupShop()
+    withRules.dbm.run("INSERT INTO automations (name, enabled, trigger, params, conditions, actions) VALUES ('mine',1,'job.stage','{}','[]','[]')")
+    assert.equal(withRules.au.seedAutomations(), 0)
+    assert.equal(withRules.dbm.get('SELECT COUNT(*) AS c FROM automations').c, 1, 'their one rule, untouched')
+
+    const emptied = await setupShop()
+    emptied.dbm.run("INSERT INTO contacts (name, email) VALUES ('C','c@x.test')")
+    assert.equal(emptied.au.seedAutomations(), 0, 'a shop that has customers and no rules chose that')
+    assert.equal(emptied.dbm.get('SELECT COUNT(*) AS c FROM automations').c, 0)
+  })
+
+  await t('the seed and its latch land together', async () => {
+    const { dbm, au } = await setupShop()
+    au.seedAutomations()
+    assert.ok(dbm.get("SELECT 1 AS x FROM schema_migrations WHERE name = 'seed_starter_automations'"),
+      'a half-seeded shop must not be able to seed again on top of itself')
+  })
+}
+
 section('every destructive control says what it destroys')
 await t('no glyph-only button is left for a screen reader to guess at', async () => {
   const fs = await import('node:fs')
