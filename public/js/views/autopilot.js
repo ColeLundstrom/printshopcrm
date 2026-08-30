@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, toast, go, on } from '../core.js'
+import { api, $, $$, esc, money, setPage, toast, go, on, store } from '../core.js'
 
 /**
  * Autopilot — the front office running itself.
@@ -45,7 +45,7 @@ function releaseArt() {
   if (uploadedArt) { try { URL.revokeObjectURL(uploadedArt) } catch { /* already released */ } }
   uploadedArt = null
 }
-let mode = localStorage.getItem('psc-ap-mode') || 'review' // conservative default
+let mode = store.get('psc-ap-mode') || 'review' // conservative default
 
 export async function autopilotView() {
   setPage('Autopilot')
@@ -112,7 +112,7 @@ export async function autopilotView() {
   drop.ondragleave = () => drop.classList.remove('over')
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
   on($('#ap-dial'), '[data-mode]', (_e, t) => {
-    mode = t.dataset.mode; localStorage.setItem('psc-ap-mode', mode)
+    mode = t.dataset.mode; store.set('psc-ap-mode', mode)
     $$('#ap-dial button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode))
   })
   $('#ap-run').onclick = run

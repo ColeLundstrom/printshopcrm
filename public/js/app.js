@@ -1,4 +1,4 @@
-import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute } from './core.js'
+import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, store } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
@@ -177,7 +177,7 @@ function isActive(href, path) {
  * the daily loop: quote → produce → invoice → get paid.
  */
 const MORE_KEY = 'psc-nav-more'
-const moreOpen = () => localStorage.getItem(MORE_KEY) === '1'
+const moreOpen = () => store.get(MORE_KEY) === '1'
 
 function drawNav() {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
@@ -207,7 +207,7 @@ function drawNav() {
   const btn = $('#nav-more')
   if (btn) {
     btn.onclick = () => {
-      localStorage.setItem(MORE_KEY, expanded ? '0' : '1')
+      store.set(MORE_KEY, expanded ? '0' : '1')
       drawNav()
     }
   }
@@ -409,7 +409,7 @@ wireKeys()
 $('#theme-toggle').onclick = () => {
   const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'
   document.documentElement.setAttribute('data-theme', next)
-  localStorage.setItem('psc-theme', next)
+  store.set('psc-theme', next)
 }
 
 // Logout — clears the server session and returns to the login page.

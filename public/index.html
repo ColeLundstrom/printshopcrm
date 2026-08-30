@@ -22,7 +22,11 @@
     // design (a clean, approachable invoicing tool); pro respects the user's saved/OS preference.
     (function () {
       var forced = "__THEME_FORCE__";
-      var t = forced || localStorage.getItem('psc-theme');
+      // localStorage throws outright when site data is blocked, and this runs before anything
+      // else on the page. An unreadable preference must cost the theme, never the app.
+      var saved = null;
+      try { saved = localStorage.getItem('psc-theme'); } catch (e) { saved = null; }
+      var t = forced || saved;
       if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', t);
     })();

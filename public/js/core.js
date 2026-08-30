@@ -19,6 +19,24 @@ function httpMessage(status, text) {
   return `Something went wrong (${status}).`
 }
 
+/**
+ * Web Storage, which is allowed to throw.
+ *
+ * `localStorage` is not always there and not always usable: Chrome throws on every access when
+ * the user has blocked site data (or the app is framed with third-party storage off), Safari
+ * throws when the quota is exhausted, and an enterprise policy can switch it off entirely. The
+ * app read it unguarded in five places, one of them a TOP-LEVEL `let` in views/autopilot.js —
+ * a statically imported module, so that throw takes the whole module graph down with it and the
+ * app is a blank page with no toast, because core.js never runs either.
+ *
+ * A preference that cannot be remembered is not an error worth showing anyone: read as absent,
+ * write as a no-op.
+ */
+export const store = {
+  get(key) { try { return globalThis.localStorage?.getItem(key) ?? null } catch { return null } },
+  set(key, value) { try { globalThis.localStorage?.setItem(key, String(value)) } catch { /* blocked, or full */ } },
+}
+
 export const api = {
   async req(method, url, body) {
     const opts = { method, headers: {} }

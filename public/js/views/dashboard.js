@@ -1,4 +1,4 @@
-import { api, $, el, esc, money0, money, fmtDate, relTime, pill, setPage, empty, dueClass, dueLabel, go, onOnce, skeleton } from '../core.js'
+import { api, $, el, esc, money0, money, fmtDate, relTime, pill, setPage, empty, dueClass, dueLabel, go, onOnce, skeleton, store } from '../core.js'
 
 const ICON = { estimate: '▤', invoice: '▣', payment: '⊕', job: '▦', stage: '→', art: '◈', contact: '◉', note: '✎' }
 
@@ -111,7 +111,7 @@ export async function dashboardView() {
     const i = e.target.closest('[data-inv]')
     if (i) return go(`/invoices/${i.dataset.inv}`)
     if (e.target.closest('[data-setup]')) return go('/welcome')
-    if (e.target.closest('#setup-dismiss')) { localStorage.setItem('psc-setup-dismissed', '1'); $('.setup-card')?.remove() }
+    if (e.target.closest('#setup-dismiss')) { store.set('psc-setup-dismissed', '1'); $('.setup-card')?.remove() }
   })
   $('#new-est').onclick = () => go('/estimates/new')
 }
@@ -119,7 +119,7 @@ export async function dashboardView() {
 /** A resumable "finish setting up" card — shows remaining steps as chips until setup is complete. */
 function setupCard(ob) {
   if (!ob?.onboarding || ob.onboarding.pct >= 100) return ''
-  if (localStorage.getItem('psc-setup-dismissed') === '1') return ''
+  if (store.get('psc-setup-dismissed') === '1') return ''
   const steps = ob.onboarding.steps
   const chips = steps.map((s) => `<span class="setup-chip ${s.done ? 'done' : s.skipped ? 'skipped' : ''}" ${s.done ? '' : 'data-setup="1"'}>${s.done ? '✓' : s.skipped ? '–' : `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`} ${esc(s.title)}</span>`).join('')
   return `<div class="setup-card">

@@ -15,6 +15,22 @@ const designs = [] // { url, img, wIn, qty, name }
 const SHOP = new URLSearchParams(location.search).get('shop') || ''
 const shopQ = SHOP ? `?shop=${encodeURIComponent(SHOP)}` : ''
 
+/**
+ * This runs on the SHOP'S OWN WEBSITE and never loads core.js, so it carries its own honest
+ * reader. `r.json()` on nginx's 502 during a deploy raised `Unexpected token '<'` — shown to the
+ * shop's customer, mid-checkout, in an alert().
+ */
+function httpMsg(status) {
+  if (status === 502 || status === 503 || status === 504) return 'The shop\u2019s server is restarting \u2014 try that again in a moment.'
+  if (status === 429) return 'Too many requests just now \u2014 wait a moment and try again.'
+  if (!status) return 'No connection to the shop\u2019s server.'
+  return `Something went wrong (${status}).`
+}
+async function readJson(r) {
+  const text = await r.text()
+  try { return text ? JSON.parse(text) : {} } catch { return null }
+}
+
 async function boot() {
   // A customer coming back from Stripe has already paid — show them that first. Confirming the
   // payment must never depend on the config request, or a transient config failure tells someone
@@ -26,8 +42,8 @@ async function boot() {
   // defaults and leave render() throwing into an empty iframe on the shop's own site.
   try {
     const r = await fetch(`/api/embed/config${shopQ}`)
-    const d = await r.json()
-    if (!r.ok || !d?.dtf) throw new Error(d?.error || 'config unavailable')
+    const d = await readJson(r)
+    if (!r.ok || !d?.dtf) throw new Error(d?.error || httpMsg(r.status))
     cfg = d
   } catch (e) {
     document.getElementById('gs-root').innerHTML = `<div class="gs"><div class="gs-done"><h2>Builder unavailable</h2><p>${esc(e.message)}</p></div></div>`
@@ -144,8 +160,8 @@ async function checkout() {
     const r = await fetch(`/api/embed/gangsheet/order${shopQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ shop: SHOP, name: document.getElementById('gs-name').value, email: document.getElementById('gs-email').value,
         items: items.map((it) => ({ w: it.w, h: it.h, qty: it.qty })), total: price.subtotal }) })
-    const d = await r.json()
-    if (!r.ok) throw new Error(d.error || 'Something went wrong')
+    const d = await readJson(r)
+    if (!r.ok) throw new Error(d?.error || httpMsg(r.status))
     if (d.mode === 'stripe' && d.checkout_url) { location.href = d.checkout_url; return }
     done('quote', d)
   } catch (e) { btn.disabled = false; btn.textContent = 'Try again'; alert(e.message) }

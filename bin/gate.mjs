@@ -8739,6 +8739,80 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- storage that is switched off costs a preference, never the app ---------- */
+/*
+ * `localStorage` is allowed to throw: Chrome throws on EVERY access when the user has blocked
+ * site data or the page is framed with third-party storage off, Safari throws on quota, and an
+ * enterprise policy can disable it outright. Five places read it unguarded, and one of them was a
+ * TOP-LEVEL `let mode = localStorage.getItem(...)` in views/autopilot.js — a statically imported
+ * module, so that throw takes the whole module graph down and the app is a BLANK PAGE with no
+ * toast, because core.js never runs either. index.html's pre-paint theme read is the same shape
+ * one layer earlier.
+ *
+ * A rule, because the next `localStorage.getItem` will be written by someone who has not read
+ * this: core.js's `store` is the only thing in public/js that may touch Web Storage.
+ */
+section('a browser with storage switched off still runs the app')
+{
+  await t('nothing in public/js touches localStorage except core.js’s guarded shim', async () => {
+    const { readFileSync, readdirSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const files = ['public/js/app.js', 'public/js/keys.js', 'public/js/core.js',
+      ...readdirSync(join(root, 'public/js/views')).filter((f) => f.endsWith('.js')).map((f) => `public/js/views/${f}`),
+      ...readdirSync(join(root, 'public/js/shared')).filter((f) => f.endsWith('.js')).map((f) => `public/js/shared/${f}`)]
+    const offenders = []
+    for (const f of files) {
+      const src = readFileSync(join(root, f), 'utf8')
+      for (const m of src.matchAll(/\b(?:localStorage|sessionStorage)\s*[.?[]/g)) {
+        const line = src.slice(0, m.index).split('\n').length
+        const near = src.slice(Math.max(0, m.index - 200), m.index + 120)
+        if (f === 'public/js/core.js' && /try \{/.test(near)) continue   // the sanctioned shim
+        offenders.push(`${f}:${line}`)
+      }
+    }
+    assert.deepEqual(offenders, [], `unguarded Web Storage at ${offenders.join(', ')}`)
+  })
+
+  await t('…and the shim really does survive a browser that throws', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'public/js/core.js'), 'utf8')
+    const shim = src.slice(src.indexOf('export const store = {'))
+    const body = shim.slice(0, shim.indexOf('\n}\n') + 3).replace('export const', 'const')
+    // Run the SHIPPED shim against a storage object that throws on every access, the way Chrome
+    // does when site data is blocked.
+    const hostile = new Proxy({}, { get() { throw new Error('Access to storage is not allowed from this context.') } })
+    // eslint-disable-next-line no-new-func — the real code, not a copy of it.
+    const mk = (g) => new Function('globalThis', `${body}\nreturn store`)(g)
+    const store = mk({ localStorage: hostile })
+    assert.equal(store.get('psc-theme'), null, 'a preference that cannot be read is absent, not a throw')
+    assert.doesNotThrow(() => store.set('psc-theme', 'light'), 'and a write that cannot land is a no-op')
+    // …and when storage is simply missing (an old WebView, a sandboxed iframe).
+    const gone = mk({})
+    assert.equal(gone.get('x'), null)
+    assert.doesNotThrow(() => gone.set('x', '1'))
+    // …and it still stores, when it can.
+    const real = new Map()
+    const ok = mk({ localStorage: { getItem: (k) => real.get(k) ?? null, setItem: (k, v) => real.set(k, v) } })
+    ok.set('psc-ap-mode', 'full')
+    assert.equal(ok.get('psc-ap-mode'), 'full', 'a working browser must still remember the setting')
+  })
+
+  await t('…and the pre-paint theme read in index.html cannot abort the page', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/index.html'), 'utf8')
+    const i = html.indexOf("localStorage.getItem('psc-theme')")
+    assert.ok(i > 0, 'precondition: the theme is still read before first paint')
+    assert.match(html.slice(i - 300, i + 60), /try \{/, 'that read runs before anything else on the page — it has to be guarded')
+  })
+}
+
 /* ---------- a restart does not sign a working session out of its own URL ---------- */
 /*
  * boot() ended `} catch { location.href = '/login'; return }`. A 401 already redirects inside
@@ -9269,7 +9343,9 @@ section('an expired reset link does not take the buttons off the login page')
     const fn = new Function('document', 'location', 'history', 'fetch', 'setTimeout', 'URLSearchParams',
       `${src}\n;return { mode, els: null, get M() { return M } }`)
     const api = fn(doc, { pathname, search, href: '' }, { replaceState: () => {} },
-      (url) => { fetched = url; return Promise.resolve({ json: () => Promise.resolve({ valid }) }) },
+      // The page reads the body as TEXT and parses it itself, so a proxy's HTML 502 during a
+      // restart cannot come out as "Unexpected token '<'" on the one page you cannot get past.
+      (url) => { fetched = url; return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify({ valid })) }) },
       (cb, ms) => { timers.push(cb); return timers.length },
       URLSearchParams)
     // Let the reset-validity promise chain settle, then fire the 2.5s switch it scheduled.
@@ -9308,6 +9384,19 @@ section('an expired reset link does not take the buttons off the login page')
     const r = await runAuth({ pathname: '/reset', search: '?token=good', valid: true })
     assert.equal(r.els.submit._hidden(), false, 'a valid link must still offer Set new password')
     assert.equal(r.els.notice.style.display, 'none', '…with no expiry notice on it')
+  })
+
+  await t('a restart does not tell the customer their reset link is dead', async () => {
+    // nginx answers HTML during a deploy. The old code did r.json() straight, so an unreadable
+    // answer either threw into a .catch() that swallowed it, or — on the sign-in path — printed
+    // `Unexpected token '<', "<html>Cann"... is not valid JSON` into the error box.
+    const ids = [...AUTH.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
+    assert.ok(ids.includes('err'), 'precondition')
+    const src = AUTH.slice(AUTH.lastIndexOf('<script>') + 8, AUTH.lastIndexOf('</script>'))
+    assert.match(src, /function readJson\(/, 'the page must read the body as text and parse it itself')
+    assert.match(src, /httpMsg\(/, '…and turn a status into a sentence a person can act on')
+    assert.match(src, /restarting/, '…which for a 502 says the server is restarting')
+    assert.ok(!/await r\.json\(\)/.test(src), 'nothing may call r.json() straight any more')
   })
 
   await t('an ordinary sign-in is unaffected', async () => {

@@ -141,6 +141,22 @@
       document.querySelector('[name=password]').setAttribute('autocomplete', isSignup || isReset ? 'new-password' : 'current-password')
       if (!isReset) history.replaceState(null, '', isSignup ? '/signup' : isForgot ? '/login' : '/login')
     }
+    /**
+     * A proxy 502 during a restart is HTML, not JSON, and this page called r.json() straight.
+     * The person signing in got `Unexpected token '<', "<html>Cann"... is not valid JSON` in the
+     * error box — on the one page you cannot get past. core.js was fixed for exactly this; this
+     * page and the shop's public checkout are the two surfaces that never load core.js.
+     */
+    function httpMsg(status) {
+      if (status === 502 || status === 503 || status === 504) return 'The server is restarting — try that again in a moment.'
+      if (status === 429) return 'Too many attempts just now — wait a moment and try again.'
+      if (!status) return 'No connection to the server.'
+      return `Something went wrong (${status}).`
+    }
+    async function readJson(r) {
+      const text = await r.text()
+      try { return text ? JSON.parse(text) : {} } catch { return null }
+    }
     async function submitForm(e) {
       e.preventDefault()
       const f = $('form'); const btn = $('submit'); const err = $('err')
@@ -150,7 +166,8 @@
       if (M === 'reset') data.token = RESET_TOKEN
       try {
         const r = await fetch(URLS[M], { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
-        const d = await r.json()
+        const d = await readJson(r)
+        if (d === null) throw new Error(httpMsg(r.status))
         if (!r.ok) {
           // Carry the server's recovery instructions through the throw. Without this the useful
           // half of a "we cannot email you" answer is dropped and the user is simply stuck.
@@ -187,8 +204,9 @@
     // A dead or already-spent link should say so up front rather than after the user has picked
     // a new password and pressed the button.
     if (M === 'reset') {
-      fetch('/api/auth/reset?token=' + encodeURIComponent(RESET_TOKEN)).then((r) => r.json()).then((d) => {
-        if (d.valid) return
+      fetch('/api/auth/reset?token=' + encodeURIComponent(RESET_TOKEN)).then(readJson).then((d) => {
+        // Unreadable answer (a restart) — leave the form alone rather than declaring the link dead.
+        if (d === null || d.valid) return
         $('err').textContent = 'That reset link has expired or already been used. Request a new one.'
         $('err').style.display = 'block'
         $('password-field').classList.add('hide')
