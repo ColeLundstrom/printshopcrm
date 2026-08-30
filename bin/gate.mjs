@@ -6002,6 +6002,46 @@ await t('the clamp that dropped an overpayment is gone', async () => {
   assert.match(body, /OVERPAID/, 'and it must reach the activity log, not only the payment note')
 })
 
+/* ---------- …and it is only recorded for the shop that took it ----------
+ * In lite edition (PSC_EDITION=lite, shipped in .env.example) every shop is a Connect Express
+ * account on ONE platform Stripe key, so confirmSession() drops the shop's settings and calls
+ * lib/connect.mjs's retrieveConnectedSession — a PLATFORM-level GET that returns any session on
+ * the install, whoever created it. The only tenancy-relevant test on the return was
+ * `metadata.invoice === id`, and invoice ids are per-tenant ROWIDs, so "invoice 7" matches at
+ * seven different shops. startCheckout has stamped `slug: curSlug()` into the metadata since
+ * 1.0.0 and nothing ever read it back.
+ *
+ * Source-level for the same reason as the case above: the confirm needs a live Stripe session.
+ * A behavioural twin belongs in the e2e the next round there is a sandbox to drive it against. */
+await t('a Stripe session is only accepted for the shop that created it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf('if (req.query.session_id)')
+  assert.ok(i > 0, 'the pay-return confirm should still be there')
+  const block = src.slice(i, src.indexOf('const fresh = get(', i))
+  assert.match(block, /metadata\?\.slug/, 'the return must read back the slug checkout stamped')
+  assert.match(block, /curSlug\(\)/, '…and compare it with the shop this page is being served for')
+  // A mismatch must NOT fall into 'not_paid', which tells the customer nothing was charged and
+  // offers them a Pay again button — while this session really did pay something, somewhere else.
+  assert.ok(block.includes('!forThisShop'), 'a session for another shop needs its own branch')
+  // The branch body: from `!forThisShop` to the `} else {` that follows it.
+  const from = block.indexOf('!forThisShop')
+  const foreign = block.slice(from, block.indexOf('} else {', from))
+  assert.doesNotMatch(foreign, /outcome = /,
+    'a foreign session must leave outcome at "unconfirmed" — "not_paid" tells the customer they '
+    + 'were not charged and offers them a Pay again button, and this session really did pay somebody')
+  assert.match(foreign, /logActivity\('payment'/,
+    '…and the shop has to be told, because the money is real and only they can reconcile it')
+  // And checkout must still be stamping it, or the check above refuses every real payment.
+  assert.match(src, /metadata: \{ invoice: String\(id\), kind, slug: curSlug\(\) \}/,
+    'startCheckout must keep stamping the slug the confirm now reads')
+  const connect = readFileSync(join(root, 'lib/connect.mjs'), 'utf8')
+  assert.match(connect, /retrieveConnectedSession/, 'precondition: the unscoped platform retrieve still exists')
+})
+
 await t('the overpayment arithmetic names the right difference', () => {
   // The shape recordStripePayment now uses: record what arrived, and report the excess over the
   // balance that was actually owed.

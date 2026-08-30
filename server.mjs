@@ -7431,9 +7431,28 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
     let outcome = 'unconfirmed'
     try {
       const session = await confirmSession(s, String(req.query.session_id))
-      if (session.paid && String(session.metadata?.invoice) === String(id)) {
+      // The session has to belong to THIS shop, and metadata.invoice is not enough to say so.
+      //
+      // In lite edition every shop is a Connect Express account on ONE platform Stripe key, so
+      // confirmSession() drops the shop's settings entirely and calls retrieveConnectedSession —
+      // a platform-level GET that hands back ANY session on the install, whoever created it. And
+      // invoice ids are per-tenant ROWIDs, so `metadata.invoice === '7'` is true at seven
+      // different shops. Anyone holding a paid session id could open another shop's pay link with
+      // it and have that shop's invoice marked paid in full: a real payments row, the invoice
+      // flipped, the order advanced, invoice.paid fired, the books queued and "Payment received"
+      // broadcast to the floor — for money that went somewhere else.
+      //
+      // startCheckout has stamped `slug: curSlug()` into the metadata since 1.0.0. Read it back.
+      // Nothing about what we send to Stripe or infer from it changes; this is our own field.
+      const forThisShop = String(session.metadata?.slug ?? '') === curSlug()
+      if (session.paid && forThisShop && String(session.metadata?.invoice) === String(id)) {
         recordStripePayment(inv, session, String(req.query.session_id), session.metadata?.kind)
         outcome = 'paid'
+      } else if (session.paid && !forThisShop) {
+        // Deliberately NOT 'not_paid': that branch tells the customer nothing was charged and
+        // offers them a Pay again button. This session really did pay something, somewhere else.
+        console.error('pay-confirm: session belongs to another shop', String(session.metadata?.slug || '(none)'), '≠', curSlug())
+        logActivity('payment', `A payment link for ${inv.invoice_number} was opened with a Stripe session belonging to another shop — nothing was recorded`, { contact_id: inv.contact_id })
       } else {
         outcome = 'not_paid'
       }
