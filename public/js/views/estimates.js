@@ -134,13 +134,13 @@ export async function estimateEditor(id) {
     const gridded = !!it.sizes
     const extra = lineUpcharge(it, up)
     return `<div class="ir" data-i="${i}">
-      <input class="input" data-f="description" value="${esc(it.description)}" placeholder="${gridded ? 'Gildan 5000 Tee, 2 color front' : 'Screen setup, 3 screens'}">
-      <input class="input" data-f="detail" value="${esc(it.detail || '')}" placeholder="${gridded ? 'Black, 2 colors front' : 'One-time charge'}">
+      <input class="input" data-f="description" aria-label="Description, line ${i + 1}" value="${esc(it.description)}" placeholder="${gridded ? 'Gildan 5000 Tee, 2 color front' : 'Screen setup, 3 screens'}">
+      <input class="input" data-f="detail" aria-label="Detail or decoration, line ${i + 1}" value="${esc(it.detail || '')}" placeholder="${gridded ? 'Black, 2 colors front' : 'One-time charge'}">
       ${gridded
         ? `<div class="qtycell" title="Set by the size grid">${lineQty(it)}<span class="dim" style="font-size:10px"> pcs</span></div>`
-        : `<input class="input num" data-f="qty" type="number" min="0" value="${esc(it.qty)}">`}
+        : `<input class="input num" data-f="qty" type="number" min="0" aria-label="Quantity, line ${i + 1}" value="${esc(it.qty)}">`}
       <div class="rate-cell">
-        <input class="input num" data-f="unit_price" type="number"${gridded ? ' min="0"' : ''} step="0.01" value="${esc(it.unit_price)}">
+        <input class="input num" data-f="unit_price" type="number"${gridded ? ' min="0"' : ''} step="0.01" aria-label="Rate, line ${i + 1}" value="${esc(it.unit_price)}">
         <button class="mx-btn" data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${esc(it.matrix.name)}: ${esc(it.matrix.row)} × ${esc(it.matrix.col)}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
       </div>
       <div class="amt">${money(lineAmount(it, up))}</div>

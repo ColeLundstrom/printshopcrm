@@ -5593,8 +5593,14 @@ try {
 
       const ui = rfsRecv(join(ROOT, 'public/js/views/board.js'), 'utf8')
       const i = ui.indexOf('function openReceive')
-      chk('the Receive button locks while the request is in flight', String(ui.slice(i, i + 3400)), 'save\\.disabled = true')
-      chk('…and the duplicate question is asked on the screen, not just refused', String(ui.slice(i, i + 3400)), 'duplicate_receipt')
+      // Bounded by the NEXT top-level declaration, not by a character count. A fixed 3400-char
+      // window silently stopped covering the second assertion the moment the function grew — which
+      // is the failure mode the round-22 note warns about: a rule that stops looking is a rule
+      // that goes green for the wrong reason.
+      const openReceive = ui.slice(i, ((n) => (n > i ? n : ui.length))(ui.indexOf('\nfunction ', i + 1)))
+      chk('openReceive is bounded by its own end', String(openReceive.length > 1000), '^true$')
+      chk('the Receive button locks while the request is in flight', openReceive, 'save\\.disabled = true')
+      chk('…and the duplicate question is asked on the screen, not just refused', openReceive, 'duplicate_receipt')
     } finally {
       try { s15.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T15, { recursive: true, force: true }) } catch { /* best effort */ }

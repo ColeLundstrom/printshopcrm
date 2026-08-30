@@ -3155,6 +3155,71 @@ await t('no glyph-only button is left for a screen reader to guess at', async ()
     assert.doesNotMatch(src, GLYPH, `${f} has a glyph-only button with no aria-label — a screen reader calls it "times"`)
   }
 })
+/* ---------- and neither is a switch or a picker ----------
+ * The glyph rule above covers <button>. It does not cover the controls that carry no text at all.
+ *
+ * wireLabels() deliberately leaves a WRAPPING <label> alone — "that is already a valid
+ * association" — which is true for association and false for NAMING when the label's only content
+ * is the input and an empty styling <span>. Both switch shapes in this codebase are exactly that,
+ * so `<label class="switch"><input type="checkbox"><span class="track"></span></label>` computes
+ * to no accessible name whatsoever. And a <select> with its caption in a sibling <div> (not a
+ * <label>) is named by nothing either. */
+await t('no switch, picker or number box is left for a screen reader to guess at', async () => {
+  const fs = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => fs.readFileSync(join(root, f), 'utf8')
+  const named = (f, re, why) => assert.match(read(f), re, `${f}: ${why}`)
+
+  // The switch that puts an AI bot live on the shop's public website. It read as "checkbox,
+  // checked", and the word that says which state that is ("Live" / "Off") sits in a separate span
+  // with no association at all.
+  named('public/js/views/agent.js', /type="checkbox" id="enabled"[^>]*aria-label=/,
+    'the receptionist master switch has no name')
+  named('public/js/views/agent.js', /type="checkbox" id="enabled"[^>]*aria-describedby="enabled-lbl"/,
+    '…and its state word is in a span joined to nothing')
+
+  // One per rule, in a list. Eight rules read out as eight identical unnamed checkboxes, and Space
+  // on the wrong one switches off the rule that chases every unanswered quote.
+  named('public/js/views/automations.js', /data-toggle="\$\{a\.id\}"[^>]*aria-label=/,
+    'the per-rule on/off switches have no names')
+
+  // The rule builder's WHEN / IF / THEN pickers. Round 22 named the action's text FIELDS
+  // (data-af) and left every <select> beside them unnamed.
+  for (const [re, why] of [
+    [/<select class="input" id="a-trig"[^>]*aria-label=/, 'the WHEN trigger picker'],
+    [/id="a-param"[^>]*aria-label=/, "the trigger's parameter"],
+    [/data-ck="\$\{i\}"[^>]*aria-label=/, 'the IF condition pickers'],
+    [/data-ak="\$\{i\}"[^>]*aria-label=/, 'the THEN action pickers'],
+  ]) named('public/js/views/automations.js', re, `${why} has no name`)
+
+  // Settings: the control that changes a teammate's permissions, and the two that decide whether
+  // the app emails customers by itself. The latter read as two identical "combo box, Automatic".
+  named('public/js/views/misc.js', /class="input role-sel"[^>]*aria-label=/,
+    "the control that changes a teammate's permissions has no name")
+  named('public/js/views/misc.js', /<select class="input" name="\$\{name\}"[^>]*aria-label=/,
+    'the follow-up mode pickers are indistinguishable from each other')
+
+  // The estimate editor's money columns. The visual header row is a set of <div>s, not a table, so
+  // it associates nothing: Qty and Rate are announced as bare spin buttons, once per line.
+  for (const [re, why] of [
+    [/data-f="qty"[^>]*aria-label=/, 'Qty'],
+    [/data-f="unit_price"[^>]*aria-label=/, 'Rate'],
+    [/data-f="description"[^>]*aria-label=/, 'Description'],
+    [/data-f="detail"[^>]*aria-label=/, 'Detail'],
+  ]) named('public/js/views/estimates.js', re, `the estimate editor's ${why} column has no name`)
+
+  // The quick-quote calculator's per-location rows, the blanks-receiving grid, and the setup
+  // wizard's per-service multipliers — all repeated controls with the caption in a sibling span.
+  named('public/js/views/quote.js', /data-lf="name"[^>]*aria-label=/, 'the print-location pickers have no names')
+  named('public/js/views/quote.js', /data-lf="colors"[^>]*aria-label=/, 'the colours-per-location boxes have no names')
+  named('public/js/views/board.js', /data-line="\$\{l\.id\}"[^>]*aria-label=/,
+    'the receive-blanks quantity boxes are one per size and all identical')
+  named('public/js/views/onboarding.js', /data-svc="\$\{esc\(name\)\}"[^>]*aria-label=/,
+    'the per-service multiplier boxes have no names')
+})
+
 await t('a refused field says so where the field is, not only in a silent div', async () => {
   const fs = await import('node:fs')
   const { join, dirname } = await import('node:path')

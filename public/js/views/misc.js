@@ -159,7 +159,7 @@ function staffCard(d, me, esc) {
   const roleCell = (m) => {
     const editable = canManage && (isOwner || m.role !== 'owner') && m.email !== myEmail
     if (!editable) return `<span class="pill ${ROLE_PILL[m.role] || 'gray'}">${esc(m.role)}</span>`
-    return `<select class="input role-sel" data-mid="${m.id}" style="width:120px;padding:5px 8px;font-size:12px">
+    return `<select class="input role-sel" data-mid="${m.id}" aria-label="Role for ${esc(m.name || m.email)}" style="width:120px;padding:5px 8px;font-size:12px">
       ${['owner', 'manager', 'staff'].map((r) => `<option value="${r}" ${m.role === r ? 'selected' : ''} ${r === 'owner' && !isOwner ? 'disabled' : ''}>${r}</option>`).join('')}</select>`
   }
   // The roster lives behind a disclosure: a shop sets its crew up once and then comes to Settings
@@ -323,7 +323,7 @@ export async function settingsView() {
     ${hint ? `<div class="dim" style="font-size:11px;margin-top:4px">${hint}</div>` : ''}</div>`
   const mode = (name, label, hint) => { const v = s[name] || 'ai'; return `<div class="row" style="align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)">
     <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12.5px">${label}</div><div class="dim" style="font-size:11px">${hint}</div></div>
-    <select class="input" name="${name}" style="width:118px;flex:none">
+    <select class="input" name="${name}" aria-label="${esc(label)}" style="width:118px;flex:none">
       <option value="ai" ${v === 'ai' ? 'selected' : ''}>Automatic</option>
       <option value="manual" ${v === 'manual' ? 'selected' : ''}>Ask me first</option>
     </select></div>` }

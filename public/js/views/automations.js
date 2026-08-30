@@ -61,7 +61,7 @@ export async function automationsView() {
         ${d.automations.length ? `<div>${d.automations.map((a) => `
           <div class="autorow ${a.enabled ? '' : 'off'}" data-edit="${a.id}">
             <label class="tog" data-nodrag>
-              <input type="checkbox" data-toggle="${a.id}" ${a.enabled ? 'checked' : ''}><span></span>
+              <input type="checkbox" data-toggle="${a.id}" aria-label="Enable ${esc(a.name)}" ${a.enabled ? 'checked' : ''}><span></span>
             </label>
             <div class="au-main">
               <div class="au-name">${esc(a.name)}</div>
@@ -194,13 +194,13 @@ function autoForm(a) {
         // board mailed the customer once per column, on every job in the shop.
         if (t?.param && state.params[t.param.key] == null) state.params[t.param.key] = t.param.default
         $('#ab-trigger', root).innerHTML = `
-          <select class="input" id="a-trig">${cfg.triggers.map((x) => `<option value="${x.key}" ${x.key === state.trigger ? 'selected' : ''}>${esc(x.label)}${x.timed ? ' (timed)' : ''}</option>`).join('')}</select>
+          <select class="input" id="a-trig" aria-label="When this happens">${cfg.triggers.map((x) => `<option value="${x.key}" ${x.key === state.trigger ? 'selected' : ''}>${esc(x.label)}${x.timed ? ' (timed)' : ''}</option>`).join('')}</select>
           ${t?.param ? `<div class="row" style="margin-top:7px;gap:7px">
             <span class="dim" style="font-size:12px">${esc(t.param.label)}</span>
             ${t.param.options
-              ? `<select class="input" id="a-param" style="max-width:170px">${t.param.options
+              ? `<select class="input" id="a-param" aria-label="${esc(t.param.label)}" style="max-width:170px">${t.param.options
                   .map((s) => `<option value="${s}" ${state.params[t.param.key] === s ? 'selected' : ''}>${esc(String(s).replace('_', ' '))}</option>`).join('')}</select>`
-              : `<input class="input" id="a-param" type="number" min="0" style="max-width:90px" value="${esc(state.params[t.param.key] ?? t.param.default)}">`}
+              : `<input class="input" id="a-param" type="number" min="0" aria-label="${esc(t.param.label)}" style="max-width:90px" value="${esc(state.params[t.param.key] ?? t.param.default)}">`}
           </div>` : ''}
           ${t?.timed ? '<div class="dim" style="font-size:11px;margin-top:6px">Time-based — checked every 5 minutes. Printavo gates these to its top tier.</div>' : ''}`
         $('#a-trig', root).onchange = (e) => { state.trigger = e.target.value; state.params = {}; drawTrigger() }
@@ -222,7 +222,7 @@ function autoForm(a) {
 
       const drawConds = () => {
         $('#ab-conds', root).innerHTML = `${state.conditions.map((c, i) => `<div class="row" style="gap:7px;margin-bottom:6px">
-            <select class="input" data-ck="${i}" style="max-width:180px">${cfg.conditions.map((x) => `<option value="${x.key}" ${x.key === c.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
+            <select class="input" data-ck="${i}" aria-label="Condition ${i + 1}" style="max-width:180px">${cfg.conditions.map((x) => `<option value="${x.key}" ${x.key === c.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
             ${condInput(cfg.conditions.find((x) => x.key === c.key), c, i)}
             <button class="del" data-rmc="${i}" aria-label="Remove condition ${i + 1}">&times;</button></div>`).join('')}
           <button class="btn ghost sm" id="add-cond">+ Add condition</button>
@@ -249,7 +249,7 @@ function autoForm(a) {
           const def = cfg.actions.find((x) => x.key === act.key) || cfg.actions[0]
           return `<div class="ab-act">
             <div class="row" style="gap:7px">
-              <select class="input" data-ak="${i}" style="max-width:210px">${cfg.actions.map((x) => `<option value="${x.key}" ${x.key === act.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
+              <select class="input" data-ak="${i}" aria-label="Action ${i + 1}" style="max-width:210px">${cfg.actions.map((x) => `<option value="${x.key}" ${x.key === act.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
               <div class="sp"></div>
               ${state.actions.length > 1 ? `<button class="del" data-rma="${i}" aria-label="Remove action ${i + 1}">&times;</button>` : ''}
             </div>

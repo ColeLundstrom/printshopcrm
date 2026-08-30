@@ -108,8 +108,8 @@ export function quoteModal(settings, onUse) {
     onMount: (bg) => {
       const drawLocs = () => {
         $('#q-locs', bg).innerHTML = state.locations.map((l, i) => `<div class="qloc" data-i="${i}">
-          <select class="input" data-lf="name">${LOCS.map((n) => `<option ${n === l.name ? 'selected' : ''}>${n}</option>`).join('')}</select>
-          <input class="input num" data-lf="colors" type="number" min="1" max="12" value="${l.colors}">
+          <select class="input" data-lf="name" aria-label="Print location ${i + 1}">${LOCS.map((n) => `<option ${n === l.name ? 'selected' : ''}>${n}</option>`).join('')}</select>
+          <input class="input num" data-lf="colors" type="number" min="1" max="12" aria-label="Colours on print location ${i + 1}" value="${l.colors}">
           <span class="dim" style="font-size:11px">colors${state.darkGarment ? ' +UB' : ''}</span>
           ${state.locations.length > 1 ? `<button class="del" data-rmloc="${i}" aria-label="Remove print location ${i + 1}">&times;</button>` : '<span></span>'}
         </div>`).join('')

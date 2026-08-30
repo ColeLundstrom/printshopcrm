@@ -193,7 +193,7 @@ function panel(key) {
     const defs = state.data.service_defaults || {}
     const rows = Object.keys(defs).map((name) => `<div class="ob-svc-row">
       <span>${esc(name)}</span>
-      <input class="input" data-svc="${esc(name)}" type="number" step="0.05" min="0.5" value="${esc(svc[name] ?? defs[name])}" style="width:80px">
+      <input class="input" data-svc="${esc(name)}" type="number" step="0.05" min="0.5" aria-label="${esc(name)} multiplier" value="${esc(svc[name] ?? defs[name])}" style="width:80px">
       <span class="dim" style="font-size:11px">× base</span></div>`).join('')
     return `<div class="ob-head"><h2>⊞ Pricing rules & blank markup</h2>
         <p>Your rules. <strong>Blank markup</strong> is what you multiply garment cost by; the <strong>per-service multipliers</strong> set what embroidery, DTF, vinyl, etc. cost relative to a screen-print base. Everything's tunable later, and the price is always an editable field on a quote.</p></div>

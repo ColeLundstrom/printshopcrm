@@ -682,7 +682,7 @@ function openReceive(jobId, po) {
     <td class="num">${l.qty_ordered}</td>
     <td class="num">${l.qty_received}</td>
     <td class="num" style="color:${l.short > 0 ? 'var(--amber)' : 'var(--txt-3)'}">${l.short}</td>
-    <td><input class="input" type="number" min="-${l.qty_received}" max="${l.short}" value="${l.short}" data-line="${l.id}" style="width:70px;text-align:right"></td>
+    <td><input class="input" type="number" min="-${l.qty_received}" max="${l.short}" value="${l.short}" data-line="${l.id}" aria-label="Received, ${esc([l.style, l.color].filter(Boolean).join(' ') || l.sku || 'line')} size ${esc(l.size)}" style="width:70px;text-align:right"></td>
   </tr>`).join('')
   modal({
     title: po.fully_received ? `Correct receipt — ${esc(po.po_number || '')}` : `Receive blanks — ${esc(po.po_number || '')}`,

@@ -23,7 +23,7 @@ export async function agentView() {
       <div class="card">
         <div class="card-h"><h3>Receptionist</h3>
           <div class="spacer"></div>
-          <label class="switch"><input type="checkbox" id="enabled" ${cfg.enabled ? 'checked' : ''}><span class="track"></span></label>
+          <label class="switch"><input type="checkbox" id="enabled" aria-label="AI Receptionist" aria-describedby="enabled-lbl" ${cfg.enabled ? 'checked' : ''}><span class="track"></span></label>
           <span class="dim" style="font-size:12px" id="enabled-lbl">${cfg.enabled ? 'Live' : 'Off'}</span>
         </div>
         <div class="card-b">
