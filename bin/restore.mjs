@@ -166,7 +166,13 @@ const quickCheck = (path) => {
 }
 
 /** Row counts a shop owner can recognise as their own shop, rather than a page count. */
-const RECOGNISABLE = ['customers', 'invoices', 'estimates', 'jobs', 'tenants', 'members']
+// `customers` was on this list, and there has never been such a table in this product — the
+// customer book is `contacts` (lib/db.mjs), which bin/reset.mjs's own survey already gets right.
+// census() filters the list down to tables that exist, so the miss was silent: a shop that had
+// migrated a 3,180-name customer book and not yet written a quote was told "0 invoices,
+// 0 estimates, 0 jobs" about a completely intact backup. `payments` was never listed at all, so
+// nothing printed could tell a restore that brought the money ledger back from one that did not.
+const RECOGNISABLE = ['contacts', 'invoices', 'estimates', 'payments', 'jobs', 'tenants', 'members']
 function census(path) {
   let db
   try {

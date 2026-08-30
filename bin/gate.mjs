@@ -8474,10 +8474,13 @@ section('a backup can actually be put back')
     const live = join(data, 'printshop.db')
     let d = new DatabaseSync(live)
     d.exec('PRAGMA journal_mode = WAL')
-    d.exec('CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)')
-    for (let i = 0; i < 500; i++) d.exec(`INSERT INTO customers (name) VALUES ('C${i}')`)
+    // `contacts`, because that is what this product's customer book is actually called. The
+    // fixture used to invent a `customers` table, which is what let bin/restore.mjs's census go on
+    // counting a table PrintShopCRM has never had — the test was calibrated to the bug.
+    d.exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT)')
+    for (let i = 0; i < 500; i++) d.exec(`INSERT INTO contacts (name) VALUES ('C${i}')`)
     d.close()
-    copyFileSync(live, join(backup, 'printshop.db'))          // the backup: 500 customers
+    copyFileSync(live, join(backup, 'printshop.db'))          // the backup: 500 contacts
     // 500 more rows in a CHILD that is then SIGKILLed. A clean close checkpoints and removes the
     // -wal, which is the opposite of the situation being reproduced: the orphaned log only exists
     // because the process died holding it, and that is the whole defect.
@@ -8485,17 +8488,45 @@ section('a backup can actually be put back')
       import { DatabaseSync } from 'node:sqlite'
       const d = new DatabaseSync(${JSON.stringify(live)})
       d.exec('PRAGMA journal_mode = WAL')
-      for (let i = 0; i < 500; i++) d.exec("INSERT INTO customers (name) VALUES ('L" + i + "')")
+      for (let i = 0; i < 500; i++) d.exec("INSERT INTO contacts (name) VALUES ('L" + i + "')")
       process.kill(process.pid, 'SIGKILL')`
     try { execFileSync(process.execPath, ['--input-type=module', '-e', crash], { stdio: 'ignore' }) }
     catch { /* SIGKILL is the point */ }
     return { dir, data, backup, live }
   }
-  const count = (p) => { const d = new DatabaseSync(p, { readOnly: true }); try { return d.prepare('SELECT COUNT(*) AS n FROM customers').get().n } finally { d.close() } }
+  const count = (p) => { const d = new DatabaseSync(p, { readOnly: true }); try { return d.prepare('SELECT COUNT(*) AS n FROM contacts').get().n } finally { d.close() } }
   const run = (args, ok = true) => {
     try { return execFileSync(process.execPath, [join(ROOT, 'bin', 'restore.mjs'), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
     catch (e) { if (ok) throw new Error(`restore.mjs failed: ${e.stdout || ''}${e.stderr || ''}`); return `${e.stdout || ''}${e.stderr || ''}` }
   }
+
+  /* ---------- the census names tables this product actually has ----------
+   * RECOGNISABLE carried `customers`, and there is no such table — the customer book is `contacts`
+   * (lib/db.mjs), which bin/reset.mjs's own survey already gets right. census() filters the list
+   * down to tables that exist, so the miss was silent: a shop that has just migrated its 3,180-name
+   * customer book off Printavo and not yet written a quote was told "0 invoices, 0 estimates,
+   * 0 jobs" for a completely intact backup, while the control database beside it printed
+   * "1 tenants, 2 members" — the two halves of one output disagreeing about whether restore works.
+   * `payments` was never on the list at all, so nothing printed could tell a restore that brought
+   * the money ledger back from one that did not. And the tool's closing line is "When the shop
+   * looks right, delete <SAFETY>. Not before." */
+  await t('restore.mjs counts tables this product actually has', async () => {
+    const dbmod = await import('../lib/db.mjs')
+    const mem = new DatabaseSync(':memory:')
+    dbmod.initDb(mem)
+    const shopTables = new Set(mem.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name))
+    mem.close()
+    const CONTROL = new Set(['tenants', 'members'])   // the control database's own two
+    const src = readFileSync(join(ROOT, 'bin', 'restore.mjs'), 'utf8')
+    const names = ((/const RECOGNISABLE = \[([^\]]+)\]/.exec(src) || [])[1] || '').match(/'([^']+)'/g)?.map((x) => x.slice(1, -1)) || []
+    assert.ok(names.length, 'RECOGNISABLE moved — re-point this test')
+    for (const n of names) {
+      assert.ok(shopTables.has(n) || CONTROL.has(n),
+        `bin/restore.mjs counts "${n}", which is not a table in this product — it is silently skipped and nothing is reported`)
+    }
+    assert.ok(names.includes('contacts'), 'a restore has to report the customer book')
+    assert.ok(names.includes('payments'), '…and the money')
+  })
 
   await t('cp really does leave the shop with the data it asked to be rid of', () => {
     const f = fixture()
@@ -8504,7 +8535,7 @@ section('a backup can actually be put back')
       copyFileSync(join(f.backup, 'printshop.db'), f.live)     // the instruction we used to print
       const d = new DatabaseSync(f.live, { readOnly: true })
       const check = d.prepare('PRAGMA quick_check').get().quick_check
-      const n = d.prepare('SELECT COUNT(*) AS n FROM customers').get().n
+      const n = d.prepare('SELECT COUNT(*) AS n FROM contacts').get().n
       d.close()
       assert.equal(check, 'ok', 'and it reports itself perfectly healthy, which is the trap')
       assert.equal(n, 1000, `the stale -wal replayed over the restore — 500 was asked for, ${n} came back`)
@@ -8535,8 +8566,8 @@ section('a backup can actually be put back')
       const out = run([f.backup, '--data-root', f.data])
       assert.equal(count(f.live), 1000, 'a plain run is a plan, not an action')
       assert.match(out, /Nothing has been changed/)
-      assert.match(out, /500 customers/, 'it has to show what is in the backup')
-      assert.match(out, /replacing: 1000 customers/, 'and what it would replace, so the shop can tell them apart')
+      assert.match(out, /500 contacts/, 'it has to show what is in the backup')
+      assert.match(out, /replacing: 1000 contacts/, 'and what it would replace, so the shop can tell them apart')
     } finally { rmSync(f.dir, { recursive: true, force: true }) }
   })
 
@@ -8578,7 +8609,7 @@ section('a backup can actually be put back')
     const service = new DatabaseSync(f.live)
     try {
       service.exec('PRAGMA journal_mode = WAL')
-      service.prepare('SELECT count(*) AS n FROM customers').get()   // served a request, now idle
+      service.prepare('SELECT count(*) AS n FROM contacts').get()   // served a request, now idle
       const out = run([f.backup, '--data-root', f.data, '--yes'], false)
       assert.match(out, /still open/, 'restoring under a running service corrupts the file')
       assert.match(out, /systemctl stop/, 'and it has to say what to do about it')
@@ -8737,8 +8768,8 @@ section('a backup can actually be put back')
       const backups = join(dir, 'backups'); mkdirSync(backups, { recursive: true })
       const data = join(dir, 'data'); mkdirSync(data, { recursive: true })
       const d = new DatabaseSync(join(data, 'printshop.db'))
-      d.exec('CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)')
-      d.exec("INSERT INTO customers (name) VALUES ('Rebel Ink')")
+      d.exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT)')
+      d.exec("INSERT INTO contacts (name) VALUES ('Rebel Ink')")
       d.close()
       const stale = join(backups, '20260101-030000.tar.gz')
       writeFileSync(stale, 'older than KEEP_DAYS')
