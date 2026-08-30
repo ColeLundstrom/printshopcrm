@@ -132,7 +132,9 @@ export async function outboxView(showNeeds = false) {
         if (!btn) return
         btn.onclick = async () => {
           btn.disabled = true
-          try { const out = await api.post(`/api/outbox/${m.id}/send`, {}); toast(`Sent to ${out.to}`); closeModal(); outboxView() }
+          // Repaint the list the person was ON. Dropping back to Recent after clearing one item
+          // from the backlog hides both the rest of the backlog and the row they just handled.
+          try { const out = await api.post(`/api/outbox/${m.id}/send`, {}); toast(`Sent to ${out.to}`); closeModal(); outboxView(showNeeds) }
           catch (err) { btn.disabled = false; toast(err.message, true) }
         }
       } })
