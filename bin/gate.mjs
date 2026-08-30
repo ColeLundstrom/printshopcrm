@@ -8679,6 +8679,107 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- the page you can only reach when you are locked out ---------- */
+/*
+ * public/auth.html's expired-reset-link handler did `$('submit').classList.add('hide')`, and
+ * mode() — which owns every other control on the card — never took it off again. 2.5 seconds
+ * later the same handler switches to 'forgot'. From then on the page has NO BUTTON IN ANY MODE:
+ * Sign in, Create your shop and "email me a fresh link" are all unreachable for the rest of that
+ * page load, and mode() has already wiped the error that explained why. The only screen a person
+ * reaches BECAUSE they are locked out, with no way out of it and no shell to fix it from.
+ *
+ * Driven rather than grepped: the real inline script is executed against a stub DOM, so the test
+ * measures the page's behaviour and not the shape of its source.
+ */
+section('an expired reset link does not take the buttons off the login page')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const AUTH = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/auth.html'), 'utf8')
+
+  // Every id the card declares, plus the two inputs the script reaches by [name=…].
+  const runAuth = async ({ pathname = '/login', search = '', valid = true } = {}) => {
+    const ids = [...AUTH.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
+    const mk = (id) => {
+      const cls = new Set()
+      return {
+        id, textContent: '', value: '', required: false, attrs: {}, style: { display: '' },
+        classList: {
+          add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c),
+          toggle: (c, on) => { if (on === undefined) { cls.has(c) ? cls.delete(c) : cls.add(c) } else if (on) cls.add(c); else cls.delete(c) },
+        },
+        setAttribute: (k, v) => { mkAttrs(id)[k] = v },
+        _hidden: () => cls.has('hide'),
+      }
+    }
+    const els = Object.fromEntries(ids.map((id) => [id, mk(id)]))
+    const attrs = {}
+    const mkAttrs = (id) => (attrs[id] ||= {})
+    const named = { email: mk('input-email'), password: mk('input-password') }
+    // The submit button starts on the page: the markup has no `hide` class on it.
+    const doc = {
+      getElementById: (id) => els[id] || null,
+      querySelector: (sel) => {
+        const m = /^\[name=([a-z_]+)\]$/.exec(sel)
+        return m ? (named[m[1]] || mk(sel)) : mk(sel)
+      },
+    }
+    const timers = []
+    let fetched = null
+    const src = AUTH.slice(AUTH.lastIndexOf('<script>') + 8, AUTH.lastIndexOf('</script>'))
+    const fn = new Function('document', 'location', 'history', 'fetch', 'setTimeout', 'URLSearchParams',
+      `${src}\n;return { mode, els: null, get M() { return M } }`)
+    const api = fn(doc, { pathname, search, href: '' }, { replaceState: () => {} },
+      (url) => { fetched = url; return Promise.resolve({ json: () => Promise.resolve({ valid }) }) },
+      (cb, ms) => { timers.push(cb); return timers.length },
+      URLSearchParams)
+    // Let the reset-validity promise chain settle, then fire the 2.5s switch it scheduled.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    return { api, els, named, timers, fetched, run: () => timers.forEach((cb) => cb()) }
+  }
+
+  await t('precondition: the reset screen really does validate its token', async () => {
+    const r = await runAuth({ pathname: '/reset', search: '?token=dead', valid: false })
+    assert.ok(String(r.fetched).includes('/api/auth/reset?token=dead'), 'the page must check the link')
+    assert.equal(r.timers.length, 1, '…and schedule the switch away from a dead one')
+  })
+
+  await t('an expired link leaves a usable button behind, in every mode', async () => {
+    const r = await runAuth({ pathname: '/reset', search: '?token=dead', valid: false })
+    assert.equal(r.els.submit._hidden(), true, 'precondition: the dead-link path hides Set new password')
+    r.run()  // the 2.5s switch to 'forgot'
+    assert.equal(r.els.submit._hidden(), false, 'after the switch there must be a button to press')
+    // …and every other mode the two tabs and the footer link can reach.
+    for (const m of ['login', 'signup', 'forgot']) {
+      r.api.mode(m)
+      assert.equal(r.els.submit._hidden(), false, `mode('${m}') must leave a button on the page`)
+    }
+  })
+
+  await t('…and it still says why, after the switch wipes the error', async () => {
+    const r = await runAuth({ pathname: '/reset', search: '?token=dead', valid: false })
+    assert.match(r.els.err.textContent, /expired or already been used/, 'precondition')
+    r.run()
+    assert.equal(r.els.err.style.display, 'none', 'mode() clears the error, as it does everywhere')
+    assert.match(r.els.notice.textContent, /expired/i, 'so the reason has to move to the notice')
+    assert.equal(r.els.notice.style.display, 'block', '…and be visible')
+  })
+
+  await t('a live reset link is left alone', async () => {
+    const r = await runAuth({ pathname: '/reset', search: '?token=good', valid: true })
+    assert.equal(r.els.submit._hidden(), false, 'a valid link must still offer Set new password')
+    assert.equal(r.els.notice.style.display, 'none', '…with no expiry notice on it')
+  })
+
+  await t('an ordinary sign-in is unaffected', async () => {
+    const r = await runAuth({ pathname: '/login' })
+    assert.equal(r.els.submit._hidden(), false)
+    assert.equal(r.els.submit.textContent, 'Sign in')
+    assert.equal(r.timers.length, 0, 'no token, so nothing is validated and nothing is scheduled')
+  })
+}
+
 /* ---------- every route that mails a customer draws on ONE allowance ---------- */
 /*
  * `outboundLimit` was added to close what the product's own comment calls "an authenticated open

@@ -130,7 +130,14 @@
       $('foot-q').textContent = isSignup ? 'Already have a shop?' : 'New here?'
       $('foot-a').textContent = isSignup ? 'Sign in →' : 'Create your shop →'
       $('foot-a').setAttribute('onclick', `mode('${isSignup ? 'login' : 'signup'}');return false`)
+      // mode() owns the visibility of every control on this card. The expired-reset-link handler
+      // below hides the submit button, and it used to be the only code that ever touched it — so
+      // after that path's 2.5s switch to 'forgot' the page had NO BUTTON IN ANY MODE. Sign in,
+      // create a shop and request a fresh link were all unreachable for the rest of the page load,
+      // on the one screen a person only reaches BECAUSE they are already locked out.
+      $('submit').classList.remove('hide')
       $('err').style.display = 'none'
+      $('notice').style.display = 'none'
       document.querySelector('[name=password]').setAttribute('autocomplete', isSignup || isReset ? 'new-password' : 'current-password')
       if (!isReset) history.replaceState(null, '', isSignup ? '/signup' : isForgot ? '/login' : '/login')
     }
@@ -186,7 +193,14 @@
         $('err').style.display = 'block'
         $('password-field').classList.add('hide')
         $('submit').classList.add('hide')
-        setTimeout(() => { history.replaceState(null, '', '/login'); mode('forgot') }, 2500)
+        setTimeout(() => {
+          history.replaceState(null, '', '/login')
+          mode('forgot')
+          // mode() clears #err, so without this the switch also erases the explanation and the
+          // person is left looking at a form they never asked for, with no idea why.
+          $('notice').textContent = 'That reset link had expired. Enter your email and we will send you a fresh one.'
+          $('notice').style.display = 'block'
+        }, 2500)
       }).catch(() => {})
     }
   </script>
