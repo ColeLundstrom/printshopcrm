@@ -6692,11 +6692,27 @@ app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   const c = row.contact_id ? get('SELECT email, phone FROM contacts WHERE id = ?', row.contact_id) : null
   const to = String(row.to_email || '').trim() || String((row.kind === 'sms' ? c?.phone : c?.email) || '').trim()
   if (!to) return res.status(400).json({ error: 'No address on file for this message — add one to the customer first.', code: 'no_recipient' })
+  // Claim the row BEFORE the await, the way every sibling drain in this file does (qbo_sync goes
+  // 'syncing', a webhook moves next_attempt_at, a PO goes 'submitting'). The already-sent check
+  // above reads `delivered`, which is not written until after the relay answers — so two Send
+  // clicks a second apart, or two staff working the same outbox, both passed it and the customer
+  // received the message twice from ONE email_log row. The row then recorded a single delivery,
+  // so nothing in the product could show it had happened, and the shop's only evidence was the
+  // customer replying twice.
+  //
+  // Time-stamped, not a flag: a process killed mid-send would otherwise strand the row for good,
+  // and nothing else in the product clears this column. sendEmail is bounded by smtpTimeoutMs()
+  // (60s ceiling), so five minutes is well clear of a slow relay and still releases a lost claim
+  // inside one automation tick.
+  const claim = run(
+    "UPDATE email_log SET sending_at = ? WHERE id = ? AND delivered = 0 AND (sending_at IS NULL OR sending_at < datetime('now', '-5 minutes'))",
+    now(), row.id)
+  if (!claim.changes) return res.status(409).json({ error: 'That message is going out right now — give it a moment.', code: 'already_sending' })
   const s = getSettings()
   const r = row.kind === 'sms'
     ? await sendSms({ to, body: row.body, settings: s })
     : await sendEmail({ to, subject: row.subject, body: row.body, settings: s })
-  run('UPDATE email_log SET to_email = ?, delivered = ?, via = ?, delivery_error = ? WHERE id = ?',
+  run('UPDATE email_log SET to_email = ?, delivered = ?, via = ?, delivery_error = ?, sending_at = NULL WHERE id = ?',
     to, r.delivered ? 1 : 0, r.via || 'logged', r.error || null, row.id)
   // The mail has already gone out by this point, and email_log already says so. A throw here — a
   // dangling contact_id, a disk hiccup — used to become a 500 on a send that actually succeeded,

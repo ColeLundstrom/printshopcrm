@@ -10514,6 +10514,52 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('pressing Send twice does not mail the customer twice')
+
+await t('the outbox claims a row before it awaits the relay, not after', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("app.post('/api/outbox/:id/send'")
+  assert.ok(i > 0, 'the send route should still be findable')
+  const handler = src.slice(i, src.indexOf('\n}))', i))
+  // The already-sent guard reads `delivered`, which is not written until AFTER the relay answers.
+  // So two Send clicks a second apart — a double tap on a slow phone, two staff on one outbox —
+  // both passed it and the customer received the message twice from ONE email_log row. Every
+  // sibling drain in this file claims first: qbo_sync goes 'syncing', a webhook moves
+  // next_attempt_at, a PO goes 'submitting'. The ORDER is the whole fix.
+  const claim = handler.indexOf('sending_at = ?')
+  const send = Math.min(...['await sendEmail', 'await sendSms'].map((k) => {
+    const n = handler.indexOf(k); return n < 0 ? Infinity : n
+  }))
+  assert.ok(claim > 0, 'the send route must claim the row (email_log.sending_at) before it mails')
+  assert.ok(claim < send, 'the claim has to happen BEFORE the await, or two clicks both get through')
+})
+
+await t('a claimed row cannot be claimed again, and a lost claim releases itself', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  dbm.setDefaultDb(db)
+  const cols = db.prepare('PRAGMA table_info(email_log)').all().map((c) => c.name)
+  assert.ok(cols.includes('sending_at'), 'email_log needs the claim column on an upgraded database too')
+  db.prepare("INSERT INTO email_log (id, subject, body, kind, delivered) VALUES (1, 's', 'b', 'email', 0)").run()
+  const CLAIM = "UPDATE email_log SET sending_at = ? WHERE id = ? AND delivered = 0 AND (sending_at IS NULL OR sending_at < datetime('now', '-5 minutes'))"
+  const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ')
+  assert.equal(db.prepare(CLAIM).run(stamp, 1).changes, 1, 'the first Send must take the row')
+  assert.equal(db.prepare(CLAIM).run(stamp, 1).changes, 0, 'the second Send must find it already claimed')
+  // A process killed between the claim and the write must not strand the message for ever —
+  // nothing else in the product clears this column, so the claim has to time out on its own.
+  db.prepare("UPDATE email_log SET sending_at = datetime('now', '-30 minutes') WHERE id = 1").run()
+  assert.equal(db.prepare(CLAIM).run(stamp, 1).changes, 1, 'a claim left behind by a crash must release itself')
+  // …and a message that really did go out is never re-sent by the timeout.
+  db.prepare("UPDATE email_log SET delivered = 1, sending_at = datetime('now', '-30 minutes') WHERE id = 1").run()
+  assert.equal(db.prepare(CLAIM).run(stamp, 1).changes, 0, 'a delivered message must never be reclaimable')
+})
+
 section('every file the distribution ships actually parses')
 
 await t('node --check passes on every .mjs in the distribution', async () => {
