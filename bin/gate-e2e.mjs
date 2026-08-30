@@ -1951,6 +1951,35 @@ try {
     chk('…and does not print UNPAID beside its own past-due bucket', String(/UNPAID/.test(stmt.text)), '^false$')
   }
 
+  /* ---------- an automation may not store an action that cannot work ----------
+   * POST and PUT /api/automations validated the name, the trigger and the trigger's param, then
+   * stored `actions` with a bare JSON.stringify. So `[{ key: 'nonsense' }]` stored a rule that
+   * runs nothing and logs itself green, and — the one a real shop hits — "Move the job to a
+   * stage" with `Production` typed into its free-text Stage box wrote a value no board column
+   * matches: the job vanished off the Job Board while every count still included it. */
+  {
+    const mkRule = (actions) => req('POST', '/api/automations', { body: { name: 'Guard', trigger: 'invoice.paid', actions } })
+    let g = await mkRule([{ key: 'job.move', config: { stage: 'Production' } }])
+    chk('a stage the board has no column for is refused', String(g.status), '^400$')
+    chk('…with a code the screen can act on', String(g.json?.code), '^invalid_action$')
+    chk('…naming the step', String(g.json?.error || ''), 'Step 1')
+    g = await mkRule([{ key: 'job.move', config: {} }])
+    chk('…and so is one with no stage chosen at all', String(g.status), '^400$')
+    g = await mkRule([{ key: 'nonsense.action', config: {} }])
+    chk('an action this app cannot do is refused', String(g.status), '^400$')
+    g = await mkRule([{ key: 'job.move', config: { stage: 'shipping' } }])
+    chk('…while a real one saves', String(g.status), '^200$')
+    const ruleId = g.json?.id
+    // The EDIT door has to clear the same bar; it is the one that has been missing checks before.
+    const bad = await req('PUT', `/api/automations/${ruleId}`, { body: { actions: [{ key: 'job.move', config: { stage: 'Shipping' } }] } })
+    chk('editing a rule into a bad stage is refused too', String(bad.status), '^400$')
+    const still = await req('GET', '/api/automations')
+    const kept = (still.json?.automations || still.json || []).find?.((a) => a.id === ruleId)
+    const acts = typeof kept?.actions === 'string' ? JSON.parse(kept.actions || '[]') : (kept?.actions || [])
+    chk('…and the rule the shop already had is untouched', String(acts[0]?.config?.stage), '^shipping$')
+    await req('DELETE', `/api/automations/${ruleId}`)
+  }
+
   /* ---------- "quotes gone quiet" is what the shop KEEPS, not what it collects for the state ----
    * estimates.total is subtotal + sales tax. The dashboard KPI, the pipeline board and per-job
    * profitability were all corrected to read the subtotal; the Follow-ups screen's headline total

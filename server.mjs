@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
   freezeUpcharges,
-  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
+  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, canWrite, SECRET_KEYS,
 } from './lib/db.mjs'
@@ -3198,16 +3198,10 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
 
 /* ================= JOBS / BOARD ================= */
 
-export const STAGES = [
-  { key: 'new', label: 'New' },
-  { key: 'art_approval', label: 'Art Approval' },
-  { key: 'prepress', label: 'Prepress' },
-  { key: 'production', label: 'Production' },
-  { key: 'qc', label: 'QC' },
-  { key: 'shipping', label: 'Shipping' },
-  { key: 'complete', label: 'Complete' },
-]
-const STAGE_KEYS = STAGES.map((s) => s.key)
+// One list, in lib/db.mjs, so the automation engine measures against the same seven keys the
+// board draws — it cannot import this file.
+export const STAGES = JOB_STAGES
+const STAGE_KEYS = JOB_STAGE_KEYS
 
 app.get('/api/board', wrap((req, res) => {
   const jobs = all(`SELECT j.*, c.name AS contact_name, c.company,
@@ -3934,6 +3928,32 @@ const sanitizeAutoParams = (p) => {
  * while `params` went up empty. Refuse the shape here as well as seeding the dropdown, so no
  * client — the UI, a script, an integration — can store a rule that means "everything".
  */
+/**
+ * An ACTION was never validated at all. POST and PUT checked the name, the trigger and the
+ * trigger's parameter, then stored `actions` with a bare JSON.stringify.
+ *
+ * So `[{ key: 'nonsense' }]` stored a rule that runs nothing and logs itself green (the engine's
+ * switch falls through), `[{}]` the same, and — the one a real shop hits — "Move the job to a
+ * stage" with `Production` typed into its free-text Stage box wrote a value no board column
+ * matches, and the job disappeared off the Job Board while every count still included it.
+ *
+ * Same posture as missingTriggerParam: refuse the shape at the route, so no client — the builder,
+ * a script, an integration — can store a rule that cannot work.
+ */
+const invalidAction = (actions) => {
+  for (const [i, a] of (actions || []).entries()) {
+    const n = i + 1
+    if (!a || typeof a !== 'object' || Array.isArray(a)) return `Step ${n} is not an action.`
+    const def = ACTIONS.find((x) => x.key === a.key)
+    if (!def) return `Step ${n} is not something this app can do.`
+    if (a.config != null && (typeof a.config !== 'object' || Array.isArray(a.config))) return `Step ${n}'s settings are not readable.`
+    if (a.key === 'job.move' && !JOB_STAGE_KEYS.includes(a.config?.stage)) {
+      return `Step ${n}: choose which stage to move the job to.`
+    }
+  }
+  return null
+}
+
 const missingTriggerParam = (trigger, params) => {
   const t = TRIGGERS.find((x) => x.key === trigger)
   if (!t?.param || t.timed) return null   // a timed threshold has a documented default; see needsSetup()
@@ -3947,6 +3967,8 @@ app.post('/api/automations', requireRole('manager'), wrap((req, res) => {
   const missing = missingTriggerParam(b.trigger, b.params)
   if (missing) return res.status(400).json({ error: `Choose which ${String(missing.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
   if (!Array.isArray(b.actions) || !b.actions.length) return res.status(400).json({ error: 'Add at least one action' })
+  const badAction = invalidAction(b.actions)
+  if (badAction) return res.status(400).json({ error: badAction, code: 'invalid_action' })
   const id = Number(run('INSERT INTO automations (name, enabled, trigger, params, conditions, actions, created_at) VALUES (?,?,?,?,?,?,?)',
     b.name.trim(), b.enabled === false ? 0 : 1, b.trigger, JSON.stringify(sanitizeAutoParams(b.params)),
     JSON.stringify(b.conditions || []), JSON.stringify(b.actions), now()).lastInsertRowid)
@@ -3973,6 +3995,8 @@ app.put('/api/automations/:id', requireRole('manager'), wrap((req, res) => {
   if (!TRIGGERS.some((t) => t.key === trigger)) return res.status(400).json({ error: 'Pick a trigger' })
   const actions = b.actions === undefined ? parse(a.actions, []) : b.actions
   if (!Array.isArray(actions) || !actions.length) return res.status(400).json({ error: 'Add at least one action' })
+  const badAction = invalidAction(actions)
+  if (badAction) return res.status(400).json({ error: badAction, code: 'invalid_action' })
   const missingOnSave = missingTriggerParam(trigger, b.params ?? parse(a.params, {}))
   if (missingOnSave) return res.status(400).json({ error: `Choose which ${String(missingOnSave.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
   run('UPDATE automations SET name=?, enabled=?, trigger=?, params=?, conditions=?, actions=? WHERE id=?',

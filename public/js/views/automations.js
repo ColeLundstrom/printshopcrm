@@ -197,27 +197,50 @@ function autoForm(a) {
           <select class="input" id="a-trig">${cfg.triggers.map((x) => `<option value="${x.key}" ${x.key === state.trigger ? 'selected' : ''}>${esc(x.label)}${x.timed ? ' (timed)' : ''}</option>`).join('')}</select>
           ${t?.param ? `<div class="row" style="margin-top:7px;gap:7px">
             <span class="dim" style="font-size:12px">${esc(t.param.label)}</span>
-            ${t.param.key === 'stage'
-              ? `<select class="input" id="a-param" style="max-width:170px">${['new', 'art_approval', 'prepress', 'production', 'qc', 'shipping', 'complete']
-                  .map((s) => `<option value="${s}" ${state.params.stage === s ? 'selected' : ''}>${s.replace('_', ' ')}</option>`).join('')}</select>`
+            ${t.param.options
+              ? `<select class="input" id="a-param" style="max-width:170px">${t.param.options
+                  .map((s) => `<option value="${s}" ${state.params[t.param.key] === s ? 'selected' : ''}>${esc(String(s).replace('_', ' '))}</option>`).join('')}</select>`
               : `<input class="input" id="a-param" type="number" min="0" style="max-width:90px" value="${esc(state.params[t.param.key] ?? t.param.default)}">`}
           </div>` : ''}
           ${t?.timed ? '<div class="dim" style="font-size:11px;margin-top:6px">Time-based — checked every 5 minutes. Printavo gates these to its top tier.</div>' : ''}`
         $('#a-trig', root).onchange = (e) => { state.trigger = e.target.value; state.params = {}; drawTrigger() }
         const p = $('#a-param', root)
-        if (p) p.oninput = p.onchange = (e) => { state.params[t.param.key] = t.param.key === 'stage' ? e.target.value : Number(e.target.value) }
+        if (p) p.oninput = p.onchange = (e) => { state.params[t.param.key] = t.param.options ? e.target.value : Number(e.target.value) }
       }
+
+      /* The catalogue has declared `kind` on every condition since it was written and nothing
+         read it: every value was a plain text box. 'Job is a rush' therefore wanted the exact
+         lowercase string "true", and a new condition is born with ''. */
+      const defaultFor = (def) => (def?.kind === 'bool' ? 'true' : '')
+      const condInput = (def, c, i) => (def?.kind === 'bool'
+        ? `<label class="sr-only" for="cv-${i}">${esc(def.label)}</label>
+           <select class="input" id="cv-${i}" data-cv="${i}" style="max-width:130px">
+             <option value="true" ${String(c.value ?? 'true') !== 'false' ? 'selected' : ''}>Yes</option>
+             <option value="false" ${String(c.value) === 'false' ? 'selected' : ''}>No</option></select>`
+        : `<label class="sr-only" for="cv-${i}">${esc(def?.label || 'Value')}</label>
+           <input class="input" id="cv-${i}" data-cv="${i}" type="${def?.kind === 'number' ? 'number' : 'text'}" value="${esc(c.value ?? '')}" style="max-width:130px">`)
 
       const drawConds = () => {
         $('#ab-conds', root).innerHTML = `${state.conditions.map((c, i) => `<div class="row" style="gap:7px;margin-bottom:6px">
             <select class="input" data-ck="${i}" style="max-width:180px">${cfg.conditions.map((x) => `<option value="${x.key}" ${x.key === c.key ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select>
-            <input class="input" data-cv="${i}" value="${esc(c.value ?? '')}" style="max-width:130px">
+            ${condInput(cfg.conditions.find((x) => x.key === c.key), c, i)}
             <button class="del" data-rmc="${i}" aria-label="Remove condition ${i + 1}">&times;</button></div>`).join('')}
           <button class="btn ghost sm" id="add-cond">+ Add condition</button>
           ${state.conditions.length ? '' : '<span class="dim" style="font-size:11.5px;margin-left:8px">Always runs</span>'}`
-        $('#add-cond', root).onclick = () => { state.conditions.push({ key: 'total_over', value: '' }); drawConds() }
-        on($('#ab-conds', root), '[data-ck]', (_e, t) => { state.conditions[+t.dataset.ck].key = t.value }, 'change')
-        on($('#ab-conds', root), '[data-cv]', (_e, t) => { state.conditions[+t.dataset.cv].value = t.value }, 'input')
+        // Born with its kind's own default, not always ''. A 'Job is a rush' condition added with a
+        // blank value used to mean the opposite of what its label says.
+        $('#add-cond', root).onclick = () => { state.conditions.push({ key: 'total_over', value: defaultFor(cfg.conditions.find((x) => x.key === 'total_over')) }); drawConds() }
+        on($('#ab-conds', root), '[data-ck]', (_e, t) => {
+          const c = state.conditions[+t.dataset.ck]
+          c.key = t.value
+          // Switching to a different kind of question needs a value that kind can hold: a number
+          // box carrying the word "true" is a condition that silently never matches.
+          c.value = defaultFor(cfg.conditions.find((x) => x.key === t.value))
+          drawConds()
+        }, 'change')
+        const takeCond = (_e, t) => { state.conditions[+t.dataset.cv].value = t.value }
+        on($('#ab-conds', root), '[data-cv]', takeCond, 'input')
+        on($('#ab-conds', root), '[data-cv]', takeCond, 'change')   // a <select> fires change, not input
         on($('#ab-conds', root), '[data-rmc]', (_e, t) => { state.conditions.splice(+t.dataset.rmc, 1); drawConds() })
       }
 
@@ -230,18 +253,37 @@ function autoForm(a) {
               <div class="sp"></div>
               ${state.actions.length > 1 ? `<button class="del" data-rma="${i}" aria-label="Remove action ${i + 1}">&times;</button>` : ''}
             </div>
-            ${def.fields.map((f) => f.long
-              ? `<textarea class="input" data-af="${i}:${f.key}" placeholder="${esc(f.label)}" style="margin-top:6px;min-height:70px">${esc(act.config?.[f.key] || '')}</textarea>`
-              : `<input class="input" data-af="${i}:${f.key}" placeholder="${esc(f.label)}" value="${esc(act.config?.[f.key] || '')}" style="margin-top:6px">`).join('')}
+            ${def.fields.map((f) => (f.options
+              /* A field whose value must be one of a fixed set is a select, never a text box.
+                 "Move the job to a stage" was a blank input labelled Stage, so an owner typed
+                 what the board shows them — `Production` — and wrote a stage no column matches. */
+              ? `<label class="sr-only" for="af-${i}-${f.key}">${esc(f.label)}</label>
+                 <select class="input" id="af-${i}-${f.key}" data-af="${i}:${f.key}" style="margin-top:6px;max-width:210px">${f.options
+                   .map((o) => `<option value="${o}" ${act.config?.[f.key] === o ? 'selected' : ''}>${esc(String(o).replace('_', ' '))}</option>`).join('')}</select>`
+              : f.long
+                ? `<textarea class="input" data-af="${i}:${f.key}" placeholder="${esc(f.label)}" aria-label="${esc(f.label)}" style="margin-top:6px;min-height:70px">${esc(act.config?.[f.key] || '')}</textarea>`
+                : `<input class="input" data-af="${i}:${f.key}" placeholder="${esc(f.label)}" aria-label="${esc(f.label)}" value="${esc(act.config?.[f.key] || '')}" style="margin-top:6px">`)).join('')}
           </div>`
         }).join('')}
         <button class="btn ghost sm" id="add-act">+ Add action</button>`
         $('#add-act', root).onclick = () => { state.actions.push({ key: 'notify.staff', config: {} }); drawActions() }
-        on($('#ab-actions', root), '[data-ak]', (_e, t) => { const i = +t.dataset.ak; state.actions[i] = { key: t.value, config: {} }; drawActions() }, 'change')
-        on($('#ab-actions', root), '[data-af]', (_e, t) => {
+        on($('#ab-actions', root), '[data-ak]', (_e, t) => {
+          const i = +t.dataset.ak
+          // Seed a select-backed field from its first option, so what the screen SHOWS is what
+          // gets stored. Rendering a dropdown while sending up an empty config is the same defect
+          // the trigger's stage param already carries a comment about.
+          const def2 = cfg.actions.find((x) => x.key === t.value)
+          const config = {}
+          for (const f of def2?.fields || []) if (f.options?.length) config[f.key] = f.options[0]
+          state.actions[i] = { key: t.value, config }
+          drawActions()
+        }, 'change')
+        const takeField = (_e, t) => {
           const [i, k] = t.dataset.af.split(':')
           state.actions[+i].config = { ...state.actions[+i].config, [k]: t.value }
-        }, 'input')
+        }
+        on($('#ab-actions', root), '[data-af]', takeField, 'input')
+        on($('#ab-actions', root), '[data-af]', takeField, 'change')   // a <select> fires change, not input
         on($('#ab-actions', root), '[data-rma]', (_e, t) => { state.actions.splice(+t.dataset.rma, 1); drawActions() })
       }
 

@@ -6566,22 +6566,31 @@ section('an automation that fails halfway is not logged as a success')
     name: 'BrokenRule',
     trigger: 'job.stage',
     conditions: [],
-    // Step 2 throws — a 'move the job to a stage' step saved with the Stage field left blank,
-    // which POST /api/automations accepts.
+    /* Step 2 throws. It used to be `{ key: 'job.move', config: {} }` — a "move the job to a
+     * stage" step saved with the Stage field blank, which POST /api/automations accepted and
+     * which then failed on a SQLite bind. That is now refused at the action (and at the route),
+     * so it degrades to a visible skip instead of an exception — which is the fix, not this
+     * test's subject. The subject is: ANY step throwing mid-rule must not be logged green.
+     * A customer email whose delivery leg throws is the realest version of that. */
     actions: [
       { key: 'contact.tag', config: { tag: 'step-1-ok' } },
-      { key: 'job.move', config: {} },
+      { key: 'email.customer', config: { subject: 'Hi', body: 'there' } },
       { key: 'contact.tag', config: { tag: 'step-3-never' } },
     ],
   }
   mem.exec("CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT, tags TEXT DEFAULT '', updated_at DATETIME)")
-  mem.exec("CREATE TABLE jobs (id INTEGER PRIMARY KEY, job_number TEXT, stage TEXT, updated_at DATETIME)")
+  mem.exec("CREATE TABLE jobs (id INTEGER PRIMARY KEY, job_number TEXT, stage TEXT, status TEXT, updated_at DATETIME)")
+  // fill() reads the shop's settings for its {{token}} vocabulary, so the throw under test is the
+  // injected one and not a missing fixture table.
+  mem.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)')
   dbmod.run('INSERT INTO contacts (id, name, tags) VALUES (1, ?, ?)', 'Casey', '')
   dbmod.run('INSERT INTO jobs (id, job_number, stage) VALUES (1, ?, ?)', 'JOB-1027', 'new')
   // automation_runs.automation_id is a real FK, so the rule has to exist to be logged against.
   dbmod.run('INSERT INTO automations (id, name, enabled, trigger, actions) VALUES (?,?,1,?,?)',
     rule.id, rule.name, rule.trigger, JSON.stringify(rule.actions))
-  auto.runAutomation(rule, 'job.stage', { contact: { id: 1, name: 'Casey' }, job: { id: 1, job_number: 'JOB-1027' } }, {})
+  auto.runAutomation(rule, 'job.stage',
+    { contact: { id: 1, name: 'Casey', email: 'casey@example.test' }, job: { id: 1, job_number: 'JOB-1027' } },
+    { queueEmail: () => { throw new Error('SMTP refused the connection') } })
 
   const row = dbmod.get('SELECT status, detail FROM automation_runs ORDER BY id DESC LIMIT 1')
   await t('the run is recorded as an error, not a green success', () => {
@@ -6595,6 +6604,7 @@ section('an automation that fails halfway is not logged as a success')
   })
   await t('…and the reason it stopped', () => {
     assert.match(String(row?.detail || ''), /then failed:/)
+    assert.match(String(row?.detail || ''), /SMTP refused the connection/, 'the shop needs the actual reason, not just "failed"')
   })
 }
 
@@ -8728,6 +8738,132 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
   assert.match(app, /function refreshChrome\(\)\s*\{\s*if \(chromeTimer\) return/,
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
+
+/* ---------- an automation cannot move a job somewhere the board has no column for ---------- */
+/*
+ * "Move the job to a stage" was a free-text <input> labelled Stage — the TRIGGER's stage field
+ * next to it is a <select> of the seven keys; the ACTION's never was — and nothing validated it
+ * at any layer: POST and PUT /api/automations checked the name, the trigger and the trigger's
+ * param, then stored `actions` with a bare JSON.stringify.
+ *
+ * So the owner types what the board shows them, `Production`, and runAction writes
+ * jobs.stage = 'Production'. GET /api/board builds its columns by `j.stage === s.key`, which
+ * matches nothing, so the job is simply gone from the Job Board while the All chip still counts
+ * it, the "pieces on the floor" total silently drops it, Floor Mode prints "✓ Complete" and the
+ * job page's Stage select displays "New" — where re-selecting New fires no change event, so the
+ * one screen that could fix it cannot.
+ *
+ * Two more in the same action. It was the ONE stage-writer of five that never paired
+ * jobs.status, and the board reads `WHERE j.status = 'active'`: a rule moving a job to complete
+ * left it in the Complete column for ever, still booking press minutes in Capacity, and a rule
+ * moving one back out left it invisible. And `is_rush`'s declared `kind: 'bool'` was read
+ * nowhere, so the condition demanded the literal string "true" and inverted on everything else,
+ * including the '' a new condition is born with.
+ */
+section('an automation writes a stage the board can draw, or it writes nothing')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+
+  const fixture = () => {
+    const mem = new DatabaseSync(':memory:')
+    dbm.setDefaultDb(mem)
+    auto.initAutomations(mem)
+    mem.exec("CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT, tags TEXT DEFAULT '', updated_at DATETIME)")
+    mem.exec("CREATE TABLE jobs (id INTEGER PRIMARY KEY, job_number TEXT, stage TEXT, status TEXT, rush INTEGER DEFAULT 0, updated_at DATETIME)")
+    mem.exec("CREATE TABLE activities (id INTEGER PRIMARY KEY, contact_id INTEGER, job_id INTEGER, type TEXT, description TEXT, created_at DATETIME)")
+    mem.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)')
+    dbm.run("INSERT INTO jobs (id, job_number, stage, status) VALUES (1, 'JOB-1042', 'production', 'active')")
+    // automation_runs.automation_id is a real FK, so the rule has to exist to be logged against.
+    dbm.run("INSERT INTO automations (id, name, enabled, trigger, actions) VALUES (1, 'R', 1, 'invoice.paid', '[]')")
+    return mem
+  }
+
+  await t('a stage no column matches is refused, and the run log says so', () => {
+    const mem = fixture()
+    try {
+      auto.runAutomation(
+        { id: 1, name: 'Typed', trigger: 'invoice.paid', conditions: [], actions: [{ key: 'job.move', config: { stage: 'Production' } }] },
+        'invoice.paid', { job: { id: 1, job_number: 'JOB-1042' } }, {})
+      const job = dbm.get('SELECT stage, status FROM jobs WHERE id = 1')
+      assert.equal(job.stage, 'production', 'the job must be left where the board can see it')
+      const logged = dbm.get('SELECT status, detail FROM automation_runs ORDER BY id DESC LIMIT 1')
+      assert.match(String(logged?.detail || ''), /is not a stage/, 'and the shop has to be able to see why nothing happened')
+      assert.match(String(logged?.detail || ''), /Production/, '…naming the value it refused')
+    } finally { mem.close() }
+  })
+
+  await t('…and a real stage still moves the job', () => {
+    const mem = fixture()
+    try {
+      auto.runAutomation({ id: 1, name: 'O', trigger: 'invoice.paid', conditions: [], actions: [{ key: 'job.move', config: { stage: 'shipping' } }] },
+        'invoice.paid', { job: { id: 1, job_number: 'JOB-1042' } }, {})
+      assert.equal(dbm.get('SELECT stage FROM jobs WHERE id = 1').stage, 'shipping')
+    } finally { mem.close() }
+  })
+
+  await t('moving a job to complete also marks it complete, like the other four writers', () => {
+    const mem = fixture()
+    try {
+      auto.runAutomation({ id: 1, name: 'Done', trigger: 'invoice.paid', conditions: [], actions: [{ key: 'job.move', config: { stage: 'complete' } }] },
+        'invoice.paid', { job: { id: 1, job_number: 'JOB-1042' } }, {})
+      const job = dbm.get('SELECT stage, status FROM jobs WHERE id = 1')
+      assert.deepEqual([job.stage, job.status], ['complete', 'complete'],
+        'the board is `WHERE status = active` — a stage of complete with a status of active never leaves the floor')
+    } finally { mem.close() }
+  })
+
+  await t('…and moving one back out of complete puts it back on the board', () => {
+    const mem = fixture()
+    try {
+      dbm.run("UPDATE jobs SET stage = 'complete', status = 'complete' WHERE id = 1")
+      auto.runAutomation({ id: 1, name: 'Reopen', trigger: 'invoice.paid', conditions: [], actions: [{ key: 'job.move', config: { stage: 'qc' } }] },
+        'invoice.paid', { job: { id: 1, job_number: 'JOB-1042' } }, {})
+      const job = dbm.get('SELECT stage, status FROM jobs WHERE id = 1')
+      assert.deepEqual([job.stage, job.status], ['qc', 'active'], 'a reopened job that stays status=complete is invisible everywhere')
+    } finally { mem.close() }
+  })
+
+  await t('"Job is a rush" means rush, whatever the box says', () => {
+    const mem = fixture()
+    try {
+      const fired = (rush, value) => {
+        dbm.run('UPDATE jobs SET rush = ?, stage = ?, status = ? WHERE id = 1', rush, 'production', 'active')
+        auto.runAutomation({ id: 1, name: 'R', trigger: 'job.stage', conditions: [{ key: 'is_rush', value }], actions: [{ key: 'job.move', config: { stage: 'shipping' } }] },
+          'job.stage', { job: { id: 1, job_number: 'JOB-1042', rush } }, {})
+        return dbm.get('SELECT stage FROM jobs WHERE id = 1').stage === 'shipping'
+      }
+      // The default a newly added condition is born with, and every word a person actually types.
+      for (const v of ['', 'true', 'Yes', 'YES', '1', 'on']) {
+        assert.equal(fired(1, v), true, `a rush job must match "${v}"`)
+        assert.equal(fired(0, v), false, `a standard job must not match "${v}"`)
+      }
+      assert.equal(fired(0, 'false'), true, '"No" must match a job that is not a rush')
+      assert.equal(fired(1, 'false'), false, '…and must not match one that is')
+    } finally { mem.close() }
+  })
+
+  await t('the builder renders a fixed-value field as a list, never a text box', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const view = readFileSync(join(root, 'public/js/views/automations.js'), 'utf8')
+    assert.match(view, /f\.options/, 'the action builder must honour a field’s option list')
+    assert.match(view, /def\?\.kind === 'bool'/, '…and a condition’s declared kind')
+    // The seven keys must not be hard-coded in the view any more: one list, in lib/db.mjs.
+    assert.ok(!/'art_approval', 'prepress'/.test(view), 'the stage list must come from the catalogue, not a copy in the view')
+    // Every catalogue entry that declares a fixed set must offer a real one.
+    for (const a of auto.ACTIONS) {
+      for (const f of a.fields || []) {
+        if (f.options) assert.ok(Array.isArray(f.options) && f.options.length, `${a.key}.${f.key} declares options but has none`)
+      }
+    }
+    assert.deepEqual(auto.ACTIONS.find((a) => a.key === 'job.move').fields[0].options, dbm.JOB_STAGE_KEYS,
+      'the action offers exactly the stages the board draws')
+  })
+}
 
 /* ---------- the assistant does not offer a button it cannot answer ---------- */
 /*
