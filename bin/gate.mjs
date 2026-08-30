@@ -8739,6 +8739,79 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- two more doors that put money somewhere it does not belong ---------- */
+/*
+ * (a) The in-app assistant records a payment against a VOIDED invoice.
+ *     POST /api/invoices/:id/payments refuses this and its comment spells out why:
+ *     syncInvoiceStatus deliberately will not move a void invoice, so the payment row exists,
+ *     counts toward Revenue MTD and the customer's lifetime value, and queues for QuickBooks —
+ *     while the invoice itself still reads $0.00 paid and CANCELLED. The assistant door had no
+ *     check at all and answered "It's now paid in full."
+ *
+ * (b) A deal's value could be negative, or big enough to overflow its own rounding.
+ *     moneyIn() rejected NaN and Infinity and nothing else. `value: -3200` stored happily and took
+ *     the open pipeline from $19,983.35 to $16,783.35, and `1e308` passed isFinite and then
+ *     overflowed INSIDE round2 (`Math.round(1e308 * 100)` is Infinity), putting an Infinity in the
+ *     column the board sums. Both answered 200. And the POST validated `b.value` through moneyIn
+ *     and then stored a second, unchecked `round2(b.value)` — two rules on one field.
+ */
+section('money cannot be put where the document says it does not belong')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+
+  await t('the assistant refuses a voided invoice, the way the API route does', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = mkdtempSync(join(tmpdir(), 'psc-void-'))
+    const db = new DatabaseSync(join(dir, 'v.db'))
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      dbm.seedSettings()
+      dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Void Co')")
+      dbm.run("INSERT INTO invoices (id, contact_id, invoice_number, status, amount_due, amount_paid, created_at) VALUES (1, 1, 'INV-9001', 'void', 848.22, 0, datetime('now'))")
+      const { ask } = await import('../lib/assistant.mjs')
+      const r = await ask('mark INV-9001 paid')
+      assert.match(String(r.reply), /voided/i, 'it has to say why, on a document the shop cancelled on purpose')
+      assert.ok(!/paid in full/i.test(String(r.reply)), 'and it must not claim the money landed')
+      assert.equal(dbm.get('SELECT COUNT(*) AS n FROM payments WHERE invoice_id = 1').n, 0,
+        'no payment row — it would count in Revenue MTD against an invoice that reads CANCELLED')
+
+      // …and a live invoice still works, or the fix has broken the feature.
+      dbm.run("INSERT INTO invoices (id, contact_id, invoice_number, status, amount_due, amount_paid, created_at) VALUES (2, 1, 'INV-9002', 'unpaid', 100, 0, datetime('now'))")
+      const ok = await ask('mark INV-9002 paid')
+      assert.match(String(ok.reply), /paid in full/i)
+      assert.equal(dbm.get('SELECT COUNT(*) AS n FROM payments WHERE invoice_id = 2').n, 1)
+    } finally { dbm.setDefaultDb(prev); try { db.close() } catch { /* closed */ } rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  await t('a deal is worth zero or more, and survives being rounded', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+    const m = /const moneyIn = (\(v\) => \{[\s\S]*?\n\})/.exec(src)
+    assert.ok(m, 'the deal-value guard should still be readable')
+    // eslint-disable-next-line no-new-func — the shipped predicate, not a copy.
+    const moneyIn = new Function('round2', `return ${m[1]}`)((n) => Math.round(n * 100) / 100)
+    assert.equal(moneyIn(3200), 3200, 'an ordinary deal')
+    assert.equal(moneyIn('3200.005'), 3200.01, '…and what a form actually posts')
+    assert.equal(moneyIn(0), 0, 'a $0 deal is legitimate — a comp, a sample')
+    assert.equal(moneyIn(-3200), null, 'there is no such thing as a deal worth minus three thousand dollars')
+    assert.equal(moneyIn(1e308), null, 'round2 answers 0 for this — a deal silently worth nothing, with a 200')
+    assert.equal(moneyIn(1e15), null, '…and so is anything past exact cent representation')
+    assert.equal(moneyIn(9e13), 9e13, 'while a number a real shop could type is fine')
+    assert.equal(moneyIn(Infinity), null)
+    assert.equal(moneyIn('abc'), null)
+    // …and the route must store the value it validated, not a second unchecked reading of the body.
+    const post = src.slice(src.indexOf("app.post('/api/opportunities'"))
+    assert.ok(!/round2\(b\.value\)/.test(post.slice(0, 900)), 'the insert must use the checked number')
+  })
+}
+
 /* ---------- storage that is switched off costs a preference, never the app ---------- */
 /*
  * `localStorage` is allowed to throw: Chrome throws on EVERY access when the user has blocked

@@ -1951,6 +1951,33 @@ try {
     chk('…and does not print UNPAID beside its own past-due bucket', String(/UNPAID/.test(stmt.text)), '^false$')
   }
 
+  /* ---------- a deal is worth zero or more ----------
+   * moneyIn() rejected NaN and Infinity and nothing else, so `value: -3200` stored happily and
+   * reduced the shop's own open-pipeline figure by that much, and `1e308` passed isFinite and then
+   * overflowed inside round2 — `Math.round(1e308 * 100)` is Infinity — putting an Infinity into
+   * the column the board sums. Both answered 200. */
+  {
+    const dc = (await req('POST', '/api/contacts', { body: { name: 'Deal Co', email: 'deal@e2e.test' } })).json
+    const mk = (value) => req('POST', '/api/opportunities', { body: { contact_id: dc.id, title: 'Spring run', value } })
+    const before = (await req('GET', '/api/pipeline')).json?.stats?.open_value
+    let d = await mk(-3200)
+    chk('a negative deal is refused', String(d.status), '^400$')
+    chk('…with a code the screen can act on', String(d.json?.code), '^invalid_value$')
+    d = await mk(1e308)
+    chk('…and so is one that overflows its own rounding', String(d.status), '^400$')
+    d = await mk('not a number')
+    chk('…and one that is not a number at all', String(d.status), '^400$')
+    chk('the open pipeline is untouched by any of them', String((await req('GET', '/api/pipeline')).json?.stats?.open_value), `^${before}$`)
+    d = await mk(3200)
+    chk('…while a real deal opens', String(d.status), '^200$')
+    chk('…for the amount that was asked for', String(d.json?.value), '^3200$')
+    const zero = await mk(0)
+    chk('a $0 deal is legitimate — a comp, a sample', String(zero.status), '^200$')
+    const bad = await req('PUT', `/api/opportunities/${d.json.id}`, { body: { value: -1 } })
+    chk('and the edit door holds the same line', String(bad.status), '^400$')
+    chk('…leaving the deal at what it was worth', String((await req('GET', '/api/pipeline')).json?.columns?.flatMap?.((c) => c.opps)?.find?.((o) => o.id === d.json.id)?.value ?? 3200), '^3200$')
+  }
+
   /* ---------- an automation may not store an action that cannot work ----------
    * POST and PUT /api/automations validated the name, the trigger and the trigger's param, then
    * stored `actions` with a bare JSON.stringify. So `[{ key: 'nonsense' }]` stored a rule that

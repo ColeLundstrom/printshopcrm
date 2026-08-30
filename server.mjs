@@ -4032,21 +4032,37 @@ app.get('/api/pipeline', wrap((_req, res) => res.json(pipeline.pipelineBoard()))
  * silently booking a $0 deal in place of what the caller sent is its own wrong answer. Refuse it
  * instead, so the caller is told rather than left to discover a $0 row later.
  */
+/**
+ * A deal's value. Used ONLY by the opportunity routes, so the rule can be the strict one.
+ *
+ * It rejected NaN and Infinity and nothing else, so `-3200` was stored happily: one POST took the
+ * open pipeline from $19,983.35 to $16,783.35 and there is no such thing as a deal worth minus
+ * three thousand dollars. `1e308` passed the isFinite check and then overflowed inside round2,
+ * which answers 0 for anything its own arithmetic cannot represent — so the shop asked for a deal
+ * worth 1e308, got a 200, and has a deal worth $0.00 with nothing anywhere saying so.
+ *
+ * A deal is worth zero or more, and it has to be representable in whole cents.
+ */
 const moneyIn = (v) => {
   const n = Number(v)
-  return Number.isFinite(n) ? round2(n) : null
+  if (!Number.isFinite(n) || n < 0) return null
+  if (!Number.isSafeInteger(Math.round(n * 100))) return null
+  return round2(n)
 }
 
 app.post('/api/opportunities', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'open a deal')
   if (contactId == null) return
-  if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'Value must be a number', code: 'invalid_value' })
+  if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'A deal is worth zero or more.', code: 'invalid_value' })
+  // The validated number, not a second unchecked round2() of the raw body — this line and the
+  // check above were reading the same field through two different rules.
+  const value = b.value != null ? moneyIn(b.value) : 0
   const id = Number(run(`INSERT INTO opportunities (contact_id, title, stage, value, source, notes, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?)`,
     contactId, str(b.title, '') || 'New opportunity', pipeline.STAGE_KEYS.includes(b.stage) ? b.stage : 'lead',
-    round2(b.value), str(b.source, '') || 'manual', str(b.notes, ''), now(), now()).lastInsertRowid)
-  logActivity('note', `Opportunity added — ${str(b.title, '') || 'New opportunity'} (${money(round2(b.value))})`, { contact_id: contactId })
+    value, str(b.source, '') || 'manual', str(b.notes, ''), now(), now()).lastInsertRowid)
+  logActivity('note', `Opportunity added — ${str(b.title, '') || 'New opportunity'} (${money(value)})`, { contact_id: contactId })
   res.json(get('SELECT * FROM opportunities WHERE id = ?', id))
 }))
 
@@ -4054,7 +4070,7 @@ app.put('/api/opportunities/:id', wrap((req, res) => {
   const o = get('SELECT * FROM opportunities WHERE id = ?', +req.params.id)
   if (!o) return res.status(404).json({ error: 'Opportunity not found' })
   const b = req.body || {}
-  if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'Value must be a number', code: 'invalid_value' })
+  if (b.value != null && moneyIn(b.value) === null) return res.status(400).json({ error: 'A deal is worth zero or more.', code: 'invalid_value' })
   run('UPDATE opportunities SET title=?, value=?, notes=?, updated_at=? WHERE id=?',
     str(b.title, o.title), b.value != null ? moneyIn(b.value) : o.value, str(b.notes, o.notes), now(), o.id)
   res.json(get('SELECT * FROM opportunities WHERE id = ?', o.id))
