@@ -10514,6 +10514,38 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('every file the distribution ships actually parses')
+
+await t('node --check passes on every .mjs in the distribution', async () => {
+  const { readdirSync, statSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  // bin/backup-drive.mjs shipped for 25 releases with an unescaped backtick pair inside a template
+  // literal, so `npm run drive -- connect` — INSTALL.md's step 4 — died on a SyntaxError and the
+  // whole off-site backup feature had never once been runnable. Nothing caught it: CI runs
+  // `bash -n` over deploy/*.sh but nothing over bin/*.mjs, the gate's only Drive case slices a
+  // literal array out of the source rather than importing it, and server.mjs never imports these.
+  // A file that does not parse is the cheapest possible defect to find and the most expensive to
+  // ship, so check the whole distribution rather than the one file that was broken.
+  const walk = (d) => readdirSync(d).flatMap((n) => {
+    if (n === 'node_modules' || n === '.git' || n === 'data') return []
+    const p = join(d, n)
+    return statSync(p).isDirectory() ? walk(p) : (n.endsWith('.mjs') || n.endsWith('.js')) ? [p] : []
+  })
+  const files = walk(root).filter((p) => !p.includes('/public/'))
+  assert.ok(files.length > 30, `expected to find the distribution's modules, found ${files.length}`)
+  const broken = []
+  for (const f of files) {
+    try { execFileSync(process.execPath, ['--check', f], { stdio: 'pipe' }) }
+    catch (e) { broken.push(`${f.slice(root.length + 1)} (${String(e.stderr || '').split('\n').find((l) => /Error/.test(l))?.trim() || 'did not parse'})`) }
+  }
+  // One line, deliberately: the gate's reporter prints only the first line of a failure message,
+  // and a parse failure that cannot name its own file is most of the way to being no test at all.
+  assert.equal(broken.length, 0, `these shipped files do not parse: ${broken.join(' | ')}`)
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

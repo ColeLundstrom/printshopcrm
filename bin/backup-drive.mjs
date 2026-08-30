@@ -223,7 +223,7 @@ ${url}
     npm run drive -- upload <file>    upload an archive and prune old ones
     npm run drive -- status           connection, retention, quota
 
-  Run it through npm, not as `node bin/backup-drive.mjs`: the script needs the credentials in
+  Run it through npm, not as \`node bin/backup-drive.mjs\`: the script needs the credentials in
   .env, and only the npm wrapper passes --env-file-if-exists=.env.
 
   Scope is drive.file: this can only see files it created itself, never the rest of your Drive.
