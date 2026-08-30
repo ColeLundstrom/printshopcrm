@@ -8729,6 +8729,66 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- the assistant does not offer a button it cannot answer ---------- */
+/*
+ * Every chip the assistant renders posts its own text straight back to /api/assistant
+ * (public/js/views/assistant.js:68 — `on(log, '[data-chip]', (_e, t) => send(t.dataset.chip))`).
+ * Four of them did not route to any tool:
+ *
+ *   "Show me all follow-ups"  ·  "Open all follow-ups"   — the router's own pattern is
+ *      `\bfollow.?up\b`, and the word boundary fails on the trailing s of "follow-ups". The
+ *      assistant offered a button whose text its own regex could not match.
+ *   "Send a reminder on the biggest one"                 — no tool sends a reminder.
+ *   "What's my margin on a job?"                         — margin had no route at all.
+ *
+ * On an install with an AI key those fell through to the model, so a deterministic, free,
+ * instant answer was replaced by a billed guess. On an install without one — which is the
+ * default — the answer was "I didn't catch that one", from a button the bot had just drawn.
+ *
+ * A rule, not four fixtures: any chip added later gets the same test for free.
+ */
+section('every suggestion the assistant offers, it can answer')
+await t('no chip falls through to "I didn’t catch that one"', async () => {
+  const { readFileSync, mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  // Every literal inside a `followups: [...]` array, server side AND in the view's opening line.
+  const chips = new Set()
+  for (const f of ['lib/assistant.mjs', 'public/js/views/assistant.js']) {
+    const src = readFileSync(join(root, f), 'utf8')
+    for (const arr of src.matchAll(/followups:\s*\[([^\]]*)\]/g)) {
+      for (const lit of arr[1].matchAll(/'([^']*)'|"([^"]*)"/g)) {
+        const v = lit[1] ?? lit[2]
+        if (v && v.trim()) chips.add(v)
+      }
+    }
+  }
+  assert.ok(chips.size >= 10, `precondition: found ${chips.size} chips, expected 10+`)
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-chip-'))
+  const db = new DatabaseSync(join(dir, 'chip.db'))
+  dbm.initDb(db)
+  const prev = dbm.getDb()
+  dbm.setDefaultDb(db)
+  try {
+    dbm.seedSettings()
+    // No AI key on this fixture, deliberately: the model fallback would paper over a dead chip
+    // with a billed guess, which is the second half of the bug rather than a fix for it.
+    const { ask } = await import('../lib/assistant.mjs')
+    const dead = []
+    for (const c of chips) {
+      const r = await ask(c)
+      if (/didn.t catch that one/i.test(String(r?.reply || ''))) dead.push(c)
+    }
+    assert.deepEqual(dead, [], `chips the assistant draws but cannot answer: ${dead.map((d) => JSON.stringify(d)).join(', ')}`)
+  } finally { dbm.setDefaultDb(prev); try { db.close() } catch { /* closed */ } rmSync(dir, { recursive: true, force: true }) }
+})
+
 /* ---------- what a quote is worth to the shop has ONE definition ---------- */
 /*
  * `estimates.total` is subtotal + sales tax. The tax is the state's money passing through, not
