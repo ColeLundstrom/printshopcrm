@@ -7,7 +7,8 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
-import { db, run, get, all, computeTotals, syncInvoiceStatus, getSettings, seedSettings, getUpcharges, rollupSizes, sizeSummary, lineQty, DB_PATH } from './lib/db.mjs'
+import { db, run, get, all, computeTotals, freezeUpcharges, syncInvoiceStatus, getSettings, seedSettings, getUpcharges, rollupSizes, sizeSummary, lineQty, DB_PATH } from './lib/db.mjs'
+import { dealValue } from './lib/pipeline.mjs'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const UPLOADS = join(ROOT, 'public', 'uploads')
@@ -128,10 +129,17 @@ let estN = 1000, invN = 1000, jobN = 1000
 const nx = (p, n) => `${p}-${n}`
 
 function addEstimate({ contact, items, status, notes, created, sent, approved }) {
-  const t = computeTotals(items, S.tax_rate, UP)
+  /* Freeze the upcharge table these lines were priced with, exactly as every write door in the
+   * app does (lib/db.mjs freezeUpcharges). The seed was the last writer storing bare lines, so
+   * the demo shop shipped seven documents that RE-PRICE themselves the moment the shop changes
+   * an ordinary setting: raise the extended-size upcharges and EST-1006's lines total $6,315.00
+   * against its own printed Subtotal of $5,784.00. That is the exact defect the freeze exists to
+   * prevent, shipped in the dataset every new install starts from. */
+  const frozen = freezeUpcharges(items, UP)
+  const t = computeTotals(frozen, S.tax_rate, UP)
   const num = nx('EST', ++estN)
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, sent_at, approved_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    cid[contact], num, status, JSON.stringify(items), t.subtotal, t.tax, t.total, notes || '', sent || null, approved || null, created).lastInsertRowid)
+    cid[contact], num, status, JSON.stringify(frozen), t.subtotal, t.tax, t.total, notes || '', sent || null, approved || null, created).lastInsertRowid)
   return { id, num, total: t.total, contact }
 }
 
@@ -378,9 +386,14 @@ for (const [to, subj, kind, at, body] of [
 const opp = (est, stage, { won = null, lost = null, reason = '', order = 0 } = {}) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', est.id)
   const title = JSON.parse(e.items)[0]?.description || 'Quote'
+  /* dealValue, not e.total. total is subtotal + sales tax, and the tax is the state's money —
+   * lib/pipeline.mjs writes every opportunity in the running app through dealValue for exactly
+   * that reason. The seed wrote the taxed figure, so the demo shop shipped a pipeline that
+   * contradicts the code that maintains it: Won read $15,218.04 where the app's own definition
+   * says $14,283.50, and the first time anything touched one of those estimates the card moved. */
   run(`INSERT INTO opportunities (contact_id, estimate_id, title, stage, value, source, sort_order, won_at, lost_at, lost_reason, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-    e.contact_id, e.id, title, stage, e.total, 'estimate', order, won, lost, reason, e.created_at, stamp(-1))
+    e.contact_id, e.id, title, stage, dealValue(e), 'estimate', order, won, lost, reason, e.created_at, stamp(-1))
 }
 // Estimates map onto the pipeline: approved = won, sent = out for signature, draft = quoted.
 opp(E.wildcats, 'won', { won: stamp(-18) })

@@ -8804,6 +8804,77 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- the dataset every new install starts from is not wrong on its own terms ---------- */
+/*
+ * Two defects in seed.mjs, both of which shipped a demo shop that CONTRADICTS the code
+ * maintaining it:
+ *
+ *  · it wrote `opportunities.value = e.total`, which is subtotal + sales tax, while
+ *    lib/pipeline.mjs writes every opportunity in the running app through dealValue (the
+ *    subtotal) for exactly the reason that the tax is the state's money. Won read $15,218.04
+ *    against the app's own $14,283.50, and the first time anything touched one of those
+ *    estimates the card moved by $934.54 with no explanation.
+ *  · it was the LAST writer in the product storing bare line items — every other door calls
+ *    freezeUpcharges. So seven of the nine shipped documents re-priced themselves the moment
+ *    the shop changed an ordinary setting: raise the extended-size upcharges and EST-1006's
+ *    lines total $6,315.00 against its own printed Subtotal of $5,784.00. That is the exact
+ *    defect the freeze exists to prevent, shipped in the starting dataset.
+ *
+ * Measured against a real seeded database rather than asserted against the source, because the
+ * numbers are the point.
+ */
+section('the shipped demo shop agrees with the code that maintains it')
+{
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { DatabaseSync } = await import('node:sqlite')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-seedmoney-'))
+  const dbPath = join(dir, 'demo.db')
+  let db = null
+  try {
+    execFileSync(process.execPath, ['--no-warnings', join(root, 'seed.mjs')],
+      { cwd: root, env: { ...process.env, PSC_DB: dbPath }, stdio: ['ignore', 'ignore', 'pipe'] })
+    db = new DatabaseSync(dbPath)
+
+    await t('every deal on the board is worth what the app says a deal is worth', async () => {
+      const { dealValue } = await import('../lib/pipeline.mjs')
+      const rows = db.prepare(`SELECT o.stage, o.value, e.subtotal, e.total, e.estimate_number
+        FROM opportunities o JOIN estimates e ON e.id = o.estimate_id`).all()
+      assert.ok(rows.length >= 8, `precondition: ${rows.length} estimate-backed deals`)
+      const wrong = rows.filter((r) => Math.abs(r.value - dealValue(r)) > 0.005)
+        .map((r) => `${r.estimate_number}: ${r.value} vs ${dealValue(r)}`)
+      assert.deepEqual(wrong, [], `the seed and the pipeline disagree: ${wrong.join(', ')}`)
+      // …and the headline the demo screenshot shows.
+      const won = rows.filter((r) => r.stage === 'won').reduce((n, r) => n + r.value, 0)
+      assert.equal(Math.round(won * 100) / 100, 14283.5, 'Won is the value of the work, not the tax collected with it')
+    })
+
+    await t('no shipped document re-prices itself when the shop edits an upcharge', async () => {
+      const { computeTotals } = await import('../public/js/shared/pricing.js')
+      const rows = db.prepare('SELECT estimate_number, items, subtotal FROM estimates').all()
+      assert.ok(rows.length >= 8, `precondition: ${rows.length} shipped estimates`)
+      // The shop raises 2XL from $2 to $20 and 3XL from $3 to $30 — one ordinary setting.
+      const AFTER = { '2XL': 20, '3XL': 30 }
+      const drifted = rows
+        .map((r) => ({ r, now: computeTotals(JSON.parse(r.items), 0, AFTER).subtotal }))
+        .filter(({ r, now }) => Math.abs(now - r.subtotal) > 0.005)
+        .map(({ r, now }) => `${r.estimate_number} ${r.subtotal} -> ${now}`)
+      assert.deepEqual(drifted, [], `documents whose lines walk away from their own stored total: ${drifted.join(', ')}`)
+      // And the freeze is really there, not just coincidentally harmless.
+      const withSizes = rows.filter((r) => JSON.parse(r.items).some((i) => i.sizes && Object.keys(i.sizes).length))
+      assert.ok(withSizes.length >= 5, 'precondition: the demo shop quotes size grids')
+      for (const r of withSizes) {
+        assert.ok(JSON.parse(r.items).some((i) => i.size_upcharges),
+          `${r.estimate_number} stores no upcharge snapshot — it is priced by whatever the table says today`)
+      }
+    })
+  } finally { try { db?.close() } catch { /* closed */ } rmSync(dir, { recursive: true, force: true }) }
+}
+
 /* ---------- two more doors that put money somewhere it does not belong ---------- */
 /*
  * (a) The in-app assistant records a payment against a VOIDED invoice.
