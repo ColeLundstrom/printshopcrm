@@ -515,9 +515,42 @@ async function boot() {
     if (me.authed && me.single_tenant !== true && me.onboarding_done === false && atRoot) {
       location.hash = '#/welcome'
     }
-  } catch { location.href = '/login'; return }
+  } catch (e) {
+    /* Not every failure of /api/auth/me means "not signed in".
+     *
+     * A 401 already redirects inside api.req() before it ever throws here. What was left was
+     * everything ELSE — a 502 from nginx during a deploy, a dropped connection on a train, a 500 —
+     * and this catch answered all of them by hard-navigating to /login. That signs a working
+     * session out of its own URL: the emailed proof link, the bookmarked job, the estimate a
+     * customer is on the phone about, all replaced by a sign-in form that will then land them on
+     * the dashboard. The one thing the person wanted is the one thing that is gone.
+     *
+     * Keep the URL and offer the retry instead. The hash is untouched, so pressing it resumes
+     * exactly where they were. */
+    bootFailed(e)
+    return
+  }
   drawNav()
   navigate()
   connectRealtime()
+}
+
+/** The app could not start. Say why, keep the address bar, and offer the way back in. */
+function bootFailed(e) {
+  const view = document.getElementById('view')
+  const why = String(e?.message || 'The server did not answer.')
+  if (!view) { location.reload(); return }
+  view.innerHTML = `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
+      <h2 style="margin-top:0">Could not reach your shop</h2>
+      <p class="dim" style="line-height:1.6">${why.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</p>
+      <p class="dim" style="font-size:12px">This page is usually back within a few seconds of a restart. Your link is still in the address bar.</p>
+      <div class="row" style="gap:8px;justify-content:center;margin-top:14px">
+        <button class="btn" id="boot-retry" type="button">Try again</button>
+        <a class="btn ghost" href="/login">Sign in</a>
+      </div>
+    </div>`
+  view.setAttribute('role', 'alert')
+  const btn = document.getElementById('boot-retry')
+  if (btn) { btn.onclick = () => { btn.disabled = true; btn.textContent = 'Trying…'; boot() }; btn.focus() }
 }
 boot()

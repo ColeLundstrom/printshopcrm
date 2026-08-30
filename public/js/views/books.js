@@ -9,7 +9,15 @@ import { api, $, esc, money, setPage, on, toast, empty, confirmModal, onOnce } f
 export async function booksView() {
   setPage('Books', '', '<span class="dim">Money</span>')
   $('#view').innerHTML = '<div class="dim">Adding it up…</div>'
-  const [aging, qbo] = await Promise.all([api.get('/api/reports/ar-aging'), api.get('/api/qbo/queue')])
+  /* The A/R aging report is open to every role — /api/reports/ar-aging carries no requireRole —
+   * and "Books & A/R" is in every role's sidebar. /api/qbo/queue is manager-only, and this
+   * Promise.all was unguarded, so for a STAFF account the 403 rejected the whole thing and the
+   * page they were sent to showed an error instead of the receivables report they can read.
+   * The QuickBooks half degrades to a line that says who can see it; the report renders. */
+  const [aging, qbo] = await Promise.all([
+    api.get('/api/reports/ar-aging'),
+    api.get('/api/qbo/queue').catch((e) => ({ forbidden: e?.status === 403, error: e?.message || 'unavailable' })),
+  ])
   render(aging, qbo)
 }
 
@@ -52,7 +60,11 @@ function render(aging, qbo) {
 
     <div class="card" id="qbo-card">
       <h2>QuickBooks sync</h2>
-      ${!qbo.connected
+      ${!qbo.counts
+        ? `<p class="dim">${qbo.forbidden
+            ? 'The QuickBooks queue is visible to managers and owners. The receivables report above is yours to use.'
+            : `The QuickBooks queue could not be loaded — ${esc(qbo.error || 'unavailable')}.`}</p>`
+        : !qbo.connected
         ? `<p class="dim">Not connected. Add your QuickBooks app keys in <a href="#/settings">Settings</a> and connect — invoices and payments will post themselves as money moves, and anything that fails shows up here with the reason.</p>
            ${qbo.counts.open ? `<p class="bad">${qbo.counts.open} invoice${qbo.counts.open === 1 ? '' : 's'} waiting to sync — reconnect QuickBooks and they'll go through.</p>` : ''}`
         : `<div class="dim" style="margin-bottom:10px">

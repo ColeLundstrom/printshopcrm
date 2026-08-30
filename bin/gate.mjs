@@ -8739,6 +8739,113 @@ await t('the chrome refresh asks for badges, not for six list endpoints', async 
     'refreshChrome should coalesce bursts — one board drag broadcasts to every tab in the shop')
 })
 
+/* ---------- a restart does not sign a working session out of its own URL ---------- */
+/*
+ * boot() ended `} catch { location.href = '/login'; return }`. A 401 already redirects inside
+ * api.req() before it can ever reach here, so what that caught was everything ELSE: nginx's 502
+ * during a deploy, a dropped connection on a train, a 500. All of them answered by hard-navigating
+ * away — which destroys the address bar. The emailed proof link, the bookmarked job, the estimate
+ * the customer is on the phone about: replaced by a sign-in form that then lands on the dashboard.
+ * The one thing the person wanted is the one thing that is gone, and nothing tells them why.
+ */
+section('a failed start keeps the address bar, and offers the way back')
+await t('nothing outside the 401 path navigates to /login', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const files = ['public/js/core.js', 'public/js/app.js', 'public/js/keys.js',
+    ...readdirSync(join(root, 'public/js/views')).filter((f) => f.endsWith('.js')).map((f) => `public/js/views/${f}`),
+    ...readdirSync(join(root, 'public/js/shared')).filter((f) => f.endsWith('.js')).map((f) => `public/js/shared/${f}`)]
+
+  /* Exactly two places may send a signed-in person to the login page:
+   *   · core.js's 401 branch — the session really is gone
+   *   · the Sign out button, and boot()'s own `!me.authed` check
+   * Anything else is a transport failure being mistaken for an expired session. */
+  const allowed = [
+    /if \(r\.status === 401 && !url\.startsWith\('\/api\/auth\/'\)\)/,      // core.js
+    /if \(!me\.authed\)/,                                                    // boot(), the honest case
+    /logout/,                                                                // Sign out
+  ]
+  const offenders = []
+  for (const f of files) {
+    const src = readFileSync(join(root, f), 'utf8')
+    for (const m of src.matchAll(/location\.href\s*=\s*'\/login'/g)) {
+      const line = src.slice(0, m.index).split('\n').length
+      // Look back a few lines for one of the sanctioned reasons.
+      const before = src.slice(Math.max(0, m.index - 400), m.index + 40)
+      if (!allowed.some((re) => re.test(before))) offenders.push(`${f}:${line}`)
+    }
+  }
+  assert.deepEqual(offenders, [], `a transport failure sends the user to /login at ${offenders.join(', ')}`)
+})
+
+await t('…and a failed start offers a retry rather than a dead end', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/js/app.js'), 'utf8')
+  const fn = app.slice(app.indexOf('function bootFailed('))
+  assert.ok(fn.startsWith('function bootFailed('), 'boot() must have somewhere to go that is not /login')
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 3)
+  assert.match(body, /id="boot-retry"/, 'the screen must carry a control that tries again')
+  assert.match(body, /boot\(\)/, '…and that control must actually retry')
+  assert.match(body, /role', 'alert'|role="alert"/, '…and be announced, since nothing else on the page changed')
+  assert.match(body, /\.focus\(\)/, '…and take focus, so a keyboard user can reach it')
+  // It must NOT throw the URL away — that is the entire bug.
+  assert.ok(!/location\.href/.test(body.replace(/href="\/login"/g, '')), 'bootFailed must not navigate')
+})
+
+/* ---------- a screen every role can open does not need a permission no role has ---------- */
+/*
+ * "Books & A/R" is in EVERY role's sidebar (public/js/app.js NAV carries no `owner:` flag on it)
+ * and GET /api/reports/ar-aging carries no requireRole — the receivables report is deliberately
+ * open to staff. GET /api/qbo/queue is manager-only, and booksView fetched the two in an
+ * unguarded Promise.all: for a staff account the 403 rejected the whole thing, so the page they
+ * were sent to showed an error instead of the report they are allowed to read.
+ *
+ * A rule over every Promise.all in every view, because the shape is what recurs: a leg whose
+ * route is role-gated must be able to fail on its own.
+ */
+section('a role-gated fetch cannot take a whole screen down with it')
+await t('every role-gated leg of a view’s Promise.all can fail on its own', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const srv = readFileSync(join(root, 'server.mjs'), 'utf8')
+
+  // Which GET routes are role-gated, by path.
+  const gated = new Set()
+  for (const m of srv.matchAll(/^app\.get\(\s*'([^']+)'\s*,\s*requireRole/gm)) gated.add(m[1])
+  assert.ok(gated.size >= 3, `precondition: found ${gated.size} role-gated GET routes`)
+
+  const viewDir = join(root, 'public/js/views')
+  const files = ['public/js/app.js', ...readdirSync(viewDir).filter((f) => f.endsWith('.js')).map((f) => `public/js/views/${f}`)]
+  const offenders = []
+  for (const f of files) {
+    const src = readFileSync(join(root, f), 'utf8')
+    for (const m of src.matchAll(/Promise\.all\(\[([\s\S]*?)\]\)/g)) {
+      // One leg per api.get(...) — a leg ends at the comma that closes it, so split on `api.`.
+      for (const leg of m[1].split(/,(?=\s*api\.)/)) {
+        const path = (leg.match(/api\.get\(\s*[`']([^`'$]+)/) || [])[1]
+        if (!path || !gated.has(path)) continue
+        if (!/\.catch\(/.test(leg)) offenders.push(`${f} — ${path}`)
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `a 403 on one leg blanks the whole screen: ${offenders.join(', ')}`)
+})
+
+await t('…and the Books page says who can see the half it hid, rather than nothing', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const books = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'public/js/views/books.js'), 'utf8')
+  assert.match(books, /forbidden/, 'a 403 has to be told apart from an outage')
+  assert.match(books, /managers and owners/, '…and named, so a staff member is not left guessing')
+})
+
 /* ---------- an automation cannot move a job somewhere the board has no column for ---------- */
 /*
  * "Move the job to a stage" was a free-text <input> labelled Stage — the TRIGGER's stage field
