@@ -10514,6 +10514,79 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
 })
 
+section('a new QuickBooks company does not inherit the last one\'s ids')
+
+await t('a realm change clears the mappings, before the new realm overwrites the old one', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("app.get('/api/qbo/callback'")
+  const body = src.slice(i, src.indexOf('\n}))', i))
+  // contacts.qbo_id, invoices.qbo_id/qbo_sync_token and payments.qbo_id are written by the sync
+  // and cleared by nothing — Disconnect clears settings keys and never touches a business table.
+  // A shop that moves to a new QuickBooks company kept ids the new company has never issued, so
+  // every push failed for ever with no column any screen could null.
+  assert.match(body, /clearQboMappings\(\)/,
+    'a realm change must drop the old company\'s ids — nothing else in the product can')
+  // Compare CODE, not prose: the first draft of this assertion matched the word inside the
+  // explanatory comment above the call and failed on a correct fix.
+  const code = body.split('\n').map((l) => l.replace(/\s*\/\/.*$/, '')).join('\n')
+  assert.ok(code.indexOf('clearQboMappings()') < code.indexOf('applySettingsPatch({'),
+    'clear against the OLD realm, before applySettingsPatch overwrites the value being compared')
+  assert.match(body, /realm !== s\.qbo_realm_id/,
+    'only on a CHANGE: reconnecting the SAME company must keep its mappings or every invoice duplicates')
+})
+
+await t('the mapping sweep really clears all four columns, and only when it should', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const db = new DatabaseSync(':memory:')
+  dbm.initDb(db)
+  const prev = dbm.getDb ? dbm.getDb() : null
+  dbm.setDefaultDb(db)
+  try {
+    dbm.run("INSERT INTO contacts (id, name, qbo_id) VALUES (1, 'Harbor City Brewfest', '58')")
+    dbm.run("INSERT INTO invoices (id, contact_id, invoice_number, amount_due, qbo_id, qbo_sync_token) VALUES (1, 1, 'INV-1042', 2727, '1042', '3')")
+    dbm.run("INSERT INTO payments (id, invoice_id, amount, qbo_id) VALUES (1, 1, 2727, '77')")
+    // The three statements clearQboMappings() runs, driven directly — importing server.mjs would
+    // boot a listener.
+    dbm.run('UPDATE contacts SET qbo_id = NULL WHERE qbo_id IS NOT NULL')
+    dbm.run('UPDATE invoices SET qbo_id = NULL, qbo_sync_token = NULL WHERE qbo_id IS NOT NULL')
+    dbm.run("UPDATE payments SET qbo_id = NULL WHERE qbo_id IS NOT NULL AND qbo_id != ''")
+    assert.equal(dbm.get('SELECT qbo_id FROM contacts WHERE id = 1').qbo_id, null, "the old company's customer id is not this company's")
+    assert.equal(dbm.get('SELECT qbo_id FROM invoices WHERE id = 1').qbo_id, null, '…nor its invoice id')
+    assert.equal(dbm.get('SELECT qbo_sync_token FROM invoices WHERE id = 1').qbo_sync_token, null, '…nor the SyncToken, which only rotates inside it')
+    assert.equal(dbm.get('SELECT qbo_id FROM payments WHERE id = 1').qbo_id, null, '…nor the payment id')
+    // And the statements the helper runs must be exactly these — a drift here is silent.
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+    const fn = src.slice(src.indexOf('function clearQboMappings'), src.indexOf('function clearQboMappings') + 500)
+    for (const tbl of ['contacts', 'invoices', 'payments']) {
+      assert.match(fn, new RegExp(`UPDATE ${tbl} SET qbo_id = NULL`), `clearQboMappings must clear ${tbl}.qbo_id`)
+    }
+    assert.match(fn, /qbo_sync_token = NULL/, 'a stale SyncToken alone is enough to make every update fail')
+  } finally { if (prev) dbm.setDefaultDb(prev) }
+})
+
+await t('a QuickBooks 200 with no customer id is not stored as an id', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  const i = src.indexOf('let custId = contact?.qbo_id')
+  const near = src.slice(i, i + 900)
+  // ensureCustomer returns { ok: true, id: r.data?.Customer?.Id }. A 200 whose body is not the
+  // expected JSON — a TLS-inspecting proxy, an nginx error page — makes id undefined, and
+  // String(undefined) stored the literal 'undefined', which then short-circuits ensureCustomer
+  // for that customer on every future invoice.
+  assert.ok(near.indexOf('if (!custId) return') > 0 && near.indexOf('if (!custId) return') < near.indexOf('UPDATE contacts SET qbo_id'),
+    'a 200 with no id must be refused before it is written into an id column')
+})
+
 section('a dismissed QuickBooks sync is not the end of the money')
 
 await t('a dismissed row still has a way back onto the queue, from the screen that dismissed it', async () => {

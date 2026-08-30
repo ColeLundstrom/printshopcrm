@@ -6043,13 +6043,42 @@ app.get('/api/qbo/connect', requireRole('manager'), wrap((req, res) => {
  * a page that needs a session in this browser anyway. Plain text, not requireRole's JSON: this
  * response is read by a human in an address bar.
  */
+/**
+ * Drop every QuickBooks id this shop has stored.
+ *
+ * A QuickBooks id is only meaningful inside the company that issued it. contacts.qbo_id,
+ * invoices.qbo_id / qbo_sync_token and payments.qbo_id are written by syncInvoiceToQboInner and
+ * cleared by NOTHING — not the disconnect route, which clears settings keys and never touches a
+ * business table, and not the callback below. So a shop that moves to a new QuickBooks company
+ * (a year-end incorporation, a new accountant, the trial file being scrapped) kept the old
+ * company's ids: `custId = contact.qbo_id` short-circuits ensureCustomer, and pushInvoice then
+ * builds a sparse UPDATE against an Id the new company has never issued. Every push fails, the
+ * queue backs off six times and parks 'failed', and the books never receive another invoice —
+ * from any screen, for ever, with no column any part of the product could null.
+ *
+ * Called on a realm CHANGE only. A disconnect and reconnect of the SAME company must keep its
+ * mappings, or the next push creates a duplicate of every invoice — which is the exact thing
+ * persisting these ids exists to prevent.
+ */
+function clearQboMappings() {
+  run('UPDATE contacts SET qbo_id = NULL WHERE qbo_id IS NOT NULL')
+  run('UPDATE invoices SET qbo_id = NULL, qbo_sync_token = NULL WHERE qbo_id IS NOT NULL')
+  run("UPDATE payments SET qbo_id = NULL WHERE qbo_id IS NOT NULL AND qbo_id != ''")
+}
+
 app.get('/api/qbo/callback', wrap(async (req, res) => {
   if (!hasRole(req, 'manager')) return res.status(403).send('Connecting QuickBooks needs manager access. Ask an owner or manager to finish this.')
   const s = getSettings()
   if (!req.query.state || req.query.state !== s.qbo_oauth_state) return res.status(400).send('QuickBooks connection expired — try again.')
   const r = await qbo.exchangeCode({ clientId: s.qbo_client_id, clientSecret: s.qbo_client_secret, code: String(req.query.code || ''), redirectUri: QBO_REDIRECT(req) })
   if (!r.ok) return res.status(400).send(`QuickBooks connection failed: ${esc(r.error || 'unknown')}`)
-  applySettingsPatch({ qbo_realm_id: String(req.query.realmId || r.realmId || ''), qbo_access_token: r.accessToken, qbo_refresh_token: r.refreshToken, qbo_token_expires: String(r.expiresAt || '') })
+  // Compare BEFORE applySettingsPatch overwrites the realm we are comparing against.
+  const realm = String(req.query.realmId || r.realmId || '')
+  if (realm && s.qbo_realm_id && realm !== s.qbo_realm_id) {
+    clearQboMappings()
+    logActivity('note', 'QuickBooks company changed — the ids from the previous company were cleared so this one can sync from scratch', {})
+  }
+  applySettingsPatch({ qbo_realm_id: realm, qbo_access_token: r.accessToken, qbo_refresh_token: r.refreshToken, qbo_token_expires: String(r.expiresAt || '') })
   setSetting('qbo_oauth_state', '')
   logActivity('note', 'QuickBooks Online connected', {})
   res.redirect('/#/settings?qbo=connected')
@@ -6199,6 +6228,11 @@ async function syncInvoiceToQboInner(invoiceId) {
         const cust = await qbo.ensureCustomer({ realmId: s.qbo_realm_id, accessToken, contact })
         if (!cust.ok) return cust
         custId = cust.id
+        // Never write a non-id into an id column. ensureCustomer returns { ok: true, id: r.data
+        // ?.Customer?.Id }, so a 200 with an unreadable body (a TLS-inspecting proxy, an nginx
+        // error page) yields id === undefined and this stored the literal string 'undefined' —
+        // which then short-circuits ensureCustomer for that customer on EVERY future invoice.
+        if (!custId) return { ok: false, error: 'QuickBooks accepted the customer but returned no id — nothing was recorded; retry' }
         if (contact) run('UPDATE contacts SET qbo_id = ? WHERE id = ?', String(custId), contact.id)
       }
       // Invoice: create, or update in place when we already hold its QBO id + current SyncToken.
