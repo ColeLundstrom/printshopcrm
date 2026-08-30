@@ -4144,7 +4144,22 @@ app.post('/api/automations/pending/:id/resume', requireRole('manager'), wrap((re
 app.post('/api/automations/runs/:id/retry', requireRole('manager'), wrap((req, res) => {
   const r = get('SELECT * FROM automation_runs WHERE id = ?', +req.params.id)
   if (!r) return res.status(404).json({ error: 'That run is no longer in the log.', code: 'not_found' })
-  if (r.status !== 'error') return res.status(409).json({ error: 'That run did not fail, so there is nothing to retry.', code: 'not_failed' })
+  /**
+   * A PARTIAL skip is retryable too.
+   *
+   * A run where the customer email skipped ("no email") and the tag applied is logged 'ran',
+   * because one step did do something. That record is then latched out of the rule for ever by
+   * already(), and this route was the only documented release — and it refused, because the row
+   * is not an error. The shop fills in the missing email and nothing happens, on any tick.
+   *
+   * A wholly-skipped run no longer latches at all (it lands as 'skipped'), so what is left here
+   * is the mixed case. next_index means the retry resumes at the step that skipped rather than
+   * re-doing the one that succeeded.
+   */
+  const partiallySkipped = /: skipped\b/.test(String(r.detail || ''))
+  if (r.status !== 'error' && !partiallySkipped) {
+    return res.status(409).json({ error: 'That run did not fail, so there is nothing to retry.', code: 'not_failed' })
+  }
   run("UPDATE automation_runs SET status = 'retry' WHERE id = ?", r.id)
   logActivity('note', `Automation retry queued — ${r.automation_name}${r.entity_label ? ` · ${r.entity_label}` : ''}`, {})
   // Where it will pick up, so the toast can say it. The run stores the step that threw; a retry

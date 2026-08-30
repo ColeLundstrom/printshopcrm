@@ -7694,6 +7694,84 @@ section('a quote that inherits a deleted quote\'s rowid still gets chased')
   })
 }
 
+/* ---------- a run in which nothing happened does not latch the record for ever (v28) --------
+ *
+ * runAction returns a STRING for a send AND for a skip, and logRun had no third status — so a
+ * chase whose only customer-facing step answered "skipped — customer has no email" was logged
+ * 'ran'. already() counts 'ran' as fired, permanently and by design, so that record was latched
+ * out of the rule for good.
+ *
+ * Driven: a walk-in with a phone and no email, on a $4,200 quote sent twenty days ago. The shop
+ * does the obvious correct thing and adds the email. Three more ticks fire nothing. The retry
+ * route answers 409 not_failed because the row is not an error, and the screen draws Try again
+ * only on errors. Zero mail ever leaves. The only release was sqlite3. */
+section('a chase that could not send is not recorded as a chase')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbmod = await import('../lib/db.mjs')
+  const auto = await import('../lib/automations.mjs')
+  const mem = new DatabaseSync(':memory:')
+  mem.exec('PRAGMA foreign_keys = ON')
+  dbmod.setDefaultDb(mem)
+  dbmod.initDb(mem)
+  auto.initAutomations(mem)
+  dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (1,?,1,?,'{"days":3}',?)`,
+    'Chase a stale quote', 'estimate.stale',
+    JSON.stringify([{ key: 'email.customer', config: { subject: 'Still good?', body: 'Checking in' } }]))
+  dbmod.run(`INSERT INTO contacts (id, name, email, phone) VALUES (1, 'Walk-in Wanda', '', '714-555-0000')`)
+  dbmod.run(`INSERT INTO estimates (id, estimate_number, contact_id, status, total, sent_at)
+             VALUES (9, 'EST-9001', 1, 'sent', 4200, datetime('now','-20 days'))`)
+
+  const rule = { id: 1, name: 'Chase a stale quote', trigger: 'estimate.stale', conditions: [],
+    actions: [{ key: 'email.customer', config: { subject: 'Still good?', body: 'Checking in' } }] }
+  const ctx = () => ({ estimate: dbmod.get('SELECT * FROM estimates WHERE id = 9'), total: 4200, days: 20,
+    contact: dbmod.get('SELECT * FROM contacts WHERE id = 1') })
+  let sends = 0
+  const deps = { queueEmail: () => { sends++ } }
+  auto.runAutomation(rule, 'estimate.stale', ctx(), deps)
+
+  await t('a run where every customer-facing step skipped is not logged as a run', () => {
+    const row = dbmod.get('SELECT status, detail FROM automation_runs ORDER BY id DESC LIMIT 1')
+    assert.equal(sends, 0, 'precondition: nothing was sent — the customer has no email on file')
+    assert.match(String(row.detail), /skipped/, 'precondition: the step skipped')
+    assert.equal(row.status, 'skipped', "a run in which nothing happened was logged 'ran', which latches the record for ever")
+  })
+
+  await t('…so the shop adding the missing email gets the quote chased', () => {
+    dbmod.run("UPDATE contacts SET email = 'wanda@example.com' WHERE id = 1")
+    const fired = auto.tick(deps)
+    assert.ok(fired.some((f) => /EST-9001/.test(String(f))), `the $4,200 quote is still never chased: ${JSON.stringify(fired)}`)
+    assert.equal(sends, 1, 'and the chase actually went out')
+  })
+
+  await t('…while a rule with no actions at all stays latched, instead of re-firing every tick', () => {
+    dbmod.run(`INSERT INTO automations (id, name, enabled, trigger, params, actions) VALUES (2,'Empty',1,'estimate.stale','{"days":3}','[]')`)
+    const empty = { id: 2, name: 'Empty', trigger: 'estimate.stale', conditions: [], actions: [] }
+    auto.runAutomation(empty, 'estimate.stale', ctx(), deps)
+    assert.equal(dbmod.get('SELECT status FROM automation_runs WHERE automation_id = 2 ORDER BY id DESC LIMIT 1').status, 'ran',
+      'an empty rule that never latches fills the run log for ever')
+  })
+
+  await t('a partly-skipped run can be forced from the screen, not only from sqlite3', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    // The mixed case — email skipped, tag applied — is still 'ran', because one step did do
+    // something. It is the retry route and the button that have to let it through.
+    const srv = readFileSync(join(root, 'server.mjs'), 'utf8')
+    const i = srv.indexOf("app.post('/api/automations/runs/:id/retry'")
+    assert.ok(i > 0, 'the retry route moved — re-point this test')
+    const route = srv.slice(i, srv.indexOf('\n}))', i)).split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+    assert.match(route, /skipped/, 'the retry route refuses every run that is not an error, including one that skipped the send')
+    const ui = readFileSync(join(root, 'public/js/views/automations.js'), 'utf8')
+    assert.match(ui, /data-retry-run[\s\S]{0,80}/, 'precondition: the Try again button is still here')
+    const line = ui.split('\n').find((l) => l.includes('data-retry-run="${r.id}"'))
+    assert.ok(line, 'the Try again button moved — re-point this test')
+    assert.match(line, /skipped/, 'the button is drawn only on an error, so a skipped chase has no control at all')
+  })
+}
+
 /* ---------- a drip whose step fails does not re-send the step before it (v28) ----------
  *
  * automation_pending has carried a next_index column since it was written — and the ONLY thing

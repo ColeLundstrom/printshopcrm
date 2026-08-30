@@ -93,7 +93,7 @@ export async function automationsView() {
                 ${r.status === 'ran' ? '' : `<span class="pill ${r.status === 'error' ? 'red' : 'gray'}">${esc(r.status)}</span>`}
               </div>
               <div class="dim" style="font-size:11.5px;margin-top:2px">${esc(r.entity_label || '')} — ${esc(r.detail || '')}</div>
-              <div class="dt">${relTime(r.created_at)}${r.status === 'error' ? ` · <button class="btn ghost sm" data-retry-run="${r.id}">Try again</button>` : ''}</div>
+              <div class="dt">${relTime(r.created_at)}${r.status === 'error' || /: skipped/.test(r.detail || '') ? ` · <button class="btn ghost sm" data-retry-run="${r.id}">Try again</button>` : ''}</div>
             </div>`).join('')}</div>`
             : '<div class="dim">Nothing has fired yet. Hit “Run timed rules now” to see them work.</div>'}
         </div>
