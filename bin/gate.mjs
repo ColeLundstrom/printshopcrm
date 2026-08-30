@@ -2658,6 +2658,43 @@ section('the app does not discard what the shop has typed')
     assert.equal(t2.accept('#/b'), true, 'a broken guard is ignored, never a trap')
   })
 
+  await t('clicking the nav item for the page you are ON asks before it repaints', async () => {
+    const { createNavGuard } = await import('../public/js/shared/navguard.js')
+    // A same-hash click is not a no-op any more: app.js's sameHash handler calls navigate() so a
+    // stale or failed screen can always be refreshed. That repaint destroys the same unsaved work
+    // a navigation does, and the guard was skipped for it — AND disarmed on the way through, so
+    // the freshly-painted screen was unguarded too.
+    const put = []
+    const g = createNavGuard((h) => put.push(h))
+    g.accept('#/settings')
+    let asked = 0
+    let dirty = true
+    g.register(() => { asked++; return !dirty })
+
+    assert.equal(g.accept('#/settings'), false, 'a dirty Settings must not be repainted from under the shop')
+    assert.equal(asked, 1, 'the guard has to be ASKED on a same-page repaint, not skipped')
+    assert.equal(g.armed(), true, 'and it must survive: the work is still unsaved')
+    assert.deepEqual(put, [], 'nothing to revert — the hash never moved, and assigning it would fire no hashchange')
+
+    // The latch that a same-page refusal must NOT set: if `reverting` were left true here, the
+    // next real navigation would be swallowed and the shop would be stuck on this screen.
+    dirty = false
+    assert.equal(g.accept('#/invoices'), true, 'a same-page refusal must not swallow the next real navigation')
+    assert.equal(g.armed(), false, 'and the guard is disarmed for the screen being drawn')
+
+    // Discarding still lets the repaint through.
+    const g2 = createNavGuard((h) => put.push(h))
+    g2.accept('#/settings')
+    g2.register(() => true)
+    assert.equal(g2.accept('#/settings'), true, 'once the shop says discard, the repaint happens')
+    assert.equal(g2.armed(), false, 'and the repainted screen starts clean')
+
+    // An UNguarded screen still repaints freely — that is what the same-hash click exists for.
+    const g3 = createNavGuard(() => {})
+    g3.accept('#/dashboard')
+    assert.equal(g3.accept('#/dashboard'), true, 'a screen with no unsaved work must still be refreshable')
+  })
+
   await t('the estimate editor arms that guard, and knows when it is dirty', async () => {
     const est = code(await readFile('public/js/views/estimates.js'))
     assert.match(est, /guardLeave\(/, 'the editor must register a leave guard')
@@ -10560,6 +10597,30 @@ await t('…and they share one bucket, so twelve routes are not twelve allowance
   // 100+ sends in a sitting, so the old per-route 60 would have turned this into a broken Send.
   assert.match(src, /const OUTBOUND_MAX = [^\n]*\|\| 300/, 'the shared ceiling must clear a real invoice run')
   assert.match(src, /PSC_OUTBOUND_MAX/, '…and be movable without a code change')
+})
+
+section('cancelling "Mark as lost" leaves the deal where it was')
+
+await t('the card is not moved into Lost before the question is answered', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const pipe = readFileSync(join(root, 'public/js/views/pipeline.js'), 'utf8')
+  const fn = pipe.slice(pipe.indexOf('function promptLost'), pipe.indexOf('async function openOpp'))
+  const code = fn.split('\n').map((l) => l.replace(/\s*\/\/.*$/, '')).join('\n')
+  // modal() offers three ways out that make no server call — the Cancel button, Escape, and a
+  // backdrop mousedown — and none of them repaint. Moving the card first meant all three left a
+  // LIVE deal sitting in the Lost column on screen, with the KPI row, the column recount and the
+  // next drag's from-stage all reading a position the server had never agreed to.
+  assert.doesNotMatch(code, /appendChild\(card\)/,
+    'the deal must not be moved into Lost until the shop has answered — Cancel makes no server call')
+  assert.doesNotMatch(code, /recount\(\)/, '…and nothing may be counted as lost before it is lost')
+  // The only move is the one the server confirmed.
+  assert.ok(code.indexOf('api.patch') < code.indexOf('pipelineView()'),
+    'the board repaints from the server after the write, which is what actually moves the card')
+  assert.match(code, /catch \(e\) \{ toast\(e\.message, true\); btn\.disabled = false; return \}/,
+    'a refused write has to give the button back, not leave a dead dialog')
 })
 
 section('the money a shop bills on a 2XL is a number it can set')

@@ -90,7 +90,7 @@ function wireDnd() {
     dragEndedAt = Date.now()
     const col = s.col; if (!col || col === s.from) return
     const stage = col.dataset.stage
-    if (stage === 'lost') return promptLost(s.id, col, s.card) // capture why we lost it
+    if (stage === 'lost') return promptLost(s.id) // capture why we lost it
     const fromCol = s.from
     const fromStage = fromCol.dataset.stage
     col.querySelector('.col-b').appendChild(s.card); recount()
@@ -108,14 +108,23 @@ function wireDnd() {
   })
 }
 
-function promptLost(id, col, card) {
-  col.querySelector('.col-b').appendChild(card); recount()
+function promptLost(id) {
+  // The card is deliberately NOT moved into the Lost column here. It used to be moved first and
+  // asked afterwards, so Cancel, Escape and a backdrop click all closed the dialog with no server
+  // call and no repaint — leaving a live deal sitting in Lost on screen, and every later read of
+  // that board (its own recount, the KPI row, the next drag's from-stage) working off a position
+  // the server had never agreed to. The drop handler has not moved it either at this point, so the
+  // card simply stays where it was until the shop actually answers.
   modal({
     title: 'Mark as lost', body: `<div class="field"><label>What happened? (optional)</label>
       <input class="input" name="lost_reason" placeholder="Price · went with another shop · ghosted…"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="go">Mark lost</button>`,
     onMount: (bg) => $('#go', bg).onclick = async () => {
-      await api.patch(`/api/opportunities/${id}/stage`, { stage: 'lost', lost_reason: $('[name=lost_reason]', bg).value })
+      const btn = $('#go', bg)
+      btn.disabled = true
+      try {
+        await api.patch(`/api/opportunities/${id}/stage`, { stage: 'lost', lost_reason: $('[name=lost_reason]', bg).value })
+      } catch (e) { toast(e.message, true); btn.disabled = false; return }
       closeModal(); toast('Marked lost'); pipelineView()
     },
   })

@@ -38,10 +38,25 @@ export function createNavGuard(setHash) {
      */
     accept(target) {
       if (reverting) { reverting = false; return false }
-      if (guard && currentHash !== null && target !== currentHash) {
+      // Note there is NO `target !== currentHash` test here. There used to be, from when a
+      // same-hash click meant "nothing happens" — but clicking the sidebar item for the screen you
+      // are already on now REPAINTS that screen from the server, deliberately, so that a stale or
+      // failed view always has a way to refresh itself. A repaint destroys exactly the same
+      // unsaved work a navigation does. Skipping the guard there meant clicking "Settings" while
+      // standing on Settings threw away the shop's edits without asking — and worse, fell through
+      // to `guard = null` below, so the guard was disarmed for the freshly-painted screen too.
+      if (guard && currentHash !== null) {
+        const samePage = target === currentHash
         let ok = true
         try { ok = guard(target) !== false } catch { ok = true }
-        if (!ok) { reverting = true; setHash(currentHash); return false }
+        if (!ok) {
+          // A same-page repaint has no URL to put back: setHash(currentHash) would assign the hash
+          // the value it already holds, which fires no hashchange, so `reverting` would never be
+          // cleared and the next REAL navigation would be swallowed in its place. Refusing is
+          // enough — the screen simply does not repaint.
+          if (!samePage) { reverting = true; setHash(currentHash) }
+          return false
+        }
       }
       currentHash = target
       guard = null
