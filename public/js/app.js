@@ -296,6 +296,21 @@ async function navigate() {
 }
 
 window.addEventListener('hashchange', navigate)
+
+/* Setting location.hash to the value it already holds fires no hashchange, so every sidebar link,
+ * every tabbar link and every in-view `<a href="#/...">` is inert on the screen it points at. That
+ * is invisible when the screen is fine and a trap when it is not: a view that failed to load, a
+ * list gone stale behind a lost websocket, the 404 panel's "Back to dashboard" while standing on
+ * '#/'. The instinct is always to click the nav item again, so make that mean "repaint this". */
+const sameHash = (e) => {
+  if (e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+  const a = e.target?.closest?.('a[href^="#/"]')
+  if (!a) return
+  if (a.getAttribute('href') !== (location.hash || '#/')) return   // a real move; let hashchange do it
+  e.preventDefault()
+  navigate()
+}
+document.addEventListener('click', sameHash)
 window.addEventListener('psc:settings', refreshChrome)
 
 /* -------------------------------------------------------------------------------------------------

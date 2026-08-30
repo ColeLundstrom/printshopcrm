@@ -2642,6 +2642,42 @@ section('the app does not discard what the shop has typed')
     assert.match(core, /export const guardLeave = \(fn\) => navGuard\.register\(fn\)/, 'views arm it through core')
     assert.match(core, /export const acceptRoute = \(target\) => navGuard\.accept\(target\)/, 'and the router asks through core')
   })
+
+  /* ---------- a view that throws leaves a screen you can get OUT of ----------
+   * Twelve views call setPage(title, actions) BEFORE their first await. runRouter()'s catch
+   * repainted `#view` only, so a failed load left the previous screen's header buttons sitting
+   * above "Something broke" — enabled, and bound to handlers the render that threw never wired.
+   * And the panel itself offered nothing: no retry, and clicking the sidebar item you are already
+   * standing on fires no hashchange, so the one instinct a shop owner has is a no-op. On a
+   * screen with no other exit that is a dead end reachable from any transient 500. */
+  await t('a view that throws mid-render clears its header and offers a way out', async () => {
+    const core = code(await readFile('public/js/core.js'))
+    const router = core.slice(core.indexOf('export async function runRouter'), core.indexOf('export function setPage'))
+    assert.ok(router.length > 100, 'runRouter should still be there')
+    assert.match(router, /catch \(e\)/, 'the router still catches')
+    // The stale chrome has to go with the view it belonged to.
+    assert.match(router, /setPage\('Something broke'\)/,
+      "a failed view's header buttons must not survive the view that wired them")
+    assert.ok(router.indexOf("setPage('Something broke')") < router.indexOf("$('#view').innerHTML"),
+      'clear the chrome before painting the panel, so a throw in empty() still leaves no stale buttons')
+    // And the panel needs the one control that gets the shop off it.
+    assert.match(router, /id="route-retry"/, 'the error panel needs a Try again button')
+    assert.match(router, /runRouter\(\)/, '…that actually re-runs the route')
+  })
+
+  await t('clicking the screen you are already on repaints it', async () => {
+    const app = code(await readFile('public/js/app.js'))
+    // location.hash = '#/estimates' while already on '#/estimates' fires no hashchange, so
+    // navigate() never runs. Every sidebar link, every tabbar link and every in-view
+    // `<a href="#/...">` is therefore inert on the screen it points at — including the "Back to
+    // dashboard" link in the 404 panel when you are standing on '#/'. A stale or broken screen
+    // must always have an escape, and the escape a shop reaches for is the nav item itself.
+    assert.match(app, /const sameHash = /, 'app.js needs a same-hash click path')
+    assert.match(app, /navigate\(\)/, '…that re-runs navigate()')
+    const h = app.slice(app.indexOf('const sameHash = '), app.indexOf('const sameHash = ') + 700)
+    assert.match(h, /preventDefault\(\)/, 'a same-hash click must not be left to the browser')
+    assert.match(h, /a\[href\^="#\/"\]|closest\('a'\)/, 'it keys off the anchor that was clicked')
+  })
 }
 
 /* ---------- the starter automations stay deleted ----------

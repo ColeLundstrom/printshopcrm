@@ -538,7 +538,20 @@ export async function runRouter() {
   for (const r of routes) {
     const m = path.match(r.re)
     if (m) {
-      try { await r.handler(...m.slice(1)) } catch (e) { console.error(e); $('#view').innerHTML = empty('⚠', 'Something broke', e.message) }
+      try { await r.handler(...m.slice(1)) } catch (e) {
+        console.error(e)
+        // Twelve views call setPage(title, actions) before their first await, so a throw halfway
+        // through a render used to leave the previous screen's header buttons above this panel —
+        // enabled, and wired to nothing, because the code that binds them never ran. Clear the
+        // chrome with the view it belonged to, then give the panel the one control that gets the
+        // shop off it: the sidebar link for the screen you are already standing on fires no
+        // hashchange, so without this button a transient 500 is a dead end.
+        setPage('Something broke')
+        $('#view').innerHTML = empty('⚠', 'Something broke', e.message,
+          '<button class="btn" type="button" id="route-retry">Try again</button>')
+        const again = $('#route-retry')
+        if (again) again.onclick = () => { again.disabled = true; again.textContent = 'Trying…'; runRouter() }
+      }
       return
     }
   }
