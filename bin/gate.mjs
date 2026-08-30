@@ -4177,7 +4177,12 @@ const rehearseRelease = async ({ healthy, first = false, gnu = false, seedBackup
     stub('npm', 'exit 0')
     stub('node', 'exit 0')
     stub('journalctl', 'exit 0')
-    stub('curl', healthy ? 'exit 0' : 'exit 7')
+    // `curl -f` exits 22 on a 4xx/5xx and 0 on a 2xx. 'degraded' models the one failure the
+    // pre-migration backup above exists for: the release came up and answers, but one shop's
+    // database will not open — 200 {"ok":true,"degraded":true} on plain /health, 503 on strict.
+    stub('curl', healthy === 'degraded'
+      ? 'case "$*" in *strict=1*) exit 22;; *) exit 0;; esac'
+      : healthy ? 'exit 0' : 'exit 7')
     // GNU coreutils `readlink -f` requires all but the LAST component of a path to exist: it prints
     // the canonical path and exits 0 when the final component is missing. BSD readlink (macOS,
     // which is where this gate is usually run) exits 1 on the same input — which is exactly why no
@@ -4261,6 +4266,39 @@ await t('a release that will not answer /health is rolled back, not announced as
   assert.match(r.out, /not answering \/health/, 'it has to say what actually failed')
   assert.match(r.out, /rolled back/, 'and it has to put the previous release back')
   assert.match(r.current, /releases\/v0\.0\.1$/, `current must point back at the previous release, got ${r.current}`)
+})
+
+/* ---------- and it has to ask the question that catches a bricked shop ----------
+ * 00f604a split /health: plain stays 200 `{"ok":true,"degraded":true}` when a shop's database will
+ * not open, because it is the PLATFORM's liveness probe and answering 503 there de-routes every
+ * healthy shop on the box. Only ?strict=1 503s. That commit taught ship.sh the difference and
+ * never touched release.sh — the script INSTALL.md tells self-hosters to run — which still polled
+ * plain /health. So the exact failure its 70-line pre-migration backup exists for, a migration
+ * that throws on one shop's real data, printed "✓ is live", exited 0, stayed flipped in, and
+ * never restored the snapshot it had just taken. release.sh's own comment asserted the opposite. */
+await t("a release that leaves one shop's database dark is rolled back, not announced as live", async () => {
+  const r = await rehearseRelease({ healthy: 'degraded' })
+  assert.notEqual(r.code, 0, `a deploy that bricked a shop must exit non-zero:\n${r.out}`)
+  assert.doesNotMatch(r.out, /✓ v9\.9\.9 is live/, 'a degraded 200 is not a successful deploy')
+  assert.match(r.out, /rolled back/, 'the pre-migration backup exists for exactly this failure')
+  assert.match(r.current, /releases\/v0\.0\.1$/, `current must point back at the previous release, got ${r.current}`)
+})
+
+await t('…and both deploy scripts ask it the same way', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const f of ['deploy/ship.sh', 'deploy/release.sh']) {
+    const polls = readFileSync(join(root, f), 'utf8').split('\n')
+      .filter((l) => l.includes('curl') && l.includes('/health'))
+      .map((l) => (/\/health[^"\s\\]*/.exec(l) || [''])[0])
+    assert.ok(polls.length >= 2, `${f} should poll /health twice — the loop and the diagnostic that names the dark shops`)
+    for (const u of polls) {
+      assert.ok(u.includes('strict=1'),
+        `${f} polls ${u} — a deploy gate on plain /health ships a release that bricked a shop, green`)
+    }
+  }
 })
 
 // ship.sh had the /health probe but fell back to `systemctl is-active` whenever it could not work

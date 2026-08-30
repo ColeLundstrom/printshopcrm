@@ -176,8 +176,13 @@ sudo systemctl restart "$SERVICE"
 # in. ship.sh was given a real /health probe in v1.14.0; this script — the one INSTALL.md tells
 # self-hosters to run — was not. Ask the app the way a customer would.
 #
-# /health 503s when any shop's database will not open, which is exactly the failure a migration
-# causes, so this is the check that catches the thing the backup above exists for.
+# ?strict=1 on purpose, and this is the whole point of the probe. Plain /health is the PLATFORM's
+# liveness probe: it stays 200 `{"ok":true,"degraded":true}` when one shop's database will not open,
+# because answering 503 there would de-route every HEALTHY shop on the box. The DEPLOY gate asks a
+# stricter question — a release that leaves any shop unable to open its database is a release that
+# rolls back — and only ?strict=1 answers it. That is exactly the failure a migration causes on one
+# shop's real data, and exactly the thing the pre-migration backup above exists for. Polling plain
+# /health here printed "✓ is live" over it and never restored the snapshot it had just taken.
 PORT="$(systemctl show -p Environment --value "$SERVICE" 2>/dev/null | tr ' ' '\n' | sed -n 's/^PORT=//p' | tail -1)"
 [ -n "$PORT" ] || PORT="$(sed -n 's/^[[:space:]]*PORT=//p' "$APP_ROOT/.env" 2>/dev/null | tr -d '"'"'"'[:space:]' | tail -1)"
 # server.mjs: `const PORT = process.env.PORT || 3333`. An unset PORT is 3333, not unknown — and
@@ -191,11 +196,11 @@ TRIES="${PSC_HEALTH_TRIES:-10}"
 HEALTHY=0
 for _ in $(seq 1 "$TRIES"); do
   sleep 2
-  if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HEALTHY=1; break; fi
+  if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/health?strict=1" >/dev/null 2>&1; then HEALTHY=1; break; fi
 done
 
 if [ "$HEALTHY" = '1' ]; then
-  echo "✓ $TAG is live and answering /health"
+  echo "✓ $TAG is live and answering /health?strict=1"
   # `[ … ] && echo …` as the LAST command of the script makes its exit status the test's. On an
   # install's very first deploy there is no previous release, so the script printed "is live" and
   # then exited 1 — every CI step wrapping it went red over a deploy that had worked, and re-running
@@ -206,8 +211,8 @@ if [ "$HEALTHY" = '1' ]; then
     echo "  first release on this install — nothing to roll back to yet"
   fi
 else
-  echo "✗ $TAG is not answering /health on port $PORT — rolling back" >&2
-  curl -sS --max-time 5 "http://127.0.0.1:$PORT/health" >&2 || true   # names the shops that are dark
+  echo "✗ $TAG is not answering /health?strict=1 on port $PORT — rolling back" >&2
+  curl -sS --max-time 5 "http://127.0.0.1:$PORT/health?strict=1" >&2 || true   # names the shops that are dark
   echo >&2
   if [ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ]; then
     sudo ln -sfn "$PREVIOUS" "$APP_ROOT/current"
