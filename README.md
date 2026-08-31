@@ -116,7 +116,7 @@ Longer write-ups of the things people ask about most, on the project site:
 - Invoices with partial payments, running balance, and status always derived from the payments table
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
-- QuickBooks Online sync plus IIF export
+- QuickBooks IIF export (Online sync is API-only for now — it has no setup screen yet)
 
 **Purchasing**
 - Garment catalog with real costs feeding the ROI engine

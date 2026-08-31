@@ -67,7 +67,7 @@ function render(aging, qbo) {
             ? 'The QuickBooks queue is visible to managers and owners. The receivables report above is yours to use.'
             : `The QuickBooks queue could not be loaded — ${esc(qbo.error || 'unavailable')}.`}</p>`
         : !qbo.connected
-        ? `<p class="dim">Not connected. Add your QuickBooks app keys in <a href="#/settings">Settings</a> and connect — invoices and payments will post themselves as money moves, and anything that fails shows up here with the reason.</p>
+        ? `<p class="dim">Not connected — QuickBooks Online has no setup screen yet, so this queue stays empty. In the meantime the <a href="#/roi">Profitability</a> screen's <strong>Export to QuickBooks</strong> button produces an IIF file that imports into QuickBooks today.</p>
            ${qbo.counts.open ? `<p class="bad">${qbo.counts.open} invoice${qbo.counts.open === 1 ? '' : 's'} waiting to sync — reconnect QuickBooks and they'll go through.</p>` : ''}`
         : `<div class="dim" style="margin-bottom:10px">
              ${qbo.counts.ok} synced · ${qbo.counts.open} waiting · <strong${qbo.counts.failed ? ' class="bad"' : ''}>${qbo.counts.failed} need attention</strong>

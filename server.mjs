@@ -6438,7 +6438,11 @@ const QBO_REDIRECT = (req) => `${req.protocol}://${req.get('host')}/api/qbo/call
 /** Start the Intuit OAuth consent flow. */
 app.get('/api/qbo/connect', requireRole('manager'), wrap((req, res) => {
   const s = getSettings()
-  if (!s.qbo_client_id) return res.status(400).json({ error: 'Add your QuickBooks app Client ID and Secret in Settings first.' })
+  // Not "in Settings": there is no QuickBooks card on that screen and never has been. The keys are
+  // in SETTING_DEFAULTS so PUT /api/settings stores them, but nothing renders an input for either,
+  // so a shop sent to Settings reads eleven cards, finds nothing, and concludes the product is
+  // broken. Say what is actually true, and name the export that does work today.
+  if (!s.qbo_client_id) return res.status(400).json({ error: 'QuickBooks Online has no setup screen yet — its app Client ID and Secret can currently only be set through the API (PUT /api/settings). The “Export to QuickBooks” button on the Profitability screen produces an IIF file that imports today.' })
   const state = crypto.randomBytes(12).toString('base64url')
   setSetting('qbo_oauth_state', state)
   res.json({ url: qbo.authorizeUrl({ clientId: s.qbo_client_id, redirectUri: QBO_REDIRECT(req), state }) })
@@ -6731,7 +6735,7 @@ async function processQboQueue(limit = 5) {
 
 /** Manual "sync this invoice now" — records the attempt in the queue either way. */
 app.post('/api/invoices/:id/qbo-sync', requireRole('manager'), wrap(async (req, res) => {
-  if (!qboConnected()) return res.status(400).json({ error: 'Connect QuickBooks Online in Settings first.' })
+  if (!qboConnected()) return res.status(400).json({ error: 'QuickBooks Online is not connected, and has no setup screen yet — see GET /api/qbo/connect. The “Export to QuickBooks” button on the Profitability screen produces an IIF file that imports today.' })
   const inv = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const r = await syncInvoiceToQbo(inv.id)

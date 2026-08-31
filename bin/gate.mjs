@@ -5454,6 +5454,62 @@ exec /usr/bin/readlink "$@"`)
  * defect is in the argument list, so the test has to run the real rsync with the real list.
  * ship.sh gets the same two excludes — it copies from a dev checkout today, but nothing stops an
  * operator running it from the install root, and the failure is silent until the deploy dies. */
+/* ---------- nothing may send a shop to a screen that does not have the field ----------
+ * QuickBooks Online has never been connectable from the product. `qbo_client_id` and
+ * `qbo_client_secret` are in SETTING_DEFAULTS, so PUT /api/settings will store them — but no
+ * screen renders an input for either, and `grep -rn qbo public/js/views/misc.js` finds nothing:
+ * there are eleven Settings cards and none of them is QuickBooks. GET /api/qbo/connect and
+ * POST /api/invoices/:id/qbo-sync have zero references anywhere under public/. The only way to
+ * turn the feature on is a developer with curl.
+ *
+ * Two places then send the shop somewhere that cannot help them: Books & A/R says "Add your
+ * QuickBooks app keys in Settings and connect", linking to #/settings, and the connect route's
+ * own 400 says "Add your QuickBooks app Client ID and Secret in Settings first." A shop follows
+ * the link, reads all eleven cards, finds nothing, and concludes the product is broken — which,
+ * for this feature, it is. README sells it in a bullet.
+ *
+ * NOT fixed here by building the card: whether the OAuth handshake actually completes cannot be
+ * verified without an Intuit sandbox, and shipping a Connect button that fails is worse than
+ * saying plainly what does and does not work. So this guard is conditional on its own remedy —
+ * the moment a QuickBooks credential field exists in Settings, it stops requiring the
+ * qualification and the copy can go back to pointing at it. */
+section('the app does not point a shop at a field that is not there')
+await t('nothing tells a shop to add QuickBooks keys in Settings while Settings has no such field', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const views = join(root, 'public', 'js', 'views')
+  const settingsUi = readdirSync(views).filter((f) => f.endsWith('.js'))
+    .map((f) => readFileSync(join(views, f), 'utf8')).join('\n')
+  // Does a screen actually offer somewhere to put them? An id/name/data attribute is enough.
+  const hasField = /qbo_client_id|qbo-client-id|quickbooks[^\n]{0,80}(client\s*id|<input)/i.test(settingsUi)
+  if (hasField) return   // the remedy landed — this guard has nothing left to hold
+
+  const offenders = []
+  for (const [file, text] of [
+    ['public/js/views/books.js', readFileSync(join(root, 'public/js/views/books.js'), 'utf8')],
+    ['server.mjs', readFileSync(join(root, 'server.mjs'), 'utf8')],
+    ['lib/billing.mjs', readFileSync(join(root, 'lib/billing.mjs'), 'utf8')],
+  ]) {
+    for (const line of text.split('\n')) {
+      // Comment lines are not what a shop reads. This one matters: the fix below server.mjs:6441
+      // explains in prose why it must not say "in Settings", and a guard that cannot tell an
+      // explanation from the string it is explaining fails on its own remedy.
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue
+      if (/QuickBooks/i.test(line) && /\bin Settings\b/i.test(line)) offenders.push(`${file}: ${line.trim().slice(0, 120)}`)
+    }
+  }
+  assert.equal(offenders.length, 0,
+    `these send a shop to Settings for a QuickBooks field no screen renders:\n      ${offenders.join('\n      ')}`)
+
+  // …and the README may not sell it flat while it is unreachable from the UI.
+  const readme = readFileSync(join(root, 'README.md'), 'utf8')
+  const bullet = readme.split('\n').find((l) => /^-\s.*QuickBooks/i.test(l)) || ''
+  assert.ok(!bullet || /export|manual|keys|not yet|setup|self-host|API|advanced/i.test(bullet),
+    `README sells QuickBooks Online sync unqualified, and no screen can connect it:\n      ${bullet.trim()}`)
+})
+
 section('a release does not contain the install it was cut from')
 await t('release.sh and ship.sh exclude `current` and `releases` from the copy', async () => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, lstatSync } = await import('node:fs')
