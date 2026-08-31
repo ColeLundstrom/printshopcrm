@@ -65,6 +65,9 @@ h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; margin: 
   body { background: #fff; padding: 0; }
   .tk { border: 0; padding: 0; max-width: none; }
   .printbtn { display: none; }
+  /* AGPL §13 is about users interacting with the program over a NETWORK. The offer belongs on the
+     screen this ticket is read on; it does not need to be on the paper it is printed onto. */
+  .source-link { display: none; }
   @page { margin: 12mm; }
 }
 

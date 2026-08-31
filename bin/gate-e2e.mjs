@@ -941,6 +941,20 @@ try {
     const ticket = await fetch(`${BASE}${tkUrl}`, { headers: { Cookie: cookieHeader() } })
     const tkHtml = await ticket.text()
     chk('the work ticket the press operator holds says RUSH', String(/class="rush"/.test(tkHtml)), '^true$')
+    /* AGPL §13 — "all users interacting with it remotely through a computer network". The work
+     * ticket is the one /p/ route that builds its own <!doctype> rather than going through pPage's
+     * renderer, which appends the offer to every other public document, so it never inherited one.
+     * It is a complete styled page opened over the network on a floor tablet with no session at
+     * all — it authenticates on an HMAC in the query string. It carried no __SOURCE_LINK__
+     * placeholder either, so the "no unrendered placeholder" rule could not see the gap, exactly
+     * as with /docs-api.html. This assertion runs against the real rendered ticket, not the 403. */
+    chk('…and carries the §13 source offer, like every other public document', tkHtml, 'class="source-link"')
+    chk('…pointing at a URL a user can fetch', tkHtml, 'href="https?://[^"]+"')
+    chk('…styled, since the ticket never loads app.css', tkHtml, '\\.source-link\\{')
+    chk('…and it declares a language', tkHtml, '<html lang="en"')
+    chk('…but it is hidden on paper, because §13 is about the network, not the printout',
+      (await fetch(`${BASE}/css/ticket.css`)).ok ? await (await fetch(`${BASE}/css/ticket.css`)).text() : '',
+      '@media print[\\s\\S]*\\.source-link \\{ display: none')
 
     // …and an ordinary job is still an ordinary job, or the flag means nothing.
     const std = (await req('POST', '/api/autopilot', { body: { text: 'Please quote 300 Gildan 5000 tees in black, 1 color front. fastlane@e2e.test' } })).json
@@ -1312,6 +1326,9 @@ try {
       ['/embed/gangsheet', 'the public gang-sheet builder'],
       ['/embed/chatdemo', 'the receptionist demo page'],
       ['/p/estimate/999999?k=nope', 'a customer document page'],
+      // /unsub is a real rendered document for anyone who follows it — the recipient of a
+      // marketing email, who is interacting with this program over a network and has no account.
+      ['/unsub?t=nope', 'the unsubscribe confirmation'],
     ]) {
       const page = await req('GET', path, { cookies: false })
       chk(`${what} carries the §13 source offer`, page.text, 'class="source-link"')

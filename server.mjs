@@ -1541,7 +1541,7 @@ app.post('/api/capture', ipLimit(10), wrap(async (req, res) => {
 // One-click unsubscribe from the nurture drip (CAN-SPAM). Public, GET so the email link just works.
 app.get('/unsub', (req, res) => {
   try { stopNurtureByToken(String(req.query.t || '')) } catch { /* ignore — always confirm */ }
-  res.set('Content-Type', 'text/html').send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e6edf3;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0"><div style="text-align:center;max-width:420px;padding:24px"><h1 style="font-size:20px;margin:0 0 8px">You're unsubscribed</h1><p style="color:#9aa4b2;line-height:1.6">You won't get any more PrintShopCRM emails. Changed your mind? You can always <a href="https://pro.printshopcrm.com/signup" style="color:#3ba">start a free trial</a>.</p></div></body>`)
+  res.set('Content-Type', 'text/html').send(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${SOURCE_FOOT_CSS}</style><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e6edf3;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0"><div style="text-align:center;max-width:420px;padding:24px"><h1 style="font-size:20px;margin:0 0 8px">You're unsubscribed</h1><p style="color:#9aa4b2;line-height:1.6">You won't get any more PrintShopCRM emails. Changed your mind? You can always <a href="https://pro.printshopcrm.com/signup" style="color:#3ba">start a free trial</a>.</p></div>${sourceFooterHtml()}</body></html>`)
 })
 
 /**
@@ -7831,7 +7831,7 @@ const docAccentCss = () => {
 
 // Every customer-facing document goes through here, so the AGPL §13 offer does too — see
 // sourceFooterHtml(). It is appended unconditionally, exactly like the app shell's.
-const page = (title, body) => `<!doctype html><html><head><meta charset="utf-8">
+const page = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${title}</title><link rel="stylesheet" href="/css/public.css"><style>${SOURCE_FOOT_CSS}</style>${docAccentCss()}</head><body>${body}${sourceFooterHtml()}</body></html>`
 
@@ -8262,8 +8262,14 @@ app.get('/p/ticket/:id', pPage((req, res) => {
   const art = all('SELECT * FROM art_versions WHERE job_id = ? ORDER BY version DESC', j.id)
   const approved = art.find((a) => a.status === 'approved')
 
-  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(j.job_number)} — Work Ticket</title>
-    <link rel="stylesheet" href="/css/ticket.css"></head><body>
+  // AGPL §13 covers "all users interacting with it remotely through a computer network", and this
+  // is a complete, styled, self-contained page fetched over the network by a press operator on a
+  // floor tablet, with no session at all — it authenticates on an HMAC in the query string. It is
+  // the one /p/ route that builds its own document instead of going through pPage's renderer,
+  // which appends the offer for every other one, so it never got it. Same miss as /docs-api.html,
+  // and invisible for the same reason: no __SOURCE_LINK__ placeholder for the gate to find.
+  res.send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(j.job_number)} — Work Ticket</title>
+    <link rel="stylesheet" href="/css/ticket.css"><style>${SOURCE_FOOT_CSS}</style></head><body>
     <button class="printbtn" onclick="window.print()">🖨 Print this ticket</button>
     <div class="tk">
       <div class="tk-h">
@@ -8320,7 +8326,7 @@ app.get('/p/ticket/:id', pPage((req, res) => {
         <div><span>Date</span><div class="ln"></div></div>
       </div>
       <div class="tk-f">${esc(s.shop_name)} · ${esc(j.job_number)} · printed ${new Date().toISOString().slice(0, 10)}</div>
-    </div></body></html>`)
+    </div>${sourceFooterHtml()}</body></html>`)
 }))
 
 app.get('/p/art/:id', pPage((req, res) => {
