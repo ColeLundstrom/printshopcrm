@@ -54,7 +54,17 @@ git fetch --quiet origin
 BEHIND="$(git rev-list --count HEAD..origin/main)"
 [ "$BEHIND" = "0" ] || die "main is $BEHIND commit(s) behind origin/main — pull (and re-run the gates) first"
 AHEAD="$(git rev-list --count origin/main..HEAD)"
-git rev-parse "$TAG" >/dev/null 2>&1 && die "$TAG already exists"
+# A tag that already exists is not automatically a mistake. Everything after this point can fail
+# on the SERVER, long after the tag was created and pushed, and the retry then has to be able to
+# use the same tag — the alternative is burning a version number for every transient npm failure,
+# which is how the previous dead end started. Refuse only when it names DIFFERENT code.
+RESUMING=0
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+  [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ] \
+    || die "$TAG already exists and points at other code — pick a new tag"
+  RESUMING=1
+  echo "  $TAG already exists and matches HEAD — resuming a previous attempt"
+fi
 echo "  clean, on main, $([ "$AHEAD" = "0" ] && echo 'in step with origin' || echo "$AHEAD commit(s) to push")"
 
 # ---------------------------------------------------------------- 2. tests
@@ -64,7 +74,7 @@ npm run test:e2e || die "end-to-end tests failed — nothing shipped"
 
 # ---------------------------------------------------------------- 3. GitHub
 step "Tagging and pushing to GitHub"
-git tag -a "$TAG" -m "${SUMMARY:-$TAG}" || die "could not create the tag"
+[ "$RESUMING" = "1" ] || git tag -a "$TAG" -m "${SUMMARY:-$TAG}" || die "could not create the tag"
 git push origin main --quiet || die "push failed"
 git push origin "$TAG" --quiet || die "tag push failed — GitHub and your tree now disagree"
 echo "  pushed $TAG (this also builds and publishes the container image)"
@@ -74,7 +84,58 @@ REL_NAME="${TAG}-$(date +%Y-%m-%d)"
 REL="$APP_ROOT/releases/$REL_NAME"
 step "Deploying to $APP_HOST as $REL_NAME"
 
-"${SSH[@]}" "$APP_HOST" "test ! -e '$REL'" || die "$REL already exists on the server"
+# A leftover release directory used to be the end of the road. Any failure in the block below —
+# most often `npm ci` — aborts AFTER the rsync, so $REL exists; the retry is then refused here, and
+# refused on the tag before that, and after deleting the tag the retry re-pushes it and is refused
+# here again. The escape (removing the directory) appeared in no script, no error and no document.
+#
+# So: distinguish a release that is IN USE from an abandoned one. The live release and the one
+# recorded as the way back are refused outright — deleting either is how you lose a rollback. An
+# abandoned one names the exact command to clear it, and PSC_REDEPLOY=1 runs that command for you
+# after re-checking, on the server, that it is neither of the two protected paths.
+if ! "${SSH[@]}" "$APP_HOST" "test ! -e '$REL'"; then
+  # Both lookups are guarded the way every other one in these two scripts is: GNU readlink -f
+  # prints a path whose last component is missing and exits 0, and a recorded previous release that
+  # is no longer on disk is not a previous release. An unguarded read here would compare a
+  # plausible-looking string against $REL and answer "not in use" about the live release.
+  IN_USE="$("${SSH[@]}" "$APP_HOST" "
+    CUR=''
+    if [ -L '$APP_ROOT/current' ]; then
+      CUR=\$(readlink -f '$APP_ROOT/current' 2>/dev/null || true)
+      [ -n \"\$CUR\" ] && [ -d \"\$CUR\" ] || CUR=''
+    fi
+    PREV=\$(cat '$APP_ROOT/.previous-release' 2>/dev/null || true)
+    [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ] || PREV=''
+    if [ \"\$CUR\" = '$REL' ]; then echo 'it is the release that is currently live'
+    elif [ \"\$PREV\" = '$REL' ]; then echo 'it is the release recorded as the way back'
+    fi" 2>/dev/null || true)"
+  if [ -n "$IN_USE" ]; then
+    die "$REL already exists on the server and $IN_USE — ship a new tag rather than overwriting it"
+  fi
+  if [ "${PSC_REDEPLOY:-}" = "1" ]; then
+    # Look before you delete. A previous round rm -rf'd an aborted release and only afterwards
+    # noticed it contained .db files (fixtures the server-side gate run writes inside the release).
+    # They were fixtures and the live data root was never touched — it was still the wrong order.
+    case "$REL" in
+      "$APP_ROOT/releases/"?*) : ;;
+      *) die "refusing to remove '$REL' — that is not a path under $APP_ROOT/releases" ;;
+    esac
+    echo "  an abandoned release directory is in the way; here is what is in it:"
+    "${SSH[@]}" "$APP_HOST" "ls -la '$REL' 2>/dev/null | head -20; echo '  databases inside it:'; find '$REL' -name '*.db' 2>/dev/null | head -10" || true
+    echo "  clearing it (it is neither the live release nor the recorded rollback target)"
+    "${SSH[@]}" "$APP_HOST" "sudo rm -rf '$REL'" || die "could not remove $REL"
+  else
+    printf '\n  \xe2\x9c\x97 %s\n\n' "$REL already exists on the server" >&2
+    echo "  It is not the live release and not the recorded rollback target, so it is almost" >&2
+    echo "  certainly left over from an attempt that failed after the copy step." >&2
+    echo >&2
+    echo "  Look at it first, then clear it and re-run:" >&2
+    echo "    ssh $APP_HOST 'ls -la $REL'" >&2
+    echo "    PSC_REDEPLOY=1 APP_HOST=$APP_HOST bash deploy/ship.sh $TAG \"$SUMMARY\"" >&2
+    echo >&2
+    exit 1
+  fi
+fi
 
 rsync -a -e "$RSYNC_E" \
   --exclude node_modules --exclude .git --exclude data --exclude '.env' \
@@ -94,8 +155,22 @@ rsync -a -e "$RSYNC_E" \
   # lockout recovery is one of those commands.
   if [ -f '$APP_ROOT/.env' ]; then sudo ln -sfn '$APP_ROOT/.env' '$REL/.env'
   else echo '!  $APP_ROOT/.env not found — the admin, restore and drive CLIs will run on built-in default paths'; fi
-  cd '$REL' && npm ci --omit=dev >/dev/null 2>&1
-  node bin/gate.mjs >/dev/null || { echo 'GATE FAILED ON THE SERVER'; exit 1; }
+  # Not >/dev/null 2>&1. This discarded BOTH npm error lines, so a deploy that died here gave the
+  # operator two unrelated warnings and \"see the output above for whether it rolled back\" with
+  # nothing above it to see. Keep the log quiet on success and print the tail of it on failure —
+  # the failure is the only time anyone wants these 200 lines, and the only time they had none.
+  cd '$REL'
+  if ! npm ci --omit=dev >/tmp/psc-ship-npm.log 2>&1; then
+    echo 'npm ci FAILED ON THE SERVER — last 40 lines:'; tail -40 /tmp/psc-ship-npm.log
+    echo \"(full log on the server at /tmp/psc-ship-npm.log; nothing was flipped)\"
+    exit 1
+  fi
+  # Same for the gate: it names the assertion that failed, and that was being thrown away too.
+  if ! node bin/gate.mjs >/tmp/psc-ship-gate.log 2>&1; then
+    echo 'GATE FAILED ON THE SERVER:'; grep -E '^\\s+(✗|[0-9]+ passed)' /tmp/psc-ship-gate.log | tail -40
+    echo \"(full log on the server at /tmp/psc-ship-gate.log; nothing was flipped)\"
+    exit 1
+  fi
   # GNU readlink -f prints a path whose LAST component is missing and exits 0, so on a first
   # deploy PREV came back as the link about to be replaced and the rollback below pointed current
   # at itself: ELOOP, and Restart=always looping on it forever. A way home has to be a link that

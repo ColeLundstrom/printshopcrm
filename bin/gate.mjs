@@ -12708,6 +12708,91 @@ section('every config read the deploy makes is one the deploy user is allowed to
   })
 }
 
+
+/* ---------- a deploy that fails on the server is not the end of the road (round 27) ----------
+ * Rehearsed against a simulated server: `npm ci` fails inside the remote block, and because that
+ * line was `>/dev/null 2>&1` BOTH npm error lines vanished. The operator's entire output was two
+ * unrelated warnings and "see the output above for whether it rolled back" — with nothing above it
+ * to see. Then a permanent dead end: the tag had already been created and pushed before the server
+ * step, so the retry was refused on the tag; deleting the tag and retrying re-pushed it and was
+ * refused on "$REL already exists" instead, because the rsync had run before the failure. The one
+ * escape — removing the release directory — appeared in no script, no error message and no
+ * document.
+ *
+ * ship.sh's remote half runs over ssh and cannot be rehearsed in a unit gate the way release.sh
+ * can, so these are assertions on the properties: the failure is printed, the tag can be reused
+ * when it names the same code, and the way out is printed with the rest. */
+section('a deploy that fails on the server says why, and can be run again')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const raw = readFileSync(join(root, 'deploy', 'ship.sh'), 'utf8')
+  const lines = raw.split('\n')
+  // Comments explain these fixes at length; asserting over them would pass on a reverted script.
+  const code = lines.map((l) => (/^\s*#/.test(l) ? '' : l))
+  const codeText = code.join('\n')
+  // A window, not a line: every one of these is printed as a multi-line block.
+  const near = (idx, n = 6) => code.slice(Math.max(0, idx - n), idx + n + 1).join('\n')
+
+  await t('npm ci on the server does not throw its own error away', () => {
+    const i = code.findIndex((l) => /npm ci --omit=dev/.test(l))
+    assert.ok(i >= 0, 'ship.sh no longer installs dependencies on the server — re-point this rule')
+    assert.ok(!/>\s*\/dev\/null\s+2>&1/.test(code[i]),
+      `this is the line that left an operator with no idea why the deploy died:\n      ${code[i].trim()}`)
+    assert.match(near(i), /tail -40|cat /, 'a failure has to print the log it captured')
+  })
+
+  await t('…and neither does the gate run on the server', () => {
+    const i = code.findIndex((l) => /node bin\/gate\.mjs/.test(l))
+    assert.ok(i >= 0, 'ship.sh no longer runs the gate on the server')
+    assert.ok(!/>\s*\/dev\/null(\s|$)/.test(code[i]) || /psc-ship-gate\.log/.test(near(i)),
+      'the gate names the assertion that failed; that is the whole reason to run it there')
+    assert.match(near(i), /GATE FAILED ON THE SERVER/, 'and it must say so out loud')
+  })
+
+  await t('a tag that names exactly this code can be shipped again', () => {
+    // Everything after the tag push can fail on the server. Refusing the retry burns a version
+    // number for every transient npm failure, which is how the dead end above began.
+    const i = code.findIndex((l) => /git rev-parse "\$TAG"/.test(l))
+    assert.ok(i >= 0, 'ship.sh no longer checks whether the tag exists')
+    const w = near(i, 8)
+    assert.match(w, /RESUMING=1/, 'an existing tag pointing at HEAD must be treated as a resumed attempt')
+    assert.match(w, /points at other code/, '…and one pointing anywhere else must still be refused')
+    const mk = code.findIndex((l) => /git tag -a "\$TAG"/.test(l))
+    assert.ok(mk >= 0 && /RESUMING/.test(code[mk]), 'the tag must not be re-created on a resumed attempt')
+  })
+
+  await t('a release directory left by a failed attempt prints the way past it', () => {
+    // The guard is a ~30-line block, so anchor on the block and read all of it: the first line
+    // mentioning the directory is the hard refusal, and the escape is printed well below it.
+    const i = code.findIndex((l) => /test ! -e '\$REL'/.test(l))
+    assert.ok(i >= 0, 'ship.sh no longer guards against an existing release directory')
+    const w = code.slice(i, i + 40).join('\n')
+    assert.match(w, /PSC_REDEPLOY=1/, 'the refusal must name the command that clears it — this was the dead end')
+    assert.match(w, /ls -la/, '…and tell the operator to look at it before it is removed')
+  })
+
+  await t('…but never past the live release or the one recorded as the way back', () => {
+    assert.match(codeText, /it is the release that is currently live/,
+      'clearing the live release is not a recovery')
+    assert.match(codeText, /it is the release recorded as the way back/,
+      'clearing the rollback target is how you lose the rollback')
+  })
+
+  await t('and no rm -rf in the deploy can run on a path outside the releases directory', () => {
+    // A previous round rm -rf'd an aborted release and only afterwards noticed it held .db files.
+    const bad = []
+    code.forEach((l, i) => {
+      if (!/rm -rf/.test(l)) return
+      const w = near(i, 8)
+      if (!/APP_ROOT\/releases\/|refusing to remove/.test(w)) bad.push(`${i + 1}: ${l.trim()}`)
+    })
+    assert.deepEqual(bad, [], `an unguarded recursive delete in the deploy:\n      ${bad.join('\n      ')}`)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
