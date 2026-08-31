@@ -2388,6 +2388,26 @@ await t('one job cannot use more presses than it physically runs on', async () =
   // sooner — the pooled model used to say it did, over-promising by the station count.
   assert.equal(f8, f1, 'a single job must take the same time regardless of how many presses exist')
 })
+await t('…and the date the FRONT DESK is given agrees with the one the board will show', async () => {
+  // promise() is the only function in the product that answers the customer-facing question:
+  // /api/capacity/promise renders its verdict verbatim as "Yes — ships by Aug 31" and announces it
+  // to a screen reader. schedule() answers the same question for the same job once it is booked,
+  // in the Capacity table's "Projected finish" column. schedule() got the one-press bound above;
+  // promise() kept the pooled daily total, so the two disagreed by two working days on an
+  // eight-press shop, and the over-promise grew with every press the shop bought.
+  const { promise, schedule, jobMinutes } = await import('../lib/capacity.mjs')
+  const many = { capacity_stations: 8, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
+  const one = { capacity_stations: 1, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
+  const ask = { pieces: 2000, colors: 6 }
+  const p8 = promise([], many, ask)
+  const p1 = promise([], one, ask)
+  assert.equal(p8.earliestFinish, p1.earliestFinish,
+    'a promised ship date must not improve just because the shop owns more presses')
+  const big = { id: 1, due: '2026-12-31', sizes: JSON.stringify({ M: 2000 }), colors: 6 }
+  const booked = schedule([{ ...big, minutes: jobMinutes(big, many) }], many).jobs[0].projectedFinish
+  assert.equal(p8.earliestFinish, booked,
+    'promise() and schedule() must answer the same date for the same job on the same shop')
+})
 await t('but more presses still finish a BATCH of jobs sooner', async () => {
   const { schedule, jobMinutes } = await import('../lib/capacity.mjs')
   const many = { capacity_stations: 8, capacity_hours_per_day: 8, utilization_pct: 30, press_type: 'auto' }
