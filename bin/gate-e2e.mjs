@@ -4115,6 +4115,22 @@ try {
       const shopEmbedKey = String((await as6('GET', '/api/auth/me')).json?.embed_key || '')
       chk('…and knows its own embed key, which its website carries', String(!!shopEmbedKey), '^true$')
 
+      /* Artwork this shop has already emailed to a customer. Uploaded and shared while the shop is
+       * still live, so the tokened URL captured here is exactly the one sitting in a customer's
+       * inbox when the operator presses Suspend. */
+      const suspC = (await as6('POST', '/api/contacts', { name: 'Downstream Client', email: 'downstream@shop.test' })).json
+      const suspJ = (await as6('POST', '/api/jobs', { contact_id: suspC?.id, title: 'Tour Merch', decoration: 'Screen Print' })).json
+      const suspForm = new FormData()
+      suspForm.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"><!--SUSPENDED-SHOP-ART--></svg>'], { type: 'image/svg+xml' }), 'tour.svg')
+      const suspUp = await fetch(`http://127.0.0.1:${P6}/api/jobs/${suspJ?.id}/art`, { method: 'POST', headers: { Cookie: ch6() }, body: suspForm })
+      const suspArt = await suspUp.json().catch(() => ({}))
+      chk('the shop about to be suspended has artwork on a job', String(suspUp.status), '^200$')
+      const suspSent = await as6('POST', `/api/art/${suspArt?.id}/send`)
+      const suspShare = String(suspSent.json?.share_url || '').replace(/^https?:\/\/[^/]+/, '')
+      const suspHtml = await (await fetch(`http://127.0.0.1:${P6}${suspShare}`)).text()
+      const suspImg = ((/<img src="(\/uploads\/[^"]+)"/.exec(suspHtml) || [])[1] || '').replace(/&amp;/g, '&')
+      chk('…and a tokened image URL its customer can open with no login', String(/^\/uploads\/.+[?&]t=/.test(suspImg)), '^true$')
+
       // The operator gets their own shop the way the product tells them to — the signup form
       // refuses this address, which is what the three assertions above are about.
       const mk = spawn(process.execPath, ['--no-warnings', 'bin/admin.mjs', 'create-shop', 'Ops', 'operator@example.com', 'GatePass-123456'],
@@ -4183,6 +4199,16 @@ try {
         ['the shop\'s embedded builder config', `/api/embed/config?shop=${shopEmbedKey}`, undefined],
         ['the AI receptionist on the shop\'s own website', `/api/embed/chat/start?shop=${shopEmbedKey}`, {}],
         ['the public gang-sheet order form', `/api/embed/gangsheet/order?shop=${shopEmbedKey}`, { items: [{ w: 10, h: 10, qty: 2 }], name: 'Stranger', email: 'stranger@evil.test' }],
+        /* GET /uploads/:file was the one public-by-key surface that never asked whether the shop
+         * was still open. pPage, embedRun, slackRun, getSession and getTenantByApiKey all filter on
+         * status; the file route resolved the slug with getTenantBySlug and checked only that the
+         * row existed. So after Suspend the owner could not sign in, the REST API was dead, /p/
+         * 404'd and the embed 404'd — and every file the shop had ever uploaded was still served in
+         * full, off the platform's own domain, to anyone holding a link the shop itself handed out.
+         * Suspend is the operator's lever against a shop defrauding people, and artwork is most of
+         * what a print shop hands out. The only thing that actually took the bytes down was the
+         * irreversible Delete. */
+        ['the artwork it had already emailed to customers', suspImg, undefined],
       ]
       for (const [what, path, body] of PUBLIC_SURFACES) {
         chk(`a suspended shop closes ${what}`, String((await pub(path, body)).status), '^404$')

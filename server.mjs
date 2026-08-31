@@ -8405,8 +8405,16 @@ app.get('/uploads/:file', (req, res) => {
     const want = Buffer.from(fileToken(f, slug))
     const got = Buffer.from(String(req.query.t || ''))
     if (slug && want.length === got.length && crypto.timingSafeEqual(want, got)) {
+      // tenantOpen, not merely "the row exists". This was the one public-by-key surface that
+      // never asked whether the shop was still open: pPage, embedRun, slackRun, getSession and
+      // getTenantByApiKey all filter on status. So after Suspend the owner could not sign in, the
+      // REST API was dead, /p/ 404'd and the embed 404'd — and every file the shop had ever
+      // uploaded was still served in full, off the platform's own domain, to anyone holding a link
+      // the shop itself handed out. Suspend is the operator's lever against a shop defrauding
+      // people, and artwork is most of what a print shop hands out; the only thing that actually
+      // took the bytes down was the irreversible Delete.
       const t = getTenantBySlug(slug)
-      if (t) { try { ok = withTenant(t.slug, ownedHere) } catch { ok = false } }
+      if (tenantOpen(t)) { try { ok = withTenant(t.slug, ownedHere) } catch { ok = false } }
     }
   }
   // 404, not 403: a 403 would confirm the file exists to a caller who should not learn that.
