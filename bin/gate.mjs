@@ -13163,6 +13163,78 @@ await t('every decoration the price book sells is costed somewhere', async () =>
   assert.deepEqual(free, [], `these decorations are sold to customers and cost the shop nothing on the books: ${free.join(', ')}`)
 })
 
+
+/* ---------- saving the shop's phone number deleted its size upcharges (round 27) ----------
+ * The extended-size upcharge card rendered exactly four boxes — the literal list
+ * ['2XL','3XL','4XL','5XL'] — under a heading that says "Every estimate, invoice, PDF and export
+ * bills these". The estimate editor's "Add size", the CSV importer and the v1 API can all reach
+ * 6XL, LT, XLT, 2XLT, 3XLT and 4XLT, which are in SIZES, and no screen could show or set a rate
+ * for any of them.
+ *
+ * Worse, the save built the whole map out of whatever boxes were on screen and REPLACED the stored
+ * value — sent by the single Save button that covers all eleven settings cards. So a shop that had
+ * set tall-size rates through the API lost them the next time anyone edited the shop's phone
+ * number: a 180-piece order re-quoted from $1,792.00 to $1,732.00, silently, with nothing in the
+ * product able to put them back. */
+section('a settings save cannot delete a rate whose box was not on screen')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const { SIZES, upchargeFor } = await import('../public/js/shared/pricing.js')
+  const { UPCHARGE_SIZES } = await import('../public/js/views/misc.js')
+
+  // Everything the size picker offers above XL, which is everything that legitimately costs the
+  // shop more to buy. OSFA is one-size-fits-all and is not an extended size.
+  const EXTENDED = SIZES.filter((sz, i) => i > SIZES.indexOf('XL') && sz !== 'OSFA')
+
+  await t('precondition: the product really does sell sizes beyond 5XL', () => {
+    for (const sz of ['6XL', 'LT', 'XLT', '2XLT', '3XLT', '4XLT']) {
+      assert.ok(SIZES.includes(sz), `${sz} left the size list — re-derive this case`)
+    }
+    assert.ok(EXTENDED.length > 4, `expected more than the four boxes the card used to draw, got ${EXTENDED.length}`)
+  })
+
+  await t('every size the shop can sell above XL gets a box it can type a rate into', () => {
+    const shown = UPCHARGE_SIZES({})
+    const missing = EXTENDED.filter((sz) => !shown.includes(sz))
+    assert.deepEqual(missing, [], `these bill real money and no screen in the product can set them: ${missing.join(', ')}`)
+  })
+
+  await t('…and a rate the shop set through the API is shown, not hidden', () => {
+    // A key the card does not know about must still appear, or saving the page deletes it.
+    assert.ok(UPCHARGE_SIZES({ 'CUSTOM-TALL': 7 }).includes('CUSTOM-TALL'),
+      'a stored rate with no box is a rate the next save destroys')
+    assert.equal(new Set(UPCHARGE_SIZES({ '6XL': 6 })).size, UPCHARGE_SIZES({ '6XL': 6 }).length,
+      'a stored key that is also an extended size must not be drawn twice')
+  })
+
+  await t('the save merges over the stored map instead of replacing it', () => {
+    const src = readFileSync(join(ROOT, 'public/js/views/misc.js'), 'utf8')
+      .split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l.trim())).join('\n')
+    const i = src.indexOf('payload.size_upcharges =')
+    assert.ok(i > 0, 'the settings save no longer writes size_upcharges — re-point this rule')
+    const line = src.slice(i, src.indexOf('\n', i))
+    assert.match(line, /\{\s*\.\.\./,
+      `this is a whole-map replace again, so a save about the phone number deletes rates:\n      ${line.trim()}`)
+    // …and what it spreads has to be what is STORED, not the defaults-filled copy the card renders
+    // from — otherwise a shop that never set a rate silently acquires the shipped table.
+    const w = src.slice(Math.max(0, i - 500), i)
+    assert.match(w, /const keep = /, 'the merge base must be parsed from the stored setting')
+    assert.ok(!/const keep = upNow/.test(w), 'upNow already has DEFAULT_UPCHARGES folded in — spreading it persists defaults nobody chose')
+  })
+
+  await t('a rate that survives is a rate that bills', () => {
+    // The money the whole card is about: $6.00 a piece on 10 pieces of 6XL is $60, which is
+    // exactly what the measured 180-piece order lost when the save deleted the key.
+    const kept = { '2XL': 2, '3XL': 3, '4XL': 4, '5XL': 5, '6XL': 6 }
+    assert.equal(upchargeFor('6XL', kept), 6)
+    assert.equal(upchargeFor('6XL', { '2XL': 2, '3XL': 3, '4XL': 4, '5XL': 5 }), 0,
+      'precondition: a deleted key really does bill nothing — this is what the replace caused')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

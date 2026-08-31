@@ -1,5 +1,21 @@
 import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce } from '../core.js'
-import { DEFAULT_UPCHARGES } from '../shared/pricing.js'
+import { DEFAULT_UPCHARGES, SIZES } from '../shared/pricing.js'
+
+/**
+ * Which sizes get an upcharge box.
+ *
+ * This was the literal list ['2XL','3XL','4XL','5XL']. The estimate editor's "Add size", the CSV
+ * importer and the v1 API can all reach 6XL, LT, XLT, 2XLT, 3XLT and 4XLT — they are in SIZES —
+ * and upchargeFor() answers 0 for every one of them, so the shop billed nothing extra on the
+ * garments that cost it the most. A rate no screen can show is a rate no owner can fix.
+ *
+ * Everything above XL, plus anything the shop has already stored, so a key set through the API
+ * is never invisible on the screen that saves the map.
+ */
+export const UPCHARGE_SIZES = (stored = {}) => {
+  const extended = SIZES.filter((sz, i) => i > SIZES.indexOf('XL') && sz !== 'OSFA')
+  return [...new Set([...extended, ...Object.keys(stored || {})])]
+}
 
 /* ---------- art queue ---------- */
 
@@ -374,7 +390,7 @@ export async function settingsView() {
           <div class="lbl" id="up-lbl">Extended-size upcharges ($ per piece)</div>
           <div class="dim" style="font-size:11px;margin-bottom:6px">Added on top of the base rate for big garments. Every estimate, invoice, PDF and export bills these.</div>
           <div class="grid4" role="group" aria-labelledby="up-lbl">
-            ${['2XL', '3XL', '4XL', '5XL'].map((sz) => `<div class="field" style="margin:0">
+            ${UPCHARGE_SIZES(upNow).map((sz) => `<div class="field" style="margin:0">
               <label for="fs-up-${sz}">${sz}</label>
               <input class="input" id="fs-up-${sz}" data-up="${sz}" type="number" step="0.25" min="0" value="${esc(String(upNow[sz] ?? 0))}">
             </div>`).join('')}
@@ -755,7 +771,16 @@ export async function settingsView() {
     // setting, not four. applySettingsPatch serialises a JSON-shaped setting given as an object.
     const upBoxes = $$('[data-up]')
     if (upBoxes.length) {
-      payload.size_upcharges = Object.fromEntries(upBoxes.map((el) => [el.dataset.up, Math.max(0, Number(el.value) || 0)]))
+      // MERGE over what is stored, never replace it. This was a whole-map replace built from
+      // whatever boxes happened to be on screen, and it is sent by the single Save button that
+      // covers all eleven settings cards — so changing the shop's PHONE NUMBER deleted every rate
+      // whose box the card did not render. Measured: a 180-piece order with tall sizes re-quoted
+      // from $1,792.00 to $1,732.00, with no screen able to put the rates back.
+      const keep = (() => {
+        try { const v = JSON.parse(s.size_upcharges); return v && typeof v === 'object' && !Array.isArray(v) ? v : {} }
+        catch { return {} }
+      })()
+      payload.size_upcharges = { ...keep, ...Object.fromEntries(upBoxes.map((el) => [el.dataset.up, Math.max(0, Number(el.value) || 0)])) }
     }
     const err = $('#stripe-err')
     if (err) err.textContent = ''
