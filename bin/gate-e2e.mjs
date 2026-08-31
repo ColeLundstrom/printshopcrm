@@ -1368,6 +1368,30 @@ try {
     await req('PATCH', `/api/jobs/${poJob}/stage`, { body: { stage: 'complete' } })
     r = await req('GET', `/api/jobs/${poJob}`)
     chk('…and it is stamped once, not rewritten by every drag', String(r.json?.job?.ship_date ?? r.json?.ship_date), `^${shipped}$`)
+
+    /* The board drag was taught to stamp it and the other two doors were not, which is worse than
+     * the original bug. POST /api/scan is the path the shop-floor actually uses — the product's
+     * own comment says "operators never type, they scan" — so a shop that standardises on Floor
+     * Mode got the stale booking date on every packing slip it ever printed, while the shop next
+     * door that drags cards got the right one. Same one-line omission on the v1 API. There is no
+     * screen anywhere that sets the field by hand, so neither shop could correct it. */
+    const shipDoor = async (label, advance) => {
+      r = await req('POST', '/api/estimates', { body: { contact_id: poC, items: [{ description: 'Gildan 5000 Tee', sizes: { M: 24 }, unit_price: 9 }] } })
+      const eid = r.json?.id
+      await req('POST', `/api/estimates/${eid}/approve`)
+      r = await req('POST', `/api/estimates/${eid}/convert`, { body: {} })
+      const jid = r.json?.job_id
+      await advance(jid, 'shipping')
+      r = await req('GET', `/api/jobs/${jid}`)
+      const d = String(r.json?.job?.ship_date ?? r.json?.ship_date ?? '')
+      chk(`a job shipped from ${label} carries a ship date`, d, '^\\d{4}-\\d{2}-\\d{2}$')
+      // Re-crossing at the pack bench must not move the day the box went out.
+      await advance(jid, 'complete')
+      r = await req('GET', `/api/jobs/${jid}`)
+      chk(`…and ${label} stamps it once, not on every crossing`, String(r.json?.job?.ship_date ?? r.json?.ship_date ?? ''), `^${d}$`)
+    }
+    await shipDoor('Floor Mode', (jid, stage) => req('POST', '/api/scan', { body: { job_id: jid, to_stage: stage } }))
+    await shipDoor('the v1 API', (jid, stage) => req('POST', `/api/v1/jobs/${jid}/stage`, { body: { stage } }))
   }
 
   /* ---------- the payout destination is not a settings field ----------

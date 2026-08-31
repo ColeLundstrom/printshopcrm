@@ -3706,13 +3706,7 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
   }
   const status = stage === 'complete' ? 'complete' : 'active'
   run('UPDATE jobs SET stage=?, sort_order=?, status=?, updated_at=? WHERE id=?', stage, order, status, now(), id)
-  // jobs.ship_date has existed since the v1 migrations and NOTHING has ever written it, so the
-  // packing slip's DATE cell fell back to the day the job was booked — seventy days stale on an
-  // ordinary order, printed on the document receiving signs. Stamped once, on the first crossing,
-  // so a card dragged back and forth does not keep rewriting the day the box went out.
-  if ((stage === 'shipping' || stage === 'complete') && !j.ship_date) {
-    run('UPDATE jobs SET ship_date = ? WHERE id = ?', todayIso(), id)
-  }
+  stampShipDate(j, stage)
   if (stage !== j.stage) {
     const label = STAGES.find((s) => s.key === stage).label
     // Every transition is recorded so the job's timeline is complete. Tagged `board`, not `scan`:
@@ -3724,6 +3718,28 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
   rtBroadcast('board', { job_id: id, stage, from: j.stage, actor: 'you' })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
+
+/**
+ * Stamp the day a job left the building — once, from whichever door moved it.
+ *
+ * jobs.ship_date has existed since the v1 migrations and for a long time NOTHING wrote it, so the
+ * packing slip's DATE cell fell back to the day the job was BOOKED — seventy days stale on an
+ * ordinary order, printed on the document receiving signs. The board drag was taught to stamp it
+ * and the other two doors were not, which is worse than the original bug: a shop that standardises
+ * on Floor Mode ("operators never type, they scan") got the stale date on every packing slip it
+ * ever printed, while the shop next door that drags cards got the right one, and no screen in the
+ * product can set the field by hand either way. Same omission on POST /api/v1/jobs/:id/stage, so
+ * an integrator advancing jobs over the API never stamped it at all.
+ *
+ * One function, called by all three, so the fourth writer cannot forget. Stamped only on the first
+ * crossing: a card dragged back and forth, or a ticket re-scanned at the pack bench, must not keep
+ * rewriting the day the box actually went out.
+ */
+function stampShipDate(job, stage) {
+  if (stage !== 'shipping' && stage !== 'complete') return
+  if (job.ship_date) return
+  run('UPDATE jobs SET ship_date = ? WHERE id = ?', todayIso(), job.id)
+}
 
 /* ---- Shop-floor scan loop ----
  * A phone camera reads the Code 128 on the work ticket → the job card appears → one tap
@@ -3782,6 +3798,7 @@ app.post('/api/scan', wrap((req, res) => {
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `Unknown stage: ${stage}` })
   if (stage !== j.stage) {
     run('UPDATE jobs SET stage=?, status=?, updated_at=? WHERE id=?', stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
+    stampShipDate(j, stage)
     run("INSERT INTO job_scans (job_id, from_stage, to_stage, actor, note, source, created_at) VALUES (?,?,?,?,?,'scan',?)",
       j.id, j.stage, stage, req.member?.name || 'floor', String(b.note || '').slice(0, 300), now())
     const label = STAGES.find((s) => s.key === stage).label
@@ -6193,6 +6210,7 @@ app.post('/api/v1/jobs/:id/stage', wrap((req, res) => {
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `stage must be one of: ${STAGE_KEYS.join(', ')}` })
   const from = j.stage
   run("UPDATE jobs SET stage = ?, status = ?, updated_at = ? WHERE id = ?", stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
+  stampShipDate(j, stage)
   const fresh = get('SELECT * FROM jobs WHERE id = ?', j.id)
   if (from !== stage) {
     logActivity('stage', `${j.job_number} moved to ${STAGES.find((s) => s.key === stage)?.label || stage} via API`, { contact_id: j.contact_id, job_id: j.id })
