@@ -23,10 +23,52 @@ set -euo pipefail
 TAG="${1:-}"
 [ -n "$TAG" ] || { echo "usage: $0 <tag>   e.g. $0 v1.1.0" >&2; echo "       $0 rollback" >&2; echo "       $0 activate <release-name>" >&2; exit 1; }
 
-APP_ROOT="${APP_ROOT:-/opt/printshopcrm}"
-DATA_ROOT="${DATA_ROOT:-/var/lib/printshopcrm}"
-SERVICE="${SERVICE:-printshopcrm}"
 SRC="${SRC:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+##
+## The defaults describe THE INSTALL THIS COPY OF THE SCRIPT BELONGS TO, not /opt/printshopcrm.
+##
+## They used to be three hardcoded constants, and every caller invokes this script the way ship.sh
+## and RELEASING.md print it —
+##
+##     ssh host "sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback"
+##
+## — with APP_ROOT and SERVICE unset in that shell. So the "roll the app back" command rolled back
+## /opt/printshopcrm: the marketing WEBSITE. Measured end to end on a simulated server, the full
+## recovery chain ship.sh prints after every deploy exited 0, printed "✓ is live" and "Restored 3
+## database(s) / 600 contacts" — while the app stayed on the bad release with 541 of its 600
+## contacts, and the website silently went back a version. Restarting then re-ran the migration
+## that ate the rows, and the loop reported success every time.
+##
+## A rollback that redeploys the bad code is worse than having no rollback command. Derive the
+## root by walking up from the script that is actually executing: it lives at
+## <root>/current/deploy/release.sh or <root>/releases/<tag>/deploy/release.sh, and the `cd` above
+## has already resolved `current` to the release it points at. The install root is the first
+## ancestor holding both `releases/` and `current`.
+##
+if [ -z "${APP_ROOT:-}" ]; then
+  _d="$SRC"
+  while [ "$_d" != "/" ] && [ -n "$_d" ]; do
+    _p="$(dirname "$_d")"
+    if [ -d "$_p/releases" ] && [ -e "$_p/current" ]; then APP_ROOT="$_p"; break; fi
+    _d="$_p"
+  done
+  unset _d _p
+fi
+APP_ROOT="${APP_ROOT:-/opt/printshopcrm}"
+# The unit is named after the root it serves — /opt/printshopcrm-pro is printshopcrm-pro — so a
+# derived APP_ROOT must carry its SERVICE with it or the rollback restarts the wrong daemon.
+SERVICE="${SERVICE:-$(basename "$APP_ROOT")}"
+# Multi-tenant installs keep control.db and tenants/ under the app root; the single-file layout
+# this script was first written for keeps them in /var/lib. Pick the one that is actually there,
+# so the snapshot and the restore hint both name the databases that hold the shop's work.
+if [ -z "${DATA_ROOT:-}" ]; then
+  if [ -d "$APP_ROOT/data" ]; then DATA_ROOT="$APP_ROOT/data"; else DATA_ROOT="/var/lib/printshopcrm"; fi
+fi
+
+# Say which install is about to be changed. Every defect above was invisible because the script
+# never named the thing it was acting on.
+echo "→ install   $APP_ROOT  (service $SERVICE, data $DATA_ROOT)" >&2
 
 ##
 ## Subcommands, because RELEASING.md and ship.sh have both been printing two of these for

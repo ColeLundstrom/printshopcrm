@@ -12460,6 +12460,133 @@ await t('node --check passes on every .mjs in the distribution', async () => {
   assert.equal(broken.length, 0, `these shipped files do not parse: ${broken.join(' | ')}`)
 })
 
+
+/* ---------- the rollback rolls back the app, not the marketing website (round 27) ----------
+ * deploy/release.sh defaulted APP_ROOT=/opt/printshopcrm, SERVICE=printshopcrm, and every caller
+ * invokes it the way ship.sh and RELEASING.md print it:
+ *
+ *     ssh host "sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback"
+ *
+ * APP_ROOT is unset in that shell — and `sudo` scrubs the environment anyway, so no caller COULD
+ * have passed it — so the app's rollback repointed the website. Rehearsed end to end on a
+ * simulated server, the whole recovery chain ship.sh prints after every deploy exited 0 and said
+ * "✓ is live" and "Restored 3 database(s) / 600 contacts", while the app stayed on the bad release
+ * with 541 of its 600 contacts and the website silently went back a version. The restart then re-ran
+ * the migration that ate the rows, and it reported success every time round.
+ *
+ * The fix derives the install from the path of the script that is executing, which is the only
+ * thing sudo cannot take away. This case therefore passes NO APP_ROOT, SERVICE, DATA_ROOT or SRC —
+ * that is the entire point, and it is why gate.mjs's older release.sh rehearsal (which passes all
+ * four explicitly, as ship.sh does over ssh) could not see this. */
+section('the rollback rolls back the app, not the marketing website')
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readlinkSync, existsSync, chmodSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const { execFileSync } = await import('node:child_process')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  // Two installs on one box, which is what pro.printshopcrm.com actually is: the app under
+  // /opt/printshopcrm-pro and the marketing site under /opt/printshopcrm.
+  const rehearse = () => {
+    const box = mkdtempSync(join(tmpdir(), 'psc-two-roots-'))
+    try {
+      const BIN = join(box, 'bin'); mkdirSync(BIN)
+      const stub = (n, body) => { const p = join(BIN, n); writeFileSync(p, `#!/usr/bin/env bash\n${body}\n`); chmodSync(p, 0o755) }
+      const LOG = join(box, 'systemctl.log')
+      stub('sudo', 'exec "$@"')
+      stub('systemctl', `echo "$@" >> '${LOG}'; exit 0`)
+      // BSD readlink (macOS, where this gate usually runs) has no -f. The shipped script needs the
+      // GNU behaviour, so model it rather than skipping the case on the developer's own machine.
+      stub('readlink', `
+if [ "$1" = "-f" ]; then
+  p="$2"; d=$(dirname "$p"); b=$(basename "$p")
+  [ -d "$d" ] || exit 1
+  if [ -L "$d/$b" ]; then t=$(/usr/bin/readlink "$d/$b"); case "$t" in /*) echo "$t";; *) echo "$(cd "$d" && pwd -P)/$t";; esac
+  else echo "$(cd "$d" && pwd -P)/$b"; fi
+  exit 0
+fi
+exec /usr/bin/readlink "$@"`)
+
+      const install = (name, rels) => {
+        const APP = join(box, 'opt', name)
+        for (const r of rels) mkdirSync(join(APP, 'releases', r, 'deploy'), { recursive: true })
+        mkdirSync(join(APP, 'data', 'backups'), { recursive: true })
+        execFileSync('ln', ['-sfn', join(APP, 'releases', rels[rels.length - 1]), join(APP, 'current')])
+        writeFileSync(join(APP, '.previous-release'), join(APP, 'releases', rels[0]))
+        return APP
+      }
+      const PRO = install('printshopcrm-pro', ['v1.0.0', 'v1.1.0'])
+      const WEB = install('printshopcrm', ['w0', 'w1'])
+      // The script under test goes into BOTH installs, because on a real box it does live in both.
+      for (const APP of [PRO, WEB]) for (const r of ['v1.0.0', 'v1.1.0', 'w0', 'w1']) {
+        const d = join(APP, 'releases', r, 'deploy')
+        if (existsSync(d)) execFileSync('cp', [join(root, 'deploy', 'release.sh'), join(d, 'release.sh')])
+      }
+
+      let out = '', code = 0
+      // Exactly the command RELEASING.md:81 and ship.sh's printed recovery tell an operator to run:
+      // through `current`, with nothing else set. No APP_ROOT, no SERVICE, no DATA_ROOT, no SRC.
+      const env = { PATH: `${BIN}:${process.env.PATH}`, HOME: box }
+      try {
+        out = execFileSync('bash', [join(PRO, 'current', 'deploy', 'release.sh'), 'rollback'],
+          { cwd: box, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env, timeout: 20000 })
+      } catch (e) {
+        if (e.killed || e.signal) { out = 'TIMED OUT — release.sh rollback should never do any work'; code = -1 }
+        else { out = `${e.stdout || ''}${e.stderr || ''}`; code = e.status }
+      }
+      const link = (APP) => { try { return readlinkSync(join(APP, 'current')) } catch { return '' } }
+      return { out, code, pro: link(PRO), web: link(WEB), PRO, WEB,
+        units: existsSync(LOG) ? readFileSync(LOG, 'utf8') : '' }
+    } finally { rmSync(box, { recursive: true, force: true }) }
+  }
+
+  const r = rehearse()
+
+  await t('`release.sh rollback`, run the way the docs print it, rolls the APP back', () => {
+    assert.equal(r.code, 0, `the documented rollback failed outright:\n${r.out}`)
+    assert.equal(r.pro, join(r.PRO, 'releases', 'v1.0.0'),
+      `the app is still on the release we were running away from — this is the whole point of the command:\n${r.out}`)
+  })
+
+  await t('…and does not touch the marketing website next door', () => {
+    assert.equal(r.web, join(r.WEB, 'releases', 'w1'),
+      `rolling back the app moved the WEBSITE — /opt/printshopcrm is a different install:\n${r.out}`)
+  })
+
+  await t('…and restarts the app\'s unit, not the website\'s', () => {
+    assert.match(r.units, /restart printshopcrm-pro/, `units restarted: ${JSON.stringify(r.units)}`)
+    assert.ok(!/restart printshopcrm$/m.test(r.units), `it restarted the website's unit: ${JSON.stringify(r.units)}`)
+  })
+
+  await t('…and points the operator at the snapshots of the install it just changed', () => {
+    // The closing line names "$DATA_ROOT/backups". Derived wrong, it sends someone recovering from
+    // a bad migration to a directory belonging to a different install, or to one that is not there.
+    assert.ok(r.out.includes(join(r.PRO, 'data', 'backups')),
+      `the rollback should name this install's snapshot directory, said:\n${r.out}`)
+  })
+
+  await t('…and the defaults are derived from the running script, which is what sudo cannot strip', () => {
+    // A source-level guard on the property, not the formatting: three bare hardcoded assignments
+    // are what made every one of the above wrong, and `sudo bash …` scrubs the environment, so
+    // "the caller should pass APP_ROOT" is not an available fix.
+    // Comments stripped: a prior round had an assertion match the word inside its own explanatory
+    // comment and pass on broken code.
+    const src = readFileSync(join(root, 'deploy', 'release.sh'), 'utf8')
+      .split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    const derive = src.search(/\[ -d "\$_p\/releases" \] && \[ -e "\$_p\/current" \]/)
+    const fallback = src.search(/^APP_ROOT="\$\{APP_ROOT:-\/opt\/printshopcrm\}"/m)
+    assert.ok(derive >= 0, 'release.sh must find its install root by walking up from the script that is executing')
+    // The hardcoded root stays as a last resort — a self-hoster running this out of a git checkout
+    // has no releases/ to walk up to. What must never come back is it being reached FIRST.
+    assert.ok(fallback < 0 || derive < fallback,
+      'the /opt/printshopcrm fallback is being taken before the install is derived — that is the original bug')
+    assert.match(src, /SERVICE="\$\{SERVICE:-\$\(basename "\$APP_ROOT"\)\}"/,
+      'the unit name has to follow the derived root, or the rollback restarts the wrong daemon')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
