@@ -3144,6 +3144,10 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   // invoice_id and is a separate question. Adoption binds the invoice and refreshes the schedule
   // — which is what converting decides — and does not overwrite the size split, because a shop may
   // have corrected it on the job while waiting for the customer, and that is the newer truth.
+  // Captured BEFORE the transaction stamps status='approved' below. Converting an estimate that
+  // the customer had already approved must not fire estimate.approved a second time — that is the
+  // automation engine and the webhook dispatcher both, and /approve guards it the same way.
+  const wasApproved = e.status === 'approved' || e.status === 'invoiced'
   const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL AND status = 'active' ORDER BY id LIMIT 1", id)
   const { invId, jobId, invNum, jobNum } = tx(() => {
     const invNum = nextInvoiceNumber()
@@ -3178,6 +3182,27 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
     return { invId, jobId, invNum, jobNum }
   })
   logActivity('invoice', `Estimate ${e.estimate_number} converted — invoice ${invNum}, ${prior ? `linked to the job already on the board, ${jobNum}` : `job ${jobNum}`}`, { contact_id: e.contact_id, job_id: jobId })
+  /*
+   * Convert is the THIRD writer of status='approved' and was the only one that told nobody.
+   *
+   * The two Approve doors — this file's own /api/estimates/:id/approve and the customer-facing
+   * /p/estimate/:id/approve — both fire estimate.approved and both syncPipeline(…, 'approved').
+   * Converting straight from a sent quote (Convert to invoice, which is the ordinary path when
+   * the customer says yes on the phone) did neither, so a $3,600 order came back invoiced with a
+   * job on the board while its opportunity sat at 'sent': the dashboard read open_value 3600 /
+   * won_value 0, and win_rate counted the deal in neither half of wonN/(wonN+lostN).
+   *
+   * And there was no way back. Pressing Approve afterwards hits the approve-once guard above,
+   * which answers {already:true} and re-fires nothing — so no route in the product could move
+   * that deal to won or deliver the documented webhook. That is the failure this project treats
+   * as the serious one.
+   *
+   * syncPipeline unconditionally: syncFromEstimate is idempotent by contract and "only ever
+   * advances", so it cannot walk a Won deal backwards. fireAuto only when this convert is what
+   * approved it, for the reason given at wasApproved above.
+   */
+  if (!wasApproved) fireAuto('estimate.approved', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })
+  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'approved')
   res.json({ ok: true, invoice_id: invId, job_id: jobId, invoice_number: invNum, job_number: jobNum, job_reused: !!prior })
 }))
 

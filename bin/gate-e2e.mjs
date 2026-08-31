@@ -789,6 +789,46 @@ try {
       String(r.text.includes('INV-1002')), '^false$')
   }
 
+  /* NOTE ON PLACEMENT: this block raises a real invoice, so it must stay BELOW the two assertions
+   * above, which name INV-1002 literally. Run earlier it takes that number, and the void tests
+   * then fail describing a document they never created. */
+
+  /* …and the same must hold for the door most shops actually use to close a deal.
+   *
+   * The customer says yes on the phone and someone presses Convert to invoice. That route is the
+   * THIRD writer of status='approved' — the shop's own /approve and the customer-facing
+   * /p/estimate/:id/approve are the other two, and both end in fireAuto('estimate.approved') plus
+   * syncPipeline(…, 'approved'). Convert did neither, so the order was invoiced with a job on the
+   * board while its opportunity sat where the quote had left it: counted as OPEN money that had
+   * in fact already been won, and absent from both halves of win_rate = wonN/(wonN+lostN).
+   *
+   * There was no way back either. Pressing Approve afterwards hits the approve-once guard, which
+   * answers {already:true} and re-fires nothing — so no screen in the product could move that
+   * deal to won. */
+  {
+    const cv = await req('POST', '/api/contacts', { body: { name: 'Convert Probe', email: 'convert-probe@e2e.test' } })
+    const cvCid = cv.json?.id
+    const cvEst = await req('POST', '/api/estimates', {
+      body: { contact_id: cvCid, items: [{ description: 'Tees', sizes: { S: 0, M: 100, L: 0, XL: 0 }, unit_price: 12, taxable: true }] },
+    })
+    const cvEstId = cvEst.json?.id
+    chk('a quote is written the way the shop writes one', String(cvEstId ?? ''), '^\\d+$')
+    const beforeCard = (await req('GET', '/api/pipeline')).json.columns.flatMap((c) => c.opps).find((o) => o.estimate_id === cvEstId)
+    chk('…and it is on the pipeline as an open deal', String(beforeCard && beforeCard.stage), '^(lead|quoted|sent)$')
+
+    const cvInv = await req('POST', `/api/estimates/${cvEstId}/convert`, { body: {} })
+    chk('…converting it raises the invoice', String(cvInv.json?.invoice_number || ''), '^INV-')
+
+    const cvCards = (await req('GET', '/api/pipeline')).json.columns.flatMap((c) => c.opps).filter((o) => o.estimate_id === cvEstId)
+    chk('…moving the ONE card it already had', String(cvCards.length), '^1$')
+    chk('…to won, because an invoiced order is a deal that closed', String(cvCards[0] && cvCards[0].stage), '^won$')
+
+    // The half that made it unrecoverable: the guard that stops a second Approve is correct, so
+    // if convert does not do this itself nothing ever will.
+    const again = await req('POST', `/api/estimates/${cvEstId}/approve`, { body: {} })
+    chk('…and pressing Approve afterwards is still the no-op it is meant to be', String(again.json?.already), '^true$')
+  }
+
   /* ---------- being locked out must not be a dead end ----------
    * The gate runs with no mail configured, which is also how most self-hosted installs start.
    * Forgot-password answered "a reset link is on its way", sent nothing, and logged the actual
