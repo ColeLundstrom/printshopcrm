@@ -13235,6 +13235,85 @@ section('a settings save cannot delete a rate whose box was not on screen')
   })
 }
 
+
+/* ---------- a customer's own name does not bill them 50% more (round 27) ----------
+ * The rush surcharge was a bare `\b(rush\w*|asap|urgent\w*|hurr\w*)\b` tested against the WHOLE
+ * pasted message, so any occurrence of those letters anywhere in it billed +50% and printed
+ * "RUSH +50%." on the line the customer signs. Customers are called things:
+ *
+ *   "Please quote 300 tees for the Hurricanes booster club."   hurr\w*   → a school's mascot
+ *   "Riverside Urgent Care staff shirts, 300 needed."          urgent\w* → an account name
+ *   "Athletics, Rush County High School"                       rush\w*   → a signature block
+ *
+ * Measured on 300 tees: $4,582.83 against $3,063.55. $1,519.28 taken from someone who never asked
+ * for anything, on every automated quoting surface — /api/autopilot, the Slack quick-quote and
+ * quickQuote itself.
+ *
+ * The rule that replaces it is one distinction: a rush word written as a NAME is Title Case and
+ * away from the start of its sentence. People asking for a rush write it lower case, shout it, or
+ * open the sentence with it. No vocabulary list of team names required. */
+section('a customer\'s mascot is not a rush order')
+{
+  const { parseIntakeHeuristic } = await import('../lib/ai.mjs')
+  const { priceIntake } = await import('../lib/quickquote.mjs')
+  const dbm = await import('../lib/db.mjs')
+
+  const CASES = [
+    // Names. None of these asked for anything.
+    ['Please quote 300 tees for the Hurricanes booster club.', false],
+    ['Riverside Urgent Care staff shirts, 300 tees needed.', false],
+    ['Team Athletics, Rush County High School, 300 tees', false],
+    ['300 tees for Hurley Surf Co', false],
+    ['300 brushed cotton tees', false],
+    // Real requests. Every one of these must still bill the surcharge.
+    ['we need these rushed, 3 day turnaround, 300 tees', true],
+    ['RUSH ORDER - 300 tees', true],
+    ['Rush order please, 300 tees', true],
+    ['300 tees, we need them ASAP', true],
+    ['this is urgent, 300 tees', true],
+    ['300 tees needed tomorrow', true],
+    ['300 tees, need them by friday', true],
+    // The decline, which an earlier round fixed and which must not regress.
+    ['no rush at all, 300 tees', false],
+    ['there is no hurry, 300 tees', false],
+    ['not urgent, 300 tees', false],
+    // A name AND a request in the same message is still a request.
+    ['Quote for the Hurricanes. Also please rush it, 300 tees.', true],
+    // …and a name with a decline is neither.
+    ['Hi, we are the Hurricanes. No rush. 300 tees', false],
+  ]
+  for (const [text, expected] of CASES) {
+    await t(`${expected ? 'rush' : 'not a rush'}: ${JSON.stringify(text)}`, () => {
+      assert.equal(parseIntakeHeuristic(text).rush, expected)
+    })
+  }
+
+  await t('and it is measured in dollars, on the line the customer signs', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      const settings = dbm.getSettings()
+      const priced = (text) => priceIntake(parseIntakeHeuristic(text), settings, { taxRate: 0 })
+      const mascot = priced('Please quote 300 tees for the Hurricanes booster club.')
+      const plain = priced('Please quote 300 tees for the booster club.')
+      assert.equal(mascot.totals.total, plain.totals.total,
+        `naming the team cost this customer ${round(mascot.totals.total - plain.totals.total)} more than not naming it`)
+      // …and the badge is not printed on their line either.
+      const note = JSON.stringify(mascot)
+      assert.ok(!/RUSH \+\d+%/.test(note), 'the estimate still prints a RUSH badge the customer never asked for')
+      // Precondition: a real rush DOES still cost more, or this case would pass on a fix that
+      // simply switched the surcharge off.
+      const real = priced('we need these rushed, 300 tees')
+      assert.ok(real.totals.total > plain.totals.total,
+        'the surcharge stopped applying at all — that is a different bug, not a fix')
+    } finally { dbm.setDefaultDb(prev) }
+    function round(n) { return Math.round(n * 100) / 100 }
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
