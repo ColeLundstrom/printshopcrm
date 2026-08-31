@@ -37,6 +37,13 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 [ -n "$APP_HOST" ] || die "set APP_HOST=user@host"
 [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || die "tag should look like v1.2.3"
 
+# package.json said 1.0.0 for 28 releases, and nothing anywhere read it. It is the version /health
+# now reports, so a stale one is a release that misreports itself for ever. Couple it to the tag
+# here rather than rewriting the file mid-deploy: the operator bumps it, this refuses if they did
+# not, and no step of the release creates a commit behind their back.
+PKG_VERSION="$(node -p "require('./package.json').version" 2>/dev/null || echo '')"
+[ "$PKG_VERSION" = "${TAG#v}" ] || die "package.json says ${PKG_VERSION:-nothing} but you are shipping $TAG — set \"version\": \"${TAG#v}\" in package.json and commit it"
+
 SSH=(ssh); [ -n "$SSH_KEY" ] && SSH=(ssh -i "$SSH_KEY")
 RSYNC_E="ssh"; [ -n "$SSH_KEY" ] && RSYNC_E="ssh -i $SSH_KEY"
 
@@ -304,6 +311,37 @@ echo "  live and answering /health"
 
 # ---------------------------------------------------------------- 5. prove it
 step "Verifying the server runs exactly this source"
+# Ask the RUNNING PROCESS what it is, before comparing files on disk.
+#
+# A deploy interrupted between the symlink flip and the service restart leaves `current` pointing
+# at the new release while the OLD process keeps serving — and every check in this repo agreed it
+# had worked: verify-sync said "in sync" (it checksums the directory `current` resolves to),
+# check-drift said "GitHub, the app server and the website agree" and exited 0, `is-active` said
+# active, and /health said {"ok":true}. Four green checks, none of which asked the process. The
+# migration then ran unattended at the next restart, hours later, and destroyed 59 rows.
+#
+# /health reports the directory it is executing out of, which a symlink flip cannot change under a
+# running process. If that is not the release we just put there, the restart did not take.
+#
+# ?strict=1, like every other health call this script makes. It runs AFTER the loop above has
+# already had a strict 200, so it costs nothing — and two gate rules exist precisely to stop a
+# plain /health poll creeping back into the deploy path, where a release that bricked one shop
+# once shipped green.
+step "Asking the running process which release it is"
+SERVED_REL="$("${SSH[@]}" "$APP_HOST" "
+  PORT=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PORT=//p' | tail -1)
+  [ -n \"\$PORT\" ] || PORT=\$(sudo sed -n 's/^[[:space:]]*PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
+  [ -n \"\$PORT\" ] || PORT=3333
+  curl -fsS --max-time 5 \"http://127.0.0.1:\$PORT/health?strict=1\" 2>/dev/null" 2>/dev/null \
+  | sed -n 's/.*\"release\":\"\([^\"]*\)\".*/\1/p')"
+if [ "$SERVED_REL" != "$REL_NAME" ]; then
+  echo "  the process is serving '${SERVED_REL:-an unknown release}', not '$REL_NAME' — the restart did not take" >&2
+  "${SSH[@]}" "$APP_HOST" "sudo systemctl restart '$SERVICE'" || true
+  sleep 3
+  die "server is not running the release that was just deployed. Nothing was rolled back automatically: the code on disk is $REL_NAME. Restart it and re-check, or roll back with: ssh $APP_HOST 'sudo bash $APP_ROOT/current/deploy/release.sh rollback'"
+fi
+echo "  serving $SERVED_REL"
+
 bash deploy/verify-sync.sh "$APP_HOST" "$APP_ROOT/current" ${SSH_KEY:+"$SSH_KEY"} \
   || die "server does not match the tag — investigate before announcing"
 

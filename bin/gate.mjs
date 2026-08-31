@@ -13416,6 +13416,89 @@ section('previewing the receptionist does not create a customer, a deal or an es
   })
 }
 
+
+/* ---------- which code is actually answering (round 27) ----------
+ * A deploy interrupted between the symlink flip and the service restart leaves `current` pointing
+ * at the new release while the OLD process keeps serving. Rehearsed on a simulated server, every
+ * check in this repo agreed it had worked: verify-sync.sh said "in sync" (it checksums the
+ * directory `current` resolves to), check-drift.sh said "GitHub, the app server and the website
+ * agree" and exited 0, `systemctl is-active` said active, and /health said {"ok":true}. Four green
+ * checks, none of which asked the RUNNING PROCESS what it was. The migration then fired unattended
+ * at the next restart, hours later, and took 59 of a shop's 600 contacts.
+ *
+ * /health returned a bare {"ok":true} for 28 releases and package.json still said 1.0.0, so there
+ * was nothing to ask it WITH. */
+section('the app can say which release is answering')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  await t('package.json carries a real version, not the one it shipped 28 releases with', () => {
+    const v = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+    assert.match(String(v), /^\d+\.\d+\.\d+$/, `package.json version is ${JSON.stringify(v)}`)
+    assert.notEqual(v, '1.0.0', 'package.json has gone back to the placeholder nothing ever read')
+  })
+
+  await t('/health reports the version, the release and when the process started', () => {
+    const src = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+    const i = src.indexOf('const BUILD_ID = ')
+    assert.ok(i > 0, 'server.mjs must publish a build identity')
+    const b = src.slice(i, i + 700)
+    for (const key of ['version', 'release', 'started_at']) {
+      assert.ok(new RegExp(`\\b${key}\\b`).test(b), `/health must carry ${key}`)
+    }
+    // The release has to come from where the process is EXECUTING, not from the symlink or from a
+    // file that a flip would have already updated — that is the entire point.
+    assert.match(b, /basename\(dir\)/, 'the release name must be the directory this process is running out of')
+    assert.match(b, /fileURLToPath\(import\.meta\.url\)/, '…resolved from the running module, not from cwd')
+  })
+
+  await t('…on the 503 body too, because that is the one you need it on', () => {
+    const src = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+    const i = src.indexOf("app.get('/health'")
+    // The handler is mostly long explanatory comments — a narrow window stops short of the
+    // responses it is asking about. Read to the end of the route.
+    const body = src.slice(i, src.indexOf('\n})', i))
+    assert.ok(body.length > 1000 && body.includes('res.json'), 'the window must actually cover the /health responses')
+    const n = (body.match(/\.\.\.BUILD_ID/g) || []).length
+    assert.ok(n >= 3, `every /health answer must carry the build identity, found ${n} of 3 (ok, degraded, strict-503)`)
+  })
+
+  await t('ship.sh asks the process, and refuses if it is serving something else', () => {
+    const src = readFileSync(join(ROOT, 'deploy', 'ship.sh'), 'utf8')
+      .split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    assert.match(src, /SERVED_REL=/, 'ship.sh must read the release the process reports')
+    assert.match(src, /"\$SERVED_REL" != "\$REL_NAME"/, '…and compare it to the release it just deployed')
+    assert.match(src, /is not running the release that was just deployed/,
+      '…and stop, saying so, rather than announcing a deploy that did not take')
+    // It has to run BEFORE verify-sync, which is the check that was giving the false green.
+    const ask = src.indexOf('SERVED_REL=')
+    const sync = src.indexOf('verify-sync.sh')
+    assert.ok(ask >= 0 && sync > ask, 'ask the process before checksumming the directory it may not be running')
+  })
+
+  await t('…and refuses a tag that does not match package.json', () => {
+    const src = readFileSync(join(ROOT, 'deploy', 'ship.sh'), 'utf8')
+      .split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    assert.match(src, /PKG_VERSION/, 'ship.sh must check package.json against the tag')
+    assert.match(src, /\$\{TAG#v\}/, '…by comparing it with the tag being shipped')
+    // Deliberately a refusal rather than a rewrite: no step of a release may create a commit
+    // behind the operator's back.
+    assert.ok(!/npm version|git commit/.test(src), 'ship.sh must not rewrite and commit the version itself')
+  })
+
+  await t('a deleted shop cannot hold the deploy gate down', () => {
+    const src = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+    const i = src.indexOf("app.get('/health'")
+    const body = src.slice(i, src.indexOf('\n})', i))
+    assert.match(body, /activeTenantSlugs\(\)/,
+      '/health must report broken shops that are still shops — a slug nobody can fix keeps every deploy rolling back')
+    assert.match(body, /live\.has\(slug\)/, '…by filtering the reported list against the live registry')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

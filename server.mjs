@@ -2,7 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import crypto from 'node:crypto'
 import { mkdirSync, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
-import { join, dirname, extname } from 'node:path'
+import { join, dirname, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzip } from 'node:zlib'
 import {
@@ -1086,6 +1086,28 @@ app.use(litePlanGate)
  * this endpoint, so a health check that cannot fail is a rollback that never fires. Touch the
  * database: a locked, missing or closed handle is exactly the failure a restart needs to catch.
  */
+/**
+ * Which code is actually answering.
+ *
+ * /health returned a bare {"ok":true} through 28 releases, and package.json still said 1.0.0. That
+ * is not cosmetic: a deploy interrupted between the symlink flip and the service restart leaves
+ * `current` pointing at the new release while the OLD process keeps serving, and every check in
+ * the product agreed it had worked — verify-sync.sh said "in sync", check-drift.sh said "GitHub,
+ * the app server and the website agree" and exited 0, `systemctl is-active` said active, and
+ * /health said ok. Four green checks, none of which asked the RUNNING PROCESS what it was. The
+ * migration then fired unattended at the next restart, hours later, and took 59 rows with it.
+ *
+ * `release` is read from the directory this file is executing out of, which is the one fact a
+ * stale process cannot lie about — a symlink flip does not move a running process. ship.sh now
+ * compares it against the release it just deployed and refuses to call the deploy done otherwise.
+ */
+const BUILD_ID = (() => {
+  const dir = dirname(fileURLToPath(import.meta.url))
+  let version = ''
+  try { version = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version || '' } catch { /* not fatal */ }
+  return { version, release: basename(dir), started_at: new Date().toISOString() }
+})()
+
 app.get('/health', (req, res) => {
   // A WRITE probe, not `SELECT 1`. On a full disk reads keep working while every write fails, so
   // the old read-only check answered {"ok":true} 200 while the shop could not save anything —
@@ -1115,13 +1137,17 @@ app.get('/health', (req, res) => {
   // what deploy/ship.sh polls. Nothing about openTenantDb's refusal changes: a shop whose database
   // is missing still gets a 503 with the restore command on every one of its own requests, which
   // is the half that protects its books.
-  const broken = AUTH_ENABLED ? [...brokenTenants.keys()] : []
+  // A slug that is no longer an active shop cannot hold the deploy gate down. deleteTenantFully
+  // clears its own entry now, but /health is the thing that stops a release, so it does not take
+  // that on trust: anything not in the live registry is filtered out here as well.
+  const live = AUTH_ENABLED ? new Set(activeTenantSlugs()) : new Set()
+  const broken = AUTH_ENABLED ? [...brokenTenants.keys()].filter((slug) => live.has(slug)) : []
   if (broken.length && String(req.query.strict || '') === '1') {
-    return res.status(503).json({ ok: false, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20) })
+    return res.status(503).json({ ok: false, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20), ...BUILD_ID })
   }
   res.json(broken.length
-    ? { ok: true, degraded: true, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20) }
-    : { ok: true })
+    ? { ok: true, degraded: true, error: `${broken.length} shop database(s) unavailable`, shops: broken.slice(0, 20), ...BUILD_ID }
+    : { ok: true, ...BUILD_ID })
 })
 
 /**
