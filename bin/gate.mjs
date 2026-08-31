@@ -5761,6 +5761,9 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
   const guard = src.indexOf('const SHADOWED_BY_A_ROUTE')
   assert.ok(guard > 0, 'the shadow-spelling guard is gone — /UPLOADS/f serves another shop\'s art off disk')
   const rendered = src.indexOf("app.get(['/index.html', '/auth.html']")
+  const docsRoute = src.indexOf("app.get('/docs-api.html'")
+  assert.ok(docsRoute > 0, 'the API reference must have a handler, or the guard below 404s a real page')
+  assert.ok(docsRoute < src.indexOf('const SHADOWED_BY_A_ROUTE'), 'and it must sit above the guard')
   const owned = src.indexOf("app.get('/uploads/:file'")
   const stat = src.indexOf('app.use(express.static(PUBLIC')
   assert.ok(owned > 0 && rendered > 0 && stat > 0, 'the three landmarks should still be there')
@@ -5772,11 +5775,16 @@ await t('the guard exists, refuses, and sits between the handlers and express.st
   assert.ok(re[1].endsWith('i'), 'a case-SENSITIVE guard is the bug it was written to fix')
   // eslint-disable-next-line no-new-func — the gate reads the shipped literal rather than a copy.
   const rx = new Function(`return ${re[1]}`)()
-  for (const p of ['/UPLOADS/f.png', '/Uploads/f.png', '/uploadS/f.png', '/uploads/f.png', '/Index.html', '/AUTH.HTML', '/auth.html']) {
+  // /docs-api.html joined this list when it got a renderer of its own: it is a complete page under
+  // public/ that express.static was answering off disk with no AGPL §13 offer on it, and a
+  // case-insensitive filesystem answering /Docs-Api.html would skip the renderer and the offer
+  // with it — the same bug as /Index.html, with the same licence attached.
+  for (const p of ['/UPLOADS/f.png', '/Uploads/f.png', '/uploadS/f.png', '/uploads/f.png', '/Index.html', '/AUTH.HTML', '/auth.html',
+    '/docs-api.html', '/Docs-Api.html', '/DOCS-API.HTML']) {
     assert.ok(rx.test(p), `${p} must be recognised as shadowing a handler`)
   }
   // …and it must not swallow the rest of public/, which has no handler and must still be served.
-  for (const p of ['/css/app.css', '/js/core.js', '/docs-api.html', '/manifest.json', '/embed/gangsheet.js', '/icon.svg', '/sw.js']) {
+  for (const p of ['/css/app.css', '/js/core.js', '/manifest.json', '/embed/gangsheet.js', '/icon.svg', '/sw.js']) {
     assert.ok(!rx.test(p), `${p} has no handler above the static mount — refusing it takes the app down`)
   }
 })
