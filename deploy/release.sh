@@ -90,6 +90,8 @@ list_releases() { ls -1dt "$APP_ROOT/releases/"*/ 2>/dev/null | head -8 | sed 's
 
 case "$TAG" in
   rollback)
+    NO_RESTART=0
+    for a in "$@"; do [ "$a" = "--no-restart" ] && NO_RESTART=1; done
     PREV=$(cat "$APP_ROOT/.previous-release" 2>/dev/null || true)
     # -L first: GNU readlink -f prints a path whose LAST component is missing and exits 0, so on a
     # box with no `current` yet this came back as the link itself and we would have recorded a
@@ -114,6 +116,20 @@ case "$TAG" in
     sudo ln -sfn "$PREV" "$APP_ROOT/current"
     # Record where we came FROM, so a second rollback works instead of being a no-op.
     [ -n "$CUR" ] && echo "$CUR" | sudo tee "$APP_ROOT/.previous-release" >/dev/null
+    # --no-restart: the caller is managing the service around us.
+    #
+    # ship.sh prints a recovery chain after every deploy — stop the service, roll back, restore the
+    # pre-deploy snapshot, start the service — and this restart sat in the middle of it, undoing
+    # the stop one command earlier. The restore that came next then ran against a service that was
+    # up with every shop database open, restore.mjs refused it (correctly), and `&&` meant the
+    # final start never ran either. So the one instruction an operator has when a migration eats
+    # data restored nothing, and re-running it — the natural response — rolls FORWARD onto the bad
+    # release and re-runs the migration.
+    if [ "$NO_RESTART" = "1" ]; then
+      echo "  ✓ $PREV is now current. The service was NOT restarted (--no-restart)."
+      echo "    Start it when you are done: sudo systemctl start $SERVICE"
+      exit 0
+    fi
     # NOT bare: `set -e` is on, and a unit that fails to START returns non-zero — which would end
     # the script here, before the line that tells the operator what they are actually looking at.
     sudo systemctl restart "$SERVICE" || echo "  !  systemctl restart exited non-zero — the service may be down; check: systemctl status $SERVICE"

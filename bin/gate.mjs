@@ -5417,6 +5417,95 @@ exec /usr/bin/readlink "$@"`)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
+/* ---------- the recovery ship.sh prints after every deploy has to actually recover ----------
+ * The chain, printed on every single deploy and repeated in RELEASING.md, is:
+ *
+ *   sudo systemctl stop SERVICE \
+ *     && sudo bash APP_ROOT/current/deploy/release.sh rollback \
+ *     && SNAP_AS node APP_ROOT/current/bin/restore.mjs SNAP --data-root … --yes \
+ *     && sudo systemctl start SERVICE
+ *
+ * Step 2 ends in `sudo systemctl restart "$SERVICE"`. So the stop in step 1 is undone by the very
+ * next command, and step 3 then runs a restore against a service that is up with every shop
+ * database open — which restore.mjs refuses, correctly. `&&` means step 4 never runs either.
+ *
+ * This is the one instruction a shop owner or operator has when a migration eats data, and it is
+ * printed at exactly the moment they are least able to improvise. Worse, the natural response to
+ * it failing is to run the whole thing again — and re-running rolls FORWARD onto the bad release
+ * and re-runs the migration.
+ *
+ * The rollback itself is right; only its restart is wrong for this caller, who is managing the
+ * service around it. So the flag goes on release.sh and the printed chain uses it, rather than
+ * the chain open-coding an `ln -sfn` that would skip .previous-release bookkeeping. */
+section('the recovery chain printed after a deploy can actually be run')
+await t('release.sh rollback --no-restart flips the release without bringing the service back up', async () => {
+  const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readlinkSync, existsSync, chmodSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-rollback-'))
+  try {
+    const APP_ROOT = join(dir, 'app'); const BIN = join(dir, 'bin'); const LOG = join(dir, 'systemctl.log')
+    mkdirSync(join(APP_ROOT, 'releases', 'v1.0.0'), { recursive: true })
+    mkdirSync(join(APP_ROOT, 'releases', 'v1.0.1'), { recursive: true })
+    mkdirSync(BIN, { recursive: true })
+    execFileSync('ln', ['-sfn', join(APP_ROOT, 'releases', 'v1.0.1'), join(APP_ROOT, 'current')])
+    writeFileSync(join(APP_ROOT, '.previous-release'), `${join(APP_ROOT, 'releases', 'v1.0.0')}\n`)
+    const stub = (name, body) => { const f = join(BIN, name); writeFileSync(f, `#!/bin/sh\n${body}\n`); chmodSync(f, 0o755) }
+    stub('sudo', 'exec "$@"')
+    // Record every systemctl verb, so the assertion is about what the script DID, not what it says.
+    stub('systemctl', `echo "$@" >> ${JSON.stringify(LOG)}; exit 0`)
+    const runRollback = (args) => {
+      try {
+        return execFileSync('bash', [join(root, 'deploy', 'release.sh'), ...args], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, PATH: `${BIN}:${process.env.PATH}`, APP_ROOT, DATA_ROOT: join(dir, 'data'), SERVICE: 'psc-test' },
+        })
+      } catch (e) { return `${e.stdout || ''}${e.stderr || ''}` }
+    }
+    runRollback(['rollback', '--no-restart'])
+    const log = existsSync(LOG) ? readFileSync(LOG, 'utf8') : ''
+    assert.ok(!/restart|start/.test(log),
+      `rollback --no-restart still brought the service up (systemctl saw: ${log.trim() || 'nothing'}) — the restore that follows it in the printed chain will refuse, because every database is open`)
+    assert.equal(readlinkSync(join(APP_ROOT, 'current')), join(APP_ROOT, 'releases', 'v1.0.0'),
+      '…and it still has to actually roll the code back')
+    // realpath both sides: the script records `readlink -f`, and on macOS the tmpdir arrives as
+    // /var/... while readlink canonicalises it to /private/var/... — a harness artifact, not a
+    // difference the product would ever produce on the Linux box this ships to.
+    const { realpathSync } = await import('node:fs')
+    assert.equal(realpathSync(readFileSync(join(APP_ROOT, '.previous-release'), 'utf8').trim()),
+      realpathSync(join(APP_ROOT, 'releases', 'v1.0.1')),
+      '…and still record where it came from, or a second rollback is a silent no-op')
+
+    // The plain form is unchanged: an operator rolling back on its own still gets the restart.
+    writeFileSync(LOG, '')
+    writeFileSync(join(APP_ROOT, '.previous-release'), `${join(APP_ROOT, 'releases', 'v1.0.1')}\n`)
+    runRollback(['rollback'])
+    assert.match(readFileSync(LOG, 'utf8'), /restart/,
+      'a bare `release.sh rollback` must still restart the service — that is the whole command for an operator using it alone')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+await t('…and the chain ship.sh prints uses it, so the restore is not run against an open database', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const f of ['deploy/ship.sh', 'RELEASING.md']) {
+    const text = readFileSync(join(root, f), 'utf8')
+    // Only where a restore FOLLOWS the rollback in one chain. A standalone rollback is fine.
+    const chains = text.split('\n').join('\n')
+    const at = chains.indexOf('release.sh rollback')
+    if (at < 0) continue
+    const window = chains.slice(at, at + 500)
+    if (!/restore\.mjs/.test(window)) continue
+    assert.match(window, /rollback --no-restart/,
+      `${f}: this chain stops the service, then runs a rollback that restarts it, then runs restore.mjs against every open database — restore refuses and the && chain stops there`)
+  }
+})
+
 await t('a deploy does not delete the artwork a restore set aside', async () => {
   // release.sh pruned `$DATA_ROOT/backups/pre-*` to the five newest. bin/restore.mjs writes its
   // safety copy to `$DATA_ROOT/backups/pre-restore-<stamp>` in that same directory — and puts the

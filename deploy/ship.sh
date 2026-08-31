@@ -238,7 +238,7 @@ rsync -a -e "$RSYNC_E" \
     # "attempt to write a readonly database" on every save is not a recovery.
     echo \"  if a migration eats data, put it back with:\"
     echo \"    sudo systemctl stop $SERVICE \\\\\"
-    echo \"      && sudo bash $APP_ROOT/current/deploy/release.sh rollback \\\\\"
+    echo \"      && sudo bash $APP_ROOT/current/deploy/release.sh rollback --no-restart \\\\\"
     echo \"      && \$SNAP_AS node $APP_ROOT/current/bin/restore.mjs '\$SNAP' --data-root '\$SNAP_DATA' --yes \\\\\"
     echo \"      && sudo systemctl start $SERVICE\"
   fi

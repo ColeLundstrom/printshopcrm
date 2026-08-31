@@ -83,7 +83,10 @@ ssh user@host "sudo bash /opt/printshopcrm/current/deploy/release.sh rollback"  
 ```
 
 `release.sh rollback` records where it came from, so running it twice takes you back and then
-forward again rather than doing nothing. To go back further than one release:
+forward again rather than doing nothing. It restarts the service — pass `--no-restart` when you
+are managing the service yourself, as the data-restore chain below does: without it the rollback
+brings the service straight back up, and the restore that follows refuses because every shop
+database is open again. To go back further than one release:
 
 ```bash
 ssh user@host "ls -1dt /opt/printshopcrm-pro/releases/*/ | head"
@@ -96,7 +99,7 @@ snapshot path on every deploy; that is what puts the data back:
 
 ```bash
 ssh user@host "sudo systemctl stop printshopcrm-pro \
-  && sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback \
+  && sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback --no-restart \
   && sudo -u printshopcrm node /opt/printshopcrm-pro/current/bin/restore.mjs <snapshot-dir> --data-root /var/lib/printshopcrm --yes \
   && sudo systemctl start printshopcrm-pro"
 ```
