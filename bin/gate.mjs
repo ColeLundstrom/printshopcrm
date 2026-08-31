@@ -14278,6 +14278,51 @@ section('no two servers in the e2e suite are given the same port')
   })
 }
 
+
+/* ---------- a documented install that cannot start is not documentation ---------- */
+section('every doc that copies .env.example first makes the directory it points at')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  await t('README and INSTALL create PSC_DB’s directory before they copy .env.example', () => {
+    /*
+     * README is the front door, and the first thing a shop owner who decides to self-host copies
+     * is its six-line "short version for a Linux box". Run verbatim in a clean clone as a normal
+     * user, it exits 7 and nothing ever listens:
+     *
+     *   PrintShopCRM could not create its data directory: /var/lib/printshopcrm
+     *   this user does not have permission to write there.
+     *
+     * The same clone with NO .env starts fine — the failure is introduced BY the documented
+     * `cp .env.example .env` line, because .env.example sets PSC_DB=/var/lib/printshopcrm/... and
+     * README never creates it. INSTALL.md's production path is fine: its step 4 makes and chowns
+     * that directory before step 5 copies the file. README's short version dropped that step.
+     *
+     * And the failure's own suggested recovery (PSC_DB=./data/printshop.db) is the exact layout
+     * the surrounding prose tells you never to use, because an upgrade that replaces the checkout
+     * then eats the database. So the documented happy path fails, and its advice on failing walks
+     * the owner into the data-loss configuration.
+     */
+    const env = readFileSync(join(ROOT, '.env.example'), 'utf8')
+    const m = /^PSC_DB=(\S+)/m.exec(env)
+    assert.ok(m, '.env.example no longer sets PSC_DB — this rule needs to know what it points at')
+    const dbDir = m[1].slice(0, m[1].lastIndexOf('/'))
+    assert.ok(dbDir.startsWith('/'), `PSC_DB in .env.example is relative (${m[1]}); this rule is about the absolute case`)
+
+    for (const doc of ['README.md', 'INSTALL.md']) {
+      const lines = readFileSync(join(ROOT, doc), 'utf8').split('\n')
+      const cp = lines.findIndex((l) => /cp\s+\.env\.example\s+\.env/.test(l))
+      if (cp < 0) continue                      // a doc that never copies it cannot have this bug
+      const mk = lines.findIndex((l) => l.includes('mkdir') && l.includes(dbDir))
+      assert.ok(mk >= 0, `${doc} tells the reader to copy .env.example, which sets PSC_DB=${m[1]}, and never creates ${dbDir} — the server exits before it listens`)
+      assert.ok(mk < cp, `${doc} creates ${dbDir} at line ${mk + 1}, AFTER copying .env.example at line ${cp + 1}`)
+    }
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

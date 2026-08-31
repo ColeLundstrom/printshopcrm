@@ -211,6 +211,13 @@ The short version for a Linux box:
 git clone https://github.com/ColeLundstrom/printshopcrm.git /opt/printshopcrm
 cd /opt/printshopcrm
 npm ci --omit=dev
+
+# .env.example points PSC_DB at /var/lib/printshopcrm, deliberately — OUTSIDE the checkout, so an
+# upgrade that replaces the code cannot touch your data. Make it first, or the next line copies in
+# a path this user cannot write and the server exits before it listens.
+sudo mkdir -p /var/lib/printshopcrm/uploads
+sudo chown -R "$USER":"$USER" /var/lib/printshopcrm   # or the service account, if you made one
+
 cp .env.example .env        # then edit it — PSC_SECRET is required
 chmod 600 .env              # it holds PSC_SECRET and every API key; cp leaves it world-readable
 npm start                   # reads .env; `node server.mjs` does NOT
