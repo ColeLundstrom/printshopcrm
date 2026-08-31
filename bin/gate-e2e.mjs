@@ -3715,6 +3715,26 @@ try {
     chk('…and that image really loads for them', String(shown.status), '^200$')
     chk('…showing the artwork', String(/UNRELEASED-LOGO/.test(await shown.text())), '^true$')
 
+    /* …and so does a customer who happens to be signed in to a DIFFERENT shop.
+     *
+     * The two ownership tests were written as an either/or — `if (!AUTH_ENABLED || req.tenant) …
+     * else <token path>` — so holding ANY session disabled the capability branch entirely. On a
+     * multi-tenant install that is the ordinary case, not an exotic one: contract printing, a shop
+     * that buys blanks or DTF transfers from another shop on the same platform, an owner who runs
+     * two shops, the operator's own tenant. Shop A emails a proof for approval; the recipient is
+     * at their desk signed in to their own shop; they click the link, the approval page loads at
+     * 200, and every image on it 404s — the artwork they are being asked to approve and the shop's
+     * letterhead both broken, with no message and nothing they can do about it. The same applies
+     * to the logo on /p/pay and /p/estimate.
+     *
+     * A token is a capability the shop minted and handed out. Holding an unrelated session is not
+     * a reason to refuse it, so the two checks are additive rather than exclusive. */
+    const neighbourViewing = await fetch(`${BASE}${imgSrc.replace(/&amp;/g, '&')}`, { headers: { Cookie: bCookie } })
+    chk('a customer signed in to another shop still sees the proof they were sent', String(neighbourViewing.status), '^200$')
+    chk('…with the artwork on it', String(/UNRELEASED-LOGO/.test(await neighbourViewing.text())), '^true$')
+    // …and that must not have widened anything: the same neighbour with no token is still refused.
+    chk('…while the bare path is still closed to them', String((await fetch(`${BASE}/uploads/${uart.filename}`, { headers: { Cookie: bCookie } })).status), '^404$')
+
     // A token minted for one shop must not open another shop's file, and a token for one file
     // must not open the file next to it.
     const tok = (/[?&]t=([a-f0-9]+)/.exec(imgSrc) || [])[1] || ''

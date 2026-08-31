@@ -8395,12 +8395,27 @@ app.get('/uploads/:file', (req, res) => {
       return String(getSettings()?.shop_logo || '') === f
     } catch { return false }
   }
+  // Two ways to satisfy one question, not two mutually exclusive branches.
+  //
+  // These were written as `if (!AUTH_ENABLED || req.tenant) … else <token path>`, so holding ANY
+  // session disabled the capability branch entirely. On a multi-tenant install that is the
+  // ordinary case rather than an exotic one: contract printing, a shop buying blanks or transfers
+  // from another shop on the same platform, an owner running two shops, the operator's own tenant.
+  // Shop A emails a proof for approval, the recipient is at their desk signed in to their own
+  // shop, they click the link — the approval page loads at 200 and every image on it 404s. The
+  // artwork they are being asked to approve and the shop's letterhead, both broken, with no
+  // message and nothing they can do about it. Same for the logo on /p/pay and /p/estimate.
+  //
+  // A token is a capability the shop minted and handed out; holding an unrelated session is not a
+  // reason to refuse it. Nothing is widened: each branch still proves ownership on its own terms,
+  // and the bare path with no token remains closed to everyone but the owning shop.
   let ok = false
   if (!AUTH_ENABLED || req.tenant) {
     // Single-tenant (no login anywhere in the product), or a signed-in member: the gate already
     // put us in that shop's database, so this asks "is it yours?" and nothing else.
     ok = ownedHere()
-  } else {
+  }
+  if (!ok) {
     const slug = String(req.query.s || '')
     const want = Buffer.from(fileToken(f, slug))
     const got = Buffer.from(String(req.query.t || ''))
