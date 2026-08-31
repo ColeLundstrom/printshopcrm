@@ -22,7 +22,7 @@ export async function roiView() {
   $('#view').innerHTML = `
     <div class="kpis">
       <div class="kpi"><div class="lbl">Revenue</div><div class="val">${money0(t.revenue)}</div><div class="sub">${t.count} costed jobs</div></div>
-      <div class="kpi bad"><div class="lbl">Cost to produce</div><div class="val">${money0(t.cost)}</div><div class="sub">blanks · labor · screens</div></div>
+      <div class="kpi bad"><div class="lbl">Cost to produce</div><div class="val">${money0(t.cost)}</div><div class="sub">blanks · decoration · labor · screens</div></div>
       <div class="kpi"><div class="lbl">Profit</div><div class="val">${money0(t.profit)}</div><div class="sub">what you actually keep</div></div>
       <div class="kpi ${t.margin < 40 ? 'warn' : ''}"><div class="lbl">Avg margin</div><div class="val">${t.margin}%</div>
         <div class="sub">${t.losers ? `<span style="color:var(--red)">${t.losers} losing money</span> · ` : ''}${t.thin} thin</div></div>

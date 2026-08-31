@@ -13044,6 +13044,125 @@ section('a new shop never opens the books of a shop that was deleted')
   })
 }
 
+
+/* ---------- Profitability costs the decoration the job actually uses (round 27) ----------
+ * lib/roi.mjs never contained the word "decoration". Every job was costed as screen print: press
+ * minutes for labour, and ZERO consumable cost. Five of the seven methods in the shipped price
+ * book — DTF, UV DTF, embroidery, patch and laser — have no press, no screens and a real
+ * per-piece material cost, and every dollar of it was invisible.
+ *
+ * The shop's own cost model for those five already existed, with vendor cost matrices and the
+ * patch price breaks, in public/js/shared/servicecost.js. `grep -rn servicecost` over the whole
+ * repo returned exactly one importer: the browser price calculator. Nothing server-side read it.
+ *
+ * Measured, on a 500-piece DTF order at $8.00/pc with $3.20 blanks: the shop spends $4,182.00 and
+ * LOSES $182.00. The screen reported $2,005.50 profit at 50.1% margin, verdict "Healthy", the
+ * shop-wide sweep returned losers: 0, and the page headline read "✓ Every job is profitable."
+ * That is the one number this product exists to get right. */
+section('Profitability costs a DTF job as DTF, not as screen printing')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const { dtfCost } = await import('../public/js/shared/servicecost.js')
+
+  // One order, priced identically, decorated two different ways.
+  const build = (decoration) => {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      const items = [{
+        description: 'DTF Transfer — 10x12" print', decoration,
+        sizes: { M: 500 }, unit_price: 8.00, garment_cost: 3.20, taxable: false,
+      }]
+      dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+      dbm.run(
+        'INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+        'EST-3001', 'approved', JSON.stringify(items), 4000, 0, 4000, 0, dbm.now(),
+      )
+      return jobRoi({ id: 1, estimate_id: 1, decoration }, dbm.getSettings())
+    } finally { dbm.setDefaultDb(prev) }
+  }
+
+  const dtf = build('DTF Transfer')
+  const screen = build('Screen Print')
+
+  await t('precondition: the order is worth $4,000 either way', () => {
+    assert.equal(dtf.revenue, 4000)
+    assert.equal(screen.revenue, 4000, 'revenue must not move — only what it costs to make')
+  })
+
+  await t('the film the shop buys is on the books', () => {
+    // 500 × (10 × 12 × $0.03 + $1.50) = 500 × $5.10 = $2,550 of transfer film.
+    const perPiece = dtfCost(10, 12)
+    assert.equal(Math.round(perPiece * 100) / 100, 5.10, 'the shipped cost model changed — re-derive this figure')
+    assert.equal(dtf.breakdown.decoration, 2550,
+      `500 pieces of 10×12" transfer cost the shop $2,550 and were booked at ${dtf.breakdown.decoration}`)
+  })
+
+  await t('…and press minutes are not charged for a job that never goes on a press', () => {
+    assert.equal(dtf.breakdown.labor, 0, 'a heat-pressed transfer was billed screen-press labour')
+    assert.ok(screen.breakdown.labor > 0, 'and screen print must still be costed exactly as before')
+    assert.equal(screen.breakdown.decoration, 0, 'screen print has no separate decoration line')
+  })
+
+  await t('the job that loses money is reported as losing money', () => {
+    // $3.20 blanks × 500 × 1.02 spoilage = $1,632, plus $2,550 of film = $4,182 against $4,000.
+    assert.equal(dtf.cost, 4182, `expected $4,182.00 of real cost, got ${dtf.cost}`)
+    assert.ok(dtf.profit < 0, `the shop loses money on this order and the screen said it made ${dtf.profit}`)
+    assert.equal(dtf.verdict.level, 'bad', `verdict was "${dtf.verdict.level}" on a job that loses ${-dtf.profit}`)
+  })
+
+  await t('…and the shop-wide sweep counts it among the losers', async () => {
+    const { shopRoi } = await import('../lib/roi.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      // shopRoi() prefetches the garment catalog, which lives in the suppliers schema.
+      const { initSuppliers } = await import('../lib/suppliers.mjs')
+      initSuppliers(db)
+      const items = [{ description: 'DTF Transfer — 10x12" print', decoration: 'DTF Transfer', sizes: { M: 500 }, unit_price: 8.00, garment_cost: 3.20, taxable: false }]
+      dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+      dbm.run('INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+        'EST-3002', 'approved', JSON.stringify(items), 4000, 0, 4000, 0, dbm.now())
+      dbm.run("INSERT INTO jobs (id, estimate_id, job_number, title, decoration, status, stage, created_at) VALUES (1,1,'JOB-3002','Spirit tees','DTF Transfer','active','production',?)", dbm.now())
+      const s = shopRoi()
+      assert.equal(s.totals.losers, 1, `the headline said "Every job is profitable" over a job losing money (losers: ${s.totals.losers})`)
+      assert.ok(s.worst.length > 0, 'and the worst-first list has to name it')
+    } finally { dbm.setDefaultDb(prev) }
+  })
+}
+
+await t('every decoration the price book sells is costed somewhere', async () => {
+  // The general property behind the case above: if a method can be sold, the profitability sweep
+  // has to be able to cost it. Laser has no material cost line, only a sell tier, so it uses the
+  // same half-the-sell fallback the price calculator does — but it must not be free.
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const { SERVICE_METHODS } = await import('../public/js/shared/servicecost.js')
+  const free = []
+  for (const method of SERVICE_METHODS) {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      const items = [{ description: `${method} run`, decoration: method, sizes: { M: 200 }, unit_price: 12, garment_cost: 3, taxable: false }]
+      dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'B', dbm.now(), dbm.now())
+      dbm.run('INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+        `EST-4${SERVICE_METHODS.indexOf(method)}`, 'approved', JSON.stringify(items), 2400, 0, 2400, 0, dbm.now())
+      const r = jobRoi({ id: 1, estimate_id: 1, decoration: method }, dbm.getSettings())
+      if (!(r.breakdown.decoration > 0)) free.push(method)
+    } finally { dbm.setDefaultDb(prev) }
+  }
+  assert.deepEqual(free, [], `these decorations are sold to customers and cost the shop nothing on the books: ${free.join(', ')}`)
+})
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
