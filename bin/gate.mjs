@@ -14982,6 +14982,66 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('the e2e harness says WHY it failed, not just that it did')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  /*
+   * Third sibling of the two rules above, and the one that cost the most to learn.
+   *
+   * `fetch failed` is the entire message Node's fetch throws. Undici puts the real reason —
+   * ECONNRESET, "other side closed", ECONNREFUSED, a socket that died mid-body — on err.cause,
+   * and the request that died on err.stack. The suite's outer catch printed err.message alone,
+   * so every transport failure anywhere in 6,000 lines reported the same four words.
+   *
+   * Measured across three ten-run loops: one failure after the 30,000-row contact import, one in
+   * the suspended-shop block, one on an auxiliary boot. All three printed
+   *
+   *     ✗ harness error: fetch failed
+   *
+   * and nothing else. Diagnosing them cost a purpose-built reproduction harness apiece and killed
+   * three hypotheses — machine load, socket exhaustion, the keep-alive close race — every one of
+   * which err.cause would have settled on the first line. A gate that cannot say why it failed
+   * teaches people to re-run it until it goes green, which is the habit this whole file exists to
+   * break.
+   *
+   * The comments are stripped before matching: this rule has been fooled by prose in the very
+   * block it was asserting on before, twice.
+   */
+  const e2eRaw = readFileSync(join(ROOT, 'bin/gate-e2e.mjs'), 'utf8')
+  const at = e2eRaw.lastIndexOf('} catch (err) {')
+  const block = at === -1 ? '' : e2eRaw.slice(at, e2eRaw.indexOf('\n}', at) + 2)
+  const code = block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  await t('the suite still has an outer harness catch, and this rule can see inside it', () => {
+    assert.notEqual(at, -1, 'no `} catch (err) {` found in bin/gate-e2e.mjs — this rule would assert on nothing')
+    // `harness error` is the bounds check: it is printed by this block and nowhere else, so
+    // finding it proves the slice really is the reporter and the assertions below are not
+    // iterating an empty string. Length is deliberately NOT asserted — the old reporter was a
+    // legitimate 71 characters, and calling that "wrong bounds" would send the next reader
+    // looking for a parsing bug that is not there.
+    assert.ok(code.includes('harness error'), 'the slice found is not the harness reporter — the bounds are wrong and every rule below is vacuous')
+  })
+
+  await t('a transport failure reports its cause, because "fetch failed" names nothing', () => {
+    assert.match(code, /\.cause/, 'the harness catch must read err.cause — without it every fetch failure is the same four words')
+  })
+
+  await t('…and the call site, so a 6,000-line suite says WHICH request died', () => {
+    assert.match(code, /\.stack/, 'the harness catch must read err.stack to name the frame inside gate-e2e.mjs')
+    assert.match(code, /gate-e2e\.mjs/, 'it must pick the frame in the suite itself, not node internals')
+  })
+
+  await t('the cause chain is walked, not just read one deep', () => {
+    // undici nests: TypeError(fetch failed) -> Error(socket hang up) -> the errno. One level deep
+    // still hides the code that names the failure.
+    assert.match(code, /for\s*\(\s*let\s+c\s*=/, 'the cause chain should be walked in a loop')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

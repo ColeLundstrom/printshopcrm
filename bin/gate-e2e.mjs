@@ -6383,7 +6383,24 @@ try {
   }
 
 } catch (err) {
-  say('✗', `harness error: ${err.message}`)
+  /* `fetch failed` is undici's wrapper and it carries nothing at all. The real reason —
+   * ECONNRESET, "other side closed", ECONNREFUSED, a DNS failure, a body that died mid-read —
+   * lives on err.cause, and the line that issued the request lives on err.stack. This printed
+   * err.message alone, so an intermittent failure in a 6,000-line suite reported the same four
+   * words wherever it happened: no cause, no call site, nothing to act on.
+   *
+   * Measured: three separate runs failed here — once after the 30,000-row contact import, once
+   * in the suspended-shop block, once on an aux boot — and all three said exactly
+   * "harness error: fetch failed". Chasing them cost a reproduction harness apiece and killed
+   * three hypotheses (load, socket exhaustion, the keep-alive close race) that the cause would
+   * have settled in one line. A gate that cannot say why it failed teaches people to re-run it
+   * until it goes green, which is the thing this file exists to prevent. */
+  const causes = []
+  for (let c = err?.cause, i = 0; c && i < 4; c = c.cause, i++) causes.push(`${c.code ? `${c.code}: ` : ''}${c.message || c}`)
+  say('✗', `harness error: ${err.message}${causes.length ? ` — ${causes.join(' <- ')}` : ''}`)
+  // The frame inside THIS file is the one that names which request died.
+  const frame = String(err?.stack || '').split('\n').map((l) => l.trim()).find((l) => l.includes('gate-e2e.mjs'))
+  if (frame) console.log(`      ${frame.replace(/^at\s+/, 'at ')}`)
   fails++
 }
 
