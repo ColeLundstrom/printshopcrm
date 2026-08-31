@@ -12793,6 +12793,119 @@ section('a deploy that fails on the server says why, and can be run again')
   })
 }
 
+
+/* ---------- a signup that cannot build its database leaves no account behind (round 27) --------
+ * createTenant COMMITted the tenants + members rows and only THEN created the shop's database,
+ * outside any rollback. Two independent channels found this in the same round, from an unwritable
+ * data directory and from a full disk — and EROFS is the same shape again.
+ *
+ * What the owner got: a raw `EACCES: permission denied, mkdir '/var/…'` on the public signup form;
+ * their email address taken FOREVER, because retrying answers dupe_email and no route in the
+ * product can free it; a login that works; and every screen 503'ing "restore it from a snapshot
+ * with npm run restore" for a shop one minute old that has never had a snapshot. On a self-host
+ * with no PSC_ADMIN_EMAIL there is no Control Room either, so the only exits were sqlite3 and
+ * bin/admin.mjs, which has no delete-shop.
+ *
+ * And it did not stop at that shop. The half-made tenant lands in brokenTenants, so /health?strict=1
+ * — the URL ship.sh and release.sh poll to decide whether to roll a release back — answers 503 for
+ * ever, and every later deploy FOR THE WHOLE FLEET auto-rolls back.
+ *
+ * Driven in a child process, because lib/tenants.mjs resolves its data root at module scope. The
+ * failure is injected portably: a plain FILE where the shop's directory has to go, so mkdirSync
+ * fails on every platform. No chmod, which is a no-op on Windows CI. */
+section('a signup that cannot create its database creates no account either')
+{
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  const run = () => {
+    const box = mkdtempSync(join(tmpdir(), 'psc-signup-'))
+    try {
+      const script = `
+        import { writeFileSync, rmSync, existsSync } from 'node:fs'
+        import { join } from 'node:path'
+        const data = process.env.PSC_DATA
+        const t = await import(${JSON.stringify(join(ROOT, 'lib/tenants.mjs'))})
+        const { DatabaseSync } = await import('node:sqlite')
+        const ctl = new DatabaseSync(process.env.PSC_CONTROL_DB)
+        const count = (tbl) => ctl.prepare('SELECT COUNT(*) AS n FROM ' + tbl).get().n
+        const out = { }
+
+        // 'Northside Threads' slugs to 'northside-threads'. A regular file there makes the shop's
+        // own mkdir fail, which is what a full disk / read-only data root does.
+        const blocker = join(data, 'tenants', 'northside-threads')
+        writeFileSync(blocker, 'not a directory')
+
+        const args = { shop_name: 'Northside Threads', owner_name: 'Rae', owner_email: 'rae@t.test', password: 'signup12345' }
+        try { await t.createTenant({ ...args }); out.threw = false }
+        catch (e) { out.threw = true; out.code = e.code || null; out.message = String(e.message || '') }
+
+        out.tenants = count('tenants')
+        out.members = count('members')
+        out.broken = t.brokenTenants.size
+        out.byEmail = !!t.getTenantByEmail('rae@t.test')
+
+        // Now fix the underlying problem the way an operator would, and try again with the SAME
+        // address. This is the half that was impossible: the account was taken for ever.
+        rmSync(blocker, { force: true })
+        try { const shop = await t.createTenant({ ...args }); out.retryOk = true; out.retrySlug = shop.slug }
+        catch (e) { out.retryOk = false; out.retryCode = e.code || null; out.retryMessage = String(e.message || '') }
+        console.log('@@' + JSON.stringify(out))
+      `
+      const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+        env: { ...process.env, PSC_DATA: join(box, 'data'), PSC_DB: join(box, 'data', 'printshop.db'), PSC_CONTROL_DB: join(box, 'data', 'control.db') },
+      })
+      const line = stdout.split('\n').find((l) => l.startsWith('@@'))
+      assert.ok(line, `the child produced no result:\n${stdout}`)
+      return JSON.parse(line.slice(2))
+    } finally { rmSync(box, { recursive: true, force: true }) }
+  }
+
+  const r = run()
+
+  await t('precondition: the signup really does fail when the database cannot be created', () => {
+    assert.equal(r.threw, true, 'the failure was not injected — the rest of this section would pass vacuously')
+  })
+
+  await t('no half-made shop is left in the registry', () => {
+    assert.equal(r.tenants, 0, `the tenants row survived a signup that could not build the shop (${r.tenants} row(s))`)
+    assert.equal(r.members, 0, `the owner's member row survived (${r.members} row(s))`)
+  })
+
+  await t('the owner\'s email address is not taken for ever', () => {
+    assert.equal(r.byEmail, false, 'the address still resolves to a shop that was never created')
+    assert.equal(r.retryOk, true, `retrying once the disk was fixed still failed: ${r.retryCode} ${r.retryMessage}`)
+    assert.equal(r.retrySlug, 'northside-threads', 'and the retry should get the name it asked for')
+  })
+
+  await t('…and nothing is left to hold the deploy gate down', () => {
+    // brokenTenants is what /health?strict=1 reports, and what ship.sh rolls releases back on.
+    assert.equal(r.broken, 0, 'a shop that was never created is being reported as a broken shop, so every deploy rolls back')
+  })
+
+  await t('the form does not print the server\'s filesystem layout to the public', () => {
+    assert.equal(r.code, 'provisioning_failed', `expected a coded failure, got ${r.code}`)
+    assert.ok(!/EACCES|ENOSPC|ENOTDIR|EEXIST|permission denied|mkdir|\/(var|tmp|private|home|Users)\//.test(r.message),
+      `raw errno reached the caller: ${r.message}`)
+    assert.match(r.message, /nothing was created/i, 'and it has to tell the person what state they are in')
+  })
+
+  await t('and the signup route only ever puts its OWN coded messages on the page', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+    const i = src.indexOf("const SAFE = ['dupe_email'")
+    assert.ok(i > 0, 'the signup catch must whitelist the codes whose messages are safe to show')
+    const w = src.slice(i, i + 700)
+    assert.match(w, /provisioning_failed/, 'including the new one, or a real outage reads as a validation error')
+    assert.match(w, /SAFE\.includes\(e\.code\)/, 'anything else has to be replaced, not forwarded')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

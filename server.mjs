@@ -1345,7 +1345,16 @@ app.post('/api/auth/signup', ipLimit(6), wrap(async (req, res) => {
     sendWelcomeEmail(t, trustedOrigin(req, t)) // fire-and-forget; delivers if platform SMTP is set
     res.json({ ok: true, slug: t.slug, shop_name: t.shop_name, onboarding: true })
   } catch (e) {
-    res.status(e.code === 'dupe_email' ? 409 : 400).json({ error: e.message })
+    // Only the app's OWN coded errors carry a message fit for a public, unauthenticated page.
+    // Anything else is a raw thrown string — signup reached one from the filesystem and printed
+    // `EACCES: permission denied, mkdir '/var/lib/printshopcrm/tenants/northside-threads'` to the
+    // form, which hands the server's layout to anyone who can load it.
+    const SAFE = ['dupe_email', 'weak_password', 'missing', 'reserved_email', 'retry', 'provisioning_failed']
+    const status = e.code === 'dupe_email' ? 409 : e.code === 'provisioning_failed' ? 503 : 400
+    res.status(status).json({
+      error: SAFE.includes(e.code) ? e.message : 'We could not create your shop just now — please try again.',
+      code: e.code || null,
+    })
   }
 }))
 
