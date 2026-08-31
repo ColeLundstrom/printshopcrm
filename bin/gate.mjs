@@ -4880,6 +4880,25 @@ await t('ship.sh snapshots before it flips, not after and not never', async () =
   // Fail closed, with a documented escape, exactly as release.sh already does.
   assert.match(sh, /PSC_SKIP_BACKUP/, 'there has to be a deliberate way to flip without one')
   assert.match(sh, /COULD NOT LOCATE THE DATA ROOT/, 'a data root it cannot find must stop the deploy, not skip the backup')
+
+  /* …and BEFORE the .previous-release bookkeeping, because this step can refuse.
+   *
+   * Found by the guard's own first real deploy: it correctly refused to flip, and
+   * .previous-release had already been rewritten to equal `current` — so the pointer to the
+   * release you would roll back to was destroyed by a deploy that did nothing else at all. */
+  const prevWrite = sh.indexOf("tee '$APP_ROOT/.previous-release'")
+  assert.ok(prevWrite > 0, 'the .previous-release write moved — re-point this test')
+  assert.ok(snap < prevWrite,
+    'a snapshot step that can refuse must run BEFORE .previous-release is rewritten, or an aborted deploy destroys the way back')
+
+  /* The data root is found the way PORT is, and in the same order. pro's own unit carries
+   * `Environment=PSC_DB=...` and has NO .env file at all, so a lookup that reads only .env
+   * located nothing on the very install this ships to — measured, on the first attempt. */
+  const envLookup = sh.indexOf("sed -n 's/^PSC_DB=//p'")
+  const fileLookup = sh.indexOf("sed -n 's/^[[:space:]]*PSC_DB=//p'")
+  assert.ok(envLookup > 0, "the data root must be read from systemd's resolved environment, not only from .env")
+  assert.ok(fileLookup > 0, '…and from .env as well, for an install that uses an EnvironmentFile')
+  assert.ok(envLookup < fileLookup, 'systemd first: it is authoritative and it resolves drop-in overrides')
 })
 
 await t('every recovery line the deploy scripts print actually works', async () => {

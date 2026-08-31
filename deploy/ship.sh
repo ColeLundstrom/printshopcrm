@@ -100,14 +100,6 @@ rsync -a -e "$RSYNC_E" \
   # deploy PREV came back as the link about to be replaced and the rollback below pointed current
   # at itself: ELOOP, and Restart=always looping on it forever. A way home has to be a link that
   # resolves to a directory that is really there. (See deploy/release.sh for the full account.)
-  PREV=''
-  if [ -L '$APP_ROOT/current' ]; then
-    PREV=\$(readlink -f '$APP_ROOT/current' 2>/dev/null || true)
-    [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ] || PREV=''
-  fi
-  if [ -n \"\$PREV\" ]; then echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
-  else sudo rm -f '$APP_ROOT/.previous-release'; fi
-
   # ---- pre-migration snapshot -----------------------------------------------------------------
   # The restart below runs schema migrations against EVERY shop's real data, and some of them are
   # one-shot data restatements (lib/db.mjs's once(...) blocks) that no rollback can undo. This
@@ -121,20 +113,29 @@ rsync -a -e "$RSYNC_E" \
   # without exactly this since it was written. bin/snapshot.mjs is node-only (VACUUM INTO), needs
   # no sqlite3 binary, and is already in the release that was just rsynced.
   #
-  # Before the flip, after the server-side gate: a snapshot of a tree we are then not going to
-  # deploy is wasted, and a flip we cannot undo is the thing being fixed.
+  # BEFORE the .previous-release bookkeeping below, not after. This step can refuse — that is the
+  # point of it — and a refusal that has already rewritten .previous-release destroys the pointer
+  # to the release you would roll back to. Measured on the first real deploy that hit this guard:
+  # it stopped correctly, and .previous-release had already been clobbered to equal `current`.
+  #
+  # The data root is found the same way PORT is, and in the same order: systemd's resolved
+  # environment first, because it is authoritative and resolves drop-ins, then .env. pro's own
+  # unit carries `Environment=PSC_DB=...` and has NO .env file at all, so reading only .env
+  # located nothing on the very install this ships to.
   SNAP_DATA='$DATA_ROOT'
   if [ -z \"\$SNAP_DATA\" ]; then
+    PSC_DB_PATH=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PSC_DB=//p' | tail -1)
     # sudo, because INSTALL.md mandates a 0600 .env the deploy user cannot read.
-    PSC_DB_PATH=\$(sudo sed -n 's/^[[:space:]]*PSC_DB=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
+    [ -n \"\$PSC_DB_PATH\" ] || PSC_DB_PATH=\$(sudo sed -n 's/^[[:space:]]*PSC_DB=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
     [ -n \"\$PSC_DB_PATH\" ] && SNAP_DATA=\$(dirname \"\$PSC_DB_PATH\")
   fi
   if [ \"\${PSC_SKIP_BACKUP:-}\" = '1' ]; then
     echo '!  PSC_SKIP_BACKUP=1 — flipping with NO pre-migration snapshot'
   elif [ -z \"\$SNAP_DATA\" ] || [ ! -d \"\$SNAP_DATA\" ]; then
-    echo 'COULD NOT LOCATE THE DATA ROOT — nothing was flipped.'
-    echo \"  Looked for PSC_DB in $APP_ROOT/.env. Set DATA_ROOT=<dir holding control.db and tenants/>\"
-    echo '  when running ship.sh, or PSC_SKIP_BACKUP=1 to flip without a snapshot.'
+    echo 'COULD NOT LOCATE THE DATA ROOT — nothing was flipped, and nothing was changed.'
+    echo \"  Looked for PSC_DB in systemctl show -p Environment $SERVICE, then $APP_ROOT/.env.\"
+    echo '  Set DATA_ROOT=<dir holding control.db and tenants/> when running ship.sh,'
+    echo '  or PSC_SKIP_BACKUP=1 to flip without a snapshot.'
     exit 1
   else
     SNAP=\"\$SNAP_DATA/backups/predeploy-$TAG-\$(date +%Y%m%d%H%M%S)\"
@@ -145,10 +146,18 @@ rsync -a -e "$RSYNC_E" \
     echo \"  snapshot: \$SNAP\"
     echo \"  if a migration eats data, put it back with:\"
     echo \"    sudo systemctl stop $SERVICE \\\\\"
-    echo \"      && sudo ln -sfn \\\$(cat $APP_ROOT/.previous-release) $APP_ROOT/current \\\\\"
+    echo \"      && sudo bash $APP_ROOT/current/deploy/release.sh rollback \\\\\"
     echo \"      && sudo node $APP_ROOT/current/bin/restore.mjs '\$SNAP' --data-root '\$SNAP_DATA' --yes \\\\\"
     echo \"      && sudo systemctl start $SERVICE\"
   fi
+
+  PREV=''
+  if [ -L '$APP_ROOT/current' ]; then
+    PREV=\$(readlink -f '$APP_ROOT/current' 2>/dev/null || true)
+    [ -n \"\$PREV\" ] && [ -d \"\$PREV\" ] || PREV=''
+  fi
+  if [ -n \"\$PREV\" ]; then echo \"\$PREV\" | sudo tee '$APP_ROOT/.previous-release' >/dev/null
+  else sudo rm -f '$APP_ROOT/.previous-release'; fi
 
   sudo ln -sfn '$REL' '$APP_ROOT/current'
   # NOT bare. Under the \`set -e\` at the top of this block a non-zero \`systemctl restart\` ended the
