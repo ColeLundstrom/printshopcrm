@@ -176,7 +176,24 @@ export async function estimateEditor(id) {
     const g = $('#margin-guard'); if (!g) return
     let cost = 0, priced = false
     for (const it of items) {
-      const qty = it.sizes ? sizeTotal(it.sizes) : Number(it.qty) || 0
+      /* A production line has a size grid. A fee, a flat charge and a DISCOUNT do not.
+       *
+       * The skip used to be `it.taxable === false`, which catches fee lines because blankFee()
+       * sets it — but blankDiscount() sets taxable TRUE, deliberately, so that a discount reduces
+       * the tax base. So the shop's own "− Discount" button produced { qty: 1, taxable: true },
+       * which fell straight into jobCost({ qty: 1, colors: 1, garmentCost: 0 }) and booked press
+       * labour and a screen against it: about $58.63 of cost for a line that is a credit.
+       *
+       * Measured on 24 tees at $12.00 with a $10 discount: the guard went from "Healthy 47.5%" to
+       * "⚠ Too thin 24.5% · under your 45% floor". The truthful figure is 45.6% — Healthy, above
+       * the floor. 21 points and two thresholds, on the product's headline guardrail, triggered by
+       * using the discount button at all.
+       *
+       * lib/roi.mjs:182 — the authoritative costing this guard's own docstring defers to — tests
+       * exactly `if (it.sizes)`, which is why the ROI page always had this right and the editor
+       * did not. Two screens must not disagree about the same estimate. */
+      if (!it.sizes) continue
+      const qty = sizeTotal(it.sizes)
       if (qty <= 0 || it.taxable === false) continue // skip setup/fee lines
       priced = true
       const colors = guessColors(`${it.description} ${it.detail || ''}`)

@@ -14821,6 +14821,53 @@ section('the estimate editor costs a calculator line the way the calculator did'
     assert.equal(lineBlankCost({ description: 'x', garment_cost: 0 }), 0, 'a zero field must not be read as a price')
   })
 
+  /* The discount button poisoned the guardrail it sits next to.
+   *
+   * blankFee() is { taxable: false } and blankDiscount() is { qty: 1, taxable: true } — the true
+   * is deliberate, so a discount reduces the TAX base. marginGuard skipped on
+   * `it.taxable === false`, so the fee lines were excluded and the discount line was not: it fell
+   * into jobCost({ qty: 1, … }) and was costed as a one-piece production run.
+   *
+   * lib/roi.mjs:182 tests `if (it.sizes)` instead, which is why the ROI page was always right
+   * about the same estimate and the editor was not. */
+  await t('a discount line is not a one-piece production run', () => {
+    // 24 tees at $12.00 with the shop's own "− Discount" button set to $10, on stock costing
+    // settings. Every number below is the shipped helpers' own arithmetic.
+    const COST = { press: 'auto', shopRate: 75, utilization: 0.3, spoilage: 2, screenCost: 8, screens: 1 }
+    const line = jobCost({ qty: 24, colors: 1, garmentCost: 3.20, ...COST }).total
+    const phantom = jobCost({ qty: 1, colors: 1, garmentCost: 0, ...COST }).total
+    const revenue = 24 * 12 - 10
+    assert.equal(line, 151.34, 'sanity: the real line still costs what this case was measured at')
+    assert.equal(phantom, 58.63, 'sanity: a qty-1 line still books press time and a screen')
+    // The shipped default target margin is 45%, so this does not merely move a number — it moves
+    // the verdict across the floor, in the direction that tells a shop to raise a healthy price.
+    assert.equal(margin(revenue, line + phantom).margin, 24.5, 'what the guard used to say')
+    assert.equal(margin(revenue, line).margin, 45.6, 'what is true')
+  })
+
+  await t('…so the shop\'s own Discount button cannot push a healthy quote under the floor', () => {
+    const src = readFileSync(join(ROOT, 'public/js/views/estimates.js'), 'utf8')
+    // The discount line really is taxable — that is what made it slip past the old skip.
+    const disc = src.match(/const blankDiscount = \(\) => \(\{[^}]*\}\)/)
+    assert.ok(disc, 'blankDiscount moved — re-point this rule')
+    assert.match(disc[0], /taxable: true/, 'sanity: the discount line is taxable on purpose, so `taxable === false` cannot exclude it')
+    assert.ok(!/sizes/.test(disc[0]), 'sanity: and it carries no size grid, which is what marks a real production line')
+  })
+
+  await t('…because the guard costs only lines with a size grid, as lib/roi.mjs does', () => {
+    const src = readFileSync(join(ROOT, 'public/js/views/estimates.js'), 'utf8')
+    const i = src.indexOf('const marginGuard =')
+    assert.ok(i > 0, 'marginGuard moved — re-point this rule')
+    const mg = src.slice(i, src.indexOf('\n  const draw', i))
+    assert.ok(mg.length > 100, 'the marginGuard slice is empty — re-point this rule')
+    const code = mg.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    assert.match(code, /if \(!it\.sizes\) continue/,
+      'marginGuard costs lines with no size grid — the Discount button books ~$58.63 of press time against a credit and reads "Too thin"')
+    // And the authoritative screen must still be making the same test, or they have diverged again.
+    const roi = readFileSync(join(ROOT, 'lib/roi.mjs'), 'utf8')
+    assert.match(roi, /if \(it\.sizes\)/, 'lib/roi.mjs no longer discriminates on the size grid — the two costing screens have diverged')
+  })
+
   await t('the guard reads the field, and cannot quietly stop reading it', () => {
     const src = readFileSync(join(ROOT, 'public/js/views/estimates.js'), 'utf8')
     const i = src.indexOf('const marginGuard =')
