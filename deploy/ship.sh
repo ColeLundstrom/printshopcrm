@@ -139,7 +139,13 @@ rsync -a -e "$RSYNC_E" \
     exit 1
   else
     SNAP=\"\$SNAP_DATA/backups/predeploy-$TAG-\$(date +%Y%m%d%H%M%S)\"
-    sudo node '$REL/bin/snapshot.mjs' \"\$SNAP_DATA\" \"\$SNAP\" || {
+    # As the account that OWNS the data, not as root. A root-owned backups tree is a tree the
+    # service account cannot prune and the operator needs sudo to read — and INSTALL.md now tells
+    # them to run every one of these tools as the service account for exactly that reason. Falls
+    # back to plain sudo if the owner cannot be read.
+    SNAP_USER=\$(stat -c %U \"\$SNAP_DATA\" 2>/dev/null || true)
+    if [ -n \"\$SNAP_USER\" ]; then SNAP_AS=\"sudo -u \$SNAP_USER\"; else SNAP_AS='sudo'; fi
+    \$SNAP_AS node '$REL/bin/snapshot.mjs' \"\$SNAP_DATA\" \"\$SNAP\" || {
       echo \"PRE-MIGRATION SNAPSHOT FAILED under \$SNAP_DATA — nothing was flipped.\"
       echo '  Fix it, or re-run with PSC_SKIP_BACKUP=1 to flip anyway.'
       exit 1; }
