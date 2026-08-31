@@ -144,8 +144,12 @@ if ! "${SSH[@]}" "$APP_HOST" "test ! -e '$REL'"; then
   fi
 fi
 
+# `current`/`releases` for the same reason deploy/release.sh excludes them: this copies from a dev
+# checkout today, but nothing stops an operator running it from the install root, and a release
+# holding a symlink back to its own parent dies on ELOOP the first time anything walks it.
 rsync -a -e "$RSYNC_E" \
   --exclude node_modules --exclude .git --exclude data --exclude '.env' \
+  --exclude 'current' --exclude 'releases' \
   --exclude 'public/uploads' --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' \
   --exclude 'docs/img' \
   ./ "$APP_HOST:$REL/" || die "rsync failed — nothing was flipped"

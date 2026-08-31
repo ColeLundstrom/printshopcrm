@@ -171,11 +171,20 @@ echo "→ release  $RELEASE"
 mkdir -p "$APP_ROOT/releases" "$UPLOADS"
 
 # --- copy the code, never the data -------------------------------------------------------------
+# `current` and `releases`: INSTALL.md builds `current -> /opt/printshopcrm`, so the symlink lives
+# INSIDE the directory it points at. Copied into the release, it points back at its own parent —
+# and anything that then walks the release tree (its own gate, npm, a checksum, verify-sync)
+# descends current/current/current/… until it dies on ELOOP, `set -e` aborts the deploy, and the
+# half-built release directory is left behind so this tag is refused for ever afterwards. Copying
+# `releases` embeds every previous release in every new one and roughly doubles the install per
+# deploy. A release contains the app; it must not contain the install it was cut from.
 rsync -a \
   --exclude node_modules \
   --exclude .git \
   --exclude data \
   --exclude '.env' \
+  --exclude 'current' \
+  --exclude 'releases' \
   --exclude 'public/uploads' \
   --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' \
   "$SRC/" "$RELEASE/"

@@ -5437,6 +5437,62 @@ exec /usr/bin/readlink "$@"`)
  * The rollback itself is right; only its restart is wrong for this caller, who is managing the
  * service around it. So the flag goes on release.sh and the printed chain uses it, rather than
  * the chain open-coding an `ln -sfn` that would skip .previous-release bookkeeping. */
+/* ---------- a release may not contain the install it was cut from ----------
+ * INSTALL.md builds `current -> /opt/printshopcrm` — the symlink lives INSIDE the directory it
+ * points at. release.sh then rsyncs that same directory into releases/<tag>/, and its exclude list
+ * named node_modules, .git, data, .env, uploads and the database files, but neither `current` nor
+ * `releases`. So every release it cuts contains:
+ *
+ *   - a `current` symlink pointing back at its own parent — anything that walks the release tree
+ *     (its own gate, npm, a checksum, verify-sync) descends current/current/current/… until it
+ *     dies on ELOOP. `set -e` then aborts the deploy, the half-built release directory is left
+ *     behind, and release.sh refuses that tag for ever afterwards because the directory exists.
+ *   - a full copy of `releases/`, so each release embeds every release before it and the install
+ *     roughly doubles in size per deploy.
+ *
+ * The simulation harness below stubs rsync out, which is exactly why no case ever saw this: the
+ * defect is in the argument list, so the test has to run the real rsync with the real list.
+ * ship.sh gets the same two excludes — it copies from a dev checkout today, but nothing stops an
+ * operator running it from the install root, and the failure is silent until the deploy dies. */
+section('a release does not contain the install it was cut from')
+await t('release.sh and ship.sh exclude `current` and `releases` from the copy', async () => {
+  const { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, lstatSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const { readFileSync } = await import('node:fs')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  for (const script of ['deploy/release.sh', 'deploy/ship.sh']) {
+    const text = readFileSync(join(root, script), 'utf8')
+    // The real exclude list, read out of the real script — not a copy that could drift.
+    const at = text.indexOf('rsync ')
+    assert.ok(at > 0, `${script} no longer calls rsync`)
+    const block = text.slice(at, text.indexOf('\n\n', at) + 1)
+    const excludes = [...block.matchAll(/--exclude\s+'?([^'\s\\]+)'?/g)].map((m) => m[1])
+    assert.ok(excludes.length > 3, `${script}: could not read the exclude list (${excludes.join(',')})`)
+
+    const dir = mkdtempSync(join(tmpdir(), 'psc-relcopy-'))
+    try {
+      const SRC = join(dir, 'app'); const OUT = join(dir, 'out')
+      mkdirSync(join(SRC, 'bin'), { recursive: true })
+      mkdirSync(join(SRC, 'releases', 'v0.0.1'), { recursive: true })
+      writeFileSync(join(SRC, 'server.mjs'), 'x')
+      // The INSTALL.md shape: the link lives inside the directory it points at.
+      execFileSync('ln', ['-sfn', SRC, join(SRC, 'current')])
+      execFileSync('rsync', ['-a', ...excludes.flatMap((e) => ['--exclude', e]), `${SRC}/`, `${OUT}/`])
+
+      assert.ok(!existsSync(join(OUT, 'current')) && !(() => { try { return lstatSync(join(OUT, 'current')).isSymbolicLink() } catch { return false } })(),
+        `${script}: the release contains a \`current\` symlink pointing back at its own parent — the release's own gate walks current/current/current/… and dies on ELOOP`)
+      assert.ok(!existsSync(join(OUT, 'releases')),
+        `${script}: the release contains a full copy of releases/, so every deploy embeds every deploy before it`)
+      assert.ok(existsSync(join(OUT, 'server.mjs')), `${script}: …while still copying the app itself`)
+      assert.ok(existsSync(join(OUT, 'bin')), `${script}: …and its directories`)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+})
+
 section('the recovery chain printed after a deploy can actually be run')
 await t('release.sh rollback --no-restart flips the release without bringing the service back up', async () => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readlinkSync, existsSync, chmodSync } = await import('node:fs')
