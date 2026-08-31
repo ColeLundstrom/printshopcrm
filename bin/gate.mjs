@@ -15083,6 +15083,53 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('a brand-new shop can open its first deal')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(ROOT, f), 'utf8')
+
+  /*
+   * On a shop with no contacts, GET /api/contacts returns { contacts: [] }, so the New Opportunity
+   * dialog rendered a <select name="contact_id"> containing ZERO options. Create posted
+   * contact_id: '' and POST /api/opportunities answered 400 customer_required — "Pick a customer
+   * to open a deal for." — which the dialog offered no control to satisfy. The first thing a new
+   * shop is invited to do on the Pipeline was a dead end with a correct error message.
+   *
+   * The missing placeholder is the second half and outlives the empty shop: with no empty first
+   * option a <select> pre-selects whichever contact sorts first, so a distracted click files the
+   * deal against the wrong customer with no warning. board.js already renders both an empty state
+   * and a "Choose a customer…" option, and estimates.js carries a comment about exactly this
+   * hazard — pipeline.js was the one create dialog that had neither.
+   */
+  await t('sanity: the server really does refuse a deal with no customer', () => {
+    assert.match(read('server.mjs'), /code: 'customer_required'/,
+      'sanity: the 400 this dialog has to stop the shop reaching is still there')
+  })
+
+  await t('sanity: the sibling dialog that gets this right still does', () => {
+    const board = read('public/js/views/board.js')
+    assert.match(board, /Add your first customer/, 'board.js is the pattern being mirrored — if it changed, re-read this rule')
+    assert.match(board, /Choose a customer…/, 'board.js should still offer the empty first option')
+  })
+
+  await t('the deal dialog offers a way to make the customer it demands', () => {
+    const pipe = read('public/js/views/pipeline.js')
+    assert.match(pipe, /Add your first customer/,
+      'a shop with no contacts gets a select with zero options and a 400 it cannot act on')
+    assert.match(pipe, /addEventListener\('click', \(\) => contactForm/,
+      'the button has to actually open the contact form, or it is decoration')
+  })
+
+  await t('…and does not silently file the deal against whoever sorts first', () => {
+    const pipe = read('public/js/views/pipeline.js')
+    assert.match(pipe, /Choose a customer…/,
+      'with no empty first option the select pre-selects a contact nobody chose')
+  })
+}
+
 section('a staff member is not handed controls that answer 403')
 {
   const { readFileSync } = await import('node:fs')

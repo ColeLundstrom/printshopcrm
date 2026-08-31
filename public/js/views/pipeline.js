@@ -1,4 +1,5 @@
 import { api, $, $$, esc, money, money0, relTime, initials, setPage, empty, toast, undoable, on, go, modal, closeModal, confirmModal, formData } from '../core.js'
+import { contactForm } from './contacts.js'
 
 /**
  * Sales pipeline — GHL's opportunities board, kept separate from production on purpose.
@@ -141,8 +142,22 @@ function oppForm(o) {
   api.get('/api/contacts').then(({ contacts }) => {
     modal({
       title: isNew ? 'New Opportunity' : o.title,
-      body: `<div class="field"><label>Customer</label><select class="input" name="contact_id" ${o ? 'disabled' : ''}>
-          ${contacts.map((c) => `<option value="${c.id}" ${c.id === o?.contact_id ? 'selected' : ''}>${esc(c.name)}${c.company ? ` — ${esc(c.company)}` : ''}</option>`).join('')}</select></div>
+      /* A brand-new shop has no contacts, and this select had no empty state and no placeholder.
+       * It rendered with ZERO options, Create posted contact_id: '', and POST /api/opportunities
+       * answered 400 customer_required — "Pick a customer to open a deal for." — which the dialog
+       * offered no control to satisfy. The first thing a shop is invited to do on the Pipeline was
+       * a dead end.
+       *
+       * The placeholder matters just as much once contacts exist: with no empty first option the
+       * select silently pre-selects whichever contact sorts first, so a distracted click files the
+       * deal against the wrong customer. board.js solves both, twenty lines away, and estimates.js
+       * has a comment about precisely this hazard. */
+      body: `<div class="field"><label>Customer${isNew ? ' *' : ''}</label>${o || contacts.length
+        ? `<select class="input" name="contact_id" ${o ? 'disabled' : ''}>
+          ${o ? '' : '<option value="">Choose a customer…</option>'}
+          ${contacts.map((c) => `<option value="${c.id}" ${c.id === o?.contact_id ? 'selected' : ''}>${esc(c.name)}${c.company ? ` — ${esc(c.company)}` : ''}</option>`).join('')}</select>`
+        : `<div class="dim" style="font-size:13px">No customers yet — every deal belongs to one.</div>
+          <button class="btn ghost sm" id="add-contact" type="button" style="margin-top:7px">+ Add your first customer</button>`}</div>
         <div class="grid2">
           <div class="field"><label>Title</label><input class="input" name="title" value="${esc(o?.title || '')}" placeholder="Fall spirit wear"></div>
           <div class="field"><label>Value ($)</label><input class="input" name="value" type="number" min="0" value="${esc(o?.value || '')}"></div>
@@ -155,9 +170,13 @@ function oppForm(o) {
           ${o.estimate_id ? `<div class="dim" style="font-size:11.5px"><a href="#/estimates/${o.estimate_id}" style="color:var(--accent)">view estimate →</a></div>` : ''}` : ''}`,
       footer: `${o ? '<button class="btn danger" id="del" style="margin-right:auto">Delete</button>' : ''}<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${isNew ? 'Create' : 'Save'}</button>`,
       onMount: (bg) => {
+        // Reopens this dialog when the customer is saved, so the deal being written is not lost.
+        $('#add-contact', bg)?.addEventListener('click', () => contactForm(null, () => oppForm(o)))
         $('#save', bg).onclick = async () => {
           const data = formData(bg)
           if (isNew && !data.title) return toast('Give it a title', true)
+          // Said here rather than by a 400 the dialog cannot act on.
+          if (isNew && !data.contact_id) return toast(contacts.length ? 'Choose a customer for this deal first' : 'Add a customer first', true)
           try {
             if (isNew) await api.post('/api/opportunities', data)
             else {
