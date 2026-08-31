@@ -10101,11 +10101,48 @@ section('a backup can actually be put back')
   await t('…and changes nothing at all until it is told to', () => {
     const f = fixture()
     try {
+      // Byte-for-byte, not just row counts. "Nothing has been changed" is a claim about the FILE.
+      const before = readFileSync(f.live)
+      const walBefore = statSync(`${f.live}-wal`).size
       const out = run([f.backup, '--data-root', f.data])
       assert.equal(count(f.live), 1000, 'a plain run is a plan, not an action')
+      assert.equal(Buffer.compare(readFileSync(f.live), before), 0, 'the plan rewrote the live database')
+      assert.ok(existsSync(`${f.live}-wal`), 'the plan DELETED the write-ahead log')
+      assert.equal(statSync(`${f.live}-wal`).size, walBefore, 'the plan checkpointed the log away')
       assert.match(out, /Nothing has been changed/)
       assert.match(out, /500 contacts/, 'it has to show what is in the backup')
       assert.match(out, /replacing: 1000 contacts/, 'and what it would replace, so the shop can tell them apart')
+    } finally { rmSync(f.dir, { recursive: true, force: true }) }
+  })
+
+  await t('a plan does not replay a stale -wal over the live database', () => {
+    /*
+     * The exact case this file's forty-line preamble is written about: an operator who did
+     * `cp backup.db live.db` and left the crash-time -wal beside it. At that moment the shop is
+     * fully recoverable — `rm printshop.db-wal` gives it back.
+     *
+     * looksOpen() opened the live file read-WRITE to ask whether anything still had it open, and
+     * a read-write open of a WAL database replays the log. It ran in the plan loop, before the
+     * `if (!APPLY)` exit. So the look-first step INSTALL.md tells you to run first replayed an
+     * unrelated database's log over a good backup, left quick_check answering "database disk
+     * image is malformed", deleted the log outright — and printed "Nothing has been changed."
+     * Both copies of the shop gone, and a plan takes no safety copy, so there was nothing to
+     * put back.
+     */
+    const f = fixture()
+    try {
+      const good = join(f.backup, 'printshop.db')
+      copyFileSync(good, f.live)                       // the documented mistake
+      const walBytes = statSync(`${f.live}-wal`).size  // the crash-time log, left beside it
+      assert.ok(walBytes > 0, 'fixture no longer leaves an orphaned -wal, which is the whole case')
+      run([f.backup, '--data-root', f.data])
+      assert.equal(Buffer.compare(readFileSync(f.live), readFileSync(good)), 0,
+        'the plan replayed a stale log over the live database')
+      assert.ok(existsSync(`${f.live}-wal`), 'the plan deleted the log, which may be the only copy of the last minutes of work')
+      assert.equal(statSync(`${f.live}-wal`).size, walBytes, 'the plan truncated the log')
+      // And the shop is still recoverable the way it was before the plan ran.
+      rmSync(`${f.live}-wal`, { force: true }); rmSync(`${f.live}-shm`, { force: true })
+      assert.equal(count(f.live), 500, 'after the plan, removing the stale log must still give the shop back')
     } finally { rmSync(f.dir, { recursive: true, force: true }) }
   })
 
@@ -10119,6 +10156,11 @@ section('a backup can actually be put back')
       const files = readdirSync(join(safety, kept[0]))
       assert.ok(files.includes('printshop.db'), 'the file that was replaced')
       assert.ok(files.includes('printshop.db-wal'), 'and the -wal, which may be the only copy of the last few minutes of work')
+      // Not just present — the BYTES. The still-open probe used to run before the safety copy, so
+      // it had already checkpointed the log away: measured at exactly 0 bytes, under a tool that
+      // prints "including any -wal, so this is undoable". It was not.
+      assert.ok(statSync(join(safety, kept[0], 'printshop.db-wal')).size > 0,
+        'the -wal in the safety copy is empty, so the restore is not undoable after all')
       // Undo it, exactly as the tool prints: the crash-time state comes back.
       copyFileSync(join(safety, kept[0], 'printshop.db'), f.live)
       copyFileSync(join(safety, kept[0], 'printshop.db-wal'), `${f.live}-wal`)

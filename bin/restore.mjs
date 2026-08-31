@@ -54,7 +54,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import {
-  statSync, readdirSync, mkdirSync, copyFileSync, renameSync, existsSync,
+  statSync, readdirSync, mkdirSync, copyFileSync, renameSync, rmSync, existsSync,
   chownSync, chmodSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -229,6 +229,13 @@ function census(path) {
  * outright on the first access and fails with SQLITE_BUSY if any other connection has the
  * database open at all, idle or not. Verified both directions — BUSY with a live handle open,
  * free the moment it closes.
+ *
+ * THIS FUNCTION MUTATES THE FILE IT PROBES. There is no read-only way to ask the question: a
+ * read-only handle plus locking_mode = EXCLUSIVE throws "disk I/O error" against a live database,
+ * which is indistinguishable from a dozen real faults. A read-WRITE open performs WAL recovery,
+ * and closing the last connection checkpoints the log into the main file and deletes it. So the
+ * probe rewrites exactly the bytes this tool exists to preserve, and it must never run during a
+ * plan or before the safety copy. Both of those had happened; see the preserve phase below.
  */
 function looksOpen(path) {
   if (!existsSync(path)) return false
@@ -295,15 +302,12 @@ say(`    safety     ${SAFETY}`)
 say('')
 
 let bad = 0
-let busy = 0
 for (const p of pairs) {
   const v = quickCheck(p.from)
   const live = existsSync(p.to)
   const stale = ['-wal', '-shm'].filter((s) => existsSync(p.to + s))
   const walBytes = existsSync(p.to + '-wal') ? statSync(p.to + '-wal').size : 0
-  const open = live && looksOpen(p.to)
   if (!v.ok) bad++
-  if (open) busy++
   say(`    ${v.ok ? '✓' : '✗'} ${p.from.slice(SRC.length + 1) || basename(p.from)}`)
   say(`        ${v.ok ? census(p.from) : `BACKUP IS NOT USABLE: ${v.error}`}`)
   say(`        → ${p.to}${live ? '' : '   (new file)'}`)
@@ -312,7 +316,6 @@ for (const p of pairs) {
     say(`        a ${stale.join(' and ')} is beside it${walBytes ? ` (${walBytes} bytes of write-ahead log)` : ''}`)
     say(`        → moved into the safety copy. Left in place it would replay over the restore${walBytes ? ' — this is the one that empties a shop' : ''}.`)
   }
-  if (open) say(`        STILL OPEN — something is using this database`)
 }
 
 if (flag('--skip-art')) {
@@ -335,13 +338,12 @@ if (bad) {
   die(`${bad} of ${pairs.length} file(s) in this backup did not pass PRAGMA quick_check.`,
     'Nothing was touched. Use an older archive — restoring a corrupt backup over a live database\n    would turn one bad day into two.')
 }
-if (busy && !FORCE) {
-  die(`${busy} database(s) are still open — stop the app first.`,
-    'sudo systemctl stop printshopcrm      (Docker:  docker compose stop app)\n'
-    + '    Restoring under a running service corrupts the file and the service writes its own stale\n'
-    + '    pages back over yours afterwards. --force overrides this; it is almost never right.')
-}
 if (!APPLY) {
+  // Deliberately NOT the still-open probe. See the note on looksOpen(): asking the question
+  // MUTATES the file, so a plan cannot ask it. The probe runs under --yes, once the bytes are safe.
+  say('  Whether anything still has these databases open is checked when you use --yes —')
+  say('  asking that question opens the file, and a plan does not open anything. Stop the app first.')
+  say('')
   say('  Nothing has been changed. Re-run with --yes to carry this out:')
   say('')
   say(`    node bin/restore.mjs ${positional[0]}${opt('--to') ? ` --to ${opt('--to')}` : ''}${opt('--data-root') ? ` --data-root ${opt('--data-root')}` : ''} --yes`)
@@ -365,6 +367,56 @@ try { mkdirSync(SAFETY, { recursive: true }) } catch (e) {
 }
 let restored = 0
 const undo = []
+
+/**
+ * Preserve every byte BEFORE anything opens a live database. Two separate defects made this a
+ * phase of its own rather than the first few lines of the loop below.
+ *
+ * looksOpen() opens the file read-write. A read-write open of a WAL database performs WAL
+ * recovery, and closing the last connection checkpoints the log into the main file and removes
+ * it. So the probe rewrote the very bytes this tool exists to preserve — and it ran during the
+ * PLAN, which the header of this file promises "changes nothing at all without --yes".
+ *
+ * Driven end to end on the exact case the preamble is written about, an operator who did
+ * `cp backup.db live.db` and left the crash-time -wal beside it: the plan replayed 4 MB of an
+ * unrelated database's log over a file that was byte-identical to a good 500-contact backup,
+ * grew it from 16 KB to 900 KB, left `SELECT count(*) FROM contacts` answering "database disk
+ * image is malformed", deleted the 4 MB log outright — and then printed "Nothing has been
+ * changed." Both copies of the shop destroyed by the look-first step INSTALL.md tells you to
+ * run first, with no safety copy, because a plan does not make one.
+ *
+ * The second defect is the quieter one. Even under --yes the probe ran before the safety copy,
+ * so the -wal it preserved had already been checkpointed away: measured at exactly 0 bytes,
+ * under a tool that prints "including any -wal, so this is undoable". It was not.
+ *
+ * Copies, not renames — a copy cannot hurt a database that is still live, and at this point we
+ * have not yet established that nothing is using it.
+ */
+const preserved = new Set()
+for (const p of pairs) {
+  const rel = p.to.slice(DATA_ROOT.length + 1) || basename(p.to)
+  mkdirSync(join(SAFETY, dirname(rel)), { recursive: true })
+  for (const suffix of ['', '-wal', '-shm']) {
+    const from = p.to + suffix
+    if (!existsSync(from)) continue
+    if (suffix && flag('--keep-wal')) continue
+    copyFileSync(from, join(SAFETY, rel + suffix))
+    preserved.add(from)
+  }
+}
+
+/*
+ * Only NOW is it safe to ask the question, because the answer costs a read-write open.
+ * --force still overrides, and the safety copies above are already on disk either way.
+ */
+const busy = pairs.filter((p) => existsSync(p.to) && looksOpen(p.to)).length
+if (busy && !FORCE) {
+  die(`${busy} database(s) are still open — stop the app first.`,
+    'sudo systemctl stop printshopcrm      (Docker:  docker compose stop app)\n'
+    + '    Restoring under a running service corrupts the file and the service writes its own stale\n'
+    + `    pages back over yours afterwards. --force overrides this; it is almost never right.\n`
+    + `    Nothing was restored. A copy of what is on disk now is in ${SAFETY}.`)
+}
 
 for (const p of pairs) {
   const rel = p.to.slice(DATA_ROOT.length + 1) || basename(p.to)
@@ -391,19 +443,22 @@ for (const p of pairs) {
     const st = statSync(p.to)
     own = { uid: st.uid, gid: st.gid, mode: st.mode & 0o7777 }
     // The safety copy is a plain byte copy, ON PURPOSE: the live file may be the corrupt one, and
-    // a VACUUM INTO of a corrupt database fails, which would leave us with no copy at all.
-    copyFileSync(p.to, join(SAFETY, rel))
+    // a VACUUM INTO of a corrupt database fails, which would leave us with no copy at all. It was
+    // taken in the preserve phase above, before the still-open probe could rewrite it.
     undo.push({ back: join(SAFETY, rel), to: p.to })
   }
 
-  // The -wal and the -shm go with it. MOVED, not deleted: the -wal may be the only place the last
-  // few minutes of the shop's work exists, and a restore should never be the thing that destroys
-  // it. Leaving it in place is what silently empties the restored database.
+  // The -wal and the -shm go with it. Their bytes were copied into the safety copy in the preserve
+  // phase — never deleted without a copy, because the -wal may be the only place the last few
+  // minutes of the shop's work exists, and a restore should never be the thing that destroys it.
+  // What is left here is clearing them out of the way: left in place they replay over the restore,
+  // which is what silently empties a restored database.
   for (const suffix of ['-wal', '-shm']) {
     const side = p.to + suffix
     if (!existsSync(side)) continue
     if (flag('--keep-wal')) { say(`    ! keeping ${basename(side)} in place because --keep-wal was given`); continue }
-    renameSync(side, join(SAFETY, rel + suffix))
+    if (preserved.has(side)) rmSync(side, { force: true })
+    else renameSync(side, join(SAFETY, rel + suffix))
   }
 
   if (!own) {
