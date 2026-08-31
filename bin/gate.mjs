@@ -13566,6 +13566,87 @@ section('the calculator and Profitability count the same screens')
   })
 }
 
+
+/* ---------- a documented backup contains the shops (round 27) ----------
+ * Every backup instruction in the product named `printshop.db`. On a multi-tenant install — which
+ * is what PSC_AUTH=1, and therefore every real deployment, runs — that file is the single-shop
+ * DEFAULT HANDLE and holds nothing but the built-in settings defaults. The shops are in
+ * `control.db` and `tenants/<slug>/printshop.db`.
+ *
+ * Followed literally, INSTALL.md's own verification brought up a server that started, answered
+ * {"ok":true} on /health and showed `{"contacts":[],"tags":[]}` — on an archive holding all three
+ * of that shop's customers. That looks exactly like a lost shop, on the one day you are testing a
+ * backup. Worse, the Upgrading section's `sqlite3 … .backup` is the ONLY snapshot taken before
+ * migrations run against real customer data, and it captured 0 contacts and no `tenants` table at
+ * all.
+ *
+ * deploy/release.sh had this same bug and carries the corrected reasoning in its own comments;
+ * the documents were the last place it survived. */
+section('every backup this project documents contains the shops')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const FILES = ['INSTALL.md', 'README.md', 'SECURITY.md', 'HOSTING.md', 'RELEASING.md', 'docs/API.md', 'deploy/DEPLOY.md', 'deploy/backup.sh']
+
+  await t('no instruction anywhere backs up printshop.db and calls it done', () => {
+    const bad = []
+    for (const f of FILES) {
+      let text = ''
+      try { text = readFileSync(join(ROOT, f), 'utf8') } catch { continue }
+      const lines = text.split('\n')
+      lines.forEach((line, i) => {
+        // A line that copies/dumps printshop.db as a BACKUP. Reading it, pointing PSC_DB at it, or
+        // naming it as the default handle is fine and is what the corrected text does.
+        if (!/printshop\.db/.test(line)) return
+        if (!/(\.backup|sqlite3|cp\s|rsync|tar\s+cz|scp\s)/.test(line)) return
+        // …unless the surrounding block also names the things that actually hold a shop's work.
+        const w = lines.slice(Math.max(0, i - 8), i + 9).join('\n')
+        if (/control\.db|tenants\/|snapshot\.mjs/.test(w)) return
+        bad.push(`${f}:${i + 1}: ${line.trim().slice(0, 100)}`)
+      })
+    }
+    assert.deepEqual(bad, [], `these back up a 4 KB file of defaults and none of the shop's work:\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('the pre-upgrade snapshot — the only one taken before a migration — takes all of them', () => {
+    const s = readFileSync(join(ROOT, 'INSTALL.md'), 'utf8')
+    const i = s.indexOf('## Upgrading')
+    assert.ok(i > 0, 'INSTALL.md must still document upgrading')
+    const block = s.slice(i, i + 1600)
+    assert.match(block, /snapshot\.mjs/, 'the pre-upgrade backup has to be the one that captures every database')
+    assert.ok(!/sqlite3 .*printshop\.db.*\.backup/.test(block),
+      'the single-file sqlite3 dump is back — it captures no shop on a multi-tenant install')
+    assert.match(block, /restore\.mjs/, '…and the block has to say how to put it back')
+  })
+
+  await t('the verification a reader is told to run actually shows them a shop', () => {
+    const s = readFileSync(join(ROOT, 'INSTALL.md'), 'utf8')
+    const i = s.indexOf('Restore one, once, somewhere else')
+    assert.ok(i > 0, 'INSTALL.md must still tell people to test a restore')
+    const block = s.slice(i, i + 1800)
+    assert.match(block, /PSC_AUTH=1/,
+      'without PSC_AUTH=1 the app serves the default handle and shows an empty customer list on a good archive')
+    assert.match(block, /list-shops/, 'and it should name the shops in the archive before booting anything')
+    assert.match(block, /empty customer list/i, '…and warn what the wrong command looks like, since it looks like success')
+  })
+
+  await t('and nothing still tells the reader the whole product is one file', () => {
+    const bad = []
+    for (const f of FILES) {
+      let text = ''
+      try { text = readFileSync(join(ROOT, f), 'utf8') } catch { continue }
+      text.split('\n').forEach((line, i) => {
+        if (/(database is a single file|single SQLite file you can copy|one database file you can copy)/i.test(line)) {
+          bad.push(`${f}:${i + 1}: ${line.trim().slice(0, 90)}`)
+        }
+      })
+    }
+    assert.deepEqual(bad, [], `this sentence is what makes a reader back up the wrong file:\n      ${bad.join('\n      ')}`)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

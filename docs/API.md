@@ -344,4 +344,5 @@ Not part of `/api/v1`, but worth knowing: `GET /api/export/<table>.csv` covers `
 `estimates`, `invoices`, `payments`, `jobs`, `activities`, `art_versions` and `line_items` — the
 last being every line of every document flattened, with size breakdowns, which nobody else gives
 you. The whole database, every table, exports as one JSON file from Settings. There is no export
-fee and no support ticket. The database itself is a single SQLite file you can copy.
+fee and no support ticket. Each shop's database is a plain SQLite file you can copy (a
+multi-tenant install has one per shop, plus the registry — see INSTALL.md).

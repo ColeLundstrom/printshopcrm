@@ -39,7 +39,9 @@ bite:
   firewall.
 - **Don't run it as root.** The supplied systemd unit runs as a dedicated user with
   `ProtectSystem=strict` and a narrow `ReadWritePaths`.
-- **Back the database up somewhere else.** A backup on the same disk isn't one.
+- **Back the databases up somewhere else.** A backup on the same disk isn't one — and on a
+  multi-tenant install "the database" is `control.db` plus one file per shop under `tenants/`.
+  `bin/snapshot.mjs` takes all of them; a copy of `printshop.db` alone takes none of a shop's work.
 
 ## What the app already does
 

@@ -3,8 +3,8 @@
 **Open-source shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
 
 Quoting, estimates, invoicing, a production board, art proofing, purchasing, and per-job
-profitability in one app. Node.js + SQLite. No build step, four runtime dependencies, one database
-file you can copy.
+profitability in one app. Node.js + SQLite. No build step, four runtime dependencies, and every
+shop's data in a plain SQLite file you can copy.
 
 [![CI](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
@@ -77,7 +77,8 @@ Four more things it does that are unusual:
 - **Your data is not the moat.** Customers, quotes, invoices, payments, jobs, artwork history and
   the timeline each export to CSV — including line items with size breakdowns, which nobody else
   gives you — and **everything**, every table, exports as one JSON file. No ticket, no fee. The
-  database is a single file.
+  data for each shop is a plain SQLite file you can copy — see INSTALL.md for what a backup has to
+  include, because a multi-tenant install has more than one of them.
 
 ---
 

@@ -346,11 +346,26 @@ add whichever you already use to the same cron entry.
 
 ```bash
 tar xzf 20260823-030000.tar.gz
-PSC_DB=$PWD/20260823-030000/printshop.db npm start
+
+# Does the archive still name every shop it should?
+PSC_DB=$PWD/20260823-030000/printshop.db npm run admin -- list-shops
+
+# Then bring it up and sign in as one of them.
+PSC_DB=$PWD/20260823-030000/printshop.db PSC_AUTH=1 PSC_SECRET=verify-only PORT=3999 npm start
 ```
 
-If that starts and your customers are in it, you have backups. If you have never done it, you
-don't.
+Open <http://localhost:3999>, sign in with a shop owner's address, and look at Customers. If that
+shop's records are there, you have backups. If you have never done it, you don't.
+
+**`PSC_AUTH=1` is not optional in that command.** Your shops live in
+`20260823-030000/tenants/<slug>/printshop.db`, and the registry that lets anyone sign in is
+`20260823-030000/control.db`. The `printshop.db` in the root of the archive is the single-shop
+default handle, and on a `PSC_AUTH=1` install — which is what the multi-tenant setup above
+configures — it holds nothing but the built-in settings defaults.
+
+Without `PSC_AUTH=1` the app serves that file: you get a server that starts, answers `{"ok":true}`
+on `/health`, and shows an **empty customer list**, on a perfectly good archive. That looks exactly
+like a lost shop, and the day you are testing a backup is the worst possible day to learn it.
 
 ### Putting a backup back
 
@@ -400,7 +415,13 @@ and the service comes up with "attempt to write a readonly database".
 
 ```bash
 cd /opt/printshopcrm
-sqlite3 /var/lib/printshopcrm/printshop.db ".backup '/var/backups/pre-upgrade.db'"
+# Every database, not just one. /var/lib/printshopcrm/printshop.db is the single-shop DEFAULT
+# HANDLE; with PSC_AUTH=1 your shops are in control.db and tenants/<slug>/printshop.db, and a
+# snapshot of printshop.db alone holds no customers and nothing you could sign in to. This is the
+# only backup taken before migrations run against real shop data, so it has to be all of it.
+# bin/snapshot.mjs uses SQLite's own VACUUM INTO, needs no sqlite3 binary, and verifies each file.
+sudo -u printshopcrm npm run snapshot -- /var/lib/printshopcrm \
+  /var/backups/pre-upgrade-$(date +%Y%m%d%H%M%S)
 git pull
 npm ci --omit=dev
 sudo systemctl restart printshopcrm
@@ -408,7 +429,14 @@ journalctl -u printshopcrm -n 30
 ```
 
 Schema migrations run automatically at startup and are additive — they add columns and tables, they
-don't drop them. Take the backup anyway.
+don't drop them. Take the snapshot anyway; it is exactly what `bin/restore.mjs` puts back:
+
+```bash
+sudo systemctl stop printshopcrm
+sudo -u printshopcrm npm run restore -- /var/backups/pre-upgrade-<stamp> \
+  --data-root /var/lib/printshopcrm --yes
+sudo systemctl start printshopcrm
+```
 
 To verify before restarting, run the tests against the new code:
 

@@ -204,7 +204,12 @@ echo "$(date +%Y-%m-%dT%H:%M:%S%z) backup ok — $count database(s), $DEST.tar.g
 #   aws s3 cp   "$DEST.tar.gz" s3://your-bucket/printshopcrm/
 #   scp         "$DEST.tar.gz" you@another-host:/backups/
 #
-# Then actually restore one somewhere else, once, so you know it works:
+# Then actually restore one somewhere else, once, so you know it works. PSC_AUTH=1 matters: the
+# printshop.db in the root of the archive is the single-shop DEFAULT HANDLE and holds no shop's
+# data on a multi-tenant install — the shops are in tenants/<slug>/printshop.db and control.db.
+# Without it you get a server that starts, answers {"ok":true}, and shows an empty customer list
+# on a perfectly good archive.
 #   tar xzf 20260823-030000.tar.gz
-#   PSC_DB=$PWD/20260823-030000/printshop.db npm start
+#   PSC_DB=$PWD/20260823-030000/printshop.db npm run admin -- list-shops
+#   PSC_DB=$PWD/20260823-030000/printshop.db PSC_AUTH=1 PSC_SECRET=verify-only PORT=3999 npm start
 # ---------------------------------------------------------------------------
