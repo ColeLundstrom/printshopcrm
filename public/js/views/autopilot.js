@@ -87,9 +87,9 @@ export async function autopilotView() {
               <input type="file" id="ap-file" accept="image/*" hidden></div>
             <div class="field" style="margin-bottom:0"><label>How far should it go?</label>
               <div class="ap-dial" id="ap-dial">
-                <button data-mode="review" class="${mode === 'review' ? 'on' : ''}">
+                <button type="button" data-mode="review" class="${mode === 'review' ? 'on' : ''}" aria-pressed="${mode === 'review'}">
                   <strong>Review first</strong><span>Drafts the quote &amp; mockup, then stops for you to send</span></button>
-                <button data-mode="auto" class="${mode === 'auto' ? 'on' : ''}">
+                <button type="button" data-mode="auto" class="${mode === 'auto' ? 'on' : ''}" aria-pressed="${mode === 'auto'}">
                   <strong>Full auto</strong><span>Sends the estimate for you — the customer approves, nothing is charged</span></button>
               </div>
             </div>
@@ -120,7 +120,7 @@ export async function autopilotView() {
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
   on($('#ap-dial'), '[data-mode]', (_e, t) => {
     mode = t.dataset.mode; store.set('psc-ap-mode', mode)
-    $$('#ap-dial button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode))
+    $$('#ap-dial button').forEach((b) => { const on = b.dataset.mode === mode; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
   })
   // () => run(), not `run`: an onclick handler is CALLED WITH THE EVENT, so binding the function
   // directly would pass a MouseEvent as `resume` and the run would skip the POST it exists to make.

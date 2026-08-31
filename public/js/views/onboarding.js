@@ -121,9 +121,12 @@ function render() {
   const steps = d.onboarding.steps
   const rail = steps.map((s) => {
     const active = s.key === key
-    return `<button class="ob-rail-item ${s.done ? 'done' : ''} ${active ? 'on' : ''}" data-goto="${s.key}">
-      <span class="ob-rail-ic">${s.done ? '✓' : `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`}</span>
-      <span class="ob-rail-t">${esc(s.title)}${s.required ? '' : ' <span class="ob-opt">optional</span>'}</span></button>`
+    // aria-current="step", NOT aria-pressed: these navigate to a step in a linear flow, they are
+    // not a set of toggles. The ✓ was the only signal that a step is done and it is a bare glyph a
+    // screen reader reads as "check mark", so it is hidden and given words instead.
+    return `<button type="button" class="ob-rail-item ${s.done ? 'done' : ''} ${active ? 'on' : ''}" data-goto="${s.key}"${active ? ' aria-current="step"' : ''}>
+      <span class="ob-rail-ic" aria-hidden="true">${s.done ? '✓' : `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`}</span>
+      <span class="ob-rail-t">${esc(s.title)}${s.required ? '' : ' <span class="ob-opt">optional</span>'}${s.done ? ' <span class="sr-only">— done</span>' : ''}</span></button>`
   }).join('')
 
   $('#view').innerHTML = `<div class="obx">
@@ -134,7 +137,7 @@ function render() {
         <div class="ob-progress"><div class="ob-progress-fill" style="width:${d.onboarding.pct}%"></div></div>
         <div class="ob-progress-t">${d.onboarding.done} of ${d.onboarding.total} done</div>
       </div>
-      <div class="ob-rail-list">${rail}</div>
+      <div class="ob-rail-list" aria-label="Setup steps">${rail}</div>
       <button class="ob-skip-all" id="ob-later">Finish later — take me in →</button>
     </aside>
     <section class="ob-panel" id="ob-panel">${panel(key)}</section>

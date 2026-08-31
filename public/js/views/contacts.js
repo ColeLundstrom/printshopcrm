@@ -30,13 +30,13 @@ export async function contactsView() {
     // and the gate asserts it there; this is the same control one screen over.
     const wasTag = document.activeElement?.dataset?.tag
     $('#list').innerHTML = body
-    $('#tags').innerHTML = ['', ...d.tags].map((t) => `<button class="${filterTag === t ? 'on' : ''}" data-tag="${esc(t)}">${t ? esc(t) : 'All'}</button>`).join('')
+    $('#tags').innerHTML = ['', ...d.tags].map((t) => `<button type="button" class="${filterTag === t ? 'on' : ''}" data-tag="${esc(t)}" aria-pressed="${filterTag === t}">${t ? esc(t) : 'All'}</button>`).join('')
     if (wasTag !== undefined) $(`#tags [data-tag="${CSS.escape(wasTag)}"]`)?.focus?.()
   }
 
   $('#view').innerHTML = `<div class="searchbar">
       <input class="input" id="q" placeholder="Search name, company, email…" autocomplete="off">
-      <div class="tabs" id="tags"></div>
+      <div class="tabs" id="tags" role="group" aria-label="Filter customers by tag"></div>
     </div><div class="card" id="list"></div>`
 
   // Bound once, on elements that outlive every render.

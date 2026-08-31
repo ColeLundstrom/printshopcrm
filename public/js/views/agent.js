@@ -31,10 +31,10 @@ export async function agentView() {
             ${ai.available ? `<span class="pill green" style="margin-left:4px">Model on · ${esc(ai.model || 'connected')}</span>` : `<span class="pill" style="margin-left:4px">Runs without a model too</span>`}</p>
 
           <div class="field"><label>Mode</label>
-            <div class="modepick" id="modepick">
-              <button type="button" class="modeopt ${cfg.mode === 'ai' ? 'on' : ''}" data-mode="ai">
+            <div class="modepick" id="modepick" role="group" aria-label="Receptionist mode">
+              <button type="button" class="modeopt ${cfg.mode === 'ai' ? 'on' : ''}" data-mode="ai" aria-pressed="${cfg.mode === 'ai'}">
                 <strong>AI mode</strong><span>Replies on its own, 24/7. Captures and quotes automatically.</span></button>
-              <button type="button" class="modeopt ${cfg.mode === 'assist' ? 'on' : ''}" data-mode="assist">
+              <button type="button" class="modeopt ${cfg.mode === 'assist' ? 'on' : ''}" data-mode="assist" aria-pressed="${cfg.mode === 'assist'}">
                 <strong>Assist mode</strong><span>Still qualifies + captures, but frames prices as "the team will confirm" and flags every lead for you.</span></button>
             </div>
           </div>
@@ -208,7 +208,10 @@ function currentConfig() {
 
 function bindConfig() {
   $('#enabled').onchange = () => { $('#enabled-lbl').textContent = $('#enabled').checked ? 'Live' : 'Off' }
-  on($('#modepick'), '.modeopt', (_e, t) => { $$('.modeopt').forEach((b) => b.classList.remove('on')); t.classList.add('on') })
+  // agent.js:194 reads `$('.modeopt.on')?.dataset.mode` as the SAVE PAYLOAD, so the class is
+  // authoritative and stays. aria-pressed is added beside it, in the same statement, or the two
+  // drift the moment anyone clicks.
+  on($('#modepick'), '.modeopt', (_e, t) => { $$('.modeopt').forEach((b) => { const on = b === t; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) }) })
   $('#accent').oninput = updateEmbed
   $('#add-faq').onclick = () => { addFaqRow('', ''); markCfgDirty() }
   $('#save').onclick = async () => {

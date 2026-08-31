@@ -56,8 +56,8 @@ export async function billingView() {
   $('#view').innerHTML = `<div class="bill">
     ${banner()}
     <div class="bill-toggle">
-      <button class="${interval === 'month' ? 'on' : ''}" data-int="month">Monthly</button>
-      <button class="${interval === 'year' ? 'on' : ''}" data-int="year">Annual · 2 months free</button>
+      <button type="button" class="${interval === 'month' ? 'on' : ''}" data-int="month" aria-pressed="${interval === 'month'}">Monthly</button>
+      <button type="button" class="${interval === 'year' ? 'on' : ''}" data-int="year" aria-pressed="${interval === 'year'}">Annual · 2 months free</button>
     </div>
     <div class="plans">${order.map(planCard).join('')}</div>
     ${st.subscribed && st.stripe_customer_id ? '<div class="row" style="justify-content:center;margin-top:18px"><button class="btn ghost" id="manage">Manage or cancel subscription →</button></div>' : ''}
@@ -71,7 +71,7 @@ export async function billingView() {
   // binding survives every revisit, so one plan click would open a Checkout Session per visit.
   on($('.bill-toggle', $('#view')), '[data-int]', (_e, t) => { interval = t.dataset.int; paintPlans() })
   function paintPlans() {
-    $('.bill-toggle', $('#view')).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.int === interval))
+    $('.bill-toggle', $('#view')).querySelectorAll('button').forEach((b) => { const on = b.dataset.int === interval; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
     $('.plans', $('#view')).innerHTML = order.map(planCard).join('')
   }
 

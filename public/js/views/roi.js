@@ -38,10 +38,10 @@ export async function roiView() {
 
     <div class="card">
       <div class="card-h"><h3>Every job, costed</h3><div class="spacer"></div>
-        <div class="tabs" id="roi-sort">
-          <button data-s="margin" class="${sortBy === 'margin' ? 'on' : ''}">By margin</button>
-          <button data-s="profit" class="${sortBy === 'profit' ? 'on' : ''}">By profit</button>
-          <button data-s="revenue" class="${sortBy === 'revenue' ? 'on' : ''}">By revenue</button>
+        <div class="tabs" id="roi-sort" role="group" aria-label="Sort jobs">
+          <button type="button" data-s="margin" class="${sortBy === 'margin' ? 'on' : ''}" aria-pressed="${sortBy === 'margin'}">By margin</button>
+          <button type="button" data-s="profit" class="${sortBy === 'profit' ? 'on' : ''}" aria-pressed="${sortBy === 'profit'}">By profit</button>
+          <button type="button" data-s="revenue" class="${sortBy === 'revenue' ? 'on' : ''}" aria-pressed="${sortBy === 'revenue'}">By revenue</button>
         </div></div>
       ${d.jobs.length ? `<table class="tbl">
         <thead><tr><th>Job</th><th class="num">Pieces</th><th class="num">Revenue</th><th class="num">Cost</th><th class="num">Profit</th><th class="num">Margin</th></tr></thead>

@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, relTime, initials, setPage, empty, toast, on, go } from '../core.js'
+import { api, $, $$, el, esc, relTime, initials, setPage, empty, toast, on, go, announce } from '../core.js'
 
 /**
  * Conversations — GHL's unified inbox, built in.
@@ -44,13 +44,13 @@ async function drawList() {
   const d = await api.get('/api/conversations')
   if (!activeId && d.threads.length) activeId = d.threads[0].id
   $('#convo-list').innerHTML = d.threads.length ? d.threads.map((t) => `
-    <div class="convo-item ${t.id === activeId ? 'on' : ''} ${t.unread ? 'unread' : ''}" data-c="${t.id}">
+    <div class="convo-item ${t.id === activeId ? 'on' : ''} ${t.unread ? 'unread' : ''}" data-c="${t.id}"${t.id === activeId ? ' aria-current="true"' : ''}>
       <div class="avatar">${esc(initials(t.name))}</div>
       <div class="ci-main">
         <div class="ci-top"><span class="ci-name">${esc(t.name)}</span><span class="ci-time">${relTime(t.last_at)}</span></div>
         <div class="ci-preview">${t.last_dir === 'out' ? '<span class="dim">You: </span>' : ''}${esc((t.last_body || '').replace(/\n/g, ' ').slice(0, 60))}</div>
       </div>
-      ${t.unread ? `<span class="ci-badge">${t.unread}</span>` : `<span class="ci-ch">${t.last_channel === 'sms' ? '✉' : '@'}</span>`}
+      ${t.unread ? `<span class="ci-badge" aria-label="${t.unread} unread">${t.unread}</span>` : `<span class="ci-ch" aria-hidden="true">${t.last_channel === 'sms' ? '✉' : '@'}</span>`}
     </div>`).join('') : empty('▭', 'No conversations', 'Send an estimate or a proof to start one.', '<a class="btn" href="#/autopilot">Create an estimate</a>')
   on($('#convo-list'), '[data-c]', (_e, t) => { activeId = +t.dataset.c; go(`/conversations/${activeId}`) })
 }
@@ -92,8 +92,8 @@ async function drawThread(id) {
     </div>
     <div class="ct-compose">
       <div class="row" style="margin-bottom:7px">
-        <div class="tabs" id="ct-channel">
-          <button data-ch="email" class="${channelWas === 'email' ? 'on' : ''}">Email</button><button data-ch="sms" class="${channelWas === 'sms' ? 'on' : ''}">SMS</button>
+        <div class="tabs" id="ct-channel" role="group" aria-label="Send this reply as">
+          <button type="button" data-ch="email" class="${channelWas === 'email' ? 'on' : ''}" aria-pressed="${channelWas === 'email'}">Email</button><button type="button" data-ch="sms" class="${channelWas === 'sms' ? 'on' : ''}" aria-pressed="${channelWas === 'sms'}">SMS</button>
         </div>
         <div class="sp"></div>
         <button class="btn ghost sm" id="ct-ai">Draft with AI</button>
@@ -106,7 +106,15 @@ async function drawThread(id) {
   if (draft) $('#ct-text').value = draft
   const body = $('#ct-body'); body.scrollTop = body.scrollHeight
   let channel = channelWas
-  on($('#ct-channel'), '[data-ch]', (_e, t) => { channel = t.dataset.ch; $$('#ct-channel button').forEach((b) => b.classList.toggle('on', b.dataset.ch === channel)) })
+  // Of the sixteen segmented controls in this app, this is the one where being unable to tell
+  // which option is armed costs the shop money and reaches the customer on the wrong channel. The
+  // class is the state store — line 75 reads `$('#ct-channel .on')?.dataset.ch` to survive the
+  // realtime repaint — so aria-pressed is added beside it, and the change is also said out loud.
+  on($('#ct-channel'), '[data-ch]', (_e, t) => {
+    channel = t.dataset.ch
+    $$('#ct-channel button').forEach((b) => { const on = b.dataset.ch === channel; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
+    announce(`Replying by ${channel === 'sms' ? 'text message' : 'email'}`)
+  })
 
   $('#ct-send').onclick = async () => {
     const text = $('#ct-text').value.trim()

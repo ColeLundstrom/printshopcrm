@@ -34,7 +34,7 @@ export async function invoicesView() {
   }
 
   $('#view').innerHTML = `<div class="searchbar">
-      <div class="tabs" id="tabs">${['all', 'unpaid', 'overdue', 'partial', 'paid', 'void'].map((s) => `<button data-s="${s}" class="${filter === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
+      <div class="tabs" id="tabs" role="group" aria-label="Filter invoices by status">${['all', 'unpaid', 'overdue', 'partial', 'paid', 'void'].map((s) => `<button type="button" data-s="${s}" class="${filter === s ? 'on' : ''}" aria-pressed="${filter === s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
       <div class="sp"></div><div id="sum" style="align-self:center"></div>
     </div><div class="card" id="list"></div>`
   // #list is created ONCE per visit and only its innerHTML is repainted, so this binding used to
@@ -43,7 +43,7 @@ export async function invoicesView() {
   onOnce($('#list'), '[data-id]', (_e, t) => go(`/invoices/${t.dataset.id}`))
   on($('#tabs'), '[data-s]', (_e, t) => {
     filter = t.dataset.s
-    $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.s === filter))
+    $$('#tabs button').forEach((b) => { const on = b.dataset.s === filter; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
     render()
   })
   await render()

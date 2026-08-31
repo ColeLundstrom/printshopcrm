@@ -44,10 +44,10 @@ export async function boardView() {
   if (!$('#board')) $('#view').innerHTML = '<div class="dim">Loading…</div>'
   const d = await api.get(`/api/board?filter=${boardState.filter}&assignee=${encodeURIComponent(boardState.assignee)}`)
 
-  const chip = (k, label, n) => `<button data-f="${k}" class="${boardState.filter === k ? 'on' : ''}">${label}${n != null ? ` <span>${n}</span>` : ''}</button>`
+  const chip = (k, label, n) => `<button type="button" data-f="${k}" class="${boardState.filter === k ? 'on' : ''}" aria-pressed="${boardState.filter === k}">${label}${n != null ? ` <span>${n}</span>` : ''}</button>`
 
   $('#view').innerHTML = `<div class="boardbar">
-      <div class="tabs" id="bfilter">
+      <div class="tabs" id="bfilter" role="group" aria-label="Filter the board">
         ${chip('all', 'All', d.counts.all)}${chip('week', 'This week')}${chip('rush', 'Rush', d.counts.rush)}
         ${chip('late', 'Late', d.counts.late)}${chip('unpaid', 'Unpaid', d.counts.unpaid)}
       </div>

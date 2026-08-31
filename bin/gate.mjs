@@ -9117,7 +9117,12 @@ section('three screens that threw away the shop’s work')
     const src = await readView('public/js/views/conversations.js')
     const i = src.indexOf('async function drawThread')
     assert.ok(i > 0, 'drawThread moved — re-point this test')
-    const fn = src.slice(i, i + 3200)
+    // To the end of the function, not a fixed character count. A 3200-char window broke the moment
+    // the channel picker's markup grew by an aria-label — the third time a slice width has failed a
+    // correct change in this file. Assert the property; do not measure the formatting.
+    const next = src.slice(i + 1).search(/\n(?:export )?(?:async )?function /)
+    const fn = next > 0 ? src.slice(i, i + 1 + next) : src.slice(i)
+    assert.ok(fn.includes("$('#ct-text')"), 'the window must actually cover the draft handling it asserts about')
     assert.match(fn, /const draft = \$\('#ct-text'\)\?\.value/, 'the draft is not captured before the repaint')
     assert.match(fn, /if \(draft\) \$\('#ct-text'\)\.value = draft/, 'the draft is captured and then never put back')
   })
@@ -13820,6 +13825,112 @@ section('a server out of file handles says so, instead of "something went wrong"
     assert.match(after, /errcode === 14/, '…SQLITE_CANTOPEN')
     assert.match(after, /EMFILE/, '…and the process-wide descriptor limit')
     assert.match(after, /LimitNOFILE/, 'and the message has to name the one thing that fixes it')
+  })
+}
+
+
+/* ---------- a chosen option is chosen out loud, not only in CSS (round 27, fe-26-08) ----------
+ * Sixteen segmented controls in this app said which option was selected with the single class
+ * `.on` and nothing else. A screen reader reads every option in the group identically — "Email,
+ * button. SMS, button." — with no way to tell which one is armed.
+ *
+ * The whole of public/ contained exactly four ARIA state attributes before this: the sidebar nav,
+ * the mobile tabbar, the Outbox toggle and the command palette. Everything else was CSS.
+ *
+ * The sharpest one is the Inbox's Email / SMS picker, which decides whether the reply the shop
+ * just typed leaves as an email or as a billable text to the customer's phone — and the code
+ * REQUIRES the class to be the state store (conversations.js reads `$('#ct-channel .on')` to
+ * survive the realtime repaint, agent.js reads `$('.modeopt.on')` as its save payload). So the
+ * rule for the fix was: ADD the attribute, never replace the class, and toggle both in the same
+ * statement or they drift on the first click. */
+section('a control that is switched on says so to a screen reader')
+{
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  // Every group whose chosen option is drawn with `.on`, and the attribute it must also carry.
+  // estimates.js's `.sz` chips are deliberately absent: that class only shadows the value of the
+  // <input type="number"> it wraps, and the input already announces its own value. Listed here so
+  // the count reconciles and nobody "fixes" it into a lie later.
+  const SITES = [
+    ['public/auth.html', 'aria-selected', 'the login / create-shop switcher — the one page a locked-out owner reaches'],
+    ['public/js/views/estimates.js', 'aria-pressed', 'the estimate status filter'],
+    ['public/js/views/invoices.js', 'aria-pressed', 'the invoice status filter'],
+    ['public/js/views/roi.js', 'aria-pressed', 'the Profitability sort'],
+    ['public/js/views/billing.js', 'aria-pressed', 'Monthly / Annual'],
+    ['public/js/views/pricing.js', 'aria-selected', 'the price book chart tabs'],
+    ['public/js/views/contacts.js', 'aria-pressed', 'the customer tag filter'],
+    ['public/js/views/board.js', 'aria-pressed', 'the job board filter chips'],
+    ['public/js/views/conversations.js', 'aria-pressed', 'THE EMAIL-OR-TEXT PICKER'],
+    ['public/js/views/agent.js', 'aria-pressed', 'the receptionist AI / Assist mode'],
+    ['public/js/views/autopilot.js', 'aria-pressed', 'Review first / Full auto — this one mails customers'],
+    ['public/js/views/onboarding.js', 'aria-current', 'the setup wizard step rail'],
+  ]
+
+  for (const [file, attr, what] of SITES) {
+    await t(`${what} announces its state (${file.split('/').pop()})`, () => {
+      const src = readFileSync(join(ROOT, file), 'utf8')
+      assert.ok(src.includes(attr), `${file}: ${what} is still selected in CSS only — a screen reader cannot tell which option is on`)
+    })
+  }
+
+  await t('and the class is still there, because six of these read it back as state', () => {
+    // A "fix" that swapped the class for the attribute would break the save payload and the
+    // realtime repaint. Both of these are load-bearing reads.
+    const agent = readFileSync(join(ROOT, 'public/js/views/agent.js'), 'utf8')
+    assert.match(agent, /\.modeopt\.on/, 'agent.js reads the class as the mode it saves')
+    const conv = readFileSync(join(ROOT, 'public/js/views/conversations.js'), 'utf8')
+    assert.match(conv, /#ct-channel \.on/, 'conversations.js reads the class to survive the realtime repaint')
+  })
+
+  await t('every handler that toggles the class toggles the attribute in the same statement', () => {
+    // Two separate passes over the same buttons is how they drift: the class moves on click and
+    // the attribute stays where the last full render put it.
+    const bad = []
+    const files = ['estimates', 'invoices', 'billing', 'conversations', 'agent', 'autopilot']
+      .map((n) => `public/js/views/${n}.js`)
+      .concat(['public/auth.html'])
+    for (const f of files) {
+      const lines = readFileSync(join(ROOT, f), 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        if (!/classList\.(toggle|add|remove)\('on'/.test(line)) return
+        // The size chips in estimates.js are the documented exception.
+        if (/\.sz\b/.test(line)) return
+        const w = lines.slice(Math.max(0, i - 2), i + 4).join('\n')
+        if (!/aria-(pressed|selected|current)|setAttribute\('aria-/.test(w)) {
+          bad.push(`${f}:${i + 1}: ${line.trim().slice(0, 100)}`)
+        }
+      })
+    }
+    assert.deepEqual(bad, [], `these move the class on click and leave the announced state behind:\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('the picker that decides email-or-text also says the change out loud', () => {
+    const conv = readFileSync(join(ROOT, 'public/js/views/conversations.js'), 'utf8')
+    const i = conv.indexOf("'#ct-channel'")
+    assert.ok(i > 0, 'the channel picker moved — re-point this rule')
+    const w = conv.slice(i, i + 600)
+    assert.match(w, /announce\(/,
+      'this is the only one of the sixteen where the wrong state costs money and reaches the customer')
+    assert.match(conv, /import \{[^}]*\bannounce\b/, 'announce has to be imported for that to work')
+  })
+
+  await t('and no NEW segmented control ships without one', () => {
+    // The general rule, so the next one added is caught rather than the twelve that were fixed.
+    const dir = join(ROOT, 'public/js/views')
+    const bad = []
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+      const lines = readFileSync(join(dir, f), 'utf8').split('\n')
+      lines.forEach((line, i) => {
+        // A <button> in a template literal whose class is driven by a ternary onto 'on'.
+        if (!/<button[^>]*class="[^"]*\$\{[^}]*\?\s*'on'\s*:/.test(line)) return
+        if (/aria-(pressed|selected|current)/.test(line)) return
+        bad.push(`${f}:${i + 1}: ${line.trim().slice(0, 110)}`)
+      })
+    }
+    assert.deepEqual(bad, [], `a chosen option drawn in CSS only:\n      ${bad.join('\n      ')}`)
   })
 }
 

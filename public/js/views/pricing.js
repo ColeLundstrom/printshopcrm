@@ -32,9 +32,9 @@ async function loadChart(which) {
   keepTab()
 }
 
-const chartTabs = () => `<div class="tabs" id="pm-tabs" style="margin-bottom:14px">
+const chartTabs = () => `<div class="tabs" id="pm-tabs" style="margin-bottom:14px" role="tablist" aria-label="Price book views">
   ${[['screen', 'Screen Print'], ['embroidery', 'Embroidery'], ['dtf', 'DTF'], ['book', 'Your prices'], ['matrices', 'Your matrices']]
-    .map(([k, l]) => `<button data-c="${k}" class="${chart === k ? 'on' : ''}">${l}</button>`).join('')}
+    .map(([k, l]) => `<button type="button" role="tab" data-c="${k}" class="${chart === k ? 'on' : ''}" aria-selected="${chart === k}" tabindex="${chart === k ? 0 : -1}">${l}</button>`).join('')}
 </div>`
 
 /* ── The price book editor ────────────────────────────────────────────────────

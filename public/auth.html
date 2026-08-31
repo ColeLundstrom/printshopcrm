@@ -62,12 +62,12 @@
       <h1>__BRAND_NAME__</h1>
     </div>
     <div class="card">
-      <div class="tabs">
-        <button id="tab-login" class="on" onclick="mode('login')">Sign in</button>
-        <button id="tab-signup" onclick="mode('signup')">Create your shop</button>
+      <div class="tabs" role="tablist" aria-label="Sign in or create a shop">
+        <button id="tab-login" class="on" type="button" role="tab" aria-selected="true" aria-controls="form" onclick="mode('login')">Sign in</button>
+        <button id="tab-signup" type="button" role="tab" aria-selected="false" aria-controls="form" onclick="mode('signup')">Create your shop</button>
       </div>
 
-      <form id="form" onsubmit="return submitForm(event)">
+      <form id="form" role="tabpanel" onsubmit="return submitForm(event)">
         <div id="signup-fields" class="hide">
           <h2>Start your shop</h2>
           <div class="sub">Your own isolated workspace — set up in under a minute.</div>
@@ -113,8 +113,12 @@
     function mode(m) {
       M = m
       const isSignup = m === 'signup', isForgot = m === 'forgot', isReset = m === 'reset'
+      // Both, in the same statement. This is the only screen a locked-out owner can reach, and it
+      // is hand-written HTML outside public/js/, which is why the original sweep missed it.
       $('tab-login').classList.toggle('on', m === 'login')
+      $('tab-login').setAttribute('aria-selected', String(m === 'login'))
       $('tab-signup').classList.toggle('on', isSignup)
+      $('tab-signup').setAttribute('aria-selected', String(isSignup))
       $('signup-fields').classList.toggle('hide', !isSignup)
       $('login-head').classList.toggle('hide', isSignup || isForgot || isReset)
       // A hidden input that is still `required` makes the browser block submit on a field it

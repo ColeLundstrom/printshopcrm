@@ -25,15 +25,17 @@ export async function estimatesView() {
       : empty('▤', 'No estimates', 'Quote a job and it shows up here.', '<a class="btn" href="#/autopilot">Paste a request → estimate</a>')
   }
 
-  $('#view').innerHTML = `<div class="searchbar"><div class="tabs" id="tabs">
-      ${['all', 'draft', 'sent', 'approved'].map((s) => `<button data-s="${s}" class="${listFilter === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}
+  $('#view').innerHTML = `<div class="searchbar"><div class="tabs" id="tabs" role="group" aria-label="Filter estimates by status">
+      ${['all', 'draft', 'sent', 'approved'].map((s) => `<button type="button" data-s="${s}" class="${listFilter === s ? 'on' : ''}" aria-pressed="${listFilter === s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}
     </div></div><div class="card" id="list"></div>`
   // Bound once. #list only has its innerHTML replaced by render(), so binding this inside render()
   // stacked a new listener per tab switch — the same doubling bug as the customer list.
   on($('#list'), '[data-id]', (_e, t) => go(`/estimates/${t.dataset.id}`))
   on($('#tabs'), '[data-s]', (_e, t) => {
     listFilter = t.dataset.s
-    $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.s === listFilter))
+    // The class stays — it is the style AND, in six of these groups, the state store. The ARIA
+    // attribute is ADDED beside it, never instead of it.
+    $$('#tabs button').forEach((b) => { const on = b.dataset.s === listFilter; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
     render()
   })
   $('#new').onclick = () => go('/estimates/new')
