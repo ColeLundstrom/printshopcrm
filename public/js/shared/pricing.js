@@ -413,6 +413,25 @@ const GARMENT_COSTS = [
   [/tee|t-?shirt|shirt/i, 3.60],
 ]
 export function guessGarmentCost(text) { const t = String(text || ''); for (const [re, c] of GARMENT_COSTS) if (re.test(t)) return c; return 0 }
+
+/**
+ * The blank cost for one estimate line: prefer what the line KNOWS over what its text suggests.
+ *
+ * The Price Calculator stamps `garment_cost` on every line it hands to the estimate editor, and
+ * lib/quickquote.mjs stamps `blank_cost` — often a live distributor price, which is the entire
+ * point of having looked it up. Guessing from the description throws both away, and the
+ * descriptions the calculator writes ("Garment — 2/0 Front", "DTF Transfer — 12×16″ print") match
+ * nothing in GARMENT_COSTS, so the guess returned 0 and the blank was costed free.
+ *
+ * Only when the line carries no price of its own is its text worth reading. lib/roi.mjs has always
+ * applied this rule; it lives here so the editor and the ROI page cannot drift apart again.
+ */
+export function lineBlankCost(it) {
+  const stamped = Number(it?.garment_cost) > 0 ? Number(it.garment_cost)
+    : Number(it?.blank_cost) > 0 ? Number(it.blank_cost)
+    : 0
+  return stamped > 0 ? stamped : guessGarmentCost(it?.description)
+}
 export function guessColors(text) {
   const t = String(text || '')
   const m = t.match(/(\d+)\s*(?:\/\s*\d+\s*)?colou?rs?/i) || t.match(/\b(\d)\s*\/\s*\d\b/)

@@ -14615,6 +14615,104 @@ section('every credential a lite shop can enter, it can also remove')
 }
 
 
+/* ---------- the screen that prices the job and the guard that grades it ---------- */
+section('the estimate editor costs a calculator line the way the calculator did')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const { quoteScreenPrint, jobCost, margin, pressColors, guessGarmentCost, guessColors, sizeTotal, lineBlankCost } =
+    await import('../public/js/shared/pricing.js')
+
+  /*
+   * The Price Calculator is the estimate editor's own primary door: quoteModal hands each line
+   * straight into `items`, and it stamps the real blank cost on every one of them —
+   * `garment_cost: state.garmentCost` (quote.js, both the screen-print and the service branch).
+   *
+   * marginGuard ignored the field and re-derived the blank from the line's DESCRIPTION TEXT. The
+   * descriptions the calculator writes are "Garment — 2/0 Front", "DTF Transfer — 12×16″ print",
+   * "Embroidery — standard stitch", "Patch — 3″ patch + application", "UV DTF — 4×4″ decal" and
+   * "Laser — engrave, per-piece tier". GARMENT_COSTS matches on garment nouns and style numbers —
+   * gildan, 5000, 1717, hoodie, cap, polo, tee — and not one of those six strings contains one, so
+   * guessGarmentCost fell through its whole table and returned 0. Every blank on the quote was
+   * costed free.
+   *
+   * Measured on the shipped defaults, 300 pieces, one 2-colour front, $4.00 blanks: the calculator
+   * says cost $1,531.67 and 46.8% margin; the very next screen, with nothing edited, said $307.67
+   * and 89.3%. The missing $1,224.00 is exactly 300 × 4 × 1.02 — the whole blank line.
+   *
+   * The damage is not the label, it is the guardrail. `below = m.margin < floor` is the target-
+   * margin floor the product is built around, and at 89.3% it cannot trip against any floor a shop
+   * would set. The one control that stops an underpriced quote leaving the building was dead on
+   * every line the calculator produced, and a shop discounting to 60% was told it was Strong.
+   *
+   * lib/roi.mjs has always preferred `it.garment_cost`; this was the last of the three costing
+   * screens to read the field.
+   */
+  await t('the calculator writes descriptions that no garment table can match', () => {
+    for (const d of ['Garment — 2/0 Front', 'DTF Transfer — 12×16″ print', 'Embroidery — standard stitch',
+      'Patch — 3″ patch + application', 'UV DTF — 4×4″ decal', 'Laser — engrave, per-piece tier']) {
+      assert.equal(guessGarmentCost(d), 0,
+        `precondition: "${d}" is what the calculator names its line, and the text guess cannot cost it`)
+    }
+  })
+
+  await t('so the guard costs the line from the field, and lands where the calculator landed', () => {
+    const state = { garmentCost: 4, markup: 2, qty: 300, screenFee: 25, rushMult: 1, darkGarment: false,
+      press: 'auto', locations: [{ name: 'Front', colors: 2 }] }
+    const q = quoteScreenPrint(state)
+    const calcCost = jobCost({ qty: 300, colors: pressColors(state.locations, false), garmentCost: 4,
+      press: 'auto', shopRate: 75, utilization: 0.3, spoilage: 2, screens: q.totalColors, screenCost: 8 }).total
+    assert.equal(calcCost, 1531.67, 'precondition: this is what the Price Calculator tells the shop')
+
+    // the line quote.js pushes into the editor, verbatim in shape
+    const line = { description: 'Garment — 2/0 Front', detail: '1 location, 2 colors', decoration: 'Screen Print',
+      sizes: { S: 0, M: 300, L: 0, XL: 0 }, unit_price: q.perPiece, garment_cost: 4, taxable: true }
+
+    const colors = guessColors(`${line.description} ${line.detail || ''}`)
+    // lineBlankCost is the shipped decision, called here exactly as marginGuard calls it.
+    const guardCost = jobCost({
+      qty: sizeTotal(line.sizes), colors, garmentCost: lineBlankCost(line),
+      press: 'auto', shopRate: 75, utilization: 0.3, spoilage: 2, screenCost: 8, screens: colors,
+    }).total
+    assert.equal(guardCost, calcCost,
+      'the editor must cost the calculator\'s own line the way the calculator did')
+
+    // and the guardrail can now actually fire on it
+    const revenue = q.perPiece * 300
+    assert.ok(margin(revenue, guardCost).margin < 60, 'a 46.8% job must not read as a 89.3% one')
+    assert.ok(margin(revenue, guardCost).margin < (Number('45') + 15),
+      'the target-margin floor has to be reachable, or it is not a floor')
+  })
+
+  await t('and quickquote’s live distributor price is preferred over a text guess too', () => {
+    // lib/quickquote.mjs stamps blank_cost on every line Autopilot, Slack quick-quote, the
+    // receptionist and the assistant write — often a real distributor price, which is the whole
+    // point of looking it up. Text-guessing a "Gildan 5000" line lands on the catalogue's 3.20.
+    const line = { description: '200 Gildan 5000 tees', sizes: { M: 200 }, blank_cost: 5.75, taxable: true }
+    assert.equal(guessGarmentCost(line.description), 3.20, 'precondition: the table has an opinion here')
+    assert.equal(lineBlankCost(line), 5.75, 'the price the shop was actually quoted beats the catalogue average')
+    // …and the text guess is still there for a hand-typed line that carries no price of its own.
+    assert.equal(lineBlankCost({ description: '200 Gildan 5000 tees' }), 3.20, 'the guess is the fallback, not the rule')
+    assert.equal(lineBlankCost({ description: 'Garment — 2/0 Front' }), 0, 'and it still cannot cost a calculator line')
+    assert.equal(lineBlankCost({ description: 'x', garment_cost: 0 }), 0, 'a zero field must not be read as a price')
+  })
+
+  await t('the guard reads the field, and cannot quietly stop reading it', () => {
+    const src = readFileSync(join(ROOT, 'public/js/views/estimates.js'), 'utf8')
+    const i = src.indexOf('const marginGuard =')
+    assert.ok(i > 0, 'marginGuard moved — re-point this rule')
+    const mg = src.slice(i, src.indexOf('\n  const draw', i))
+    assert.ok(mg.length > 100, 'the marginGuard slice is empty — re-point this rule')
+    const code = mg.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    assert.match(code, /garmentCost: lineBlankCost\(it\)/,
+      'the guard must ask lineBlankCost, not re-guess the blank from the description text')
+    assert.ok(!/guessGarmentCost\(/.test(code),
+      'marginGuard is text-guessing the blank again; lineBlankCost is the one place that decision lives')
+  })
+}
+
 /* ---------- the gate must not report its own races as product regressions ---------- */
 section('no two servers in the e2e suite are given the same port')
 {

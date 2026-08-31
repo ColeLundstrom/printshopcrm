@@ -1,5 +1,5 @@
 import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
-import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, guessGarmentCost, guessColors } from '../shared/pricing.js'
+import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
 import { matrixPickerModal } from './matrices.js'
@@ -180,8 +180,16 @@ export async function estimateEditor(id) {
       if (qty <= 0 || it.taxable === false) continue // skip setup/fee lines
       priced = true
       const colors = guessColors(`${it.description} ${it.detail || ''}`)
+      // The line usually KNOWS what its blank costs, and guessing from the description throws that
+      // away. The Price Calculator — this editor's own primary door — stamps garment_cost on every
+      // line it hands over (quote.js), and quickquote stamps blank_cost, often a live distributor
+      // price. Both were being re-derived from text like "Garment — 2/0 Front", which matches
+      // nothing in GARMENT_COSTS, so guessGarmentCost returned 0 and the whole blank was free.
+      // lib/roi.mjs:184 already prefers the field; this was the one costing screen that did not.
       cost += jobCost({
-        qty, colors, garmentCost: guessGarmentCost(it.description),
+        qty,
+        colors,
+        garmentCost: lineBlankCost(it),
         press: settings.press_type || 'auto', shopRate: Number(settings.shop_hourly_rate) || 75,
         utilization: (Number(settings.utilization_pct) || 30) / 100, spoilage: Number(settings.spoilage_pct) || 2,
         screenCost: 8, screens: colors,
