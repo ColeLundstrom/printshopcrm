@@ -169,8 +169,23 @@ export function el(html) {
   return t.content.firstElementChild
 }
 
-/** Delegated click binding: on(root, '.selector', handler). */
+/**
+ * Delegated click binding: on(root, '.selector', handler).
+ *
+ * A missing root is a no-op, not a TypeError. Screens draw sections conditionally — the Reorder
+ * Radar's "Snoozed" card is rendered only when something is snoozed, which for every shop that
+ * has never pressed Snooze is never — and the handler for a section is bound on the line after
+ * the render, unconditionally, because that reads correctly. Without this guard that combination
+ * throws inside render(), the router's catch swallows it, and the screen draws NOTHING: no cards,
+ * no error, and a "Try again" button that re-runs the same code and fails the same way. The whole
+ * feature was unreachable for every shop, in the state every shop starts in.
+ *
+ * onOnce() below has had exactly this guard since it was written. The two are used
+ * interchangeably across every view, so the one without it was the one that could take a screen
+ * down — and a conditional root is an ordinary thing for a screen to have.
+ */
 export function on(root, sel, fn, evt = 'click') {
+  if (!root) return
   root.addEventListener(evt, (e) => {
     const t = e.target.closest(sel)
     if (t && root.contains(t)) fn(e, t)

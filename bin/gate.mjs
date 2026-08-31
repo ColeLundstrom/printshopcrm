@@ -2873,6 +2873,39 @@ section('the app does not discard what the shop has typed')
     assert.match(snooze, /Math\.min\(/, 'an unbounded days makes 3650 a ten-year snooze')
   })
 
+  /* ---------- …and the way back took the whole screen down with it ----------
+   * The Snooze fix above rendered the "Snoozed" card conditionally — `d.snoozed?.length ? … : ''`
+   * — and bound its handler unconditionally: `on($('#ro-snoozed'), '[data-unsnooze]', …)`. For
+   * every shop that has never pressed Snooze, lib/reorder.mjs returns `snoozed: []`, so the card
+   * is not in the document, `$('#ro-snoozed')` is null, and on() does `root.addEventListener`
+   * with no guard. TypeError, thrown inside render, swallowed by the router's catch — the Reorder
+   * Radar draws nothing at all, and the panel's only control ("Try again") re-runs the same code
+   * and fails the same way. There is no exit from that screen but the back button, and no shop
+   * can reach the feature: the state that breaks it is the state every shop starts in.
+   *
+   * The sibling helper onOnce() has had `if (!root) return` since it was written (core.js:195);
+   * on() never got it, and the two are used interchangeably across every view. So the guard goes
+   * in on(), not in reorder.js — a conditional root is an ordinary thing for a screen to have,
+   * and it must not be able to kill the render. */
+  await t('binding a handler to a section the screen did not draw does not kill the screen', async () => {
+    const { execFileSync } = await import('node:child_process')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      // A shop that has never snoozed anyone: #ro-body was drawn, #ro-snoozed was not.
+      const body = { addEventListener() {}, contains: () => false }
+      globalThis.document = { querySelector: (sel) => (sel === '#ro-snoozed' ? null : body), querySelectorAll: () => [] }
+      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      try {
+        m.on(m.$('#ro-body'), '[data-nudge]', () => {})
+        m.on(m.$('#ro-snoozed'), '[data-unsnooze]', () => {})
+        process.stdout.write('rendered')
+      } catch (e) { process.stdout.write('threw: ' + e.constructor.name) }
+    `], { encoding: 'utf8' })
+    assert.equal(out.trim(), 'rendered', 'on() threw on an absent root — the whole view dies with it')
+  })
+
   /* ---------- the screen's rule has to be the SERVER's rule ----------
    * estimates.js hid the only Edit and the only Delete in the product on `status !== 'approved'`.
    * Both routes object to something else entirely: PUT refuses only when a live invoice exists,
