@@ -8004,7 +8004,26 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
     res.redirect(303, url)
   } catch (e) {
     console.error('pay-checkout:', e.message)
-    res.status(502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1><p>${esc(e.message)}</p><p><a href="${back}">Go back</a></p></div></div>`))
+    /**
+     * The shop is told, and the customer is given something they can act on.
+     *
+     * A console line on a box nobody has a shell to was the ONLY record: no timeline note, no
+     * outbox row, nothing on any screen. So a customer who clicked Pay off an invoice email and
+     * could not, and then gave up, was invisible — the invoice just went on being unpaid. The
+     * failed-confirm path a hundred lines up already writes to the timeline; this one did not.
+     *
+     * And the page printed e.message verbatim, which for an HTML body from Stripe's edge meant
+     * the customer read "Unexpected token '<' … is not valid JSON" under "Couldn't start
+     * checkout". Give them the shop's own contact details instead — the page already knows them.
+     */
+    try {
+      logActivity('note', `A customer could not start card checkout on ${inv.invoice_number} — ${String(e.message).slice(0, 140)}`, { contact_id: inv.contact_id })
+    } catch { /* the customer's page must not depend on the note landing */ }
+    const reach = [s.shop_phone, s.shop_email].filter(Boolean).join(' · ')
+    res.status(502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1>
+      <p>We could not reach the card processor just now. Nothing has been charged.</p>
+      <p>Try again in a minute${reach ? `, or contact ${esc(s.shop_name || 'the shop')} to pay another way — ${esc(reach)}` : ''}.</p>
+      <p><a href="${back}">Go back</a></p></div></div>`))
   }
 }))
 

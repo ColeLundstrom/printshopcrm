@@ -4665,6 +4665,82 @@ await t('…and the route will not write \'submitted\' without one either', asyn
  * done it since it was written, ship.sh's rsync excludes it and its remote block linked only
  * public/uploads. `current` is where the operator stands. Measured on a server with two real
  * shops in its control database: "No shops yet. Someone needs to sign up first." */
+/* ---------- the card processor's bad day is not the customer's error message (v28) ----------
+ *
+ * lib/stripe.mjs and lib/connect.mjs were the only two integration modules in the tree that
+ * parsed a remote response unguarded, and both sit on the money path. `await res.json()` throws
+ * a SyntaxError BEFORE the `if (!res.ok)` line that would have said "Stripe 503" — and the pay
+ * route printed e.message straight onto the shop-branded page a customer reached from an invoice
+ * email. Driven with an HTML 503 and an HTML 429 from Stripe's host:
+ *
+ *   Couldn't start checkout
+ *   Unexpected token '<', "<html><hea"... is not valid JSON
+ *
+ * quickbooks.mjs, gdrive.mjs, relay.mjs, notify.mjs and suppliers.mjs all already guard this. */
+section('a bad reply from Stripe is not shown to the customer as a parser error')
+await t('an HTML error page from Stripe becomes a sentence, on every call', async () => {
+  const stripe = await import('../lib/stripe.mjs')
+  const connect = await import('../lib/connect.mjs')
+  const realFetch = globalThis.fetch
+  const answer = (status, body, type) => { globalThis.fetch = async () => new Response(body, { status, headers: { 'content-type': type } }) }
+  const failed = async (fn) => { try { await fn(); return null } catch (e) { return e.message } }
+  const prevPlat = process.env.PSC_PLATFORM_STRIPE_SECRET
+  try {
+    const settings = { stripe_secret: 'sk_test_gate' }
+    const calls = [
+      ['createCheckout', () => stripe.createCheckout({ settings, lineItems: [{ name: 'x', amountCents: 100, qty: 1 }], successUrl: 'https://a/', cancelUrl: 'https://a/' })],
+      ['retrieveSession', () => stripe.retrieveSession({ settings, sessionId: 'cs_test_1' })],
+    ]
+    for (const [status, body, type] of [[503, '<html><head><title>503</title></head><body>edge</body></html>', 'text/html'],
+      [429, '<html>Too many requests</html>', 'text/html'],
+      [200, 'not json at all', 'text/plain']]) {
+      answer(status, body, type)
+      for (const [name, fn] of calls) {
+        const msg = await failed(fn)
+        assert.ok(msg, `${name} resolved on an HTTP ${status} HTML body`)
+        assert.doesNotMatch(msg, /is not valid JSON|Unexpected token/,
+          `${name} on HTTP ${status}: the customer is shown a parser error — ${msg}`)
+        assert.match(msg, /Stripe/, `${name} on HTTP ${status}: the message has to say who is not answering — ${msg}`)
+      }
+    }
+    // A real Stripe error body still reaches the caller verbatim; that message is the whole point.
+    answer(402, JSON.stringify({ error: { message: 'Your card was declined.' } }), 'application/json')
+    assert.match(await failed(calls[0][1]), /Your card was declined\./, 'a real Stripe message must survive')
+    // …and a good response still parses.
+    answer(200, JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_1', id: 'cs_1' }), 'application/json')
+    assert.equal((await stripe.createCheckout({ settings, lineItems: [{ name: 'x', amountCents: 100, qty: 1 }], successUrl: 'https://a/', cancelUrl: 'https://a/' })).id, 'cs_1')
+
+    // The platform half, same shape, same money path.
+    process.env.PSC_PLATFORM_STRIPE_SECRET = 'sk_test_platform'
+    answer(503, '<html>503</html>', 'text/html')
+    const cmsg = await failed(() => connect.createExpressAccount({ email: 'a@b.test', shopName: 'X', slug: 'x' }))
+    assert.ok(cmsg, 'connect.mjs resolved on an HTML 503')
+    assert.doesNotMatch(cmsg, /is not valid JSON|Unexpected token/, `connect.mjs: ${cmsg}`)
+  } finally {
+    globalThis.fetch = realFetch
+    if (prevPlat === undefined) delete process.env.PSC_PLATFORM_STRIPE_SECRET
+    else process.env.PSC_PLATFORM_STRIPE_SECRET = prevPlat
+  }
+})
+
+await t('…and the shop is told a customer could not pay', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const src = readFileSync(join(root, 'server.mjs'), 'utf8')
+  const i = src.indexOf("console.error('pay-checkout:'")
+  assert.ok(i > 0, 'the pay-checkout handler moved — re-point this test')
+  const handler = src.slice(i, i + 2000).split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
+  // A console line on a box nobody has a shell to was the only record. The customer gave up and
+  // the invoice just went on being unpaid, with nothing on any screen.
+  assert.match(handler, /logActivity\(/, 'a customer who could not pay leaves no trace the shop can see')
+  assert.match(handler, /could not start card checkout/, '…and the note has to say what happened')
+  assert.doesNotMatch(handler.slice(0, handler.indexOf('res.status(502)') + 600), /esc\(e\.message\)/,
+    'the page still prints the raw exception to the shop\'s customer')
+  assert.match(handler, /Nothing has been charged/, 'the first thing a customer needs to know')
+})
+
 section('the documented way out of a lockout finds the shops')
 await t('the deploy links the config into the release, like the script beside it', async () => {
   const { readFileSync } = await import('node:fs')
