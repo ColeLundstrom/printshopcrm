@@ -6165,6 +6165,19 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now()).lastInsertRowid)
   logActivity('estimate', `Estimate created via API for ${contact.name}`, { contact_id: contact.id })
+  // The ninth estimate writer, and the only one that never did this. A quote written through the
+  // API existed as a document and as nothing else: no card on the pipeline board, no contribution
+  // to open_value, invisible on the one screen a shop uses to decide who to chase — while an
+  // identical quote typed into the app appeared immediately. Worse than merely missing, because
+  // the first syncFromEstimate then ran at APPROVAL, which inserts the opportunity and in the same
+  // call sets it to 'won': the deal was born already won, having never once been counted as open.
+  // win_rate is wonN/(wonN+lostN), so every API-sourced quote that closes lands in both halves
+  // having never been open, and every one that goes quiet lands in neither. The forecast reads low
+  // and the win rate reads high, structurally, and they are the two numbers a shop plans its year
+  // with. The manual workaround makes it worse rather than better: POST /api/opportunities has no
+  // estimate_id in its INSERT, so a card added by hand does not bind to the quote and approving it
+  // later mints a second one on top.
+  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
   res.status(201).json(v1Estimate(get('SELECT * FROM estimates WHERE id = ?', id)))
 }))
 

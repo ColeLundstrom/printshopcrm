@@ -475,6 +475,35 @@ try {
   })
   chk('v1 still allows an explicit zero-dollar line', r.text, 'EST-')
 
+  /* A quote written through the API must be the same quote as one written in the app.
+   *
+   * Every other estimate writer in the product ends with syncPipeline() — the in-app editor, the
+   * quick quote, the assistant, the autopilot, approve, send, decline: eight call sites. POST
+   * /api/v1/estimates had none, so a quote an integration wrote existed as a document and as
+   * nothing else: no card on the pipeline, no contribution to open_value, invisible on the one
+   * screen a shop uses to decide who to chase. Then approving it ran syncFromEstimate for the
+   * FIRST time, which inserts the opportunity and immediately sets it to 'won' — so the deal was
+   * born already won, having never been counted as open. win_rate is wonN/(wonN+lostN): every
+   * API-sourced quote that closes adds to the numerator and the denominator having never been
+   * open, and every one that goes quiet adds to neither. The forecast reads low and the win rate
+   * reads high, structurally, on the two numbers a shop plans its year with. */
+  const pipeBefore = (await req('GET', '/api/pipeline')).json.stats
+  r = await req('POST', '/api/v1/estimates', {
+    ...asKey(),
+    body: { customer: { name: 'Pipeline Probe', email: 'pipe-probe@e2e.test' }, items: [{ description: 'Tees', quantity: 100, unit_price: 10 }] },
+  })
+  const probeEstId = r.json?.id
+  chk('an API quote is created', String(r.status), '^201$')
+  const pipeAfter = (await req('GET', '/api/pipeline')).json
+  chk('an API-written quote enters the pipeline as an open deal', String(pipeAfter.stats.open_count - pipeBefore.open_count), '^1$')
+  chk('…carrying its value into the forecast', String(round2e(pipeAfter.stats.open_value - pipeBefore.open_value)), '^1000$')
+  const probeCard = pipeAfter.columns.flatMap((c) => c.opps).find((o) => o.estimate_id === probeEstId)
+  chk('…as a card bound to the estimate it came from', String(probeCard && probeCard.stage), '^quoted$')
+  await req('POST', `/api/estimates/${probeEstId}/approve`, { body: {} })
+  const probeCards = (await req('GET', '/api/pipeline')).json.columns.flatMap((c) => c.opps).filter((o) => o.estimate_id === probeEstId)
+  chk('…and approving it moves that one card rather than minting a second', String(probeCards.length), '^1$')
+  chk('…to won', String(probeCards[0] && probeCards[0].stage), '^won$')
+
   // The `== null` guard above caught null and undefined — and nothing an integration actually
   // sends. A form posts "", an unbound Zapier line-item mapping sends "" or [], a toggle sends
   // false. Each coerced to 0 and returned a 201 with a $0 estimate a customer could approve.
