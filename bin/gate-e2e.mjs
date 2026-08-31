@@ -5925,6 +5925,17 @@ try {
     const tiny = await rawGet('/health', { 'Accept-Encoding': 'gzip' })
     chk('a tiny response is not compressed for the sake of it', String(tiny.headers['content-encoding'] ?? 'none'), '^none$')
 
+    /* The OTHER streamed export. /api/export/all.json writes row by row and yields on
+     * backpressure — measured at 400k rows, ignoring res.write()'s return value queued 99 MB and
+     * pushed RSS to 440 MB before failing with writev EINVAL. Compression must not re-buffer it,
+     * and res.write()'s real return value must reach the writer. */
+    const whole = await rawGet('/api/export/all.json', { 'Accept-Encoding': 'gzip' })
+    chk('the whole-shop JSON export is still streamed to a browser', String(whole.headers['content-length'] ?? 'none'), '^none$')
+    chk('…and chunked', String(whole.headers['transfer-encoding']), '^chunked$')
+    chk('…and not compressed, so its backpressure loop still sees the socket',
+      String(whole.headers['content-encoding'] ?? 'none'), '^none$')
+    chk('…and it is still the whole export', String((() => { try { return !!JSON.parse(whole.body.toString()).tables } catch { return false } })()), '^true$')
+
     /* AGPL §13 is not a style choice. The source link is written into these pages by
      * shellHtml()/authHtml(), and every one of them now goes out through the compressor. */
     for (const path of ['/', '/index.html', '/auth.html']) {
