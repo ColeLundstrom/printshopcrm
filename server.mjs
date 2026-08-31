@@ -11,6 +11,7 @@ import {
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, canWrite, SECRET_KEYS,
+  stampShipDate,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore } from './lib/db.mjs'
@@ -3730,27 +3731,6 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
 
-/**
- * Stamp the day a job left the building — once, from whichever door moved it.
- *
- * jobs.ship_date has existed since the v1 migrations and for a long time NOTHING wrote it, so the
- * packing slip's DATE cell fell back to the day the job was BOOKED — seventy days stale on an
- * ordinary order, printed on the document receiving signs. The board drag was taught to stamp it
- * and the other two doors were not, which is worse than the original bug: a shop that standardises
- * on Floor Mode ("operators never type, they scan") got the stale date on every packing slip it
- * ever printed, while the shop next door that drags cards got the right one, and no screen in the
- * product can set the field by hand either way. Same omission on POST /api/v1/jobs/:id/stage, so
- * an integrator advancing jobs over the API never stamped it at all.
- *
- * One function, called by all three, so the fourth writer cannot forget. Stamped only on the first
- * crossing: a card dragged back and forth, or a ticket re-scanned at the pack bench, must not keep
- * rewriting the day the box actually went out.
- */
-function stampShipDate(job, stage) {
-  if (stage !== 'shipping' && stage !== 'complete') return
-  if (job.ship_date) return
-  run('UPDATE jobs SET ship_date = ? WHERE id = ?', todayIso(), job.id)
-}
 
 /* ---- Shop-floor scan loop ----
  * A phone camera reads the Code 128 on the work ticket → the job card appears → one tap

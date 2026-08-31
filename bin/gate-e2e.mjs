@@ -1492,6 +1492,16 @@ try {
     }
     await shipDoor('Floor Mode', (jid, stage) => req('POST', '/api/scan', { body: { job_id: jid, to_stage: stage } }))
     await shipDoor('the v1 API', (jid, stage) => req('POST', `/api/v1/jobs/${jid}/stage`, { body: { stage } }))
+    /* …and the two the helper's own docstring did not know about. It said "called by all three, so
+     * the fourth writer cannot forget"; there were five. lib/assistant.mjs's doMoveJob and
+     * lib/automations.mjs's `job.move` both write `stage` directly, in lib/, where a helper defined
+     * in server.mjs could never reach them. Measured before the fix: an automation move printed a
+     * packing slip 72 days stale, and "move JOB-1002 to shipping" printed one 122 days stale. */
+    await shipDoor('the assistant', async (jid, stage) => {
+      const j = (await req('GET', `/api/jobs/${jid}`)).json
+      const num = j?.job?.job_number ?? j?.job_number
+      return req('POST', '/api/assistant', { body: { message: `move ${num} to ${stage === 'complete' ? 'complete' : 'shipping'}` } })
+    })
   }
 
   /* ---------- the payout destination is not a settings field ----------

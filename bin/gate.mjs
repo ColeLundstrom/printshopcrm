@@ -14615,6 +14615,74 @@ section('every credential a lite shop can enter, it can also remove')
 }
 
 
+/* ---------- every door that moves a job owes the same three writes ---------- */
+section('every stage-writer stamps the day the job left the building')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  /*
+   * jobs.ship_date is the DATE cell on the packing slip — the document the receiving clerk signs.
+   * It has existed since the v1 migrations and for a long time nothing wrote it, so it fell back to
+   * the day the job was BOOKED. The board drag was taught to stamp it, then POST /api/scan and
+   * POST /api/v1/jobs/:id/stage, and stampShipDate's docstring then claimed it was "called by all
+   * three, so the fourth writer cannot forget".
+   *
+   * There were five. lib/automations.mjs's `job.move` and lib/assistant.mjs's doMoveJob write the
+   * stage directly, and they live in lib/ — where a helper defined in server.mjs cannot be reached
+   * at all. Measured: an automation move printed a packing slip dated 2026-06-20 against a job
+   * shipped 2026-08-31 (72 days stale); "move JOB-1002 to shipping" in the assistant printed one
+   * 122 days stale. No route and no field anywhere in the product writes ship_date, so a shop
+   * cannot correct either from any screen.
+   *
+   * The helper moved to lib/db.mjs, beside statusForStage — which is there for exactly this reason,
+   * the automations action having once been the one stage-writer of five that forgot THAT one.
+   *
+   * The e2e suite drives the four doors it can reach over HTTP. This rule is the one that can see
+   * the automation, and it is a text rule on purpose: the failure mode is a NEW writer added
+   * without the call, which no existing test would ever exercise.
+   */
+  const stageWriters = [
+    ['server.mjs', 'the board drag, Floor Mode and the v1 API'],
+    ['lib/automations.mjs', 'the job.move automation action'],
+    ['lib/assistant.mjs', 'the assistant’s “move JOB-1002 to shipping”'],
+  ]
+
+  await t('the rule lives where every writer can reach it', () => {
+    const db = readFileSync(join(ROOT, 'lib/db.mjs'), 'utf8')
+    assert.match(db, /export function stampShipDate/,
+      'stampShipDate must live in lib/db.mjs — a copy in server.mjs is unreachable from lib/')
+    const body = db.slice(db.indexOf('export function stampShipDate'))
+    assert.match(body.slice(0, 400), /if \(job\.ship_date\) return|if \(!job \|\| job\.ship_date\) return/,
+      'it must stamp only the FIRST crossing, or a re-scan at the pack bench rewrites the ship date')
+    assert.match(body.slice(0, 400), /stage !== 'shipping' && stage !== 'complete'/,
+      'only shipping and complete are leaving the building')
+  })
+
+  for (const [file, who] of stageWriters) {
+    await t(`${file} — ${who} — stamps it`, () => {
+      const src = readFileSync(join(ROOT, file), 'utf8')
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+      // Every place that writes jobs.stage must have the stamp within reach.
+      const writes = code.split('\n').map((l, i) => [i + 1, l]).filter(([, l]) => /UPDATE jobs SET stage\s*=|SET stage\s*=\s*\?,\s*status/.test(l))
+      assert.ok(writes.length > 0, `${file} no longer writes jobs.stage — re-point this rule`)
+      assert.match(code, /stampShipDate\(/,
+        `${file} writes jobs.stage at line(s) ${writes.map(([n]) => n).join(', ')} and never stamps ship_date — ` +
+        'the packing slip will print the day the job was booked, and no screen can correct it')
+    })
+  }
+
+  await t('and no writer keeps a private copy of the rule', () => {
+    for (const [file] of stageWriters) {
+      const src = readFileSync(join(ROOT, file), 'utf8')
+      assert.ok(!/^function stampShipDate|^const stampShipDate/m.test(src),
+        `${file} defines its own stampShipDate — there must be exactly one, in lib/db.mjs`)
+    }
+  })
+}
+
 /* ---------- the screen that prices the job and the guard that grades it ---------- */
 section('the estimate editor costs a calculator line the way the calculator did')
 {
