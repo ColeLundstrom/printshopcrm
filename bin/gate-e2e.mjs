@@ -5096,7 +5096,7 @@ try {
    * the platform relay is exercised end to end instead of being mocked out at the callsite. */
   {
     const T4 = mkdtempSync(join(tmpdir(), 'psc-e2e-origin-'))
-    const P4 = PORT + 9
+    const P4 = PORT + 22
     const P4RELAY = PORT + 10
     const sent = []
     const { createServer } = await import('node:http')
@@ -5183,7 +5183,7 @@ try {
    * assertion does not take half a minute. */
   {
     const T9 = mkdtempSync(join(tmpdir(), 'psc-e2e-wsauth-'))
-    const P9 = PORT + 11
+    const P9 = PORT + 23
     const s9 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
       env: { ...process.env, PORT: String(P9), PSC_DB: join(T9, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P9}`, PSC_WS_HEARTBEAT_MS: '300' },

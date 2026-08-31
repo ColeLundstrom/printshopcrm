@@ -14122,6 +14122,53 @@ section('every credential a lite shop can enter, it can also remove')
   })
 }
 
+
+/* ---------- the gate must not report its own races as product regressions ---------- */
+section('no two servers in the e2e suite are given the same port')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  await t('every auxiliary port in gate-e2e.mjs is allocated exactly once', () => {
+    /*
+     * The e2e suite boots ~17 extra servers to prove things the main instance cannot — a host
+     * binding, an install with no PSC_PUBLIC_URL, a server-wide SMTP box — each on PORT + n. Two
+     * of those offsets were allocated twice: PORT+9 by the PSC_HOST block and again by the
+     * PSC_PUBLIC_URL block a few hundred lines later, and PORT+11 by the SMTP-reset block and
+     * again after it.
+     *
+     * Each block does kill its server in a finally, but kill() is a request, not a receipt: the
+     * next block spawns on the same port immediately, and under load the old process has not yet
+     * released it. The new server dies with EADDRINUSE, its boot poll spins for sixty seconds
+     * against a dead port, and then every request in that block returns status 0. What the
+     * operator reads is "a stranger can sign up for a free trial — got: 0" followed by "harness
+     * error: fetch failed" — five product regressions and a crash, none of them real.
+     *
+     * That is the worst failure a gate can have. This suite exists to be run ten times in a row
+     * before a deploy, and a red run that blames the product teaches the person reading it to run
+     * it again until it goes green, which is precisely how a real regression gets waved through.
+     * Reproduced by running two suites at once: the loser reported six regressions in a tree whose
+     * only change was in a file none of those tests touch.
+     *
+     * Unique offsets are the fix. This rule keeps them unique.
+     */
+    const src = readFileSync(join(ROOT, 'bin/gate-e2e.mjs'), 'utf8')
+    const seen = new Map()
+    const dupes = []
+    for (const line of src.split('\n')) {
+      const m = line.match(/const\s+(\w+)\s*=\s*PORT\s*\+\s*(\d+)/)
+      if (!m) continue
+      const [, name, off] = m
+      if (seen.has(off)) dupes.push(`PORT+${off} is ${seen.get(off)} and also ${name}`)
+      else seen.set(off, name)
+    }
+    assert.ok(seen.size > 10, 'the auxiliary-server ports moved — this rule can no longer see them')
+    assert.deepEqual(dupes, [], `two servers share a port, so one loses the bind race under load: ${dupes.join(' | ')}`)
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
