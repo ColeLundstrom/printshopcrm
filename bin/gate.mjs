@@ -4373,6 +4373,97 @@ await t('a contended write on control.db waits, and then succeeds', async () => 
  * the product does not have.
  *
  * With a platform key present — the hosted service — every one of these answers is unchanged. */
+/* ---------- an import that stopped half way must not say it did nothing ----------
+ * Both CSV importers commit in batches ON PURPOSE — 200 orders and 500 contacts at a time, with a
+ * setImmediate between them so /health answers and other shops keep loading while a big file
+ * lands. server.mjs says so in as many words: "Whole-file atomicity is what we give up." Neither
+ * loop caught a failing batch, so the throw walked up to the terminal error handler, which is
+ * written for single-statement routes and answers with a fixed sentence: "The disk holding this
+ * shop's data is full, SO NOTHING WAS SAVED." db_readonly said the same.
+ *
+ * Measured on a real 20 MB volume filled mid-run: the shop is told nothing was saved while 11,609
+ * orders and $2,927,727.03 of payment history were committed and durable. And the only logActivity
+ * in the importer is AFTER the loop, so the run leaves no timeline row either — the money is on
+ * the books and nothing in the product names where it came from.
+ *
+ * What the shop does next is the damage. They are migrating off their old system, they believe
+ * the sentence, and they re-export "to be safe". The orders importer dedupes on
+ * `csv:<sha1 of the whole file>:<row>`, so a fresh export one byte different is a different file
+ * and every order imports AGAIN — their books doubled, and DELETE /api/contacts/:id refuses every
+ * one of those customers with has_financials, so there is no way to take it back out.
+ *
+ * The importers know what they wrote; the generic handler cannot. */
+section('an interrupted import reports what it actually wrote')
+{
+  const { interruptedImportReport } = await import('../lib/csv.mjs')
+  const diskFull = Object.assign(new Error('database or disk is full'), { errcode: 13 })
+
+  await t('a disk that fills on batch 59 does not claim nothing was saved', () => {
+    const r = interruptedImportReport({ written: 11609, total: 76400, noun: 'order', err: diskFull })
+    assert.equal(r.imported, 11609, 'the count the shop needs is the count the importer has')
+    assert.equal(r.of, 76400)
+    assert.ok(!/nothing was saved/i.test(r.error), `still claims nothing was saved: ${r.error}`)
+    assert.match(r.error, /11,?609/, 'it has to say how many landed')
+    assert.match(r.error, /disk/i, '…and why it stopped, or the shop cannot fix it')
+  })
+
+  await t('…and it is still honest when genuinely nothing landed', () => {
+    const r = interruptedImportReport({ written: 0, total: 76400, noun: 'order', err: diskFull })
+    assert.equal(r.imported, 0)
+    assert.match(r.error, /[Nn]othing was written/, 'a zero-row failure should say so plainly')
+  })
+
+  await t('a read-only data directory names the account, not the disk', () => {
+    const r = interruptedImportReport({ written: 5, total: 90, noun: 'customer',
+      err: Object.assign(new Error('attempt to write a readonly database'), { errcode: 8 }) })
+    assert.match(r.error, /read-only/i)
+    assert.ok(!/disk .*full/i.test(r.error), 'that is a different remedy')
+  })
+
+  await t('an unrecognised failure still carries its own message through', () => {
+    const r = interruptedImportReport({ written: 3, total: 10, noun: 'order', err: new Error('UNIQUE constraint failed: jobs.job_number') })
+    assert.match(r.error, /UNIQUE constraint failed/, 'the operator needs the real cause')
+  })
+
+  await t('the resume instruction it is given is the one printed', () => {
+    const r = interruptedImportReport({ written: 2, total: 9, noun: 'order', err: diskFull,
+      resume: 'Upload the SAME file again and it carries on.' })
+    assert.match(r.error, /Upload the SAME file again and it carries on\./)
+  })
+
+  const serverSrc = async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    return readFile(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs'), 'utf8')
+  }
+
+  // …and the two routes have to actually use it, or the helper is decoration.
+  await t('both CSV importers report a stopped batch instead of throwing into the generic handler', async () => {
+    const src = await serverSrc()
+    for (const [route, why] of [
+      ["app.post('/api/import/orders'", 'the orders importer'],
+      ["app.post('/api/import/contacts'", 'the customer importer'],
+    ]) {
+      const at = src.indexOf(route)
+      assert.ok(at > 0, `${route} moved`)
+      const body = src.slice(at, at + 12000)
+      assert.match(body, /interruptedImportReport/, `${why} still lets a failing batch reach the generic handler`)
+    }
+  })
+
+  // The generic handler must stop asserting an atomicity the batched routes gave up.
+  await t('the disk-full and read-only replies no longer promise nothing was saved', async () => {
+    const src = await serverSrc()
+    for (const code of ['disk_full', 'db_readonly']) {
+      const at = src.indexOf(`code: '${code}'`)
+      assert.ok(at > 0, `${code} branch moved`)
+      assert.ok(!/nothing was saved/.test(src.slice(at, at + 400)),
+        `${code} still tells every route in the product that nothing was saved`)
+    }
+  })
+}
+
 section('self-hosted: no platform Stripe key means no trial and no countdown')
 await t('a lapsed trial on an install that cannot take payment is not "trial expired"', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs')

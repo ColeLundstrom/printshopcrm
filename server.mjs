@@ -36,7 +36,7 @@ import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
-import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport } from './lib/csv.mjs'
+import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { ask } from './lib/assistant.mjs'
 import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
@@ -2429,20 +2429,31 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
   // itself rather than sinking its batch.
   let created = 0
   const BATCH = 500
+  // Same shape as the orders importer: batches commit as they go, so a failure part-way through
+  // has to report the count rather than let the generic handler claim nothing was saved.
+  let stopped = null
   for (let i = 0; i < toAdd.length; i += BATCH) {
     const batch = toAdd.slice(i, i + BATCH)
-    tx(() => {
-      for (const c of batch) {
-        try {
-          run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-            c.name, c.email, c.phone, c.company, c.notes, c.tags, now(), now())
-          created++
-        } catch (e) { /* one bad row shouldn't sink the import */ }
-      }
-    })
+    try {
+      tx(() => {
+        for (const c of batch) {
+          try {
+            run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
+              c.name, c.email, c.phone, c.company, c.notes, c.tags, now(), now())
+            created++
+          } catch (e) { /* one bad row shouldn't sink the import */ }
+        }
+      })
+    } catch (e) { stopped = e; break }
     if (i + BATCH < toAdd.length) await new Promise((r) => setImmediate(r))
   }
   if (created) logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {})
+  if (stopped) {
+    return res.status(503).json(interruptedImportReport({
+      written: created, total: toAdd.length, noun: 'customer', err: stopped,
+      resume: 'Fix that, then upload the SAME file again — anyone whose email address is already in your customer list is skipped. Rows with no email address cannot be matched, so check those for duplicates afterwards.',
+    }))
+  }
   res.json({ preview: false, created, duplicates: dupes, skipped: skippedNoName, total_rows: rows.length })
 }))
 
@@ -5906,12 +5917,29 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       'complete', 'complete', o.decoration || 'Screen Print', JSON.stringify(allSizes), JSON.stringify(garmentLines(items)),
       o.due_date || null, notes, stamp, when, when)
   }
+  // A batch that fails must be reported by the importer, not thrown at the generic error handler.
+  // That handler is written for single-statement routes and answers "so nothing was saved", which
+  // is exactly false here: every batch before this one is committed and durable. See
+  // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
+  let stopped = null
   for (let i = 0; i < grouped.length; i += BATCH) {
     const batch = grouped.slice(i, i + BATCH)
-    tx(() => { batch.forEach((o, n) => writeOne(o, i + n)) })
+    try { tx(() => { batch.forEach((o, n) => writeOne(o, i + n)) }) }
+    catch (e) { stopped = e; break }
     // Between transactions, never inside one: this is what lets /health answer, another shop
     // load a page, and a websocket stay alive while a big export is landing.
     if (i + BATCH < grouped.length) await new Promise((r) => setImmediate(r))
+  }
+  if (stopped) {
+    const report = interruptedImportReport({
+      written: created, total: grouped.length, noun: 'order', err: stopped,
+      resume: 'Fix that, then upload the SAME file again — rows already imported are recognised and skipped, so it carries on from where it stopped. Do not re-export from your old system: a fresh export is a different file and would import every order a second time.',
+    })
+    // On the shop's own timeline, because the money is on the books either way and nothing else
+    // in the product would name where it came from. Best effort: whatever stopped the import may
+    // stop this too, and the report still has to reach the screen.
+    try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
+    return res.status(503).json(report)
   }
   logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {})
   res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
@@ -8854,10 +8882,10 @@ app.use((err, req, res, _next) => {
   // the case it was written for: a write that threw where nothing expected one to.
   if (status0 >= 500) {
     if (err?.errcode === 13 || err?.code === 'ENOSPC' || /disk is full|database or disk is full|no space/i.test(m)) {
-      return res.status(503).json({ code: 'disk_full', error: 'The disk holding this shop\u2019s data is full, so nothing was saved. Free space on the server \u2014 old files under data/backups are the usual cause \u2014 then try again.' })
+      return res.status(503).json({ code: 'disk_full', error: 'The disk holding this shop\u2019s data is full, so this change could not be saved. Free space on the server \u2014 old files under data/backups are the usual cause \u2014 then try again.' })
     }
     if (err?.errcode === 8 || err?.code === 'EROFS' || err?.code === 'EACCES' || /readonly database|read-only file system/i.test(m)) {
-      return res.status(503).json({ code: 'db_readonly', error: 'This shop\u2019s data directory is read-only, so nothing was saved. Check that it still belongs to the account the service runs as, then try again.' })
+      return res.status(503).json({ code: 'db_readonly', error: 'This shop\u2019s data directory is read-only, so this change could not be saved. Check that it still belongs to the account the service runs as, then try again.' })
     }
     if (err?.errcode === 5 || /database is locked|database is busy/i.test(m)) {
       return res.status(503).json({ code: 'db_busy', error: 'The database was busy and this change was not saved. Try again in a moment \u2014 if it keeps happening, another process is holding it open.' })
