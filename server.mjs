@@ -5879,6 +5879,45 @@ const v1Invoice = (i) => i && ({ id: i.id, number: i.invoice_number, customer_id
 const v1Job = (j) => j && ({ id: j.id, number: j.job_number, customer_id: j.contact_id, estimate_id: j.estimate_id, invoice_id: j.invoice_id, title: j.title, status: j.status, stage: j.stage, decoration: j.decoration || '', sizes: parse(j.sizes, {}), due_date: j.due_date, rush: !!j.rush, created_at: j.created_at })
 const v1Payment = (p) => p && ({ id: p.id, invoice_id: p.invoice_id, amount: p.amount, method: p.method, created_at: p.created_at })
 
+/**
+ * A text field arriving from an API caller. Objects and lists are REFUSED, never stringified.
+ *
+ * `String({})` is "[object Object]", and that is not a refusal — it is a silent wrong write, which
+ * docs/API.md explicitly promises this API does not do ("Writes reject bad input rather than
+ * coercing it"). It reached money. An integration that maps `email` to a nested address object
+ * produced "[object object]" as the DEDUPE KEY, so the second, unrelated buyer to send that shape
+ * matched the first: Northgate Athletics' $3,450 quote and Riverside Booster Club's $14,000 quote
+ * both landed on customer_id 1, and the shop's customer list showed one school. It also produced
+ * contacts literally named "[object Object]", mailed out as "Hi [object,".
+ */
+const v1BadText = (v) => v !== undefined && v !== null && typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean'
+const v1TextProblem = (obj, fields, prefix = '') => {
+  for (const f of fields) {
+    if (v1BadText(obj?.[f])) {
+      return { error: `${prefix}${f} must be text, not ${Array.isArray(obj[f]) ? 'a list' : 'an object'}`, code: 'invalid_text' }
+    }
+  }
+  return null
+}
+
+/**
+ * One address, or none. `a@x.com, b@y.com` is not an email address.
+ *
+ * The v1 writer and the CSV importer both accepted it while the app's own routes refuse it, and
+ * the consequence was a document that lies: the estimate flipped to `sent` and logged "emailed to
+ * a@x.com, b@y.com" while the Outbox held "Not a single valid email address". Blank stays blank —
+ * plenty of real customers are phone-only.
+ */
+const V1_EMAIL_RE = /^[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,4}$/
+const v1EmailProblem = (raw, field = 'email') => {
+  const e = String(raw ?? '').trim()
+  if (!e) return null
+  if (!V1_EMAIL_RE.test(e)) {
+    return { error: `${field} must be a single valid email address — got "${e.slice(0, 80)}"`, code: 'invalid_email' }
+  }
+  return null
+}
+
 app.get('/api/v1/me', wrap((req, res) => {
   const s = getSettings()
   res.json({ shop: s.shop_name || req.tenant?.shop_name || '', plan: req.tenant?.plan_tier || req.tenant?.plan || 'dev', rate_limit: '120/min', docs: '/docs-api.html' })
@@ -5903,8 +5942,12 @@ app.get('/api/v1/customers/:id', wrap((req, res) => {
 }))
 app.post('/api/v1/customers', wrap((req, res) => {
   const b = req.body || {}
+  const bad = v1TextProblem(b, ['name', 'email', 'phone', 'company'])
+  if (bad) return res.status(400).json(bad)
   const name = String(b.name || '').trim()
   if (!name) return res.status(400).json({ error: 'name is required' })
+  const badEmail = v1EmailProblem(b.email)
+  if (badEmail) return res.status(400).json(badEmail)
   const email = String(b.email || '').trim().toLowerCase()
   const dupe = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
   if (dupe) return res.status(409).json({ error: 'A customer with that email already exists', id: dupe.id })
@@ -5942,7 +5985,11 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     contact = get('SELECT * FROM contacts WHERE id = ?', cid)
     if (!contact) return res.status(404).json({ error: `customer_id ${cid} does not exist`, code: 'customer_not_found' })
   }
-  if (!contact && b.customer && b.customer.name) {
+  if (!contact && b.customer && typeof b.customer === 'object' && !Array.isArray(b.customer) && b.customer.name) {
+    const badC = v1TextProblem(b.customer, ['name', 'email', 'phone', 'company'], 'customer.')
+    if (badC) return res.status(400).json(badC)
+    const badCEmail = v1EmailProblem(b.customer.email, 'customer.email')
+    if (badCEmail) return res.status(400).json(badCEmail)
     const email = String(b.customer.email || '').trim().toLowerCase()
     contact = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
     if (!contact) {

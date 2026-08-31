@@ -378,6 +378,49 @@ try {
   r = await req('GET', '/api/v1/customers?limit=99999', asKey())
   chk('v1 caps an absurd limit instead of honouring it', String((r.json?.data || []).length <= 100), '^true$')
 
+  /* Two of one shop's customers merged into one, and $14,000 landed on the wrong account.
+   *
+   * POST /api/v1/customers and POST /api/v1/estimates both used a bare `String(b.email)` as the
+   * dedupe key. Any object stringifies to "[object Object]", so the SECOND unrelated buyer whose
+   * integration maps email to a nested address object matched the FIRST record. Driven on a clean
+   * shop: Northgate Athletics' $3,450 quote and Riverside Booster Club's $14,000 quote both landed
+   * on customer_id 1, and the shop's customer list showed one school. It also minted contacts
+   * literally named "[object Object]", which go out as "Hi [object,".
+   *
+   * docs/API.md:58 promises in as many words that "Writes reject bad input rather than coercing
+   * it". This is that promise. */
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Northgate Athletics', email: { street: '1 Main St', city: 'Rockford' } } })
+  chk('an email that is an object is refused, not stringified', String(r.status), '^400$')
+  chk('…and the refusal says what is wrong with it', String(r.json?.code || ''), '^invalid_text$')
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: { first: 'Rae' }, email: 'rae@northgate.test' } })
+  chk('a name that is an object is refused too', String(r.status), '^400$')
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Listy', email: ['a@x.test', 'b@y.test'] } })
+  chk('…and a list of emails is not one email', String(r.status), '^400$')
+  // The same door on the estimate route, where the money actually is.
+  r = await req('POST', '/api/v1/estimates', { ...asKey(), body: {
+    customer: { name: 'Riverside Booster Club', email: { street: '9 Oak Ave' } },
+    items: [{ description: '500 tees', quantity: 500, unit_price: 28 }],
+  } })
+  chk('the estimate route refuses the same shape', String(r.status), '^400$')
+  chk('…before it writes anything', String(r.json?.code || ''), '^invalid_text$')
+  // No "[object Object]" customer may exist as a result of any of the above.
+  r = await req('GET', '/api/v1/customers?query=object', asKey())
+  chk('no customer is named after a stringified object', String(JSON.stringify(r.json?.data || []).includes('[object')), '^false$')
+
+  /* `a@x.com, b@y.com` is not an email address. The v1 writer and the CSV importer both took it
+   * while the app's own routes refuse it, and the estimate then flipped to `sent` and logged
+   * "emailed to a@x.com, b@y.com" while the Outbox held "Not a single valid email address". */
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Two Addresses', email: 'a@x.test, b@y.test' } })
+  chk('two addresses in one email field are refused', String(r.status), '^400$')
+  chk('…with the reason named', String(r.json?.code || ''), '^invalid_email$')
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Not An Address', email: 'nope' } })
+  chk('and so is a value that is not an address at all', String(r.status), '^400$')
+  // Precondition, so none of the above can pass by refusing everything: the ordinary shapes work.
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Perfectly Fine', email: 'fine@example.test', phone: '555-0100' } })
+  chk('a normal customer is still created', String(r.status), '^201$')
+  r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Phone Only' } })
+  chk('…and so is one with no email at all', String(r.status), '^201$')
+
   // A line with no unit_price used to return 201 and a $0 estimate a customer could approve.
   r = await req('POST', '/api/v1/estimates', {
     ...asKey(),
