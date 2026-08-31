@@ -15036,6 +15036,49 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('Floor Mode\'s stage buttons do not also navigate away')
+{
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(ROOT, f), 'utf8')
+
+  /*
+   * The other half of the shell-delegation problem, and the one with a person standing at a press.
+   *
+   * capacity.js, roi.js, misc.js and dashboard.js each delegate `[data-job]` on #view with
+   * onOnce, which never unbinds. Floor Mode's stage buttons carried BOTH data-advance and
+   * data-job, so once the shop had opened Profitability, Capacity or Art in that tab, one tap
+   * fired the scan POST *and* go('/jobs/<id>'). renderJob()'s own guard then short-circuited on
+   * the job page that had replaced the screen — no confirmation card, no announce(), no focus
+   * move — so the stage advanced and the operator was told nothing, on the screen whose taps are
+   * the labour timestamps Profitability is built from. The natural next move is to tap again.
+   */
+  await t('sanity: the four screens that claim [data-job] on the shell still do', () => {
+    const claimers = ['capacity.js', 'roi.js', 'misc.js', 'dashboard.js']
+      .filter((f) => /onOnce\(\s*\$\('#view'\)\s*,\s*'\[data-job\]|onOnce\(\s*\$\('#view'\)\s*,\s*'\[data-job\],/.test(read(`public/js/views/${f}`)))
+    assert.ok(claimers.length >= 3,
+      `only ${claimers.length} screens delegate [data-job] on #view — if that stopped being true this rule is asserting on nothing`)
+  })
+
+  await t('a scan button carries no attribute another screen navigates on', () => {
+    const scan = read('public/js/views/scan.js')
+    // Every attribute the stage buttons actually emit, read off the rendered markup.
+    const emitted = [...scan.matchAll(/data-([a-z]+)=/g)].map((m) => m[1])
+    assert.ok(emitted.includes('advance'), 'sanity: scan.js still renders data-advance buttons')
+    assert.ok(!emitted.includes('job'),
+      'scan.js emits data-job, which four other screens delegate on #view — one tap on the floor tablet both scans and navigates away')
+  })
+
+  await t('…and it still knows which job it scanned', () => {
+    const scan = read('public/js/views/scan.js')
+    assert.match(scan, /dataset\.scanjob/, 'the advance handler must read the attribute the buttons actually carry')
+    assert.doesNotMatch(scan.replace(/\/\*[\s\S]*?\*\//g, ''), /dataset\.job\b/,
+      'a renamed attribute with the old read left behind is worse than the bug: every tap posts NaN')
+  })
+}
+
 section('a screen may not delegate a shared data- attribute on the app shell')
 {
   const { readFileSync } = await import('node:fs')

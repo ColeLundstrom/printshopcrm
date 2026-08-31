@@ -99,7 +99,20 @@ export async function scanView() {
 
   onOnce($('#view'), '[data-advance]', async (e) => {
     const btn = e.target.closest('[data-advance]')
-    const jobId = Number(btn.dataset.job)
+    /* data-scanjob, not data-job.
+     *
+     * Four screens — capacity.js, roi.js, misc.js and dashboard.js — delegate `[data-job]` on
+     * #view, the app shell's permanent <main>, with onOnce, which never unbinds. Floor Mode's
+     * stage buttons carried BOTH data-advance and data-job, so once the shop had opened
+     * Profitability, Capacity or Art in that tab, one tap on the floor tablet fired the scan POST
+     * *and* go('/jobs/<id>'). By the time the POST came back, renderJob()'s own guard
+     * (`const host = $('#scan-job'); if (!host) return`) short-circuited on the job page that had
+     * replaced the screen: no confirmation card, no announce(), no focus move.
+     *
+     * So the stage advanced and the operator was told nothing — on the one screen whose taps are
+     * the labour timestamps Profitability is computed from, in front of someone holding a garment.
+     * The natural next move is to tap it again. */
+    const jobId = Number(btn.dataset.scanjob)
     const stage = btn.dataset.advance
     btn.disabled = true
     try {
@@ -124,7 +137,7 @@ function renderJob(d, note) {
   const mins = d.minutes_in_production
   const stageBtns = d.stages.map((s) => s.key === d.stage
     ? `<span class="scan-stage cur">${esc(s.label)}</span>`
-    : `<button class="scan-stage" data-advance="${esc(s.key)}" data-job="${d.id}">${esc(s.label)}</button>`).join('')
+    : `<button class="scan-stage" data-advance="${esc(s.key)}" data-scanjob="${d.id}">${esc(s.label)}</button>`).join('')
   host.innerHTML = `
     <div class="card scan-job-card">
       <div class="scan-done-wrap" role="status" aria-live="polite" aria-atomic="true">${note ? `<div class="scan-done">✓ ${esc(note)}</div>` : ''}</div>
@@ -135,7 +148,7 @@ function renderJob(d, note) {
           <div class="dim">${esc(d.contact_name)} · ${d.pieces} pcs${d.decoration ? ` · ${esc(d.decoration)}` : ''}${d.due_date ? ` · due ${esc(fmtDate(d.due_date))}` : ''}</div>
         </div>
       </div>
-      ${d.next_stage ? `<button class="btn primary scan-advance" data-advance="${esc(d.next_stage.key)}" data-job="${d.id}">Advance to ${esc(d.next_stage.label)} →</button>` : '<div class="scan-done">✓ Complete</div>'}
+      ${d.next_stage ? `<button class="btn primary scan-advance" data-advance="${esc(d.next_stage.key)}" data-scanjob="${d.id}">Advance to ${esc(d.next_stage.label)} →</button>` : '<div class="scan-done">✓ Complete</div>'}
       <div class="scan-stages">${stageBtns}</div>
       ${mins > 0 ? `<div class="dim" style="margin-top:10px">⏱ ${mins} min measured in production${d.stage === 'production' ? ' so far' : ''}</div>` : ''}
       ${d.scans.length ? `<div class="scan-log">${d.scans.map((s) => `<div class="dim">${esc(s.to_stage.replace('_', ' '))} — ${esc(s.actor || '')} · ${esc(relTime(s.created_at))}</div>`).join('')}</div>` : ''}
