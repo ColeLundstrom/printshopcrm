@@ -14982,6 +14982,92 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('a zero-byte file is not a database, on the default handle either')
+{
+  const { mkdtempSync, rmSync, writeFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  /*
+   * The sibling of round 29's c903104, one file over and never carried across.
+   *
+   * `new DatabaseSync(path)` CREATES on open and initDb writes the whole current schema into
+   * whatever it opened, so a printshop.db left empty or half-written — full disk mid-write, an
+   * interrupted cp, a truncated restore, a volume that came back blank — was adopted silently as
+   * a brand-new shop. control.db and every per-shop database have refused this since
+   * lib/tenants.mjs was written; the DEFAULT handle, which on a single-shop install is the entire
+   * shop, never got the guard, because isSqliteFile was private to tenants.mjs and tenants.mjs
+   * imports FROM db.mjs — it could never have imported back.
+   *
+   * Driven on a shop carrying a customer, EST-1001, INV-1001 and a $1,200 payment, truncated to
+   * 0 bytes: the ordinary banner printed, /api/dashboard answered 200 with every KPI at zero, and
+   * both /health and /health?strict=1 said ok. ship.sh polls exactly that to decide whether to
+   * roll back, so the deploy that lost the books reports itself green.
+   *
+   * Boots a real process, because the refusal is at module scope: it has to happen before
+   * server.mjs installs any handler, and an in-process import could not observe the exit.
+   */
+  const boot = (bytes) => {
+    const dir = mkdtempSync(join(tmpdir(), 'psc-notadb-'))
+    const dbp = join(dir, 'printshop.db')
+    if (bytes !== null) writeFileSync(dbp, bytes)
+    try {
+      const out = execFileSync(process.execPath, ['--no-warnings', '-e', "import('./lib/db.mjs').then(() => console.log('OPENED'))"],
+        { cwd: ROOT, env: { ...process.env, PSC_DB: dbp }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return { code: 0, out, created: existsSync(dbp) }
+    } catch (e) {
+      return { code: e.status ?? -1, out: `${e.stdout || ''}${e.stderr || ''}`, created: existsSync(dbp) }
+    } finally { try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ } }
+  }
+
+  await t('a truncated printshop.db stops the app instead of being adopted as a new shop', () => {
+    const r = boot(Buffer.alloc(0))
+    assert.notEqual(r.code, 0, `starting on a 0-byte database exited ${r.code} — it wrote a fresh schema over it and called itself healthy`)
+    assert.match(r.out, /is not a database/, 'the refusal has to say what is wrong')
+  })
+
+  await t('…and a half-written one, which is what a full disk actually leaves behind', () => {
+    // Not zero bytes: the commonest real corruption is a file with content that is not a header.
+    // This one always stopped the app — SQLite itself refuses it — but it stopped it with a raw
+    // stack trace ending in `PRAGMA journal_mode`, thrown at module scope before server.mjs has
+    // installed anything, so under Restart=always it is a three-second loop of Node internals
+    // that never names the file or says `npm run restore`. Stopping is not the assertion; saying
+    // something a shop owner can act on is.
+    const r = boot(Buffer.from('SQLite format 2\0garbage that is not a database'))
+    assert.notEqual(r.code, 0, 'a file whose header is wrong was opened and overwritten')
+    assert.match(r.out, /PrintShopCRM will not start/, 'the refusal must be the friendly one, not SQLite\'s own throw')
+    assert.doesNotMatch(r.out, /\bat initDb\b|node:internal/, 'a raw stack trace is not a message for someone with no developer')
+  })
+
+  await t('…naming the file, the size, and the tool that puts it back', () => {
+    const r = boot(Buffer.alloc(0))
+    assert.match(r.out, /printshop\.db/, 'the operator needs to know WHICH file')
+    assert.match(r.out, /0 bytes/, 'the size is the tell that it was truncated rather than corrupted')
+    assert.match(r.out, /npm run restore/, 'a refusal with no remedy is a dead end, and this reader has no shell script to fall back on')
+    assert.match(r.out, /Nothing has been overwritten/, 'the one thing they need to know before they touch anything')
+  })
+
+  await t('…while a genuinely new install still creates its database', () => {
+    // The guard must not turn a first run into a refusal — that is the case it has to stay out of.
+    const r = boot(null)
+    assert.equal(r.code, 0, `a first start on a missing database exited ${r.code}: ${r.out.slice(0, 200)}`)
+    assert.match(r.out, /OPENED/)
+    assert.ok(r.created, 'a new install must still get a database created for it')
+  })
+
+  await t('…and the check lives where every opener can reach it', async () => {
+    const { readFileSync } = await import('node:fs')
+    const db = readFileSync(join(ROOT, 'lib/db.mjs'), 'utf8')
+    const tn = readFileSync(join(ROOT, 'lib/tenants.mjs'), 'utf8')
+    assert.match(db, /export const isSqliteFile/, 'the probe belongs in db.mjs, which every opener already imports')
+    assert.doesNotMatch(tn.replace(/^\s*\/\/.*$/gm, ''), /const isSqliteFile\s*=/,
+      'tenants.mjs must import the one probe, not keep a private copy that can drift from it')
+  })
+}
+
 section('the e2e harness says WHY it failed, not just that it did')
 {
   const { readFileSync } = await import('node:fs')
