@@ -6312,6 +6312,22 @@ async function createWebhook(b) {
     const unknown = events.split(',').map((x) => x.trim()).filter(Boolean).filter((e) => !WEBHOOK_EVENTS.includes(e))
     if (unknown.length) throw bad(`Unknown event(s): ${unknown.join(', ')}. Allowed: ${WEBHOOK_EVENTS.join(', ')} (or * for all).`)
   }
+  // One URL, one secret. Nothing refused the same URL twice and the schema has no uniqueness on
+  // it, so two 201s minted two DIFFERENT signing secrets — and dispatchSubscriptions fans out to
+  // every matching row, so one contact.created produced two byte-identical deliveries signed with
+  // two different keys. The integrator has configured one of them, so half of every event they
+  // receive fails X-PSC-Signature verification for ever, while the delivery log shows green on
+  // both. Subscribing again is the ordinary way someone tries to rotate a secret, and the ordinary
+  // result of running a Zapier setup wizard twice.
+  //
+  // Refused at the door, naming the id that already holds it, so the way out is a Delete the shop
+  // can find on the Developers screen. Deliberately NOT a unique index with a de-duping migration:
+  // an install that already carries a duplicate must keep both rows visible and deletable rather
+  // than have one of them silently removed out from under an integration that may be using it.
+  const already = get('SELECT id FROM webhook_subscriptions WHERE url = ?', url.slice(0, 500))
+  if (already) {
+    throw bad(`That URL is already subscribed (endpoint #${already.id}). Two subscriptions to one URL send every event twice, each signed with a different secret, so half of them fail verification — delete #${already.id} first if you need a new signing secret.`)
+  }
   if (get('SELECT COUNT(*) AS n FROM webhook_subscriptions').n >= MAX_WEBHOOKS) {
     throw bad(`A shop can have at most ${MAX_WEBHOOKS} webhook endpoints — delete one first.`)
   }

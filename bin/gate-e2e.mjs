@@ -1924,6 +1924,31 @@ try {
     chk('…while the documented array form still subscribes to exactly those', String(r.json?.events ?? 'missing'), '^invoice.paid,contact.created$')
     r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-all' } })
     chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
+
+    /* ---------- one URL, one secret ----------
+     * Nothing refused the same URL twice, and the schema has no uniqueness on it. Two 201s, two
+     * DIFFERENT signing secrets, and dispatchSubscriptions then fans out to every matching row —
+     * so one contact.created produced two byte-identical deliveries signed with two different
+     * keys. The integrator has configured one of them, so HALF of every event they receive fails
+     * X-PSC-Signature verification, for ever, with the delivery log showing green on both.
+     *
+     * A second subscription is the ordinary way someone tries to rotate a secret ("subscribe
+     * again, get a new one") and the ordinary result of a Zapier setup wizard being run twice.
+     * Refused at the door with the id of the one that already exists, so the fix is a Delete the
+     * shop can find. No unique index and no de-dupe migration: an install that already carries a
+     * duplicate must keep both rows visible and deletable rather than have one silently removed. */
+    const dupeUrl = 'https://hooks.zapier.com/hooks/catch/999/dupe'
+    const dupeA = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: dupeUrl, events: ['contact.created'] } })
+    chk('a first subscription to a URL is accepted', String(dupeA.status), '^201$')
+    const dupeB = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: dupeUrl, events: ['contact.created'] } })
+    chk('the same URL cannot be subscribed a second time', String(dupeB.status), '^400$')
+    chk('…and names the subscription that already has it', dupeB.text, 'already subscribed')
+    const dupeList = ((await req('GET', '/api/v1/webhooks', asKey())).json?.data || []).filter((w) => w.url === dupeUrl)
+    chk('…leaving exactly one endpoint for that URL', String(dupeList.length), '^1$')
+    await req('DELETE', `/api/v1/webhooks/${dupeA.json?.id}`)
+    const dupeC = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: dupeUrl, events: ['contact.created'] } })
+    chk('…and deleting it frees the URL again, so this is not a one-way door', String(dupeC.status), '^201$')
+    await req('DELETE', `/api/v1/webhooks/${dupeC.json?.id}`)
   }
 
   /* ---------- money never leaves the books without a trace ----------

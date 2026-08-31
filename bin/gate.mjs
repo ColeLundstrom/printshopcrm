@@ -9242,7 +9242,12 @@ await t('a secret sent at creation is the secret deliveries are signed with', as
   const { fileURLToPath } = await import('node:url')
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const src = readFileSync(join(root, 'server.mjs'), 'utf8')
-  const fn = src.slice(src.indexOf('async function createWebhook'), src.indexOf('async function createWebhook') + 3000)
+  // The whole function, not a fixed byte window: a 3000-char slice put the assertion below out of
+  // range the moment the function grew a comment, and a guard that stops looking is worse than no
+  // guard. createWebhook ends at the first line-start `}` after it.
+  const fnAt = src.indexOf('async function createWebhook')
+  const fnEnd = src.indexOf('\n}', fnAt)
+  const fn = src.slice(fnAt, fnEnd > fnAt ? fnEnd : fnAt + 6000)
   assert.match(fn, /b\?\.secret/, 'createWebhook still ignores the secret docs/API.md tells integrators to send')
   const doc = readFileSync(join(root, 'docs/API.md'), 'utf8')
   const row = doc.split('\n').find((l) => l.includes('POST /api/v1/webhooks'))
