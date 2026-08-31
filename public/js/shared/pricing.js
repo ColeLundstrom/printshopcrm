@@ -274,6 +274,30 @@ export const PRESS_TIME = {
   auto: { setup: [12, 25, 40, 54, 70, 87], run: [0.15, 0.15, 0.15, 0.15, 0.15, 0.15] },
 }
 
+/**
+ * How many screens a job's press time is costed against — the SUM across its print locations,
+ * clamped the way lib/capacity.mjs clamps it.
+ *
+ * There were two answers to this in the product. lib/capacity.mjs's colorsFromItems sums across
+ * locations, and the scheduler and the Profitability sweep both use it — that is the definition an
+ * earlier round settled on. The Price Calculator, the third reader, was never brought along: it
+ * took `Math.max(...locations)`, so a front-and-back job booked press time for the heavier print
+ * only.
+ *
+ * Measured on a 300-piece 4/0 front + 2/0 back job: the calculator said the shop's cost was
+ * $1,439.70 at 55.4% margin while Profitability said $1,577.20 at 51.1% — $137.50 apart, on the
+ * screen where the shop decides what to charge. The PRICE is unaffected either way, because
+ * quoteScreenPrint already sums the per-location imprint rates; it is the margin the shop is shown
+ * while it picks a number that was wrong.
+ *
+ * A dark garment adds an underbase, which is a real screen on the press, so it counts per location.
+ */
+export const pressColors = (locations, darkGarment = false) => {
+  const locs = Array.isArray(locations) && locations.length ? locations : [{ colors: 1 }]
+  const n = locs.reduce((sum, l) => sum + (Number(l?.colors) || 1) + (darkGarment ? 1 : 0), 0)
+  return Math.min(12, Math.max(1, n))
+}
+
 export const pressMinutes = (qty, colors, press = 'auto') => {
   const t = PRESS_TIME[press] || PRESS_TIME.auto
   const c = Math.max(1, Number(colors) || 1)

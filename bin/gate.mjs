@@ -13499,6 +13499,73 @@ section('the app can say which release is answering')
   })
 }
 
+
+/* ---------- one job, one colour count (round 27) ----------
+ * lib/capacity.mjs's colorsFromItems SUMS the colours across a job's print locations, and both the
+ * scheduler and the Profitability sweep use it — that is the definition an earlier round settled
+ * on when it made profit and the schedule count the same colours. The Price Calculator is the
+ * third reader and was never brought along: it took `Math.max(...locations)`, so a front-and-back
+ * job booked press time for the heavier print only.
+ *
+ * Measured on a 300-piece 4/0 front + 2/0 back job: the calculator said the job cost $1,439.70 at
+ * 55.4% margin while /api/roi/:id said $1,577.20 at 51.1% — $137.50 apart, on the screen where the
+ * shop decides what to charge. */
+section('the calculator and Profitability count the same screens')
+{
+  const { pressColors, pressMinutes, quoteScreenPrint } = await import('../public/js/shared/pricing.js')
+  const { colorsFromItems } = await import('../lib/capacity.mjs')
+
+  await t('a front-and-back job is more press time than the front alone', () => {
+    assert.equal(pressColors([{ colors: 4 }, { colors: 2 }]), 6,
+      'the back print still has to go through the press')
+    assert.equal(pressColors([{ colors: 4 }]), 4)
+    assert.equal(pressColors([{ colors: 4 }, { colors: 2 }], true), 8, 'a dark garment adds an underbase per location')
+    assert.equal(pressColors([]), 1, 'a job with no locations is still one pass, never zero')
+    assert.equal(pressColors([{ colors: 8 }, { colors: 8 }]), 12, 'clamped where capacity.mjs clamps it')
+  })
+
+  await t('and it agrees with the definition the scheduler and Profitability already use', () => {
+    const state = { qty: 300, garmentCost: 3.20, markup: 2, screenFee: 25, press: 'auto',
+      locations: [{ name: 'Front', colors: 4 }, { name: 'Back', colors: 2 }] }
+    const q = quoteScreenPrint(state)
+    const fromCalculator = pressColors(state.locations, state.darkGarment)
+    // quoteScreenPrint already SUMS the per-location imprint rates — which is why the PRICE was
+    // always right and only the margin was wrong — so its own screen count is the third witness.
+    assert.equal(q.totalColors, 6, 'precondition: the priced job really is a six-screen job')
+    assert.equal(fromCalculator, q.totalColors,
+      `the calculator prices ${q.totalColors} screens and costs press time for ${fromCalculator}`)
+    // …and against the definition the scheduler and the Profitability sweep read, off the line the
+    // estimate actually stores. colorsFromItems parses the trade shorthand out of the description.
+    const items = [{ description: '300 tees — 4/0 Front + 2/0 Back', sizes: { M: 300 }, unit_price: 9 }]
+    const fromItems = colorsFromItems(items)
+    assert.equal(fromItems, 6, 'precondition: capacity.mjs reads six screens off this line')
+    assert.equal(fromCalculator, fromItems,
+      `the calculator costs ${fromCalculator} screens and Profitability costs ${fromItems} on the same job`)
+    // In minutes, which is what the money is actually made of.
+    assert.equal(pressMinutes(300, fromCalculator, 'auto'), pressMinutes(300, fromItems, 'auto'))
+  })
+
+  await t('precondition: the two really would have disagreed on this job', () => {
+    // Without this the case above passes on any job whose locations happen to be equal.
+    const locs = [{ colors: 4 }, { colors: 2 }]
+    const oldWay = Math.max(...locs.map((l) => Number(l.colors) || 1), 1)
+    assert.notEqual(oldWay, pressColors(locs), 'this fixture no longer exercises the defect')
+    assert.notEqual(pressMinutes(300, oldWay, 'auto'), pressMinutes(300, pressColors(locs), 'auto'))
+  })
+
+  await t('and the calculator no longer carries its own definition', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'public/js/views/quote.js'), 'utf8')
+      .split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l.trim())).join('\n')
+    assert.ok(!/Math\.max\(\.\.\.state\.locations/.test(src),
+      'quote.js is counting colours its own way again — there is one definition and it is pressColors')
+    assert.match(src, /pressColors\(state\.locations/, 'it has to use the shared one')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

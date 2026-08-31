@@ -1,5 +1,5 @@
 import { $, $$, esc, money, modal, closeModal, toast, on } from '../core.js'
-import { quoteScreenPrint, priceBreaks, jobCost, margin, marginVerdict, markupVsMargin, valuePerHour, RUSH_TIERS, round2 } from '../shared/pricing.js'
+import { quoteScreenPrint, priceBreaks, jobCost, margin, marginVerdict, markupVsMargin, valuePerHour, RUSH_TIERS, round2, pressColors } from '../shared/pricing.js'
 import { servicePerPiece, SERVICE_METHODS } from '../shared/servicecost.js'
 
 const DECORATIONS = ['Screen Print', ...SERVICE_METHODS]
@@ -172,7 +172,7 @@ export function quoteModal(settings, onUse) {
           return renderService()
         }
         const q = quoteScreenPrint(state)
-        const colorsPerLoc = Math.max(...state.locations.map((l) => (Number(l.colors) || 1) + (state.darkGarment ? 1 : 0)), 1)
+        const colorsPerLoc = pressColors(state.locations, state.darkGarment)
         const cost = jobCost({ qty: state.qty, colors: colorsPerLoc, garmentCost: state.garmentCost,
           press: state.press, shopRate, utilization, spoilage, screens: q.totalColors, screenCost: 8 })
         const m = margin(q.subtotal, cost.total)
