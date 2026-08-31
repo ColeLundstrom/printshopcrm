@@ -2255,18 +2255,38 @@ app.post('/api/contacts', wrap((req, res) => {
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
 
+/**
+ * Update a customer. A field the caller did not mention keeps the value it had.
+ *
+ * This was a full replace: every column was written from the request body, and anything absent
+ * became ''. The in-app editor posts the whole form so it never noticed, but the route is
+ * documented and reachable, and the ordinary way to change one thing over an API is to send that
+ * one thing. `PUT {"name":"Northside High"}` erased the customer's email, phone, company, notes,
+ * tags, tax_exempt flag AND their exemption certificate number — so the next quote for a school
+ * district that had been exempt billed it $301.88 of sales tax, with nothing on any screen saying
+ * why. Silent, and only visible on a document already in the customer's hands.
+ *
+ * A key that IS present is honoured even when it is empty, so the editor can still clear a field
+ * by sending "" — the distinction is between "set this to nothing" and "I did not mention it".
+ */
 app.put('/api/contacts/:id', wrap((req, res) => {
   const b = req.body || {}
   const id = +req.params.id
-  if (!get('SELECT id FROM contacts WHERE id = ?', id)) return res.status(404).json({ error: 'Contact not found' })
-  const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
-  const name = str(b.name).trim()
+  const cur = get('SELECT * FROM contacts WHERE id = ?', id)
+  if (!cur) return res.status(404).json({ error: 'Contact not found' })
+  const sent = (k) => Object.prototype.hasOwnProperty.call(b, k)
+  const text = (k) => (sent(k) ? str(b[k]) : (cur[k] ?? ''))
+  const tags = sent('tags') ? (Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)) : (cur.tags ?? '')
+  const name = (sent('name') ? str(b.name) : String(cur.name ?? '')).trim()
   if (!name) return res.status(400).json({ error: 'A customer needs a name.' })
-  const bad = contactAddressError(b)
+  // Validate the address the row will END UP with, not just the half that was sent.
+  const merged = { ...cur, ...(sent('email') ? { email: str(b.email) } : {}), ...(sent('phone') ? { phone: str(b.phone) } : {}) }
+  const bad = contactAddressError(merged)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, updated_at=? WHERE id=?',
-    name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
-    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), now(), id)
+    name, text('email'), text('phone'), text('company'), text('notes'), tags,
+    sent('tax_exempt') ? (b.tax_exempt ? 1 : 0) : (cur.tax_exempt ? 1 : 0),
+    text('tax_exempt_id'), now(), id)
   logActivity('contact', 'Contact updated', { contact_id: id })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))

@@ -421,6 +421,43 @@ try {
   r = await req('POST', '/api/v1/customers', { ...asKey(), body: { name: 'Phone Only' } })
   chk('…and so is one with no email at all', String(r.status), '^201$')
 
+  /* PUT /api/contacts/:id was a full replace: every column was written from the body, and anything
+   * absent became ''. The in-app editor posts the whole form so it never noticed — but the route is
+   * documented, and the ordinary way to change one thing over an API is to send that one thing.
+   * Sending only {"name":…} erased the customer's email, phone, company, notes, tags, tax_exempt
+   * flag AND their exemption certificate, so the next quote for a school district that had been
+   * exempt billed it $301.88 of sales tax with nothing on any screen saying why. */
+  r = await req('POST', '/api/contacts', { body: {
+    name: 'Rockford School District', email: 'ap@rockford.test', phone: '555-0142',
+    company: 'RSD 205', notes: 'PO required', tags: ['school', 'net30'], tax_exempt: true, tax_exempt_id: 'E-9912',
+  } })
+  const rsdId = r.json?.id ?? r.json?.contact?.id
+  chk('a tax-exempt customer is created', String(r.status), '^(200|201)$')
+  chk('…and is exempt', String(!!r.json?.tax_exempt), '^true$')
+  r = await req('PUT', `/api/contacts/${rsdId}`, { body: { name: 'Rockford School District 205' } })
+  chk('a one-field update succeeds', String(r.status), '^200$')
+  chk('…and renames the customer', String(r.json?.name || ''), '^Rockford School District 205$')
+  chk('…without erasing the tax exemption', String(!!r.json?.tax_exempt), '^true$')
+  chk('…or the certificate number behind it', String(r.json?.tax_exempt_id || ''), '^E-9912$')
+  chk('…or the email', String(r.json?.email || ''), '^ap@rockford.test$')
+  chk('…or the phone', String(r.json?.phone || ''), '555-0142')
+  chk('…or the company', String(r.json?.company || ''), '^RSD 205$')
+  chk('…or the notes', String(r.json?.notes || ''), '^PO required$')
+  chk('…or the tags', String(r.json?.tags || ''), 'school')
+  // The money. A $3,895.00 order for a district that is still exempt must still be untaxed; the
+  // full replace above turned this into $301.88 of sales tax on a customer entitled to none.
+  r = await req('POST', '/api/estimates', { body: {
+    contact_id: rsdId, tax_rate: 7.75,
+    items: [{ description: '500 spirit tees', sizes: { M: 500 }, unit_price: 7.79, taxable: true }],
+  } })
+  chk('a district that is still exempt is still quoted untaxed after a one-field rename', String(r.json?.tax ?? 'missing'), '^0$')
+  // The other half of the rule: a key that IS present is honoured even when it is empty, so the
+  // in-app editor can still clear a field rather than being unable to blank anything.
+  r = await req('PUT', `/api/contacts/${rsdId}`, { body: { name: 'Rockford School District 205', notes: '', tax_exempt: false } })
+  chk('an explicitly empty field is still cleared', String(r.json?.notes || ''), '^$')
+  chk('…and the exemption can still be turned off on purpose', String(!!r.json?.tax_exempt), '^false$')
+  chk('…while a field still not mentioned is still kept', String(r.json?.email || ''), '^ap@rockford.test$')
+
   // A line with no unit_price used to return 201 and a $0 estimate a customer could approve.
   r = await req('POST', '/api/v1/estimates', {
     ...asKey(),
@@ -886,8 +923,16 @@ try {
   const coId = r.json?.id ?? r.json?.contact?.id
   r = await req('PUT', `/api/contacts/${coId}`, { body: { name: 'Coerce Co', phone: { nope: 1 } } })
   chk('updating with a malformed field does not 500', String(r.status), '^200$')
+  // A body that does not MENTION the name used to be a 400, because the write was a full replace
+  // and an unmentioned name became ''. It is a merge now, so sending only the field you are
+  // changing is the ordinary thing an integrator does and it keeps the name it had. What must
+  // still be refused is a name explicitly set to nothing — that is a request to blank it.
   r = await req('PUT', `/api/contacts/${coId}`, { body: { email: 'x@x.test' } })
-  chk('…and a nameless update is a clean 400', String(r.status), '^400$')
+  chk('…and an update that does not mention the name keeps it', String(r.status), '^200$')
+  chk('…the name is still there', String(r.json?.name || ''), '^Coerce Co$')
+  chk('…and the field that WAS sent was applied', String(r.json?.email || ''), '^x@x.test$')
+  r = await req('PUT', `/api/contacts/${coId}`, { body: { name: '   ' } })
+  chk('…while blanking the name on purpose is still a clean 400', String(r.status), '^400$')
   r = await req('POST', '/api/contacts/99999999/note', { body: { text: 'hi' } })
   chk('a note on a deleted/missing customer is 404, not an FK 500', String(r.status), '^404$')
 
