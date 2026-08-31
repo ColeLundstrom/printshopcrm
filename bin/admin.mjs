@@ -66,7 +66,27 @@ const strongPassword = () => `psc-${randomBytes(9).toString('base64url')}`
 switch (cmd) {
   case 'list-shops': {
     const slugs = T.activeTenantSlugs()
-    if (!slugs.length) die('No shops yet. Someone needs to sign up first.')
+    /**
+     * Never answer a configuration failure with a business answer.
+     *
+     * Every npm script here is `--env-file-if-exists=.env`, and Node reports an UNREADABLE .env
+     * exactly as it reports a missing one — "`.env not found. Continuing without it.`", exit 0.
+     * INSTALL.md mandates a 0600 .env owned by the service account, gives the lockout-recovery
+     * command with no `sudo -u`, and then lists that very line under "Not an error". So on a live
+     * server with 22 shops on the disk, the documented way out of a lockout answered "No shops
+     * yet. Someone needs to sign up first." — which reads as a fact about the business.
+     *
+     * Say which database was read, and how to read the right one.
+     */
+    if (!slugs.length) {
+      const ctl = process.env.PSC_CONTROL_DB || `${(process.env.PSC_DB || 'data/printshop.db').replace(/[^/]*$/, '')}control.db`
+      die(`No shops in ${ctl}.\n`
+        + `  PSC_DB is ${process.env.PSC_DB ? `set to ${process.env.PSC_DB}` : 'UNSET, so this is the built-in default path'}.\n`
+        + '  If you expected shops here, this is the wrong database — or .env was not readable,\n'
+        + '  which Node reports as ".env not found" and then carries on with defaults.\n'
+        + '  Run it as the account that owns the file:\n'
+        + '    sudo -u printshopcrm npm run admin -- list-shops')
+    }
     console.log()
     for (const slug of slugs) {
       const t = T.getTenantBySlug(slug)

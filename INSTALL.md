@@ -298,7 +298,7 @@ one-time setup:
 4. Run the consent flow:
 
    ```bash
-   npm run drive -- connect
+   sudo -u printshopcrm npm run drive -- connect
    ```
 
    It prints a URL and waits for the redirect. **On a headless server**, either forward the port
@@ -311,7 +311,7 @@ one-time setup:
    or skip the port entirely and paste the redirected URL back instead:
 
    ```bash
-   npm run drive -- connect --manual
+   sudo -u printshopcrm npm run drive -- connect --manual
    ```
 
    (The browser will show a "can't reach this page" error at `127.0.0.1` — that's expected. Copy
@@ -323,7 +323,7 @@ Port 4765 is the default; set `PSC_BACKUP_GDRIVE_PORT` if it clashes, and use th
 Google Cloud.
 
 From then on `backup.sh` uploads every nightly archive automatically and keeps the most recent 30
-in Drive. Check it any time with `npm run drive -- status`.
+in Drive. Check it any time with `sudo -u printshopcrm npm run drive -- status`.
 
 `backup.sh` reads the `PSC_BACKUP_GDRIVE_*` lines straight out of `/opt/printshopcrm/.env`, because
 cron does not load that file the way `npm run` does. If your app lives somewhere else, add
@@ -357,10 +357,17 @@ don't.
 ```bash
 tar xzf 20260823-030000.tar.gz          # if you are restoring from a nightly archive
 sudo systemctl stop printshopcrm
-npm run restore -- 20260823-030000 --data-root /var/lib/printshopcrm          # shows the plan
-npm run restore -- 20260823-030000 --data-root /var/lib/printshopcrm --yes    # does it
+sudo -u printshopcrm npm run restore -- 20260823-030000 --data-root /var/lib/printshopcrm        # shows the plan
+sudo -u printshopcrm npm run restore -- 20260823-030000 --data-root /var/lib/printshopcrm --yes  # does it
 sudo systemctl start printshopcrm
 ```
+
+`sudo -u printshopcrm`, not bare and not plain `sudo`. Your `.env` is `chmod 600` and owned by the
+service account (that is what the install step above told you to do), and Node reports a file it
+cannot *read* exactly as it reports one that is not there — `.env not found. Continuing without
+it.`, exit 0 — so as any other user this reads the wrong `PSC_DB` and restores into the wrong
+place. Running as root has the same problem in reverse: it leaves root-owned databases the service
+cannot write.
 
 The first run changes nothing. It prints what it would replace and what with — "500 customers"
 over "1000 customers" — so you can see you have the right archive before anything is overwritten.
@@ -430,9 +437,9 @@ Expected on a fresh install: password reset goes out by email, and a new install
 configured yet. Recover it from the server, where you have filesystem access anyway:
 
 ```bash
-cd /opt/printshopcrm
-npm run admin -- list-shops                       # see the shops and their owner addresses
-npm run admin -- reset-password owner@yourshop.com
+cd /opt/printshopcrm/current
+sudo -u printshopcrm npm run admin -- list-shops                       # the shops and their owners
+sudo -u printshopcrm npm run admin -- reset-password owner@yourshop.com
 ```
 
 That prints a new password immediately — no email involved. `npm run admin` on its own lists every
@@ -441,12 +448,27 @@ command (there's also `list-users` and `promote`, for when the only owner has le
 Set `PSC_DB` if your database isn't at the default path:
 
 ```bash
-PSC_DB=/var/lib/printshopcrm/printshop.db npm run admin -- list-shops
+sudo -u printshopcrm PSC_DB=/var/lib/printshopcrm/printshop.db npm run admin -- list-shops
 ```
 
-**`.env not found. Continuing without it.` on start**
-Not an error. Node says this when there's no `.env` file, which is normal for a local trial — the
-app runs on its defaults. It goes away once you create one (`cp .env.example .env`).
+If `list-shops` says **"No shops in …"** on a server you know has shops, it is telling you which
+database it read — that is the wrong path, or `.env` was not readable. See the next entry.
+
+**`.env not found. Continuing without it.`**
+Usually not an error: Node says this when there is no `.env` file, which is normal for a local
+trial, and the app runs on its defaults.
+
+**It is an error when you are not the user that owns the file.** `.env` is `chmod 600`, and Node
+prints this same line for a file it cannot READ — then carries on with defaults, exit 0. So
+`npm run admin`, `npm run restore` and `npm run drive` all quietly operate on the built-in default
+paths instead of yours. Check with:
+
+```bash
+sudo -u printshopcrm head -1 /opt/printshopcrm/.env    # prints a line: readable, all is well
+```
+
+If that works and a bare `head -1` does not, prefix every `npm run` on this box with
+`sudo -u printshopcrm`.
 
 **`SyntaxError` or "node:sqlite not found" on start**
 Node is older than 22.13.0 — `node:sqlite` is flagged off before that, so 22.4 and 22.12 fail here

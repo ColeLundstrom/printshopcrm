@@ -4654,6 +4654,77 @@ await t('…and the route will not write \'submitted\' without one either', asyn
  * In lib/tenants.mjs it is worse in kind, because that runs at MODULE SCOPE: the whole process
  * dies at import with a raw stack, bypassing the app's own friendly startup handler, for every
  * shop on the box at once, in a 3-second Restart=always loop. */
+/* ---------- the way out of a lockout does not answer "No shops yet" (v28) ----------
+ *
+ * Every npm script here is `--env-file-if-exists=.env`, and Node reports an UNREADABLE .env
+ * exactly as it reports a missing one — ".env not found. Continuing without it.", exit 0.
+ * INSTALL.md mandates a 0600 .env owned by the service account, gives the lockout-recovery
+ * command with no `sudo -u`, and then lists that very line under "Not an error".
+ *
+ * And ship.sh never linked .env into the release at all, which sudo does not fix: release.sh has
+ * done it since it was written, ship.sh's rsync excludes it and its remote block linked only
+ * public/uploads. `current` is where the operator stands. Measured on a server with two real
+ * shops in its control database: "No shops yet. Someone needs to sign up first." */
+section('the documented way out of a lockout finds the shops')
+await t('the deploy links the config into the release, like the script beside it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  for (const f of ['deploy/ship.sh', 'deploy/release.sh']) {
+    const src = readFileSync(join(root, f), 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    assert.match(src, /ln -s(?:fn|f) '?"?\$\{?APP_ROOT\}?\/\.env/,
+      `${f}: the release has no .env, so every npm script in it silently reads the built-in default paths`)
+  }
+})
+
+await t('…and an empty answer names the database it read', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const box = mkdtempSync(join(tmpdir(), 'psc-adm-'))
+  try {
+    let out = ''
+    try {
+      out = execFileSync(process.execPath, ['--no-warnings', join(root, 'bin/admin.mjs'), 'list-shops'], {
+        cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PSC_DB: join(box, 'nothing-here.db'), PSC_CONTROL_DB: join(box, 'control.db'), PSC_AUTH: '1' },
+      })
+    } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}` }
+    // "No shops yet. Someone needs to sign up first." reads as a fact about the BUSINESS. It was
+    // the answer on a live server with 22 shops on the disk.
+    assert.doesNotMatch(out, /No shops yet/,
+      'a configuration failure is being reported as a fact about the shop')
+    assert.match(out, /control\.db/, 'it has to name the database it actually looked in')
+    assert.match(out, /sudo -u printshopcrm/, '…and how to read the right one')
+  } finally { rmSync(box, { recursive: true, force: true }) }
+})
+
+await t('…and the docs stop telling you to ignore the line that explains it', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const md = readFileSync(join(root, 'INSTALL.md'), 'utf8')
+  const i = md.indexOf('`.env not found. Continuing without it.`')
+  assert.ok(i > 0, 'the .env troubleshooting entry moved — re-point this test')
+  const entry = md.slice(i, i + 1200)
+  assert.match(entry, /cannot READ|not readable|cannot read/i,
+    'the entry still says "Not an error" without the case where it is the whole error')
+  // Every recovery command in this file that runs an npm script against the live data has to
+  // run as the account that owns the 0600 .env.
+  for (const line of md.split('\n')) {
+    // Only a line that IS the command — inside a fenced block, at the start. Prose that names
+    // `npm run admin` in backticks is not something anyone pastes.
+    if (!/^\s*(sudo\b.*|PSC_DB=\S+\s+)?npm run (admin|restore|drive)\b/.test(line)) continue
+    assert.match(line, /sudo -u |PSC_DB=/,
+      `INSTALL.md: this reads whichever database the default path points at, not the shop's:\n      ${line.trim()}`)
+  }
+})
+
 section('a restored database opens even while something else is reading it')
 await t('the WAL conversion waits for the lock instead of failing at 0 ms', async () => {
   const { DatabaseSync } = await import('node:sqlite')

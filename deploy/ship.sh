@@ -86,6 +86,14 @@ rsync -a -e "$RSYNC_E" \
 "${SSH[@]}" "$APP_HOST" "
   set -e
   ln -sfn '$DATA_UPLOADS' '$REL/public/uploads'
+  # …and the config, exactly as deploy/release.sh has always done. This script did not, and
+  # \`current\` is where the operator stands: \`cd current && npm run admin -- list-shops\` on a box
+  # with 22 live shops answered \"No shops yet. Someone needs to sign up first.\" Every npm script
+  # is \`--env-file-if-exists=.env\`, so with no .env in the release PSC_DB is unset and admin.mjs,
+  # the restore CLI and the Drive CLI all read the built-in default path instead. The documented
+  # lockout recovery is one of those commands.
+  if [ -f '$APP_ROOT/.env' ]; then sudo ln -sfn '$APP_ROOT/.env' '$REL/.env'
+  else echo '!  $APP_ROOT/.env not found — the admin, restore and drive CLIs will run on built-in default paths'; fi
   cd '$REL' && npm ci --omit=dev >/dev/null 2>&1
   node bin/gate.mjs >/dev/null || { echo 'GATE FAILED ON THE SERVER'; exit 1; }
   # GNU readlink -f prints a path whose LAST component is missing and exits 0, so on a first
