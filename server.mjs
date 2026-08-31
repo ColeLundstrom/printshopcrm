@@ -8401,6 +8401,32 @@ app.get(['/index.html', '/auth.html'], (req, res) => {
 })
 
 /**
+ * …and the third page, which was missed because it carries no placeholder to notice.
+ *
+ * /docs-api.html is the public API reference. It is a complete, hand-written page under public/,
+ * so express.static answered it off disk — anonymously, no session, linked from the 401 body of
+ * every unauthenticated /api/v1 call and from GET /api/v1/me. §13 is about "all users interacting
+ * with it remotely through a computer network", and the integrator reading this page over the
+ * network is exactly that. It had zero `source-link` anywhere in it and never had one.
+ *
+ * The two pages above were caught because they ship `__SOURCE_LINK__` and the gate holds that no
+ * response body may contain an unrendered placeholder. This one has no placeholder to leave
+ * behind, so nothing saw it. It gets the same footer the public /p/ pages get, appended
+ * unconditionally — the offer is a licence obligation, not a style choice.
+ */
+let DOCS_API_HTML = null
+const docsApiHtml = () => {
+  if (DOCS_API_HTML) return DOCS_API_HTML
+  const raw = readFileSync(join(PUBLIC, 'docs-api.html'), 'utf8')
+  const foot = `<style>${SOURCE_FOOT_CSS}</style>${sourceFooterHtml()}`
+  DOCS_API_HTML = raw.includes('</body>') ? raw.replace('</body>', `${foot}</body>`) : raw + foot
+  return DOCS_API_HTML
+}
+app.get('/docs-api.html', (_req, res) => {
+  res.set('Cache-Control', 'no-cache').type('html').send(docsApiHtml())
+})
+
+/**
  * Nothing under public/ that has its own handler may be reachable through the static mount, in
  * ANY spelling.
  *
@@ -8428,7 +8454,7 @@ app.get(['/index.html', '/auth.html'], (req, res) => {
  * answered by their own handlers ABOVE this line and never reach it, so only the shadow spellings
  * die here.
  */
-const SHADOWED_BY_A_ROUTE = /^\/(uploads(\/|$)|index\.html$|auth\.html$)/i
+const SHADOWED_BY_A_ROUTE = /^\/(uploads(\/|$)|index\.html$|auth\.html$|docs-api\.html$)/i
 app.use((req, res, next) => (SHADOWED_BY_A_ROUTE.test(req.path) ? res.status(404).end() : next()))
 
 app.use(express.static(PUBLIC, {

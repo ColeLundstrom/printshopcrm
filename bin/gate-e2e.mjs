@@ -6157,12 +6157,23 @@ try {
 
     /* AGPL §13 is not a style choice. The source link is written into these pages by
      * shellHtml()/authHtml(), and every one of them now goes out through the compressor. */
-    for (const path of ['/', '/index.html', '/auth.html']) {
+    /* /docs-api.html was the third page and the one nothing saw: it carries no placeholder, so the
+     * "no unrendered __SOURCE_LINK__ in any body" rule could not catch it. It is a complete page
+     * under public/, served off disk by express.static to anonymous callers, and linked from the
+     * 401 body of every unauthenticated /api/v1 call. It had zero source links and never had one. */
+    for (const path of ['/', '/index.html', '/auth.html', '/docs-api.html']) {
       const r = await rawGet(path, { 'Accept-Encoding': 'gzip' })
       const html = (r.headers['content-encoding'] === 'gzip' ? gunzipSync(r.body) : r.body).toString()
       chk(`${path} still carries exactly one source link through the compressor`,
         String((html.match(/class="source-link"/g) || []).length), '^1$')
       chk(`…and no unrendered placeholder`, String(html.includes('__SOURCE_LINK__')), '^false$')
+      // Anonymous. A licence obligation that only holds for signed-in staff is not one.
+      chk(`…served with no session at all`, String(r.status), '^200$')
+    }
+    // The case-insensitive filesystem must not hand back the raw file and skip the offer.
+    for (const path of ['/Docs-Api.html', '/DOCS-API.HTML']) {
+      const r = await rawGet(path, {})
+      chk(`${path} does not bypass the renderer`, String(r.status), '^404$')
     }
   }
 
