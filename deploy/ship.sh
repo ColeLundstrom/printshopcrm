@@ -186,7 +186,10 @@ rsync -a -e "$RSYNC_E" \
   # deploy/release.sh:164 has never had this bug — UPLOADS=\"\$DATA_ROOT/uploads\", with a mkdir. The
   # two deploy scripts in this directory disagreed about where a shop's artwork lives.
   UPLOADS='$DATA_UPLOADS'
-  [ -n \"\$UPLOADS\" ] || { [ -n \"\$SNAP_DATA\" ] && UPLOADS=\"\$SNAP_DATA/uploads\"; }
+  # A plain \`if\`, not \`A || { B && C; }\`. Under the \`set -e\` at the top of this block the second
+  # form leans on a subtle exemption for failures originating inside an && list — it happens to be
+  # safe in bash, and this is a production deploy path, so it does not get to depend on that.
+  if [ -z \"\$UPLOADS\" ] && [ -n \"\$SNAP_DATA\" ]; then UPLOADS=\"\$SNAP_DATA/uploads\"; fi
   if [ -z \"\$UPLOADS\" ]; then
     echo 'COULD NOT LOCATE THE UPLOADS DIRECTORY — nothing was flipped, and nothing was changed.'
     echo \"  Looked for PSC_DB in systemctl show -p Environment $SERVICE, then $APP_ROOT/.env.\"
