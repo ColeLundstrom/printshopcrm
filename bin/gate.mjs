@@ -13741,6 +13741,88 @@ section('a restore leaves the databases owned by the account that runs the shop'
   })
 }
 
+
+/* ---------- running out of file handles is a config line, and it read as a bug (round 27) -------
+ * The app holds about four descriptors per shop for the life of the process, and boot opens every
+ * shop. lib/tenants.mjs justified never evicting a handle with "File descriptors are not the
+ * constraint (the service's limit is 524288)" — 524288 is systemd's HARD default, and
+ * deploy/printshopcrm.service set no LimitNOFILE at all, so the process ran on the usual SOFT
+ * limit of 1024. That runs out somewhere around 245 shops.
+ *
+ * And the tripwire meant to warn about it was MAX_OPEN_DBS = 250 — above the failure point, so it
+ * could never fire before the thing it was warning about. Driven at `ulimit -n 200`: shop 60's
+ * owner signed in fine and every screen answered "Something went wrong on our end.", while shop 1
+ * was perfectly healthy and /health?strict=1 was 503. The one failure whose fix is a single line
+ * of configuration was the one the app could not name. */
+section('a server out of file handles says so, instead of "something went wrong"')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  await t('every way this app is shipped raises the descriptor limit', () => {
+    const NEED = 4 * 250 + 1024   // the tripwire's worth of shops, plus ordinary sockets and files
+    const checks = [
+      ['deploy/printshopcrm.service', /^\s*LimitNOFILE\s*=\s*(\d+)/m],
+      ['docker-compose.yml', /nofile:\s*\n\s*soft:\s*(\d+)/],
+    ]
+    const bad = []
+    for (const [f, re] of checks) {
+      const m = readFileSync(join(ROOT, f), 'utf8').match(re)
+      if (!m) { bad.push(`${f}: sets no file-descriptor limit at all`); continue }
+      if (Number(m[1]) < NEED) bad.push(`${f}: ${m[1]}, which is under the ${NEED} this app needs`)
+    }
+    assert.deepEqual(bad, [], `at four descriptors per shop these run out and take a shop 100% down:\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('…and the precondition that makes that rule necessary still holds', () => {
+    // If handles were ever evicted, the limit would stop mattering and this rule could be dropped
+    // deliberately rather than by accident.
+    const src = readFileSync(join(ROOT, 'lib/tenants.mjs'), 'utf8')
+    assert.match(src, /tripwire, not a limit/,
+      'nothing evicts a tenant handle — if that changed, revisit the LimitNOFILE rule above on purpose')
+  })
+
+  await t('the tripwire fires BELOW the point the process actually fails', () => {
+    const src = readFileSync(join(ROOT, 'lib/tenants.mjs'), 'utf8')
+    const m = src.match(/const MAX_OPEN_DBS = Number\(process\.env\.PSC_MAX_OPEN_DBS \|\| (\d+)\)/)
+    assert.ok(m, 'lib/tenants.mjs must still carry the open-handle tripwire')
+    // 1024 is systemd's soft default and what an unconfigured install really runs on. The
+    // databases are not the only descriptors: measured on a 60-shop box, 287 open in total against
+    // 244 for the databases, so about 45 belong to sockets, the listener, logs and node itself.
+    // Dividing the whole 1024 by four flatters it by an entire shop's worth and let the old
+    // tripwire of 250 look safe when the process actually died around 245.
+    const OVERHEAD = 64
+    const failsAt = Math.floor((1024 - OVERHEAD) / 4)
+    assert.ok(Number(m[1]) < failsAt,
+      `the warning fires at ${m[1]} databases and the process dies at about ${failsAt} — it could never print`)
+  })
+
+  await t('…and it reports the number that matters, not just a count of databases', () => {
+    const src = readFileSync(join(ROOT, 'lib/tenants.mjs'), 'utf8')
+    const i = src.indexOf('console.warn(`[tenants]')
+    assert.ok(i > 0, 'the tripwire must still say something')
+    const line = src.slice(i, src.indexOf('\n', i))
+    assert.match(line, /file descriptors/, 'a database count does not tell an operator what to raise')
+    assert.match(line, /LimitNOFILE/, '…and it should name the setting')
+  })
+
+  await t('a database that cannot be opened gets an answer the operator can act on', async () => {
+    // Driven the same way the disk_full / db_readonly / db_busy branches are: hand the mapper the
+    // error and read the body.
+    const { readFileSync: rf } = await import('node:fs')
+    const src = rf(join(ROOT, 'server.mjs'), 'utf8')
+    const i = src.indexOf("code: 'db_busy'")
+    assert.ok(i > 0, 'precondition: the sibling branches are still there')
+    const after = src.slice(i, i + 1400)
+    assert.match(after, /db_unopenable/, 'SQLITE_CANTOPEN and EMFILE fell through to "Something went wrong on our end."')
+    assert.match(after, /errcode === 14/, '…SQLITE_CANTOPEN')
+    assert.match(after, /EMFILE/, '…and the process-wide descriptor limit')
+    assert.match(after, /LimitNOFILE/, 'and the message has to name the one thing that fixes it')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

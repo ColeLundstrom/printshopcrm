@@ -17,6 +17,11 @@ services:
     container_name: printshopcrm
     restart: unless-stopped
 
+    # Mirrors LimitNOFILE in deploy/printshopcrm.service: ~4 descriptors per shop, opened at boot.
+    ulimits:
+      nofile:
+        soft: 524288
+        hard: 524288
     ports:
       - "${PORT:-3333}:3333"
 

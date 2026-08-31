@@ -25,6 +25,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 
+# The app holds about four descriptors per shop for the life of the process, and opens every shop
+# at boot. systemd's SOFT default is 1024, which runs out somewhere around 245 shops — and the shop
+# opened after that point is 100% dark: its owner signs in fine and every screen answers "Something
+# went wrong on our end.", while the shop next to it is perfectly healthy. lib/tenants.mjs assumed
+# this was already set for three rounds. It was not.
+LimitNOFILE=524288
+
 # The account that owns /opt/printshopcrm and the data directory. Do NOT run this as root.
 User=printshopcrm
 Group=printshopcrm

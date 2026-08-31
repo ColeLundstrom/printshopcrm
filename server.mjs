@@ -8805,6 +8805,15 @@ app.use((err, req, res, _next) => {
     if (err?.errcode === 5 || /database is locked|database is busy/i.test(m)) {
       return res.status(503).json({ code: 'db_busy', error: 'The database was busy and this change was not saved. Try again in a moment \u2014 if it keeps happening, another process is holding it open.' })
     }
+    // SQLITE_CANTOPEN (14) and the process-wide descriptor limits. The app holds four descriptors
+    // per shop for the life of the process and opens every shop at boot, so a box with enough
+    // shops on it simply runs out — and the shop that happens to be opened after the limit is hit
+    // is 100% dark, with its owner logging in fine and every screen answering "Something went
+    // wrong on our end." The three branches above name what the operator must do; this one did
+    // not exist, so the one failure whose fix is a single config line read as a bug in the app.
+    if (err?.errcode === 14 || err?.code === 'EMFILE' || err?.code === 'ENFILE' || /unable to open database file/i.test(m)) {
+      return res.status(503).json({ code: 'db_unopenable', error: 'This shop\u2019s database could not be opened \u2014 the server has run out of file handles. Raise LimitNOFILE on the service (the shipped unit sets 524288) and restart it; nothing was lost.' })
+    }
   }
   const status = status0
   // Deliberate 4xx errors carry a message the caller needs to act on ("url must be http(s)",
