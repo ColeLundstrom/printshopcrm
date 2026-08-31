@@ -11402,7 +11402,15 @@ section('one message goes to one recipient')
     for (const door of ["app.post('/api/contacts'", "app.put('/api/contacts/:id'"]) {
       const i = src.indexOf(door)
       assert.ok(i > 0, `precondition: ${door} exists`)
-      assert.match(src.slice(i, i + 900), /contactAddressError\(b\)/, `${door} must refuse a list before it stores one`)
+      const body = src.slice(i, i + 2000)
+      // The property, not the identifier: PUT validates the row the update will PRODUCE
+      // (`contactAddressError(merged)`) rather than the half of it the caller happened to send,
+      // so pinning the literal argument name failed a correct fix.
+      const guard = body.search(/contactAddressError\(/)
+      const write = body.search(/\brun\('(INSERT INTO|UPDATE) contacts/)
+      assert.ok(guard >= 0, `${door} must refuse a list before it stores one`)
+      assert.ok(write >= 0, `precondition: ${door} still writes the contacts table`)
+      assert.ok(guard < write, `${door} validates the recipient AFTER writing it`)
     }
   })
 }
@@ -13311,6 +13319,100 @@ section('a customer\'s mascot is not a rush order')
         'the surcharge stopped applying at all — that is a different bug, not a fix')
     } finally { dbm.setDefaultDb(prev) }
     function round(n) { return Math.round(n * 100) / 100 }
+  })
+}
+
+
+/* ---------- the Live preview is a rehearsal, not a live run (round 27) ----------
+ * The "Live preview" box on the AI Receptionist settings screen mints a chat session stamped
+ * 'preview', and captureLead treated that stamp as fully trusted. Two turns of an owner trying out
+ * their own bot produced a real contact tagged `bot-lead`, a real deal in the Pipeline, EST-1001
+ * for $8,807.50 burning the shop's estimate sequence, and a real customer email queued to whatever
+ * address was typed into the box — "Thanks for reaching out to Northgate Ink".
+ *
+ * Reset only clears the chat bubbles; so does Save. And the preview deliberately bypasses the
+ * receptionist's on/off switch so a disabled bot can be tested — so all of it happened with the
+ * bot switched OFF. */
+section('previewing the receptionist does not create a customer, a deal or an estimate')
+{
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const ag = await import('../lib/agent.mjs')
+
+  const drive = async (channel) => {
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      ag.initAgent(db)
+      const cfg = ag.getBotConfig()
+      const s = ag.startSession({ channel })
+      // Everything the engine needs to reach a quote and a capture, in one message.
+      await ag.respond(s, 'Hi, we need 300 Gildan 5000 tees in black, 2 color front, for the fall festival. Email me at owner@northgate.test', cfg)
+      await ag.respond(s, 'Looks good', cfg)
+      const count = (sql) => dbm.get(sql)?.n ?? 0
+      return {
+        contacts: count('SELECT COUNT(*) AS n FROM contacts'),
+        estimates: count('SELECT COUNT(*) AS n FROM estimates'),
+        opportunities: count('SELECT COUNT(*) AS n FROM opportunities'),
+        emails: count('SELECT COUNT(*) AS n FROM email_log'),
+      }
+    } finally { dbm.setDefaultDb(prev) }
+  }
+
+  const web = await drive('web')
+  const preview = await drive('preview')
+
+  await t('precondition: the same conversation on the real widget DOES capture a lead', () => {
+    // Without this the whole section passes on a bot that stopped working altogether.
+    assert.ok(web.contacts > 0, 'the public widget must still create the customer it captured')
+  })
+
+  const TABLES = ['contacts', 'estimates', 'opportunities', 'emails']
+
+  await t('a preview writes none of the records the real widget writes', () => {
+    // The paired claim, and the one that actually proves the defect: whatever the same
+    // conversation puts on the shop's books through the public widget, the rehearsal must not.
+    const wrote = TABLES.filter((k) => web[k] > 0)
+    assert.ok(wrote.length >= 2, `precondition: the real widget must write something, wrote: ${wrote.join(', ') || 'nothing'}`)
+    const leaked = wrote.filter((k) => preview[k] > 0)
+    assert.deepEqual(leaked, [], `a rehearsal left real rows behind in: ${leaked.join(', ')}`)
+  })
+
+  await t('…and nothing at all in any of them', () => {
+    // The wider guard. This fixture is a bare in-memory shop, so the same two turns do not reach
+    // the estimate or the outbound mail here — against a seeded shop they do, and that is where
+    // EST-1001 for $8,807.50 and the queued "Thanks for reaching out to Northgate Ink" came from.
+    // Asserted as a guard rather than claimed as a reproduction: the two counts above are the
+    // ones this fixture actually drives.
+    const any = TABLES.filter((k) => preview[k] > 0)
+    assert.deepEqual(any, [], `a rehearsal wrote real rows into: ${any.join(', ')}`)
+  })
+
+  await t('the preview still runs the real engine, which is the point of it', async () => {
+    // A fix that simply switched the preview off would pass every assertion above.
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb()
+    dbm.setDefaultDb(db)
+    try {
+      ag.initAgent(db)
+      const s = ag.startSession({ channel: 'preview' })
+      const out = await ag.respond(s, 'Hi, we need 300 Gildan 5000 tees in black, 2 color front. Email me at owner@northgate.test', ag.getBotConfig())
+      assert.ok(String(out.reply || '').length > 0, 'the preview stopped replying at all')
+      assert.ok(out.state && out.state.qty === 300, `the real parser must still run — state.qty was ${out.state?.qty}`)
+    } finally { dbm.setDefaultDb(prev) }
+  })
+
+  await t('and the screen says so, so nobody goes looking for the lead', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const src = readFileSync(join(root, 'public/js/views/agent.js'), 'utf8')
+    assert.match(src, /saves no customer, deal or estimate and sends no email/,
+      'the Live preview card has to say what it does and does not do')
   })
 }
 

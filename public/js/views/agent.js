@@ -82,6 +82,7 @@ export async function agentView() {
         <div class="card-h"><h3>Live preview</h3><div class="spacer"></div><button class="btn ghost sm" id="reset-preview">Reset</button></div>
         <div class="chatprev" id="chatprev"></div>
         <div class="chatinput"><input class="input" id="prev-in" placeholder="Message the bot as a customer…"><button class="btn sm" id="prev-send">Send</button></div>
+        <div class="card-b dim" style="font-size:11.5px;padding-top:0">A rehearsal — it runs the real bot, but saves no customer, deal or estimate and sends no email.</div>
       </div>
 
       <div class="card">
