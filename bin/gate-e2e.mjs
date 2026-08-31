@@ -167,6 +167,60 @@ async function waitForBoot() {
   )
 }
 
+/* ---------- the ~20 auxiliary servers ----------
+ * waitForBoot() above does this properly for the MAIN server: it notices an early exit, keeps the
+ * server's own output, and throws a message naming the port with that output printed under it.
+ * None of the auxiliary servers this suite boots got any of it. Each waited in its own bare loop:
+ *
+ *   for (let i = 0; i < 120; i++) { try { if ((await fetch(`…/health`)).ok) break } catch {} … }
+ *
+ * which CANNOT FAIL. After 60s it simply falls out of the loop, the next fetch throws, and the
+ * suite prints `harness error: fetch failed` — no port, no reason, no server output, and no clue
+ * which of the twenty servers it was. Every one of these children is spawned with stdio 'pipe' and
+ * nothing ever read it, so the boot error that would have explained it was thrown away (and a
+ * child that printed enough to fill the pipe buffer would have blocked there for ever).
+ *
+ * Measured: run 3 of a ten-run loop died exactly this way, on the lost-database block's second
+ * boot, while nine other node processes were competing for the machine. It named nothing, and it
+ * reads precisely like a product regression. The block is stable 12/12 in isolation — so the gate
+ * reported a failure that was entirely its own. That is the thing this file exists to prevent:
+ * "a gate that fails on load teaches people to re-run it until it goes green", as waitForBoot's
+ * own comment already says.
+ *
+ * aux() registers the child for teardown AND drains its output; waitForAux() is waitForBoot's
+ * contract for the other twenty. Same 90s budget, same PSC_GATE_BOOT_MS override. */
+function aux(label, port, child) {
+  child.__label = label
+  child.__port = port
+  child.__log = ''
+  child.stdout?.on('data', (d) => { child.__log += d })
+  child.stderr?.on('data', (d) => { child.__log += d })
+  started.push(child)
+  return child
+}
+
+/** Wait for an auxiliary server to answer /health. Throws — naming the server, the port and its
+ *  own output — rather than falling through and letting the next fetch fail anonymously.
+ *  `optional: true` returns false instead of throwing, for the blocks that assert on booting. */
+async function waitForAux(child, { optional = false } = {}) {
+  const LIMIT_MS = Number(process.env.PSC_GATE_BOOT_MS) || 90000
+  const t0 = Date.now()
+  const fail = (why) => {
+    if (optional) return false
+    throw new Error(
+      `${child.__label} (port ${child.__port}) ${why}.\n` +
+        `  Raise the budget with PSC_GATE_BOOT_MS if the machine is just slow.\n` +
+        `  Server output:\n${(child.__log || '').trim() || '  (the server printed nothing at all)'}`,
+    )
+  }
+  while (Date.now() - t0 < LIMIT_MS) {
+    if (child.exitCode !== null) return fail(`exited (${child.exitCode}) before it ever answered /health`)
+    try { if ((await fetch(`http://127.0.0.1:${child.__port}/health`)).ok) return true } catch { /* not up yet */ }
+    await sleep(500)
+  }
+  return fail(`never answered /health after ${Math.round((Date.now() - t0) / 1000)}s`)
+}
+
 /* ================================ the run ================================ */
 try {
   await waitForBoot()
@@ -4106,7 +4160,7 @@ try {
     const P6 = PORT + 12
     const env6 = { ...process.env, PORT: String(P6), PSC_DB: join(T6, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P6}`, PSC_ADMIN_EMAIL: 'operator@example.com' }
     const s6 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env6, stdio: ['ignore', 'pipe', 'pipe'] })
-    started.push(s6)
+    aux('the platform-admin-address server', P6, s6)
     const hit6 = async (path, body) => {
       try {
         const res = await fetch(`http://127.0.0.1:${P6}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -4114,10 +4168,7 @@ try {
       } catch { return { status: 0, text: '' } }
     }
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P6}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s6)
       let out = await hit6('/api/auth/signup', { shop_name: 'Real Shop', owner_name: 'Rita', owner_email: 'real@shop.test', password: 'GatePass-123456' })
       chk('an ordinary shop still signs up on an install with an admin address set', String(out.status), '^200$')
       out = await hit6('/api/auth/signup', { shop_name: 'Squat', owner_name: 'Mal', owner_email: 'operator@example.com', password: 'GatePass-123456' })
@@ -4535,12 +4586,9 @@ try {
       env: { ...process.env, PORT: String(P8), PSC_DB: join(T8, 'printshop.db'), PSC_SECRET: 'gate' },  // no PSC_AUTH: single-tenant
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(embedSrv)
+    aux('the embed server', P8, embedSrv)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P8}/health`)).status === 200) break } catch { /* not up yet */ }
-        await sleep(500)
-      }
+      await waitForAux(embedSrv)
       const start = async (shopKey) => {
         const res = await fetch(`http://127.0.0.1:${P8}/api/embed/chat/start?shop=${encodeURIComponent(shopKey)}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page_url: 'https://shop.test/' }),
@@ -4935,12 +4983,9 @@ try {
       env: { ...process.env, PORT: String(P7), PSC_DB: join(T7, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P7}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(csvSrv)
+    aux('the CSV-import server', P7, csvSrv)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P7}/health`)).status === 200) break } catch { /* not up yet */ }
-        await sleep(500)
-      }
+      await waitForAux(csvSrv)
       const su = await fetch(`http://127.0.0.1:${P7}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Leaving Ink', owner_name: 'L', owner_email: 'l@leaving.test', password: 'GatePass-123456' }),
@@ -5039,7 +5084,7 @@ try {
       env: { ...process.env, PORT: String(P4), PSC_HOST: '127.0.0.1', PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P4}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(bound)
+    aux('the PSC_HOST-bound server', P4, bound)
     let boundLog = ''
     bound.stdout.on('data', (d) => { boundLog += d })
     try {
@@ -5091,7 +5136,7 @@ try {
       catch { return { status: 0, text: '' } }
     }
     const up = async (want, path = '/health') => { for (let i = 0; i < 120; i++) { const h = await hit(path); if (h.status === want) return h; await sleep(500) } return await hit(path) }
-    let s2p = boot(); started.push(s2p)
+    let s2p = aux('the /health probe server', P2, boot())
     try {
       await up(200)
       let res = await fetch(`http://127.0.0.1:${P2}/api/auth/signup`, {
@@ -5116,7 +5161,7 @@ try {
       d.prepare("INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, source_ref) VALUES (NULL,'EST-9002','draft','[]',0,0,0,'LEGACY-77')").run()
       d.close()
 
-      s2p = boot(); started.push(s2p)
+      s2p = aux('the /health probe server', P2, boot())
       // ?strict=1 is the DEPLOY gate — what ship.sh polls to decide whether to roll back.
       const h = await up(503, '/health?strict=1')
       chk('a shop whose database will not open makes /health?strict=1 fail', String(h.status), '^503$')
@@ -5156,7 +5201,7 @@ try {
     const env5 = { ...process.env, PORT: String(P5), PSC_DB: join(T5, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P5}`, SMTP_HOST: '127.0.0.1', SMTP_PORT: '1', SMTP_USER: 'shop@example.com', SMTP_PASS: 'hunter2hunter2', SMTP_FROM: 'shop@example.com' }
     for (const k of ['GHL_PIT', 'GHL_LOCATION_ID', 'GHL_EMAIL_FROM', 'PSC_POSTMARK_TOKEN', 'PSC_RESEND_KEY']) delete env5[k]
     const s5 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env5, stdio: ['ignore', 'pipe', 'pipe'] })
-    started.push(s5)
+    aux('the SMTP-reset server', P5, s5)
     const hit5 = async (path, body) => {
       try {
         const res = await fetch(`http://127.0.0.1:${P5}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -5164,10 +5209,7 @@ try {
       } catch { return { status: 0, text: '' } }
     }
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P5}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s5)
       let out = await hit5('/api/auth/signup', { shop_name: 'Smtp Shop', owner_name: 'S', owner_email: 'smtp@reset.test', password: 'GatePass-123456' })
       chk('a shop signs up on an install using server-wide SMTP', String(out.status), '^200$')
       out = await hit5('/api/auth/forgot', { email: 'smtp@reset.test' })
@@ -5214,7 +5256,7 @@ try {
     const env4 = { ...process.env, PORT: String(P4), PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', GHL_BASE: `http://127.0.0.1:${P4RELAY}`, GHL_PIT: 'stub-token', GHL_LOCATION_ID: 'stub-loc', GHL_EMAIL_FROM: 'stub@printshopcrm.test' }
     delete env4.PSC_PUBLIC_URL
     const s4 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env4, stdio: ['ignore', 'pipe', 'pipe'] })
-    started.push(s4)
+    aux('the origin/relay server', P4, s4)
     const raw = (method, path, headers, body) => new Promise((resolve) => {
       const rq = rawHttp({ host: '127.0.0.1', port: P4, method, path, headers }, (resp) => {
         let b = ''; resp.on('data', (d) => { b += d }); resp.on('end', () => resolve({ status: resp.statusCode, text: b, headers: resp.headers }))
@@ -5223,10 +5265,7 @@ try {
       rq.end(body)
     })
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P4}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s4)
       const suBody = JSON.stringify({ shop_name: 'Origin Ink', owner_name: 'O', owner_email: 'owner@origin.test', password: 'GatePass-123456' })
       const su = await raw('POST', '/api/auth/signup', { Host: `127.0.0.1:${P4}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(suBody) }, suBody)
       chk('a shop signs up on an install with no PSC_PUBLIC_URL', String(su.status), '^200$')
@@ -5289,12 +5328,9 @@ try {
       env: { ...process.env, PORT: String(P9), PSC_DB: join(T9, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P9}`, PSC_WS_HEARTBEAT_MS: '300' },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s9)
+    aux('the websocket-auth server', P9, s9)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P9}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s9)
       const su = await fetch(`http://127.0.0.1:${P9}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Live Feed Ink', owner_name: 'L', owner_email: 'l@live.test', password: 'GatePass-123456' }),
@@ -5342,12 +5378,9 @@ try {
       env: { ...process.env, PORT: String(P3), PSC_DB: join(T3, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P3}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s3)
+    aux('the connection-drain server', P3, s3)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P3}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s3)
       const su = await fetch(`http://127.0.0.1:${P3}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Drain Ink', owner_name: 'D', owner_email: 'd@drain.test', password: 'GatePass-123456' }),
@@ -5414,17 +5447,14 @@ try {
       env: { ...process.env, PORT: String(P10), PSC_DB: join(T10, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_OUTBOUND_MAX: '6', PSC_PUBLIC_URL: `http://127.0.0.1:${P10}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s10)
+    aux('the virtual-paths server', P10, s10)
     // A real file on disk under public/uploads, which is what the shop's proofs are. Named so a
     // stray copy is obviously the gate's and never a shop's.
     const probe = 'zz-gate-path-probe.png'
     const probePath = join(ROOT, 'public', 'uploads', probe)
     try {
       writeFileSync(probePath, 'GATE-PRIVATE-ARTWORK-BYTES')
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P10}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s10)
       // fetch() normalises a URL before it goes on the wire, so it cannot express these at all.
       // Raw http with an explicit `path` sends exactly what it is given.
       const rawGet = (path) => new Promise((resolve) => {
@@ -5586,9 +5616,9 @@ try {
       env: { ...process.env, PORT: String(P11), PSC_DB: join(T11, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P11}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    const waitUp = async () => { for (let i = 0; i < 120; i++) { try { await fetch(`http://127.0.0.1:${P11}/health`); return } catch { /* not up */ } await sleep(500) } }
+    const waitUp = () => waitForAux(s11)   // `s11` is reassigned on each reboot; the closure follows it
     let s11 = bootServer()
-    started.push(s11)
+    aux('the lost-database server', P11, s11)
     try {
       await waitUp()
       const su = await fetch(`http://127.0.0.1:${P11}/api/auth/signup`, {
@@ -5611,7 +5641,7 @@ try {
       rmSync(join(T11, 'tenants', slug, 'printshop.db'), { force: true })
 
       s11 = bootServer()
-      started.push(s11)
+      aux('the lost-database server', P11, s11)
       await waitUp()
       const health = await fetch(`http://127.0.0.1:${P11}/health?strict=1`)
       const hbody = await health.text()
@@ -5642,7 +5672,7 @@ try {
       chk('the shop database is now zero bytes', String(statSync(join(T11, 'tenants', slug, 'printshop.db')).size), '^0$')
 
       s11 = bootServer()
-      started.push(s11)
+      aux('the lost-database server', P11, s11)
       await waitUp()
       const zHealth = await fetch(`http://127.0.0.1:${P11}/health?strict=1`)
       const zBody = await zHealth.text()
@@ -5675,9 +5705,9 @@ try {
       env: { ...process.env, PORT: String(P19), PSC_DB: join(T19, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P19}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    const up19 = async () => { for (let i = 0; i < 120; i++) { try { await fetch(`http://127.0.0.1:${P19}/health`); return } catch { /* not up */ } await sleep(500) } }
+    const up19 = () => waitForAux(s19)     // likewise: rebooted twice below
     let s19 = boot19()
-    started.push(s19)
+    aux('the corrupt-database server', P19, s19)
     try {
       await up19()
       const su = await fetch(`http://127.0.0.1:${P19}/api/auth/signup`, {
@@ -5706,7 +5736,7 @@ try {
       writeFileSync(dbPath, bytes)
 
       s19 = boot19()
-      started.push(s19)
+      aux('the corrupt-database server', P19, s19)
       await up19()
       const cMe = await fetch(`http://127.0.0.1:${P19}/api/auth/me`, { headers: { Cookie: cookie } })
       const cBody = await cMe.text()
@@ -5739,9 +5769,9 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     let s17 = boot17()
-    started.push(s17)
+    aux('the shop-registry server', P17, s17)
     try {
-      for (let i = 0; i < 120; i++) { try { await fetch(`http://127.0.0.1:${P17}/health`); break } catch { /* not up */ } await sleep(500) }
+      await waitForAux(s17)
       const su = await fetch(`http://127.0.0.1:${P17}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Registry Ink', owner_name: 'R', owner_email: 'r@registry.test', password: 'GatePass-123456' }),
@@ -5753,7 +5783,7 @@ try {
       for (const side of ['-wal', '-shm']) rmSync(join(T17, `control.db${side}`), { force: true })
       writeFileSync(join(T17, 'control.db'), '')
       s17 = boot17()
-      started.push(s17)
+      aux('the shop-registry server', P17, s17)
       const code = await new Promise((r) => { s17.on('exit', (c) => r(c)); setTimeout(() => r('still-running'), 15000) })
       chk('a zero-length shop registry stops the server instead of being rebuilt empty', String(code), '^1$')
       chk('…and the shop database it would have hidden is still on disk', String(readdirSync(join(T17, 'tenants')).length), '^1$')
@@ -5769,7 +5799,7 @@ try {
       await new Promise((r) => { s17.on('exit', r); setTimeout(r, 3000) })
       rmSync(join(T17, 'control.db'), { force: true })
       s17 = boot17()
-      started.push(s17)
+      aux('the shop-registry server', P17, s17)
       let log17 = ''
       s17.stderr.on('data', (d) => { log17 += d })
       const code2 = await new Promise((r) => { s17.on('exit', (c) => r(c)); setTimeout(() => r('still-running'), 15000) })
@@ -5790,10 +5820,9 @@ try {
       env: { ...process.env, PORT: String(P18), PSC_DB: join(T18, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P18}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s18)
+    aux('the first-run server', P18, s18)
     try {
-      let up = false
-      for (let i = 0; i < 120; i++) { try { if ((await fetch(`http://127.0.0.1:${P18}/health`)).ok) { up = true; break } } catch { /* not up */ } await sleep(500) }
+      const up = await waitForAux(s18, { optional: true })
       chk('a first run with no registry and no shops still starts', String(up), '^true$')
       chk('…and creates one', String(existsSync(join(T18, 'control.db'))), '^true$')
     } finally {
@@ -5828,12 +5857,9 @@ try {
       env: { ...process.env, PORT: String(P12), PSC_DB: join(T12, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P12}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s12)
+    aux('the no-mail server', P12, s12)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P12}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s12)
       const su = await fetch(`http://127.0.0.1:${P12}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Silent Ink', owner_name: 'S', owner_email: 's@silent.test', password: 'GatePass-123456' }),
@@ -5916,12 +5942,9 @@ try {
       env: { ...process.env, PORT: String(P13), PSC_DB: join(T13, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P13}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s13)
+    aux('the decoration server', P13, s13)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P13}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s13)
       const su = await fetch(`http://127.0.0.1:${P13}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Hoop Ink', owner_name: 'H', owner_email: 'h@hoop.test', password: 'GatePass-123456' }),
@@ -5992,12 +6015,9 @@ try {
       env: { ...process.env, PORT: String(P14), PSC_DB: join(T14, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P14}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s14)
+    aux('the void-invoice server', P14, s14)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P14}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s14)
       const su = await fetch(`http://127.0.0.1:${P14}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Void Ink', owner_name: 'V', owner_email: 'v@void.test', password: 'GatePass-123456' }),
@@ -6075,12 +6095,9 @@ try {
       env: { ...process.env, PORT: String(P15), PSC_DB: join(T15, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P15}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s15)
+    aux('the receptionist server', P15, s15)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P15}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s15)
       const su = await fetch(`http://127.0.0.1:${P15}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Recv Ink', owner_name: 'R', owner_email: 'r@recv.test', password: 'GatePass-123456' }),
@@ -6179,12 +6196,9 @@ try {
       env: { ...process.env, PORT: String(P16), PSC_DB: join(T16, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P16}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
-    started.push(s16)
+    aux('the price-book server', P16, s16)
     try {
-      for (let i = 0; i < 120; i++) {
-        try { if ((await fetch(`http://127.0.0.1:${P16}/health`)).ok) break } catch { /* not up */ }
-        await sleep(500)
-      }
+      await waitForAux(s16)
       const su = await fetch(`http://127.0.0.1:${P16}/api/auth/signup`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shop_name: 'Book Ink', owner_name: 'B', owner_email: 'b@book.test', password: 'GatePass-123456' }),

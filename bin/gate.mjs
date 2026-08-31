@@ -14706,6 +14706,116 @@ section('every doc that copies .env.example first makes the directory it points 
   })
 }
 
+/* ---------- a boot wait that cannot fail reports the product for its own load ---------- */
+section('every auxiliary server in the e2e suite is waited on by something that can fail')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const e2e = readFileSync(join(ROOT, 'bin/gate-e2e.mjs'), 'utf8')
+
+  /*
+   * Sibling of the port rule above, found the same way: by running the ten-run loop the release
+   * process actually requires. Run 3 died with
+   *
+   *     ✗ harness error: fetch failed
+   *
+   * and nothing else — no port, no server, no reason. The block was the lost-database one, which
+   * boots its server three times; in isolation it is stable 12/12, so the failure was the gate's
+   * own, produced by nine other processes competing for the machine.
+   *
+   * The cause: waitForBoot() does this properly for the MAIN server — it notices an early exit,
+   * keeps the server's output and throws a message naming the port — and NONE of the twenty
+   * auxiliary servers had any of it. Each waited in its own bare loop:
+   *
+   *     for (let i = 0; i < 120; i++) { try { if ((await fetch(`…/health`)).ok) break } catch {} }
+   *
+   * which cannot fail. After 60s it falls out of the loop, the next fetch throws, and the suite
+   * blames the product. Every one of those children was spawned `stdio: [..., 'pipe', 'pipe']`
+   * and nobody ever read it, so the boot error that would have named the cause was discarded —
+   * and a child that printed enough to fill the pipe buffer would have blocked there for ever.
+   *
+   * waitForBoot's own comment already states the principle this rule enforces: "a gate that fails
+   * on load teaches people to re-run it until it goes green — which is how a real regression gets
+   * waved through."
+   */
+  await t('no boot wait falls through silently when the server never came up', () => {
+    // Strip block comments first: this file quotes the very loop it forbids, twice.
+    const code = e2e.replace(/\/\*[\s\S]*?\*\//g, '')
+    const bare = code.split('\n')
+      .map((l, i) => [i + 1, l])
+      .filter(([, l]) => /for \(let i = 0; i < \d+; i\+\+\)/.test(l) && /await fetch\(/.test(l) && !/waitForAux/.test(l))
+    assert.deepEqual(bare.map(([n]) => n), [],
+      `a bare give-up boot loop is back at gate-e2e.mjs line(s) ${bare.map(([n]) => n).join(', ')} — ` +
+      'it reports "harness error: fetch failed" and blames the product for the machine\'s load')
+
+    // …and the multi-line form of the same shape.
+    assert.ok(!/for \(let i = 0; i < \d+; i\+\+\) \{\s*\n\s*try \{ if \(\(await fetch/.test(code),
+      'a multi-line bare boot loop is back in gate-e2e.mjs')
+  })
+
+  await t('every server registered for teardown also has its output drained', () => {
+    const code = e2e.replace(/\/\*[\s\S]*?\*\//g, '')
+    // aux() is the only registrar; a raw started.push() is a child whose stderr nobody reads.
+    const raw = code.split('\n').map((l, i) => [i + 1, l])
+      .filter(([, l]) => /started\.push\(/.test(l) && !/function aux|child\)/.test(l))
+    assert.deepEqual(raw.map(([n]) => n), [],
+      `gate-e2e.mjs line(s) ${raw.map(([n]) => n).join(', ')} register a server without draining it`)
+    assert.ok(code.split('aux(').length - 1 > 15, 'the aux() registrations vanished — re-point this rule')
+  })
+
+  // The contract itself, exercised on the SHIPPED function rather than on a copy of it. Built
+  // lazily inside each case: at section level a missing helper throws before any t() runs, which
+  // kills the whole gate with a stack trace instead of naming the one rule that broke.
+  const loadWaitForAux = () => {
+    const i = e2e.indexOf('async function waitForAux')
+    assert.ok(i >= 0, 'waitForAux is gone from bin/gate-e2e.mjs — the auxiliary servers have no failing wait')
+    const fnText = e2e.slice(i, e2e.indexOf('/* ============', i))
+    assert.ok(fnText.length > 200 && fnText.includes('throw new Error'),
+      'waitForAux no longer throws, so a server that never boots is silent again')
+    return new Function('sleep', `${fnText}\nreturn waitForAux`)((ms) => new Promise((r) => setTimeout(r, ms)))
+  }
+
+  await t('a server that exited before answering is reported by name, port and its own output', async () => {
+    const waitForAux = loadWaitForAux()
+    const dead = { exitCode: 1, __label: 'the lost-database server', __port: 59997, __log: 'Error: listen EADDRINUSE' }
+    await assert.rejects(() => waitForAux(dead), (e) => {
+      assert.match(e.message, /the lost-database server/, 'the message must name which of the twenty servers it was')
+      assert.match(e.message, /59997/, 'the message must name the port')
+      assert.match(e.message, /EADDRINUSE/, "the server's own output is the whole diagnostic — it must be printed")
+      assert.match(e.message, /exited \(1\)/, 'an early exit is a different failure from a timeout, and must read as one')
+      return true
+    })
+  })
+
+  await t('a server that never answers is reported as a timeout, not as a product failure', async () => {
+    const waitForAux = loadWaitForAux()
+    const prev = process.env.PSC_GATE_BOOT_MS
+    process.env.PSC_GATE_BOOT_MS = '1'          // nothing is listening on 59998; do not wait 90s for it
+    try {
+      const hung = { exitCode: null, __label: 'the price-book server', __port: 59998, __log: '' }
+      await assert.rejects(() => waitForAux(hung), (e) => {
+        assert.match(e.message, /the price-book server/)
+        assert.match(e.message, /never answered/, 'a hang and a crash must not read the same')
+        assert.match(e.message, /PSC_GATE_BOOT_MS/, 'the reader on a slow machine needs to be told the budget is raisable')
+        return true
+      })
+    } finally { if (prev === undefined) delete process.env.PSC_GATE_BOOT_MS; else process.env.PSC_GATE_BOOT_MS = prev }
+  })
+
+  await t('…but a block that asserts on booting still gets a boolean', async () => {
+    const waitForAux = loadWaitForAux()
+    const prev = process.env.PSC_GATE_BOOT_MS
+    process.env.PSC_GATE_BOOT_MS = '1'
+    try {
+      const dead = { exitCode: 1, __label: 'the first-run server', __port: 59999, __log: '' }
+      assert.equal(await waitForAux(dead, { optional: true }), false,
+        'optional:true is what lets `chk(…starts…)` assert on the boot instead of the suite dying')
+    } finally { if (prev === undefined) delete process.env.PSC_GATE_BOOT_MS; else process.env.PSC_GATE_BOOT_MS = prev }
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
