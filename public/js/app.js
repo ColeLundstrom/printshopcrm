@@ -63,7 +63,7 @@ const NAV = [
   { label: 'More', section: true },
   { advanced: true, href: '/products', ico: 'products', name: 'Products' },
   { advanced: true, href: '/activity', ico: 'activity', name: 'Activity' },
-  { advanced: true, href: '/developers', ico: 'settings', name: 'Developers' },
+  { advanced: true, href: '/developers', ico: 'settings', name: 'Developers', manage: true },
   { advanced: true, href: '/outbox', ico: 'outbox', name: 'Outbox' },
   { href: '/billing', ico: 'billing', name: 'Billing', owner: true },
   { href: '/settings', ico: 'settings', name: 'Settings' },
@@ -79,6 +79,12 @@ function visibleNav() {
   const owner = me.single_tenant || me.is_owner
   const items = NAV.filter((n) =>
     !(n.owner && !owner) &&
+    // `manage` is the third gate, and it was missing. Developers carried no role flag at all, so
+    // staff saw it; developers.js then fetches /api/developers, which is requireRole('manager'),
+    // with no catch — the 403 falls to the router boundary and paints "Something broke" with a
+    // Try again button that re-issues the same 403 for ever. A permissions rule reported as a
+    // product fault, in a permanent broken link in every staff sidebar.
+    !(n.manage && me.can_manage === false) &&
     !(n.admin && !me.is_admin))
   return items.filter((n, i) => !n.section || items.slice(i + 1).some((x) => !x.section) && !items[i + 1]?.section)
 }

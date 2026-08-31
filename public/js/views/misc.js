@@ -595,12 +595,14 @@ export async function settingsView() {
       <div class="card-b">
         <p class="dim" style="font-size:12.5px;margin-bottom:12px;line-height:1.6">Everything is yours, complete, right now — <strong style="color:var(--txt-2)">including line items and size breakdowns</strong>.
           No support ticket, no fee, no waiting. The database is a single file you can copy.</p>
-        <a class="btn ghost sm" href="/api/export/all.json" download>Download everything (JSON)</a>
+        ${me.can_manage === false
+          ? `<p class="dim" style="font-size:12.5px;margin:0">Exporting is limited to owners and managers. Ask one of them for a copy — it is the whole database, and it is yours.</p>`
+          : `<a class="btn ghost sm" href="/api/export/all.json" download>Download everything (JSON)</a>
         <details class="disc"><summary>One table at a time (CSV)</summary>
           <div class="disc-b"><div class="wrap-row">
             ${['contacts', 'estimates', 'line_items', 'invoices', 'payments', 'jobs', 'activities']
               .map((t) => `<a class="btn ghost sm" href="/api/export/${t}.csv" download>${t.replace('_', ' ')}.csv</a>`).join('')}
-          </div></div></details>
+          </div></div></details>`}
       </div>
     </div>
 

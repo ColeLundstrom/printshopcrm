@@ -8,7 +8,23 @@ import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate, 
 export async function developersView() {
   setPage('Developers', '', '<span class="dim">More</span>')
   $('#view').innerHTML = '<div class="dim">Loading…</div>'
-  paint(await api.get('/api/developers'))
+  /* Belt to the nav's braces. The sidebar no longer offers this to staff, but a bookmark, a
+   * pasted link or a demotion mid-session all still land here, and an uncaught 403 falls to the
+   * router boundary — which paints "Something broke" over a Try again button that re-issues the
+   * same 403 for ever, reporting a permissions rule as a product fault. books.js one file away
+   * already degrades this way instead. */
+  let data
+  try { data = await api.get('/api/developers') } catch (e) {
+    if (e?.status === 403) {
+      $('#view').innerHTML = `<div class="card"><div class="card-b">
+        <h3 style="margin:0 0 6px">Developers</h3>
+        <p class="dim" style="margin:0">The API key and webhooks are managed by an owner or a manager. Ask one of them if you need access.</p>
+      </div></div>`
+      return
+    }
+    throw e
+  }
+  paint(data)
 
   // Bind ONCE, and delegate on #view — which is shared by every screen and never replaced. These
   // handlers used to be re-attached on every render, and each webhook toggle/delete re-entered the

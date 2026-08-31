@@ -15083,6 +15083,64 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('a staff member is not handed controls that answer 403')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(ROOT, f), 'utf8')
+
+  /*
+   * visibleNav() filtered on `owner` and `admin` only. The Developers entry carried no role flag
+   * at all, so every staff member had it in their sidebar — and developers.js fetched
+   * /api/developers, which is requireRole('manager'), with no catch. The 403 fell to the router
+   * boundary, which paints "Something broke" over a Try again button that re-issues the same 403
+   * for ever: a permissions rule reported as a product fault, as a permanent broken link in every
+   * staff sidebar. books.js, one file away, already degrades correctly.
+   *
+   * Settings' "Your Data" card was the same shape with a worse ending: the export links rendered
+   * unconditionally, and every export route is requireRole('manager'), so a staff click
+   * DOWNLOADED a file called printshopcrm-export.json whose entire content was
+   * {"error":"This needs manager access."} — a failed operation delivered as a completed one.
+   */
+  await t('sanity: the doors this rule is about are still manager-only, and the client is told the role', () => {
+    const srv = read('server.mjs')
+    assert.match(srv, /app\.get\('\/api\/developers', requireRole\('manager'\)/, 'sanity: /api/developers is still manager-only')
+    assert.match(srv, /app\.get\('\/api\/export\/all\.json', requireRole\('manager'\)/, 'sanity: the JSON export is still manager-only')
+    assert.match(srv, /can_manage: hasRole\(req, 'manager'\)/, '/api/auth/me must keep telling the client whether it may manage')
+  })
+
+  await t('Developers is not offered to a role that cannot open it', () => {
+    const app = read('public/js/app.js')
+    const entry = app.split('\n').find((l) => l.includes("href: '/developers'"))
+    assert.ok(entry, 'the Developers nav entry moved — re-point this rule')
+    assert.match(entry, /manage: true/, 'the Developers entry carries no role flag, so staff see a link that can only ever answer 403')
+    assert.match(app, /n\.manage && me\.can_manage === false/, 'visibleNav must actually filter on that flag, or the flag is decoration')
+  })
+
+  await t('…and reaching it anyway explains itself instead of saying "Something broke"', () => {
+    const dev = read('public/js/views/developers.js')
+    assert.match(dev, /status === 403/, 'a bookmark, a pasted link or a mid-session demotion all still land here')
+    // Only the INITIAL load, not the `refresh` closure below it — that one has always had its own
+    // try/catch and toasts. Bounding the slice matters: asserting on the whole file matched
+    // refresh's already-correct call and reported a fixed file as broken.
+    const initial = dev.slice(dev.indexOf('export async function developersView'), dev.indexOf('const refresh ='))
+    assert.ok(initial.length > 80, 'the developersView slice is empty — re-point this rule')
+    assert.doesNotMatch(initial, /paint\(await api\.get\('\/api\/developers'\)\)/,
+      'the first fetch is uncaught — the 403 goes to the router boundary and becomes a product fault with a Try again that never can')
+  })
+
+  await t('…and staff are not offered a download that arrives containing an error', () => {
+    const misc = read('public/js/views/misc.js')
+    const i = misc.indexOf('<h3>Your Data</h3>')
+    assert.ok(i > 0, 'the Your Data card moved — re-point this rule')
+    const card = misc.slice(i, misc.indexOf('</div>\n    </div>', i))
+    assert.match(card, /can_manage === false/,
+      'the export links render for every role, and every export route is manager-only: a staff click downloads a file whose whole content is {"error":"This needs manager access."}')
+  })
+}
+
 section('the shop can still reach the multipliers that price half its work')
 {
   const { readFileSync, readdirSync } = await import('node:fs')
