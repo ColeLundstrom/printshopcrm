@@ -213,9 +213,16 @@ function staffCard(d, me, esc) {
  * take that connection out of the product. Rendered unconditionally: clearing a group that holds
  * nothing is a harmless no-op, and a button that appears only once you are connected is a button
  * nobody finds when they need it.
+ *
+ * `note` overrides the confirm body. The default says "connect it again by pasting the keys back
+ * in", which is true of every group a shop types by hand and false of the lite edition's Stripe
+ * payout account — that one is re-established by walking Stripe's onboarding again, not by
+ * pasting a key. Telling a shop to paste back a key it never had is how a reversible action
+ * reads as an irreversible one, and an exit nobody dares take is not an exit.
  */
-const disconnectBtn = (group, label) =>
-  `<button class="btn ghost sm" type="button" data-disconnect="${group}" data-label="${label}">Disconnect</button>`
+const disconnectBtn = (group, label, note) =>
+  `<button class="btn ghost sm" type="button" data-disconnect="${group}" data-label="${label}"${
+    note ? ` data-note="${note}"` : ''}>Disconnect</button>`
 
 /** The Bring-Your-Own-Model card. Provider + key live in the shop's own settings; usage bills to them. */
 function aiCard(aiInfo, esc) {
@@ -477,7 +484,10 @@ export async function settingsView() {
       <div class="card-h"><h3>Take Payments</h3><span class="pill ${s.stripe_charges_enabled ? 'green' : ''}" id="pay-pill">${s.stripe_charges_enabled ? 'Stripe connected' : (s.stripe_account_id ? 'finish setup' : 'not connected')}</span></div>
       <div class="card-b" id="online">
         <p class="dim" style="font-size:12.5px;margin-bottom:14px;line-height:1.6">Connect Stripe to accept card payments on your invoices — customers pay online and payouts go straight to your bank. A flat <strong style="color:var(--txt-2)">4% fee</strong> on collected payments covers card processing and the platform, so there's nothing else to set up or pay.</p>
-        <button class="btn" id="connect-stripe">${s.stripe_charges_enabled ? 'Manage Stripe' : (s.stripe_account_id ? 'Finish Stripe setup' : 'Connect Stripe')}</button>
+        <div class="row" style="gap:8px">
+          <button class="btn" id="connect-stripe">${s.stripe_charges_enabled ? 'Manage Stripe' : (s.stripe_account_id ? 'Finish Stripe setup' : 'Connect Stripe')}</button>
+          ${disconnectBtn('stripe', 'Stripe', 'This shop stops being linked to that Stripe account: no new payment can be collected into it, and the Take Payments card goes back to &quot;not connected&quot;. Nothing already collected is touched, no invoice or payment record is deleted, and a card payment a customer is part-way through still lands on the right invoice. To take payments again, press Connect Stripe and go through Stripe&#39;s setup once more.')}
+        </div>
       </div>
     </div>` : `
     <div class="card">
@@ -869,9 +879,9 @@ export async function settingsView() {
   // from here — the shop has to paste it again — but it must be REACHABLE, which it was not.
   for (const btn of document.querySelectorAll('[data-disconnect]')) {
     btn.onclick = () => {
-      const { disconnect: group, label } = btn.dataset
+      const { disconnect: group, label, note } = btn.dataset
       confirmModal(`Disconnect ${label}?`,
-        'Its saved credentials are removed from this shop. Nothing else is deleted, and you can connect it again by pasting the keys back in.',
+        note || 'Its saved credentials are removed from this shop. Nothing else is deleted, and you can connect it again by pasting the keys back in.',
         async () => {
           try { await api.post(`/api/settings/disconnect/${group}`, {}); toast(`${label} disconnected`); repaintChrome() }
           catch (e) { toast(e.message, true) }
@@ -1077,6 +1087,7 @@ function emailCard(s, notif, esc) {
       <div class="row" style="gap:8px;margin-top:16px;align-items:center">
         <button class="btn" id="mail-save">${live ? 'Save changes' : 'Connect email'}</button>
         <button class="btn ghost sm" id="mail-test">Send myself a test</button>
+        ${disconnectBtn('smtp', 'email sending')}
         <span class="dim" id="mail-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px"></span>
       </div>
     </div>

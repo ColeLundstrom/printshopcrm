@@ -14038,6 +14038,70 @@ section('anything wired to a delegated click can be reached with a keyboard')
   })
 }
 
+
+/* ---------- the lite edition's two one-way doors ---------- */
+section('every credential a lite shop can enter, it can also remove')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const misc = readFileSync(join(ROOT, 'public/js/views/misc.js'), 'utf8')
+  const server = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+
+  // Two of the Settings cards exist only in the lite edition — they sit in the `lite ?` arm of an
+  // edition ternary, and the Disconnect buttons live in the `: pro` arm. So the pro build shipped
+  // an exit for SMTP and for Stripe and the lite build shipped neither. A lite shop that onboarded
+  // onto the wrong Stripe account paid out to it for ever: the route that clears it has always
+  // worked, no screen has ever called it, and `sqlite3` was the only way out. That is the
+  // definition of a state a human cannot fix.
+
+  const slice = (from, to) => {
+    const i = misc.indexOf(from)
+    assert.ok(i > 0, `${from} moved in misc.js — this rule cannot find the card it guards`)
+    const j = misc.indexOf(to, i + from.length)
+    return misc.slice(i, j > 0 ? j : misc.length)
+  }
+
+  await t("the lite Sending Email card offers a way to remove the SMTP password", () => {
+    const card = slice('function emailCard(', '\n}')
+    assert.match(card, /disconnectBtn\('smtp'/,
+      'lite has no Disconnect for email: the password of a bookkeeper who left cannot be taken out from any screen')
+  })
+
+  await t('the lite Take Payments card offers a way to unlink the Stripe payout account', () => {
+    const card = slice('<h3>Take Payments</h3>', '<h3>Online Gang-Sheet Ordering</h3>')
+    assert.match(card, /disconnectBtn\('stripe'/,
+      'lite has no Disconnect for Stripe: a shop onboarded onto the wrong account keeps paying out to it')
+  })
+
+  await t('…and that button clears the payout destination, not just an unused API key', () => {
+    // The lite edition never stores stripe_secret — it is a Connect Express account on the
+    // platform key. A Disconnect that cleared only the pasted-key pair would look like an exit
+    // and be a no-op, which is worse than no button at all.
+    const i = server.indexOf('const DISCONNECT_GROUPS = {')
+    assert.ok(i > 0, 'DISCONNECT_GROUPS moved')
+    const line = server.slice(i, server.indexOf('}', i)).split('\n').find((l) => l.trim().startsWith('stripe:')) || ''
+    for (const k of ['stripe_account_id', 'stripe_charges_enabled']) {
+      assert.ok(line.includes(k), `the stripe disconnect group must clear ${k}, or lite's button does nothing`)
+    }
+  })
+
+  await t('a card whose reconnect is not "paste the key back" can say so', () => {
+    // The shared confirm body tells the shop it can reconnect "by pasting the keys back in".
+    // For the lite Stripe account that sentence is false — you walk Stripe's onboarding again —
+    // and an exit a shop is afraid to take is not an exit.
+    assert.match(misc, /const disconnectBtn = \(group, label, note\)/, 'disconnectBtn takes no override note')
+    assert.match(misc, /data-note="\$\{note\}"|note \? ` data-note="\$\{note\}"` : ''/,
+      'the note never reaches the DOM')
+    assert.match(misc, /const \{ disconnect: group, label, note \} = btn\.dataset/, 'the handler never reads it')
+    assert.match(misc, /confirmModal\(`Disconnect \$\{label\}\?`,\s*\n?\s*note \|\|/, 'the handler never prefers it')
+    const card = slice('<h3>Take Payments</h3>', '<h3>Online Gang-Sheet Ordering</h3>')
+    assert.ok(!/pasting the keys back in/.test(card), 'lite Stripe must not claim it is reconnected by pasting a key')
+    assert.match(card, /Connect Stripe/, 'the confirm should name the button that undoes this')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
