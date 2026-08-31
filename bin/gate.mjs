@@ -15083,6 +15083,67 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('the only backup the documented upgrade takes can actually be written')
+{
+  const { mkdtempSync, rmSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const { DatabaseSync } = await import('node:sqlite')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  /*
+   * INSTALL.md's upgrade block ran
+   *   sudo -u printshopcrm npm run snapshot -- /var/lib/printshopcrm /var/backups/pre-upgrade-<stamp>
+   * and /var/backups on a stock Ubuntu box is root-owned 0755. So the only backup the documented
+   * upgrade takes died with a raw `Error: EACCES: permission denied, mkdir` and a Node stack —
+   * not one of snapshot.mjs's own messages.
+   *
+   * And the lines were not &&-chained, so the paste carried straight on into git pull, npm ci and
+   * systemctl restart: every schema migration and every one-shot data restatement running against
+   * every shop with nothing to go back to.
+   *
+   * bin/restore.mjs got exactly this treatment for exactly this call and says so in its own
+   * comment. snapshot.mjs — the half the upgrade actually runs — never did.
+   */
+  await t('snapshot.mjs refuses in English when it cannot write the backup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psc-snap-'))
+    const d = new DatabaseSync(join(dir, 'printshop.db'))
+    d.exec('CREATE TABLE t (a)')
+    d.close()
+    let out = '', code = 0
+    try {
+      execFileSync(process.execPath, ['--no-warnings', 'bin/snapshot.mjs', dir, '/psc-a-place-nobody-can-write'],
+        { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) { code = e.status ?? -1; out = `${e.stdout || ''}${e.stderr || ''}` } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+    assert.notEqual(code, 0, 'sanity: writing a snapshot somewhere unwritable must fail')
+    assert.doesNotMatch(out, /at mkdirSync|node:fs:/,
+      'the operator gets a raw Node stack at the exact moment they are about to migrate every shop')
+    assert.match(out, /cannot write the snapshot into/, 'it has to say what it could not do')
+    assert.match(out, /Nothing has been backed up/, 'and that no backup exists, which is the thing that decides whether to go on')
+  })
+
+  await t('…and the documented upgrade stops when it fails', () => {
+    const install = readFileSync(join(ROOT, 'INSTALL.md'), 'utf8')
+    const i = install.indexOf('## Upgrading')
+    assert.ok(i > 0, 'the Upgrading section moved — re-point this rule')
+    const blockRaw = install.slice(i, install.indexOf('```', install.indexOf('```bash', i) + 7))
+    // Shell comments stripped: the block's own explanation of why /var/backups is wrong contains
+    // the string /var/backups, and without this the rule reports the fixed doc as broken. That is
+    // the fourth time this codebase has been bitten by a rule matching its own prose.
+    const block = blockRaw.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    assert.match(block, /npm run snapshot/, 'sanity: the upgrade still takes a snapshot')
+    assert.doesNotMatch(block, /\/var\/backups/,
+      '/var/backups is root-owned 0755 and this runs as the service account — the documented backup cannot be written there')
+    assert.match(block, /&& git pull/,
+      'the steps are not chained, so a failed backup is followed by the migration it existed to protect')
+    assert.match(block, /&& sudo systemctl restart/, 'the restart is what runs the migrations — it must be behind the same &&')
+  })
+}
+
 section('a brand-new shop can open its first deal')
 {
   const { readFileSync } = await import('node:fs')

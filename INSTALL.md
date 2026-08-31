@@ -420,11 +420,14 @@ cd /opt/printshopcrm
 # snapshot of printshop.db alone holds no customers and nothing you could sign in to. This is the
 # only backup taken before migrations run against real shop data, so it has to be all of it.
 # bin/snapshot.mjs uses SQLite's own VACUUM INTO, needs no sqlite3 binary, and verifies each file.
+# The snapshot goes UNDER the data root, not into /var/backups: /var/backups is root-owned 0755 on
+# a stock Ubuntu box, and this command runs as the service account, so it could not write there.
+# && between every step on purpose — if the backup fails, the upgrade must not happen.
 sudo -u printshopcrm npm run snapshot -- /var/lib/printshopcrm \
-  /var/backups/pre-upgrade-$(date +%Y%m%d%H%M%S)
-git pull
-npm ci --omit=dev
-sudo systemctl restart printshopcrm
+  /var/lib/printshopcrm/backups/pre-upgrade-$(date +%Y%m%d%H%M%S) \
+  && git pull \
+  && npm ci --omit=dev \
+  && sudo systemctl restart printshopcrm
 journalctl -u printshopcrm -n 30
 ```
 

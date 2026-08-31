@@ -63,7 +63,28 @@ for (const src of dbs) {
 }
 
 rmSync(OUT, { recursive: true, force: true })
-mkdirSync(OUT, { recursive: true })
+/*
+ * The first write is the one that fails, and this is the worst possible moment for this file to
+ * stop speaking English.
+ *
+ * INSTALL.md's upgrade block runs `sudo -u printshopcrm npm run snapshot -- /var/lib/printshopcrm
+ * /var/backups/pre-upgrade-<stamp>`, and /var/backups on a stock Ubuntu box is root-owned 0755. So
+ * the documented pre-migration backup — the ONLY backup the documented upgrade takes — died with
+ * a raw `Error: EACCES: permission denied, mkdir` and a Node stack, exit 1.
+ *
+ * The lines in that block are not &&-chained, so the paste continues straight into `git pull`,
+ * `npm ci` and `systemctl restart`, which runs every schema migration and every one-shot data
+ * restatement against every shop with nothing to go back to.
+ *
+ * bin/restore.mjs was given exactly this treatment for exactly this call, and said so in its own
+ * comment. The half the upgrade actually runs never got it.
+ */
+try { mkdirSync(OUT, { recursive: true }) } catch (e) {
+  die(`cannot write the snapshot into ${OUT} — ${e.code || e.message}.\n` +
+    `    Run this as the user that owns the data, or pick a directory it can write:\n` +
+    `      sudo -u <service-user> node ${process.argv[1]} ${process.argv.slice(2).join(' ')}\n` +
+    `    Nothing has been backed up, and nothing has been changed. Do not upgrade until this works.`)
+}
 
 let bytes = 0
 for (const src of dbs) {
