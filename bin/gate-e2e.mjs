@@ -9,7 +9,7 @@
  * app itself doesn't use. This needs only the Node you already have.
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -5525,9 +5525,116 @@ try {
       const me = await fetch(`http://127.0.0.1:${P11}/api/auth/me`, { headers: { Cookie: cookie } })
       chk('…and the owner does not silently land in a blank shop', String(me.status), '^503$')
       chk('…they are told which failure it is, and what fixes it', await me.text(), 'npm run restore')
+
+      /* The same shop, TRUNCATED rather than removed — which is the commoner accident: a disk that
+       * filled mid-write, an interrupted cp, a restore that copied a zero-length artifact, a volume
+       * that came back up thin. `existsSync` was the only test, and a zero-byte file exists, so
+       * SQLite adopted it as a brand-new empty database and bootstrapDb wrote the whole schema in.
+       * Every guard above — each one written because losing a shop silently is the worst thing
+       * this product can do — was blind to it. Measured on a shop with two customers, EST-1001/2,
+       * INV-1001 and a $300 payment: /api/dashboard answered 200 with every KPI zero, /health
+       * stayed green so ship.sh called the deploy a success, and the shop began minting EST-1001
+       * again over the top of its own history. */
+      s11.kill('SIGKILL')
+      await new Promise((r) => s11.on('exit', r))
+      for (const side of ['-wal', '-shm']) rmSync(join(T11, 'tenants', slug, `printshop.db${side}`), { force: true })
+      writeFileSync(join(T11, 'tenants', slug, 'printshop.db'), '')
+      chk('the shop database is now zero bytes', String(statSync(join(T11, 'tenants', slug, 'printshop.db')).size), '^0$')
+
+      s11 = bootServer()
+      started.push(s11)
+      await waitUp()
+      const zHealth = await fetch(`http://127.0.0.1:${P11}/health?strict=1`)
+      const zBody = await zHealth.text()
+      chk('a zero-length shop database fails /health?strict=1 too, so a deploy rolls back', String(zHealth.status), '^503$')
+      chk('…and it names the shop that is broken', zBody, 'unavailable')
+      const zMe = await fetch(`http://127.0.0.1:${P11}/api/auth/me`, { headers: { Cookie: cookie } })
+      chk('…the owner does not silently land in a blank shop', String(zMe.status), '^503$')
+      chk('…they are told what fixes it, not shown a shop that looks brand new', await zMe.text(), 'npm run restore')
+      chk('…and the empty file was not adopted and written over', String(statSync(join(T11, 'tenants', slug, 'printshop.db')).size), '^0$')
     } finally {
       try { s11.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T11, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+  /* ---------- the shop registry is never invented ----------
+   * control.db is the list of every shop on the box, and `new DatabaseSync(path)` creates on open.
+   * So a control.db that was missing or zero bytes was silently rebuilt EMPTY. That is the quietest
+   * catastrophe in the product: every owner is told "Wrong email or password", both shops' books
+   * are still sitting untouched under data/tenants/, the boot log says nothing at all, and /health
+   * AND /health?strict=1 both answer 200 — so ship.sh, which polls exactly that to decide whether
+   * to roll a release back, calls it a success. The one tool INSTALL.md names for a lockout then
+   * misdiagnoses it, reporting "this is the wrong database" while pointed at the right one. */
+  {
+    const T17 = mkdtempSync(join(tmpdir(), 'psc-e2e-registry-'))
+    const P17 = PORT + 24
+    const boot17 = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P17), PSC_DB: join(T17, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P17}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    let s17 = boot17()
+    started.push(s17)
+    try {
+      for (let i = 0; i < 120; i++) { try { await fetch(`http://127.0.0.1:${P17}/health`); break } catch { /* not up */ } await sleep(500) }
+      const su = await fetch(`http://127.0.0.1:${P17}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Registry Ink', owner_name: 'R', owner_email: 'r@registry.test', password: 'GatePass-123456' }),
+      })
+      chk('a shop signs up on the registry install', String(su.status), '^200$')
+      s17.kill('SIGKILL')
+      await new Promise((r) => s17.on('exit', r))
+
+      for (const side of ['-wal', '-shm']) rmSync(join(T17, `control.db${side}`), { force: true })
+      writeFileSync(join(T17, 'control.db'), '')
+      s17 = boot17()
+      started.push(s17)
+      const code = await new Promise((r) => { s17.on('exit', (c) => r(c)); setTimeout(() => r('still-running'), 15000) })
+      chk('a zero-length shop registry stops the server instead of being rebuilt empty', String(code), '^1$')
+      chk('…and the shop database it would have hidden is still on disk', String(readdirSync(join(T17, 'tenants')).length), '^1$')
+      chk('…and it is still a real database, not overwritten', String(statSync(join(T17, 'tenants', readdirSync(join(T17, 'tenants'))[0], 'printshop.db')).size > 0), '^true$')
+
+      // Gone entirely, with shops on disk: same answer. Creating a registry is only ever correct
+      // on a genuinely new install.
+      //
+      // Kill it first even though a fixed server has already exited: on the OLD code it is still
+      // running and still holding the port, and the next boot would then exit 1 on EADDRINUSE —
+      // which is the code this case asserts, so the test would pass for entirely the wrong reason.
+      try { s17.kill('SIGKILL') } catch { /* already gone */ }
+      await new Promise((r) => { s17.on('exit', r); setTimeout(r, 3000) })
+      rmSync(join(T17, 'control.db'), { force: true })
+      s17 = boot17()
+      started.push(s17)
+      let log17 = ''
+      s17.stderr.on('data', (d) => { log17 += d })
+      const code2 = await new Promise((r) => { s17.on('exit', (c) => r(c)); setTimeout(() => r('still-running'), 15000) })
+      chk('a missing registry with shops on disk stops the server too', String(code2), '^1$')
+      chk('…and it names the tool that fixes it', log17, 'npm run restore')
+    } finally {
+      try { s17.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T17, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+  /* ---------- a genuinely new install still creates its own registry ---------- */
+  {
+    const T18 = mkdtempSync(join(tmpdir(), 'psc-e2e-firstrun-'))
+    const P18 = PORT + 25
+    const s18 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P18), PSC_DB: join(T18, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P18}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    started.push(s18)
+    try {
+      let up = false
+      for (let i = 0; i < 120; i++) { try { if ((await fetch(`http://127.0.0.1:${P18}/health`)).ok) { up = true; break } } catch { /* not up */ } await sleep(500) }
+      chk('a first run with no registry and no shops still starts', String(up), '^true$')
+      chk('…and creates one', String(existsSync(join(T18, 'control.db'))), '^true$')
+    } finally {
+      try { s18.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T18, { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
 
