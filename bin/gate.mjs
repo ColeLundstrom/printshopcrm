@@ -12646,6 +12646,68 @@ section('nothing in the deploy’s remote command runs on the operator’s own m
   })
 }
 
+
+/* ---------- the deploy reads the config as an account that is allowed to (round 27) ----------
+ * ship.sh's server-side half runs over ssh as the DEPLOY user. INSTALL.md mandates `chmod 600` on
+ * .env, owned by the SERVICE account — so an unprivileged read of it returns nothing and the
+ * pipeline still exits 0, because a `sed | tr | tail` pipeline's status is tail's.
+ *
+ * That silence has now cost two different steps. The pre-migration snapshot could not find PSC_DB
+ * and refused a good deploy; the health check could not find PORT, fell through to `PORT=3333` —
+ * server.mjs's own default, so it looks like a real answer — and reported a release that was
+ * answering fine on its actual port as "NOT ANSWERING /health", then rolled it back. Each was
+ * fixed on its own, a round apart. This is the rule for all of them at once. */
+section('every config read the deploy makes is one the deploy user is allowed to make')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const lines = readFileSync(join(root, 'deploy', 'ship.sh'), 'utf8').split('\n')
+  const open = lines.findIndex((l) => /^"\$\{SSH\[@\]\}" "\$APP_HOST" "\s*$/.test(l))
+  const close = lines.findIndex((l, i) => i > open && /^"\s/.test(l))
+
+  await t('the remote block is where this rule looks, and it is still there', () => {
+    assert.ok(open >= 0 && close > open, 'ship.sh’s remote command block moved — re-point this rule rather than dropping it')
+  })
+
+  await t('nothing over ssh reads .env without sudo', () => {
+    const bad = []
+    for (let i = open + 1; i < close; i++) {
+      const l = lines[i]
+      if (/^\s*#/.test(l.replace(/^\s+/, ''))) continue          // comments quote the fix; they are not the fix
+      if (!/\.env'/.test(l)) continue
+      if (!/(sed|grep|cat|awk|head|tail)\b/.test(l)) continue
+      if (!/\bsudo\b/.test(l)) bad.push(`${i + 1}: ${l.trim()}`)
+    }
+    assert.deepEqual(bad, [], `these read a 0600 file as the deploy user, get nothing, and carry on:\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('…and there is more than one such read, so the rule is not passing on an empty set', () => {
+    let n = 0
+    for (let i = open + 1; i < close; i++) {
+      const l = lines[i]
+      if (/^\s*#/.test(l.replace(/^\s+/, ''))) continue
+      if (/\.env'/.test(l) && /(sed|grep|cat|awk|head|tail)\b/.test(l)) n++
+    }
+    assert.ok(n >= 2, `expected the PSC_DB and PORT reads to both be in scope, found ${n}`)
+  })
+
+  await t('and systemd is still asked before the file is, because pro has no .env at all', () => {
+    // The install this ships to carries Environment= directives on the unit and no .env whatever.
+    // Order, not presence: a fallback consulted first is not a fallback.
+    const code = lines.slice(open, close).map((l) => (/^\s*#/.test(l) ? '' : l))
+    const find = (pred) => code.findIndex(pred)
+    for (const key of ['PSC_DB', 'PORT']) {
+      const viaUnit = find((l) => l.includes('systemctl show -p Environment') && l.includes(`${key}=`))
+      const viaFile = find((l) => l.includes('.env') && l.includes(`${key}=`) && /\bsudo\b/.test(l))
+      assert.ok(viaUnit >= 0, `${key} must be read from the unit's resolved environment`)
+      assert.ok(viaFile >= 0, `${key} must still fall back to .env for installs that use one`)
+      assert.ok(viaUnit < viaFile, `${key} reads .env before it asks systemd — pro has no .env, so that finds nothing`)
+    }
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

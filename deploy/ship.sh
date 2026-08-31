@@ -184,7 +184,14 @@ rsync -a -e "$RSYNC_E" \
   # became the exact check it was written to replace. Both seds are pipelines, so \`set -e\` never
   # caught the failure to read either file.
   PORT=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PORT=//p' | tail -1)
-  [ -n \"\$PORT\" ] || PORT=\$(sed -n 's/^[[:space:]]*PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
+  # sudo, exactly as the PSC_DB read above does, and for the same reason: this half of the script
+  # runs over ssh as the DEPLOY user, and INSTALL.md mandates a 0600 .env owned by the service
+  # account. Without it the read returned empty on every install that keeps its config in a file,
+  # PORT fell through to 3333, and a release answering perfectly well on its real port was reported
+  # \"NOT ANSWERING /health\" and rolled back. The sudo added last round went to the snapshot step
+  # only. (deploy/release.sh runs locally as root or as the service account, both of which can read
+  # it, so its own fallback is left alone.)
+  [ -n \"\$PORT\" ] || PORT=\$(sudo sed -n 's/^[[:space:]]*PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
   # server.mjs: \`const PORT = process.env.PORT || 3333\`. An unset PORT is 3333, not unknown. There
   # is deliberately no is-active fallback: if the app will not answer, the release does not ship.
   [ -n \"\$PORT\" ] || PORT=3333
