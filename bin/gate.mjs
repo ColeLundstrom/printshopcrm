@@ -12587,6 +12587,65 @@ exec /usr/bin/readlink "$@"`)
   })
 }
 
+
+/* ---------- ship.sh's remote command is a string, and a string runs backticks (round 27) -------
+ * The whole server-side half of a deploy is one double-quoted argument to ssh. Inside it, `$VAR`
+ * and backticks are expanded by the OPERATOR'S shell before a byte reaches the server — which is
+ * why the remote-side ones are written \$VAR and \$(...). Three explanatory COMMENT lines added
+ * over previous rounds carried bare backticks: `current`, `Environment=PSC_DB=...` and `set -e`.
+ * Those are command substitutions. They ran on the operator's laptop on every deploy, printed
+ * "current: command not found", and silently replaced the comment text with their own output.
+ *
+ * Nothing caught it: CI runs `bash -n deploy/*.sh`, which PARSES a command substitution inside a
+ * string perfectly happily without evaluating it, and the gate's own shell rules are all per-line
+ * greps for specific hazards. This is the general rule instead — anything unescaped in that string
+ * is code the deploy operator runs locally, and a comment is the last place anyone looks for it. */
+section('nothing in the deploy’s remote command runs on the operator’s own machine')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const lines = readFileSync(join(root, 'deploy', 'ship.sh'), 'utf8').split('\n')
+
+  // The remote command opens with `"${SSH[@]}" "$APP_HOST" "` and closes on a lone `"` at the
+  // start of a line. Find it rather than hardcoding line numbers, which move every round.
+  const open = lines.findIndex((l) => /^"\$\{SSH\[@\]\}" "\$APP_HOST" "\s*$/.test(l))
+  await t('the gate can still find the remote command block', () => {
+    assert.ok(open >= 0, 'ship.sh no longer opens its remote command the way this rule expects — re-point it, do not delete it')
+  })
+  // It closes on the line that starts with the matching quote and hands the failure to die():
+  //   " || die "server deploy failed — …
+  const close = lines.findIndex((l, i) => i > open && /^"\s/.test(l))
+  await t('…and where it ends', () => {
+    assert.ok(close > open, 'could not find the closing quote of ship.sh’s remote command')
+  })
+
+  await t('no backtick inside it is left for the local shell to execute', () => {
+    const bad = []
+    for (let i = open + 1; i < close; i++) {
+      // Drop the escaped ones, then anything left is a live local command substitution.
+      if (lines[i].replace(/\\`/g, '').includes('`')) bad.push(`${i + 1}: ${lines[i].trim()}`)
+    }
+    assert.deepEqual(bad, [], `these run on the machine you type the deploy on, not on the server:\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('…nor any $( ) — the remote side of the deploy is written \\$( )', () => {
+    const bad = []
+    for (let i = open + 1; i < close; i++) {
+      if (lines[i].replace(/\\\$\(/g, '').includes('$(')) bad.push(`${i + 1}: ${lines[i].trim()}`)
+    }
+    assert.deepEqual(bad, [], `evaluated locally instead of on the server:\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('and the script still parses', async () => {
+    const { execFileSync } = await import('node:child_process')
+    for (const f of ['deploy/ship.sh', 'deploy/release.sh', 'deploy/backup.sh', 'deploy/verify-sync.sh', 'deploy/check-drift.sh']) {
+      execFileSync('bash', ['-n', join(root, f)], { stdio: 'pipe' })
+    }
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

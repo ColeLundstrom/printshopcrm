@@ -116,11 +116,11 @@ rsync -a -e "$RSYNC_E" \
   # BEFORE the .previous-release bookkeeping below, not after. This step can refuse — that is the
   # point of it — and a refusal that has already rewritten .previous-release destroys the pointer
   # to the release you would roll back to. Measured on the first real deploy that hit this guard:
-  # it stopped correctly, and .previous-release had already been clobbered to equal `current`.
+  # it stopped correctly, and .previous-release had already been clobbered to equal \`current\`.
   #
   # The data root is found the same way PORT is, and in the same order: systemd's resolved
   # environment first, because it is authoritative and resolves drop-ins, then .env. pro's own
-  # unit carries `Environment=PSC_DB=...` and has NO .env file at all, so reading only .env
+  # unit carries \`Environment=PSC_DB=...\` and has NO .env file at all, so reading only .env
   # located nothing on the very install this ships to.
   SNAP_DATA='$DATA_ROOT'
   if [ -z \"\$SNAP_DATA\" ]; then
@@ -181,7 +181,7 @@ rsync -a -e "$RSYNC_E" \
   # systemctl show, not a grep of the unit file: it resolves drop-in overrides too, and the SHIPPED
   # deploy/printshopcrm.service carries no Environment=PORT at all — it uses an EnvironmentFile. So
   # the old grep found nothing, the old code then fell back to is-active, and the gate quietly
-  # became the exact check it was written to replace. Both seds are pipelines, so `set -e` never
+  # became the exact check it was written to replace. Both seds are pipelines, so \`set -e\` never
   # caught the failure to read either file.
   PORT=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PORT=//p' | tail -1)
   [ -n \"\$PORT\" ] || PORT=\$(sed -n 's/^[[:space:]]*PORT=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
