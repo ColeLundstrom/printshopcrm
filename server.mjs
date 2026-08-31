@@ -8858,6 +8858,16 @@ app.use((err, req, res, _next) => {
     if (err?.errcode === 14 || err?.code === 'EMFILE' || err?.code === 'ENFILE' || /unable to open database file/i.test(m)) {
       return res.status(503).json({ code: 'db_unopenable', error: 'This shop\u2019s database could not be opened \u2014 the server has run out of file handles. Raise LimitNOFILE on the service (the shipped unit sets 524288) and restart it; nothing was lost.' })
     }
+    // SQLITE_CORRUPT (11) and SQLITE_NOTADB (26): the file opened, and its pages are damaged. This
+    // is the one failure in the family that the operator cannot fix by changing a setting — the
+    // answer is a restore — and it was the only one with no branch. A shop with a damaged database
+    // signs in perfectly well and then every screen, including the app shell, answers 500
+    // "Something went wrong on our end.", which names nothing and offers nothing, while the branch
+    // immediately above for a MISSING file names `npm run restore`. Same shop, same remedy, two
+    // completely different experiences depending on whether the file was deleted or damaged.
+    if (err?.errcode === 11 || err?.errcode === 26 || /disk image is malformed|file is not a database|file is encrypted or is not a database/i.test(m)) {
+      return res.status(503).json({ code: 'db_corrupt', error: 'This shop\u2019s database is damaged and cannot be read. Nothing has been overwritten \u2014 restore it from a snapshot with `npm run restore`, then reload. If you have no snapshot, stop the service before doing anything else.' })
+    }
   }
   const status = status0
   // Deliberate 4xx errors carry a message the caller needs to act on ("url must be http(s)",

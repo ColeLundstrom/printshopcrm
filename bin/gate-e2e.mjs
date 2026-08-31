@@ -9,7 +9,7 @@
  * app itself doesn't use. This needs only the Node you already have.
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -5552,9 +5552,73 @@ try {
       chk('…the owner does not silently land in a blank shop', String(zMe.status), '^503$')
       chk('…they are told what fixes it, not shown a shop that looks brand new', await zMe.text(), 'npm run restore')
       chk('…and the empty file was not adopted and written over', String(statSync(join(T11, 'tenants', slug, 'printshop.db')).size), '^0$')
+
     } finally {
       try { s11.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T11, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
+  /* ---------- the third state of a shop database: DAMAGED ----------
+   * It opens, its header is a real SQLite header, and its pages are rubble. node:sqlite reports
+   * errcode 11, SQLITE_CORRUPT. Disk full, read-only, busy and out-of-descriptors each had a branch
+   * in the error handler naming what the operator must do; this one — the only member of the family
+   * whose answer is a restore rather than a setting — had none, so every screen including the app
+   * shell answered 500 "Something went wrong on our end." The neighbouring branch, for the same
+   * file MISSING, names `npm run restore`. Same shop, same remedy, two different experiences
+   * depending on whether the file was deleted or damaged. */
+  {
+    const T19 = mkdtempSync(join(tmpdir(), 'psc-e2e-corrupt-'))
+    const P19 = PORT + 26
+    const boot19 = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(P19), PSC_DB: join(T19, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P19}` },
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    })
+    const up19 = async () => { for (let i = 0; i < 120; i++) { try { await fetch(`http://127.0.0.1:${P19}/health`); return } catch { /* not up */ } await sleep(500) } }
+    let s19 = boot19()
+    started.push(s19)
+    try {
+      await up19()
+      const su = await fetch(`http://127.0.0.1:${P19}/api/auth/signup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop_name: 'Rubble Ink', owner_name: 'R', owner_email: 'r@rubble.test', password: 'GatePass-123456' }),
+      })
+      chk('a shop signs up on the corruption install', String(su.status), '^200$')
+      const cookie = (su.headers.getSetCookie?.() ?? [su.headers.get('set-cookie')].filter(Boolean)).map((c) => String(c).split(';')[0]).join('; ')
+      s19.kill('SIGKILL')
+      await new Promise((r) => s19.on('exit', r))
+
+      // Damage THIS shop's own database rather than substituting a toy one — a substituted file
+      // fails on the schema, which is a different error with a different remedy. Checkpoint the
+      // log into the main file first (the shop's pages live in the -wal until something does),
+      // then rubble everything after page 1, so the header and the schema page survive: the file
+      // passes every "is this a database" test and fails on the first read of real data.
+      const slug19 = readdirSync(join(T19, 'tenants'))[0]
+      const dbPath = join(T19, 'tenants', slug19, 'printshop.db')
+      const ck = new DatabaseSync(dbPath)
+      ck.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+      ck.close()
+      for (const side of ['-wal', '-shm']) rmSync(`${dbPath}${side}`, { force: true })
+      const bytes = readFileSync(dbPath)
+      chk('the shop database has real pages to damage', String(bytes.length > 8192), '^true$')
+      for (let i = 4096; i < bytes.length; i++) bytes[i] = 0x5a
+      writeFileSync(dbPath, bytes)
+
+      s19 = boot19()
+      started.push(s19)
+      await up19()
+      const cMe = await fetch(`http://127.0.0.1:${P19}/api/auth/me`, { headers: { Cookie: cookie } })
+      const cBody = await cMe.text()
+      chk('a damaged shop database is not answered with "something went wrong"', String(/Something went wrong/.test(cBody)), '^false$')
+      chk('…the owner is told the database is damaged', cBody, 'damaged')
+      chk('…and named the tool that fixes it', cBody, 'npm run restore')
+      chk('…as a 503, because it is the server\u2019s condition and it is expected to change', String(cMe.status), '^503$')
+      const h19 = await fetch(`http://127.0.0.1:${P19}/health?strict=1`)
+      chk('…and a deploy that lands on it rolls back', String(h19.status), '^503$')
+    } finally {
+      try { s19.kill('SIGKILL') } catch { /* already gone */ }
+      try { rmSync(T19, { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
 
