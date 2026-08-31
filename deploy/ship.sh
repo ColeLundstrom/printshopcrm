@@ -25,7 +25,10 @@ SSH_KEY="${SSH_KEY:-}"
 APP_ROOT="${APP_ROOT:-/opt/printshopcrm-pro}"
 SERVICE="${SERVICE:-printshopcrm-pro}"
 HEALTH_TRIES="${PSC_HEALTH_TRIES:-10}"
-DATA_UPLOADS="${DATA_UPLOADS:-$APP_ROOT/data/uploads}"
+# Deliberately EMPTY by default. This used to guess "$APP_ROOT/data/uploads", which is not where
+# INSTALL.md puts artwork, and the guess was never checked — see the block that resolves it on the
+# server below. deploy/release.sh has always taken it from the data root; so does this now.
+DATA_UPLOADS="${DATA_UPLOADS:-}"
 # The directory holding control.db and tenants/. Derived from PSC_DB in the server's .env when it
 # is not set, because that is where every install actually keeps it — see the snapshot step below.
 DATA_ROOT="${DATA_ROOT:-}"
@@ -157,7 +160,52 @@ rsync -a -e "$RSYNC_E" \
 # shellcheck disable=SC2029
 "${SSH[@]}" "$APP_HOST" "
   set -e
-  ln -sfn '$DATA_UPLOADS' '$REL/public/uploads'
+  # ---- where this install actually keeps its data -----------------------------------------------
+  # Derived the way PORT is, and in the same order: systemd's resolved environment first (it is
+  # authoritative and resolves drop-ins), then .env. Hoisted to the top of this block because the
+  # UPLOADS link below needs it too, and used to be made before anything had been resolved.
+  SNAP_DATA='$DATA_ROOT'
+  if [ -z \"\$SNAP_DATA\" ]; then
+    PSC_DB_PATH=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PSC_DB=//p' | tail -1)
+    # sudo, because INSTALL.md mandates a 0600 .env the deploy user cannot read.
+    [ -n \"\$PSC_DB_PATH\" ] || PSC_DB_PATH=\$(sudo sed -n 's/^[[:space:]]*PSC_DB=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
+    [ -n \"\$PSC_DB_PATH\" ] && SNAP_DATA=\$(dirname \"\$PSC_DB_PATH\")
+  fi
+
+  # ---- the shop's artwork -----------------------------------------------------------------------
+  # This was \`ln -sfn \$APP_ROOT/data/uploads\` against a path nothing had checked existed. On the
+  # layout INSTALL.md documents (PSC_DB=/var/lib/printshopcrm/printshop.db, artwork beside it at
+  # /var/lib/printshopcrm/uploads) that directory is not there, \`ln -sfn\` makes a DANGLING link and
+  # exits 0, and the rsync above already excluded public/uploads so nothing else can save it.
+  #
+  # Nothing downstream notices: /health probes databases, not the filesystem; verify-sync.sh filters
+  # public/uploads out of its checksum on purpose; check-drift.sh only calls verify-sync. So the
+  # deploy prints \"live and answering /health\", \"serving <release>\" and \"in sync\" while every
+  # proof, mockup, approval page and PDF in the shop shows a broken image.
+  #
+  # deploy/release.sh:164 has never had this bug — UPLOADS=\"\$DATA_ROOT/uploads\", with a mkdir. The
+  # two deploy scripts in this directory disagreed about where a shop's artwork lives.
+  UPLOADS='$DATA_UPLOADS'
+  [ -n \"\$UPLOADS\" ] || { [ -n \"\$SNAP_DATA\" ] && UPLOADS=\"\$SNAP_DATA/uploads\"; }
+  if [ -z \"\$UPLOADS\" ]; then
+    echo 'COULD NOT LOCATE THE UPLOADS DIRECTORY — nothing was flipped, and nothing was changed.'
+    echo \"  Looked for PSC_DB in systemctl show -p Environment $SERVICE, then $APP_ROOT/.env.\"
+    echo '  Set DATA_UPLOADS=<dir holding the shop artwork> when running ship.sh.'
+    exit 1
+  fi
+  # As the account that OWNS the data, for the same reason the snapshot below is: a root-owned
+  # uploads tree is one the service cannot write, and every future proof upload fails on it.
+  if [ ! -d \"\$UPLOADS\" ]; then
+    UP_OWNER=\$(stat -c %U \"\$(dirname \"\$UPLOADS\")\" 2>/dev/null || true)
+    if [ -n \"\$UP_OWNER\" ]; then sudo -u \"\$UP_OWNER\" mkdir -p \"\$UPLOADS\"; else sudo mkdir -p \"\$UPLOADS\"; fi
+  fi
+  ln -sfn \"\$UPLOADS\" '$REL/public/uploads'
+  # A link is not a directory. This is the whole point of the block: prove it resolves before the
+  # release is allowed anywhere near \`current\`.
+  [ -d '$REL/public/uploads' ] || {
+    echo \"THE UPLOADS LINK DOES NOT RESOLVE: $REL/public/uploads -> \$UPLOADS\"
+    echo '  Nothing was flipped. Every proof and mockup would have shown a broken image.'
+    exit 1; }
   # …and the config, exactly as deploy/release.sh has always done. This script did not, and
   # \`current\` is where the operator stands: \`cd current && npm run admin -- list-shops\` on a box
   # with 22 live shops answered \"No shops yet. Someone needs to sign up first.\" Every npm script
@@ -208,13 +256,7 @@ rsync -a -e "$RSYNC_E" \
   # environment first, because it is authoritative and resolves drop-ins, then .env. pro's own
   # unit carries \`Environment=PSC_DB=...\` and has NO .env file at all, so reading only .env
   # located nothing on the very install this ships to.
-  SNAP_DATA='$DATA_ROOT'
-  if [ -z \"\$SNAP_DATA\" ]; then
-    PSC_DB_PATH=\$(systemctl show -p Environment --value '$SERVICE' 2>/dev/null | tr ' ' '\\n' | sed -n 's/^PSC_DB=//p' | tail -1)
-    # sudo, because INSTALL.md mandates a 0600 .env the deploy user cannot read.
-    [ -n \"\$PSC_DB_PATH\" ] || PSC_DB_PATH=\$(sudo sed -n 's/^[[:space:]]*PSC_DB=//p' '$APP_ROOT/.env' 2>/dev/null | tr -d '\\042\\047[:space:]' | tail -1)
-    [ -n \"\$PSC_DB_PATH\" ] && SNAP_DATA=\$(dirname \"\$PSC_DB_PATH\")
-  fi
+  # SNAP_DATA was resolved at the top of this block, where the uploads link also needs it.
   if [ \"\${PSC_SKIP_BACKUP:-}\" = '1' ]; then
     echo '!  PSC_SKIP_BACKUP=1 — flipping with NO pre-migration snapshot'
   elif [ -z \"\$SNAP_DATA\" ] || [ ! -d \"\$SNAP_DATA\" ]; then

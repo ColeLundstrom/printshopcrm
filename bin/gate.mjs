@@ -5063,6 +5063,60 @@ await t('…and both database handles set it in that order', async () => {
 })
 
 section('a deploy takes a snapshot it can be put back from')
+/* ---------- both deploy scripts must agree where a shop's artwork lives ----------
+ * ship.sh defaulted DATA_UPLOADS to "$APP_ROOT/data/uploads" and then `ln -sfn`'d it into the
+ * release without ever checking it was there. On the layout INSTALL.md documents —
+ * PSC_DB=/var/lib/printshopcrm/printshop.db, artwork beside it at /var/lib/printshopcrm/uploads —
+ * that directory does not exist under APP_ROOT at all, `ln -sfn` makes a dangling link and exits
+ * 0, and the rsync already excluded public/uploads so nothing else could save it.
+ *
+ * Every check downstream agreed the deploy had worked: /health probes databases, not the
+ * filesystem; verify-sync.sh filters public/uploads out of its checksum deliberately;
+ * check-drift.sh only calls verify-sync. So the operator is told "live and answering /health",
+ * "serving <release>" and "in sync" while every proof, mockup, approval page and PDF in the shop
+ * shows a broken image — and the artwork is the one thing in this product that cannot be
+ * regenerated from anything else.
+ *
+ * deploy/release.sh:164 has never had this bug: UPLOADS="$DATA_ROOT/uploads", with a mkdir -p.
+ * The two scripts in the same directory disagreed about where a shop's artwork lives, and the one
+ * that was wrong is the one that ships production. */
+await t('ship.sh does not guess the uploads directory from APP_ROOT', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const sh = readFileSync(join(root, 'deploy/ship.sh'), 'utf8')
+  const code = sh.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+  assert.doesNotMatch(code, /DATA_UPLOADS:-\$APP_ROOT/,
+    'ship.sh defaults the artwork directory to a guess under APP_ROOT — release.sh takes it from the data root, and INSTALL.md puts it there')
+})
+
+await t('…it takes it from the same data root release.sh does', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const sh = readFileSync(join(root, 'deploy/ship.sh'), 'utf8')
+  const rel = readFileSync(join(root, 'deploy/release.sh'), 'utf8')
+  assert.match(rel, /UPLOADS="\$DATA_ROOT\/uploads"/, 'sanity: release.sh still derives uploads from the data root')
+  assert.match(sh, /UPLOADS=\\?"?\\?\$SNAP_DATA\/uploads/,
+    'ship.sh must derive the uploads directory from the resolved data root, the way release.sh does')
+})
+
+await t('…and refuses to flip when the link does not resolve', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const sh = readFileSync(join(root, 'deploy/ship.sh'), 'utf8')
+  // `ln -sfn` to a missing target succeeds and exits 0. A link is not a directory: the only way to
+  // know the artwork is really reachable from the release is to test it as one.
+  assert.match(sh, /\[ -d '\$REL\/public\/uploads' \]/,
+    'nothing proves the uploads symlink resolves — a dangling one deploys green and breaks every proof')
+  assert.match(sh, /mkdir -p .*UPLOADS/,
+    'release.sh mkdir -p\'s the uploads directory; ship.sh must too, or a first deploy to a new data root dangles')
+})
+
 await t('ship.sh snapshots before it flips, not after and not never', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')
