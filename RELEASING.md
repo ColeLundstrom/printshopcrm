@@ -97,7 +97,7 @@ snapshot path on every deploy; that is what puts the data back:
 ```bash
 ssh user@host "sudo systemctl stop printshopcrm-pro \
   && sudo bash /opt/printshopcrm-pro/current/deploy/release.sh rollback \
-  && sudo node /opt/printshopcrm-pro/current/bin/restore.mjs <snapshot-dir> --data-root /var/lib/printshopcrm --yes \
+  && sudo -u printshopcrm node /opt/printshopcrm-pro/current/bin/restore.mjs <snapshot-dir> --data-root /var/lib/printshopcrm --yes \
   && sudo systemctl start printshopcrm-pro"
 ```
 

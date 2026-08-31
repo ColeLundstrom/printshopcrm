@@ -376,6 +376,16 @@ for (const p of pairs) {
   // leaves root-owned databases behind and the service — which runs as an unprivileged user, see
   // deploy/printshopcrm.service — comes back up with "attempt to write a readonly database" on
   // every save. That is INSTALL.md's "Permission denied writing the database", caused by the fix.
+  //
+  // The gap this closes: the guard was `if (existsSync(p.to))`, so it only fired for a file being
+  // REPLACED. Restoring a database that is MISSING — which is the exact case lib/tenants.mjs sends
+  // an owner here for ("its database file is missing … Restore it from a snapshot with: npm run
+  // restore") — took the identity of whoever ran the command. Measured: a 0640 tenant database,
+  // deleted and restored, came back 0644, and under `sudo` it comes back owned by root, which is
+  // "attempt to write a readonly database" on every save with no screen able to fix it.
+  //
+  // So when there is nothing to copy the identity FROM, take it from a sibling that is already
+  // right: control.db, the default handle, or failing those the data root itself. One extra stat.
   let own = null
   if (existsSync(p.to)) {
     const st = statSync(p.to)
@@ -396,8 +406,28 @@ for (const p of pairs) {
     renameSync(side, join(SAFETY, rel + suffix))
   }
 
+  if (!own) {
+    // Nothing was there to inherit from. Adopt the identity of a database that already works.
+    const ref = [join(DATA_ROOT, 'control.db'), join(DATA_ROOT, 'printshop.db'), DATA_ROOT].find((f) => existsSync(f))
+    if (ref) {
+      const st = statSync(ref)
+      // A directory's mode is not a file's — never hand 0755 to a database. Fall back to 0640,
+      // which is what deploy/printshopcrm.service's ReadWritePaths expects.
+      own = { uid: st.uid, gid: st.gid, mode: st.isDirectory() ? 0o640 : (st.mode & 0o7777) }
+      // The directory that was just created for it needs the same owner, or the service cannot
+      // write the -wal alongside the file it can now read.
+      try { chownSync(dirname(p.to), own.uid, own.gid) } catch { /* not privileged */ }
+    }
+  }
+
   copyFileSync(p.from, p.to)
   if (own) { try { chownSync(p.to, own.uid, own.gid); chmodSync(p.to, own.mode) } catch { /* not privileged; leave as copied */ } }
+  // Print what the service will actually see. An operator discovering this from a 500 an hour
+  // later is the whole failure mode above.
+  try {
+    const st = statSync(p.to)
+    say(`      owner ${st.uid}:${st.gid}  mode ${(st.mode & 0o7777).toString(8).padStart(4, '0')}`)
+  } catch { /* nothing to report */ }
 
   const v = quickCheck(p.to)
   if (!v.ok) {

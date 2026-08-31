@@ -13647,6 +13647,100 @@ section('every backup this project documents contains the shops')
   })
 }
 
+
+/* ---------- a restore hands the shop back to the account that runs it (round 27) ----------
+ * restore.mjs preserved the uid/gid/mode of the file it was REPLACING — but the guard was
+ * `if (existsSync(p.to))`, so it did nothing at all for a database that is MISSING. That is
+ * precisely the case lib/tenants.mjs sends an owner here for: "its database file is missing …
+ * Restore it from a snapshot with: npm run restore".
+ *
+ * Measured: a 0640 tenant database, deleted and restored, came back 0644 — and run the way
+ * RELEASING.md printed it (`sudo node …`, as root) it comes back owned by root, which is "attempt
+ * to write a readonly database" on every save, with no screen in the product able to fix it.
+ * INSTALL.md says in as many words not to do that; RELEASING.md and ship.sh's printed recovery
+ * both told the operator to. */
+section('a restore leaves the databases owned by the account that runs the shop')
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, existsSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const { DatabaseSync } = await import('node:sqlite')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  const run = () => {
+    const box = mkdtempSync(join(tmpdir(), 'psc-restore-own-'))
+    try {
+      const DATA = join(box, 'data'), SNAP = join(box, 'snap')
+      mkdirSync(join(DATA, 'tenants', 'acme'), { recursive: true })
+      mkdirSync(SNAP, { recursive: true })
+      const mk = (f) => { const d = new DatabaseSync(f); d.exec('CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT)'); d.exec("INSERT INTO contacts (name) VALUES ('Northside High')"); d.close() }
+      // control.db is the sibling whose identity a missing file must adopt. 0640 is what the
+      // shipped unit's ReadWritePaths expects.
+      mk(join(DATA, 'control.db'));  execFileSync('chmod', ['640', join(DATA, 'control.db')])
+      mk(join(DATA, 'printshop.db')); execFileSync('chmod', ['640', join(DATA, 'printshop.db')])
+      // The snapshot holds the shop; the live copy has been DELETED, which is the scenario.
+      mk(join(SNAP, 'tenants__acme__printshop.db'))
+      execFileSync('cp', [join(DATA, 'control.db'), join(SNAP, 'control.db')])
+      execFileSync('cp', [join(DATA, 'printshop.db'), join(SNAP, 'printshop.db')])
+      const live = join(DATA, 'tenants', 'acme', 'printshop.db')
+      assert.ok(!existsSync(live), 'precondition: the shop database is missing, which is why we are restoring')
+
+      let out = ''
+      try {
+        out = execFileSync(process.execPath, ['--no-warnings', join(ROOT, 'bin/restore.mjs'), SNAP, '--data-root', DATA, '--yes'],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 })
+      } catch (e) { out = `${e.stdout || ''}${e.stderr || ''}` }
+      const mode = existsSync(live) ? (statSync(live).mode & 0o7777) : null
+      const ref = statSync(join(DATA, 'control.db')).mode & 0o7777
+      return { out, mode, ref, exists: existsSync(live) }
+    } finally { rmSync(box, { recursive: true, force: true }) }
+  }
+
+  const r = run()
+
+  await t('precondition: the missing shop database is actually put back', () => {
+    assert.equal(r.exists, true, `restore.mjs did not write the file:\n${r.out}`)
+  })
+
+  await t('…with the permissions its siblings have, not the ones the umask happened to give it', () => {
+    assert.equal(r.ref, 0o640, 'precondition: the reference database is 0640')
+    assert.equal(r.mode, r.ref,
+      `the restored database came back ${r.mode?.toString(8)} against a control.db of ${r.ref.toString(8)} — as root that is a shop that cannot be written to, and no screen can fix it`)
+  })
+
+  await t('…and it prints what the service will actually see', () => {
+    assert.match(r.out, /owner \d+:\d+\s+mode \d{4}/,
+      'an operator finding this out from a 500 an hour later is the whole failure mode')
+  })
+
+  await t('and nothing documents running the restore as root', () => {
+    const bad = []
+    for (const f of ['RELEASING.md', 'INSTALL.md', 'deploy/ship.sh', 'deploy/DEPLOY.md', 'HOSTING.md']) {
+      let text = ''
+      try { text = readFileSync(join(ROOT, f), 'utf8') } catch { continue }
+      text.split('\n').forEach((line, i) => {
+        if (/^\s*#/.test(line)) return
+        // `sudo node … bin/(restore|snapshot|admin).mjs` with no -u is a root-owned database.
+        if (/\bsudo\s+node\b[^\n]*bin\/(restore|snapshot|admin|backup-drive)\.mjs/.test(line)) {
+          bad.push(`${f}:${i + 1}: ${line.trim().slice(0, 100)}`)
+        }
+      })
+    }
+    assert.deepEqual(bad, [], `INSTALL.md says this "leaves root-owned databases the service cannot write":\n      ${bad.join('\n      ')}`)
+  })
+
+  await t('…and ship.sh prints the recovery as the account that took the snapshot', () => {
+    const src = readFileSync(join(ROOT, 'deploy/ship.sh'), 'utf8')
+      .split('\n').filter((l) => !/^\s*#/.test(l.replace(/^\s*/, '')) && !/^\s*\\?#/.test(l)).join('\n')
+    const take = src.indexOf('$SNAP_AS node')
+    assert.ok(take >= 0, 'ship.sh must still take the snapshot as the data-owning account')
+    assert.match(src, /\$SNAP_AS node \$?\{?APP_ROOT\}?|SNAP_AS node \$APP_ROOT/,
+      'the printed restore has to run as that same account, or the recovery creates the lockout')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
