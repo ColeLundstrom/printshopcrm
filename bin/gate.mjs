@@ -4357,6 +4357,59 @@ await t('a contended write on control.db waits, and then succeeds', async () => 
   }
 })
 
+/* ---------- a self-hosted shop is not on a trial, because there is nothing to buy ----------
+ * README and HOSTING.md promise "free forever, no feature flags, no license key", and .env.example
+ * tells a self-hoster to leave the platform Stripe key blank. Do that and billingLive() is false:
+ * createCheckout answers 503, /api/billing/free is 410 plan_retired, and PLAN_ORDER holds the one
+ * plan the shop already has. There is no purchase to make.
+ *
+ * `locked` was guarded on billingLive() for exactly that reason — locking a shop that cannot pay
+ * would be a trap. `status` was not, and status is what both banners actually read:
+ * app.js:455 and billing.js:21 each fire on `status === 'trial_expired' || locked`. So on day 31
+ * every self-hosted install grew a permanent full-width red bar across every screen — "Your free
+ * trial has ended, choose a plan to keep working" — pointing at a screen with nothing to choose.
+ * No UI action clears it. The only exit is an UPDATE on control.db, which is a shell, which is
+ * the failure this project is defined against; and a countdown to a paywall is the feature gate
+ * the product does not have.
+ *
+ * With a platform key present — the hosted service — every one of these answers is unchanged. */
+section('self-hosted: no platform Stripe key means no trial and no countdown')
+await t('a lapsed trial on an install that cannot take payment is not "trial expired"', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'psc-bill-'))
+  const prevCtl = process.env.PSC_CONTROL_DB
+  const prevSk = process.env.PSC_PLATFORM_STRIPE_SECRET
+  process.env.PSC_CONTROL_DB = join(dir, 'control.db')
+  delete process.env.PSC_PLATFORM_STRIPE_SECRET
+  try {
+    const T = await import(`../lib/tenants.mjs?bill=${Date.now()}`)
+    const { setPlatformCredentials } = await import('../lib/billing.mjs')
+    // A shop whose 30 days ran out a fortnight ago. Not an edge case — it is every self-hosted
+    // install that has been up for a month.
+    const lapsed = { subscription_status: 'trialing', trial_ends_at: '2020-01-01 00:00:00', plan_tier: '' }
+
+    setPlatformCredentials({ secret: '' })                       // self-hosted: nothing to buy
+    const self = T.billingState(lapsed)
+    assert.notEqual(self.status, 'trial_expired', 'the red bar reads status, so this IS the red bar')
+    assert.equal(self.locked, false, 'and it must not lock a shop that has no way to pay')
+    assert.equal(self.trial_days_left, 0, 'no countdown to a paywall that does not exist')
+    assert.equal(self.subscribed, true, 'app.js hides the bar on `subscribed` — this is what clears it')
+
+    setPlatformCredentials({ secret: 'sk_test_platform' })        // the hosted service: unchanged
+    const hosted = T.billingState(lapsed)
+    assert.equal(hosted.status, 'trial_expired', 'the hosted product must still know a trial lapsed')
+    assert.equal(hosted.locked, true, '…and must still lock it')
+  } finally {
+    const { setPlatformCredentials } = await import('../lib/billing.mjs')
+    setPlatformCredentials({ secret: '' })
+    if (prevCtl === undefined) delete process.env.PSC_CONTROL_DB; else process.env.PSC_CONTROL_DB = prevCtl
+    if (prevSk !== undefined) process.env.PSC_PLATFORM_STRIPE_SECRET = prevSk
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+})
+
 await t('the recovery tool loads the .env the server uses, and does not lie about sessions', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')
