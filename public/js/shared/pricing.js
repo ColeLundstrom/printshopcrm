@@ -168,10 +168,30 @@ export function lineUpcharge(item, upcharges) {
   return round2(total)
 }
 
-/** Document totals. `taxable === false` on a line exempts it (setup fees, labor in many states). */
+/**
+ * Document totals. `taxable === false` on a line exempts it (setup fees, labor in many states).
+ *
+ * The taxable base is floored at zero. A discount is an ordinary line with a negative amount, and
+ * a non-taxable setup / digitizing / booth / rush line beside a negotiated discount is an ordinary
+ * print-shop order — so the taxable subset alone could go negative while the document total stayed
+ * healthily positive. $500 non-taxable digitizing + $240 of taxable caps − a $300 discount at
+ * 8.25% produced {subtotal: 440, tax: -4.95, total: 435.05}: a document naming a POSITIVE tax rate
+ * and a NEGATIVE tax amount. The two guards that exist for this — representableTotals and
+ * nonNegativeTotals — both passed, because both look at the subtotal and the total, and the
+ * authors closed a negative subtotal and a negative total and left the base between them open.
+ *
+ * It reached the customer: pdf.mjs was deliberately taught to PRINT a negative tax line rather
+ * than hide one, so "Tax (8.25%) -$4.95" went onto the PDF, /p/estimate and the pay page, and
+ * QuickBooks got a -$4.95 "Sales tax" line. The shop is short by the amount and its remittance
+ * for the period is wrong.
+ *
+ * Whether a discount should instead be ALLOCATED pro-rata across taxable and non-taxable lines is
+ * a jurisdictional question and is NOT decided here. Flooring at zero is correct everywhere: no
+ * invoice may charge negative tax.
+ */
 export function computeTotals(items, taxRate, upcharges) {
   const subtotal = round2((items || []).reduce((s, i) => s + lineAmount(i, upcharges), 0))
-  const taxable = round2((items || []).reduce((s, i) => (i.taxable === false ? s : s + lineAmount(i, upcharges)), 0))
+  const taxable = Math.max(0, round2((items || []).reduce((s, i) => (i.taxable === false ? s : s + lineAmount(i, upcharges)), 0)))
   const tax = round2(taxable * (Number(taxRate) || 0) / 100)
   return { subtotal, tax, total: round2(subtotal + tax) }
 }

@@ -6075,6 +6075,55 @@ await t('…and the card it opens can move the order in either direction', async
     'the copy has to say that tracking only ever moves a card FORWARD')
 })
 
+section('no invoice ever charges a negative sales tax')
+await t('a discount larger than the taxable lines does not become a tax credit', async () => {
+  /*
+   * A non-taxable setup / digitizing / booth / rush line beside a negotiated discount is an
+   * ordinary print-shop order, and the discount is an ordinary line with a negative amount. So the
+   * TAXABLE SUBSET could go negative while the document total stayed healthily positive — and the
+   * two guards that exist for exactly this, representableTotals and nonNegativeTotals, both look
+   * at the subtotal and the total. A negative subtotal was closed, a negative total was closed,
+   * and the base between them was left open.
+   *
+   * $500 non-taxable digitizing + $240 of taxable caps − a $300 discount at 8.25% produced
+   * {subtotal: 440, tax: -4.95, total: 435.05}: a document naming a POSITIVE rate beside a
+   * NEGATIVE amount. pdf.mjs was deliberately taught to PRINT a negative tax line rather than
+   * hide one, so "Tax (8.25%) -$4.95" went onto the customer's PDF, /p/estimate and the pay page,
+   * and syncInvoiceToQboInner derives its tax line from amount_due − lineSum, so QuickBooks got a
+   * -$4.95 "Sales tax" line. The shop is short the money and its remittance for the period is
+   * wrong.
+   */
+  const { computeTotals } = await import('../public/js/shared/pricing.js')
+  const t1 = computeTotals([
+    { description: 'Digitizing — 1 design', qty: 1, unit_price: 500, taxable: false },
+    { description: 'Richardson 112 — Embroidery', sizes: { OSFA: 12 }, unit_price: 20, taxable: true },
+    { description: 'Discount', qty: 1, unit_price: -300, taxable: true },
+  ], 8.25, {})
+  assert.deepEqual(t1, { subtotal: 440, tax: 0, total: 440 })
+
+  // The plainer variant, at a different rate, so this is not calibrated to one set of numbers.
+  const t2 = computeTotals([
+    { description: 'Screen setup', qty: 6, unit_price: 25, taxable: false },
+    { description: 'Tee', sizes: { M: 24 }, unit_price: 9.5, taxable: true },
+    { description: 'Discount', qty: 1, unit_price: -250, taxable: true },
+  ], 7.75, {})
+  assert.deepEqual(t2, { subtotal: 128, tax: 0, total: 128 })
+
+  // And as a property, over every shape a document can take: tax is never negative.
+  const rates = [0, 6, 7.75, 8.25, 9.5]
+  for (const rate of rates) {
+    for (const disc of [-50, -300, -1200, -99999]) {
+      const t = computeTotals([
+        { description: 'Setup', qty: 2, unit_price: 45, taxable: false },
+        { description: 'Tee', sizes: { M: 48, L: 24 }, unit_price: 11, taxable: true },
+        { description: 'Discount', qty: 1, unit_price: disc, taxable: true },
+      ], rate, {})
+      assert.ok(t.tax >= 0, `tax ${t.tax} at rate ${rate} with a ${disc} discount`)
+      assert.equal(Math.round((t.subtotal + t.tax) * 100) / 100, t.total, 'and the three numbers still reconcile')
+    }
+  }
+})
+
 section('a document is a demand for money, never the other way round')
 await t('a mistyped discount is refused rather than stored as a negative quote', async () => {
   const { computeTotals } = await import('../public/js/shared/pricing.js')
@@ -6084,7 +6133,10 @@ await t('a mistyped discount is refused rather than stored as a negative quote',
     { description: 'Screen setup', qty: 3, unit_price: 25, taxable: false },
     { description: 'Discount', qty: 1, unit_price: -1200, taxable: true },
   ], 7.75, {})
-  assert.deepEqual([t2.subtotal, t2.tax, t2.total], [-250, -25.19, -275.19], 'the arithmetic this is about')
+  // The tax is 0, not -25.19: the taxable base (875 - 1200) is floored before the rate is applied,
+  // because no invoice may charge negative tax. The TOTAL is still -250, which is what this case
+  // is about, and nonNegativeTotals still has to refuse it.
+  assert.deepEqual([t2.subtotal, t2.tax, t2.total], [-250, 0, -250], 'the arithmetic this is about')
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
@@ -7410,17 +7462,24 @@ section('a document never hides money between its subtotal and its total')
     { description: 'Loyalty discount', qty: 1, unit_price: -100, taxable: true },
   ]
 
-  await t('the case really does produce a negative tax', () => {
+  await t('this case no longer produces a negative tax at all', () => {
+    // It used to: {subtotal 400, tax -8.25, total 391.75}. computeTotals now floors the TAXABLE
+    // base at zero, so a document can never name a positive rate beside a negative amount. The
+    // renderer tests below stay, driven by a hand-built document, because the rendering bug they
+    // guard is a separate one and this floor is not allowed to quietly retire it.
     const t2 = computeTotals(ITEMS, 8.25, {})
     assert.equal(t2.subtotal, 400)
-    assert.equal(t2.tax, -8.25)
-    assert.equal(t2.total, 391.75)
+    assert.equal(t2.tax, 0, 'a negative taxable base must be floored, not billed')
+    assert.equal(t2.total, 400)
     // …and the three numbers must be self-consistent, or the document cannot be made honest.
     assert.equal(Math.round((t2.subtotal + t2.tax) * 100) / 100, t2.total)
   })
 
-  await t('the estimate PDF shows the negative tax line', () => {
-    const t2 = computeTotals(ITEMS, 8.25, {})
+  await t('the estimate PDF shows a negative tax line if one ever reaches it', () => {
+    // Built by hand, NOT by computeTotals: the arithmetic that produced this can no longer, but a
+    // document carrying a negative tax must still print it rather than hide money between the
+    // subtotal and the total. That is what `> 0` did on the page the customer signs.
+    const t2 = { subtotal: 400, tax: -8.25, total: 391.75 }
     const pdf = renderDocument('ESTIMATE', {
       doc: { estimate_number: 'EST-1001', created_at: '2026-08-27', ...t2, tax_rate: 8.25 },
       contact: { name: 'Ace Corp' },
