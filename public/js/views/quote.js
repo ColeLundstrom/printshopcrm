@@ -153,8 +153,8 @@ export function quoteModal(settings, onUse) {
         // qty price breaks (methods with real qty tiers move; area-priced ones are flat)
         $('#q-breaks', bg).innerHTML = [24, 48, 72, 144, 288, 500].map((qq) => {
           const b = serviceQuote(qq)
-          return `<div class="qb ${qq === state.qty ? 'on' : ''}" data-qty="${qq}"><span>${qq}</span><strong>${money(b.perPiece)}</strong>
-            <em class="${marginVerdict(b.m.margin).level}">${b.m.margin}%</em></div>`
+          return `<button type="button" class="qb ${qq === state.qty ? 'on' : ''}" data-qty="${qq}" aria-pressed="${qq === state.qty}" aria-label="${qq} pieces at ${money(b.perPiece)} each, ${b.m.margin}% margin"><span>${qq}</span><strong>${money(b.perPiece)}</strong>
+            <em class="${marginVerdict(b.m.margin).level}" aria-hidden="true">${b.m.margin}%</em></button>`
         }).join('')
       }
 
@@ -216,9 +216,9 @@ export function quoteModal(settings, onUse) {
           const bc = jobCost({ qty: b.qty, colors: colorsPerLoc, garmentCost: state.garmentCost,
             press: state.press, shopRate, utilization, spoilage, screens: b.totalColors, screenCost: 8 })
           const bm = margin(b.subtotal, bc.total)
-          return `<div class="qb ${b.qty === state.qty ? 'on' : ''}" data-qty="${b.qty}">
+          return `<button type="button" class="qb ${b.qty === state.qty ? 'on' : ''}" data-qty="${b.qty}" aria-pressed="${b.qty === state.qty}" aria-label="${b.qty} pieces at ${money(b.perPiece)} each, ${bm.margin}% margin">
             <span>${b.qty}</span><strong>${money(b.perPiece)}</strong>
-            <em class="${marginVerdict(bm.margin).level}">${bm.margin}%</em></div>`
+            <em class="${marginVerdict(bm.margin).level}" aria-hidden="true">${bm.margin}%</em></button>`
         }).join('')
       }
 

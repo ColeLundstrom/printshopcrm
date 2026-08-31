@@ -13934,6 +13934,110 @@ section('a control that is switched on says so to a screen reader')
   })
 }
 
+
+/* ---------- anything a click re-prices, a keyboard can reach (round 27, fe-27-01) ----------
+ * The quantity price-break bricks on the Price Calculator were plain <div>s with `cursor:pointer`
+ * and a delegated click that RE-PRICES THE QUOTE. Driven with core.js's real upgradeClickableRows
+ * against the real markup:
+ *
+ *     upgraded rows in view: 0
+ *     .qb tabindex: null   role: null
+ *     .qb clicks after Enter: 0
+ *
+ * They advertise as clickable to a mouse and to nothing else.
+ *
+ * The gate already had a rule for exactly this class of defect — and it could not see these,
+ * because it only inspects elements carrying `data-(id|job|inv|go|sid|c|edit|setup)=`, and this one
+ * is `data-qty`. An allowlist of attribute names is whack-a-mole: it catches the shapes that were
+ * wrong once and nothing else. This rule instead reads each view's OWN delegated-click selectors
+ * out of its on()/onOnce() calls, so a new clickable element is covered the moment it is wired up,
+ * whatever it is called. */
+section('anything wired to a delegated click can be reached with a keyboard')
+{
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const VIEWS = join(ROOT, 'public/js/views')
+
+  const core = readFileSync(join(ROOT, 'public/js/core.js'), 'utf8')
+  const rowsSel = (core.match(/export const CLICKABLE_ROWS = '([^']+)'/) || [])[1] || ''
+  // Tags the browser puts in the tab order and fires on Enter/Space by itself.
+  const FOCUSABLE = /^(button|a|input|select|textarea|label|summary)$/i
+
+  await t('precondition: core.js still publishes the set of rows it upgrades', () => {
+    assert.ok(rowsSel.length > 0, 'CLICKABLE_ROWS moved — this rule needs it to know what is already covered')
+  })
+
+  await t('no view wires a click to something only a mouse can use', () => {
+    const offenders = []
+    for (const f of readdirSync(VIEWS).filter((n) => n.endsWith('.js'))) {
+      const src = readFileSync(join(VIEWS, f), 'utf8')
+      // What this file delegates clicks to: on($x, 'SEL', …) / onOnce($x, 'SEL', …).
+      const selectors = new Set()
+      // The first argument is itself a call — `on($('#q-breaks', bg), '[data-qty]', …)` — so it
+      // contains commas. A `[^,]+` here silently matched nothing on the one file this rule was
+      // written for, and the sweep passed green over the defect it exists to catch.
+      for (const m of src.matchAll(/\bon(?:Once)?\s*\([\s\S]{0,160}?,\s*'([^']+)'\s*,/g)) {
+        for (const part of m[1].split(',')) {
+          const p = part.trim()
+          // Only the two shapes that can name a non-interactive element.
+          const attr = p.match(/^\[([\w-]+)\]$/)
+          const cls = p.match(/^\.([\w-]+)$/)
+          if (attr) selectors.add({ kind: 'attr', name: attr[1] })
+          else if (cls) selectors.add({ kind: 'class', name: cls[1] })
+        }
+      }
+      if (!selectors.size) continue
+      const lines = src.split('\n')
+      lines.forEach((line, i) => {
+        for (const m of line.matchAll(/<(\w+)([^>]*)>/g)) {
+          const [, tag, attrs] = m
+          if (FOCUSABLE.test(tag)) continue                       // the browser already handles it
+          if (/\btabindex=/.test(attrs)) continue                 // made focusable on purpose
+          // A composite widget owns the keyboard for its own children: an option in a listbox, an
+          // item in a menu, a node in a tree are reached with the arrow keys from the element that
+          // holds focus, and are announced through aria-activedescendant. Putting them in the tab
+          // order would be the bug. The command palette is the one of these the app has, and it
+          // already does this correctly — see search.js's aria-activedescendant.
+          if (/\brole="(option|menuitem|menuitemradio|menuitemcheckbox|treeitem|radio|tab)"/.test(attrs)) continue
+          const matches = [...selectors].some((s) => (s.kind === 'attr'
+            ? new RegExp(`\\b${s.name}=`).test(attrs)
+            : new RegExp(`class="[^"]*\\b${s.name}\\b`).test(attrs)))
+          if (!matches) continue
+          // Already covered by the upgrade core.js runs after every render?
+          const covered = rowsSel.split(',').some((part) => {
+            const c = (part.match(/^\.([\w-]+)/) || [])[1]
+            if (c && !new RegExp(`class="[^"]*\\b${c}\\b`).test(attrs)) return false
+            return [...part.matchAll(/\[([\w-]+)\]/g)].every((a) => new RegExp(`\\b${a[1]}=`).test(attrs))
+          })
+          if (!covered) offenders.push(`${f}:${i + 1}: <${tag}${attrs.slice(0, 70)}>`)
+        }
+      })
+    }
+    // One line, deliberately: the reporter prints only the FIRST line of a failure message, and a
+    // sweep that cannot name the file it found is most of the way to being no test at all.
+    assert.deepEqual(offenders, [], `clickable with a mouse, unreachable with a keyboard: ${offenders.join(' | ')}`)
+  })
+
+  await t('the price breaks in particular are real controls now', () => {
+    const src = readFileSync(join(VIEWS, 'quote.js'), 'utf8')
+    const divs = (src.match(/<div class="qb /g) || []).length
+    assert.equal(divs, 0, 'a price break that re-quotes the job is a button, not a div with a pointer cursor')
+    assert.equal((src.match(/<button type="button" class="qb /g) || []).length, 2,
+      'both the screen-print and the service price-break grids')
+    // Turning a div into a button inherits the UA stylesheet, which would repaint the control.
+    const css = readFileSync(join(ROOT, 'public/css/app.css'), 'utf8')
+    const i = css.indexOf('.qb {')
+    assert.ok(i > 0, '.qb rule moved')
+    const rule = css.slice(i, css.indexOf('}', i))
+    for (const prop of ['border', 'background', 'font-family', 'text-align']) {
+      assert.ok(rule.includes(prop), `.qb must reset ${prop}, or a <button> does not look like the brick it replaced`)
+    }
+    assert.match(css, /\.qb:focus-visible/, 'a control you can tab to has to show where the focus is')
+  })
+}
+
 /* ---------- summary ---------- */
 console.log(`\n  ${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)
