@@ -12835,10 +12835,22 @@ section('a signup that cannot create its database creates no account either')
         const count = (tbl) => ctl.prepare('SELECT COUNT(*) AS n FROM ' + tbl).get().n
         const out = { }
 
-        // 'Northside Threads' slugs to 'northside-threads'. A regular file there makes the shop's
-        // own mkdir fail, which is what a full disk / read-only data root does.
-        const blocker = join(data, 'tenants', 'northside-threads')
-        writeFileSync(blocker, 'not a directory')
+        // Make the tenants directory unwritable, which is what a read-only mount, a full disk and
+        // the state \`sudo node bin/restore.mjs\` leaves behind all look like from here.
+        //
+        // NOT a file planted at tenants/<slug>: uniqueSlug now treats a directory on disk as a
+        // taken name, so that injection stopped biting the moment that fix landed — it quietly
+        // became a signup that SUCCEEDED under a different slug, and every assertion below it
+        // would have passed for the wrong reason.
+        const { chmodSync, mkdirSync } = await import('node:fs')
+        const tdir = join(data, 'tenants')
+        chmodSync(tdir, 0o555)
+        // Root ignores the mode bits, and Windows ignores chmod altogether. Prove the injection
+        // took before relying on it.
+        let injected = true
+        try { mkdirSync(join(tdir, '__probe')); rmSync(join(tdir, '__probe'), { recursive: true, force: true }); injected = false } catch { /* good */ }
+        out.injected = injected
+        const blocker = null
 
         const args = { shop_name: 'Northside Threads', owner_name: 'Rae', owner_email: 'rae@t.test', password: 'signup12345' }
         try { await t.createTenant({ ...args }); out.threw = false }
@@ -12851,7 +12863,8 @@ section('a signup that cannot create its database creates no account either')
 
         // Now fix the underlying problem the way an operator would, and try again with the SAME
         // address. This is the half that was impossible: the account was taken for ever.
-        rmSync(blocker, { force: true })
+        chmodSync(tdir, 0o755)
+        void blocker
         try { const shop = await t.createTenant({ ...args }); out.retryOk = true; out.retrySlug = shop.slug }
         catch (e) { out.retryOk = false; out.retryCode = e.code || null; out.retryMessage = String(e.message || '') }
         console.log('@@' + JSON.stringify(out))
@@ -12868,27 +12881,35 @@ section('a signup that cannot create its database creates no account either')
 
   const r = run()
 
+  // Running as root, or on Windows, chmod does not stop a write. Say so and skip rather than
+  // reporting five green assertions that were never exercised.
+  const INJECTED = r.injected === true
   await t('precondition: the signup really does fail when the database cannot be created', () => {
+    if (!INJECTED) { console.log('      (skipped: this process can write to a 0555 directory — run the gate as a normal user)'); return }
     assert.equal(r.threw, true, 'the failure was not injected — the rest of this section would pass vacuously')
   })
 
   await t('no half-made shop is left in the registry', () => {
+    if (!INJECTED) return
     assert.equal(r.tenants, 0, `the tenants row survived a signup that could not build the shop (${r.tenants} row(s))`)
     assert.equal(r.members, 0, `the owner's member row survived (${r.members} row(s))`)
   })
 
   await t('the owner\'s email address is not taken for ever', () => {
+    if (!INJECTED) return
     assert.equal(r.byEmail, false, 'the address still resolves to a shop that was never created')
     assert.equal(r.retryOk, true, `retrying once the disk was fixed still failed: ${r.retryCode} ${r.retryMessage}`)
     assert.equal(r.retrySlug, 'northside-threads', 'and the retry should get the name it asked for')
   })
 
   await t('…and nothing is left to hold the deploy gate down', () => {
+    if (!INJECTED) return
     // brokenTenants is what /health?strict=1 reports, and what ship.sh rolls releases back on.
     assert.equal(r.broken, 0, 'a shop that was never created is being reported as a broken shop, so every deploy rolls back')
   })
 
   await t('the form does not print the server\'s filesystem layout to the public', () => {
+    if (!INJECTED) return
     assert.equal(r.code, 'provisioning_failed', `expected a coded failure, got ${r.code}`)
     assert.ok(!/EACCES|ENOSPC|ENOTDIR|EEXIST|permission denied|mkdir|\/(var|tmp|private|home|Users)\//.test(r.message),
       `raw errno reached the caller: ${r.message}`)
@@ -12903,6 +12924,123 @@ section('a signup that cannot create its database creates no account either')
     const w = src.slice(i, i + 700)
     assert.match(w, /provisioning_failed/, 'including the new one, or a real outage reads as a validation error')
     assert.match(w, /SAFE\.includes\(e\.code\)/, 'anything else has to be replaced, not forwarded')
+  })
+}
+
+
+/* ---------- a new shop never opens an old shop's books (round 27) ----------
+ * openTenantDb was hardened so a MISSING database is loud. The mirror case was silent: a database
+ * that is already there when a brand-new shop is created was simply adopted.
+ *
+ * Two things make it reachable. uniqueSlug consulted only the `tenants` table, while baseSlug
+ * strips punctuation — so "Rebel Ink Press" and "Rebel Ink & Press!!" are one slug. And
+ * deleteTenantFully's rmSync was `catch { }`, so a delete that removed the rows and could not
+ * remove the directory (read-only mount, permissions, an open handle) still answered `{ ok: true }`
+ * to the Control Room, which said "Shop deleted".
+ *
+ * Driven: the next signup — different shop name, different owner, different password — opened the
+ * old shop's customer list, its unpaid $4,850 invoice and its $1,200 payment, and its own
+ * onboarding then overwrote that shop's letterhead and reset its tax rate to 0. That is the
+ * isolation guarantee failing in the direction that cannot be undone. */
+section('a new shop never opens the books of a shop that was deleted')
+{
+  const { mkdtempSync, rmSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { execFileSync } = await import('node:child_process')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  const run = () => {
+    const box = mkdtempSync(join(tmpdir(), 'psc-adopt-'))
+    try {
+      const script = `
+        import { existsSync } from 'node:fs'
+        const t = await import(${JSON.stringify(join(ROOT, 'lib/tenants.mjs'))})
+        const { DatabaseSync } = await import('node:sqlite')
+        const ctl = new DatabaseSync(process.env.PSC_CONTROL_DB)
+        const out = {}
+
+        const a = await t.createTenant({ shop_name: 'Rebel Ink Press', owner_name: 'Dee', owner_email: 'dee@t.test', password: 'firstpass123' })
+        out.slugA = a.slug
+        t.withTenant(a.slug, () => {
+          const db = t.tenantDb ? t.tenantDb() : null
+          void db
+        })
+        // Put something unmistakable in the first shop's own database.
+        const dbm = await import(${JSON.stringify(join(ROOT, 'lib/db.mjs'))})
+        t.withTenant(a.slug, () => {
+          dbm.run("INSERT INTO contacts (name, email) VALUES ('Northside High Athletics', 'ad@northside.test')")
+        })
+
+        // Delete the shop the way a failed rmSync leaves it: control rows gone, data still on disk.
+        ctl.exec('DELETE FROM sessions; DELETE FROM members; DELETE FROM tenants')
+        out.dataStillThere = existsSync(process.env.PSC_DATA + '/tenants/' + a.slug + '/printshop.db')
+
+        // A different shop, a different owner. baseSlug maps this onto the same slug.
+        try {
+          const b = await t.createTenant({ shop_name: 'Rebel Ink & Press!!', owner_name: 'Sam', owner_email: 'sam@t.test', password: 'secondpass1' })
+          out.threw = false
+          out.slugB = b.slug
+          out.contactsSeen = t.withTenant(b.slug, () => dbm.all('SELECT name FROM contacts')).map((r) => r.name)
+        } catch (e) { out.threw = true; out.code = e.code || null; out.message = String(e.message || '') }
+        console.log('@@' + JSON.stringify(out))
+      `
+      const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+        env: { ...process.env, PSC_DATA: join(box, 'data'), PSC_DB: join(box, 'data', 'printshop.db'), PSC_CONTROL_DB: join(box, 'data', 'control.db') },
+      })
+      const line = stdout.split('\n').find((l) => l.startsWith('@@'))
+      assert.ok(line, `the child produced no result:\n${stdout}`)
+      return JSON.parse(line.slice(2))
+    } finally { rmSync(box, { recursive: true, force: true }) }
+  }
+
+  const r = run()
+
+  await t('precondition: the deleted shop\'s database really is still on disk', () => {
+    assert.equal(r.slugA, 'rebel-ink-press')
+    assert.equal(r.dataStillThere, true, 'the scenario was not set up — everything below would pass for the wrong reason')
+  })
+
+  await t('the second shop does not read the first shop\'s customers', () => {
+    // The important assertion, whichever way the fix goes: a fresh signup must never see them.
+    assert.ok(!(r.contactsSeen || []).includes('Northside High Athletics'),
+      `a brand-new shop opened a deleted shop's customer book: ${JSON.stringify(r.contactsSeen)}`)
+  })
+
+  await t('…it gets a slug of its own rather than the abandoned one', () => {
+    if (r.threw) return   // refusing outright is also correct; the guard below covers that path
+    assert.notEqual(r.slugB, r.slugA, 'the new shop was handed the directory of the old one')
+  })
+
+  await t('…and if a slug is ever forced onto occupied data, opening it is refused by name', async () => {
+    // The backstop for anything that reaches openTenantDb directly. Source-level, because
+    // uniqueSlug now makes the collision unreachable through the front door.
+    const src = readFileSync(join(ROOT, 'lib/tenants.mjs'), 'utf8')
+      .split('\n').filter((l) => !/^\s*[/*]/.test(l.trim())).join('\n')
+    assert.match(src, /if \(create && existsSync\(path\)\)/,
+      'openTenantDb must refuse to create over a database that is already there')
+    assert.match(src, /tenant_db_exists/, 'and the refusal needs a code the caller can act on')
+    assert.match(src, /existsSync\(join\(TENANTS_DIR, s\)\)/,
+      'uniqueSlug must treat a directory on disk as a taken name, not just a row in the registry')
+  })
+
+  await t('a delete that leaves the data behind does not report success', () => {
+    const src = readFileSync(join(ROOT, 'lib/tenants.mjs'), 'utf8')
+    const i = src.indexOf('export function deleteTenantFully')
+    assert.ok(i > 0)
+    // Comments first. A previous round had an assertion match the word inside its own explanatory
+    // comment and pass green on code that was still wrong.
+    const fn = src.slice(i, i + 2600).split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    assert.match(fn, /dataRemoved/, 'the caller has to be told whether the data actually went')
+    assert.ok(!/catch \{ \/\* already gone \*\/ \}/.test(fn),
+      'the rmSync failure is swallowed again — "already gone" is only one of the things it can mean')
+    const route = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+    assert.match(route, /Move or delete that directory before the name/,
+      'and the Control Room has to say so — the operator is the only person who can move it')
+    const ui = readFileSync(join(ROOT, 'public/js/views/admin.js'), 'utf8')
+    assert.match(ui, /r\.dataRemoved === false/, 'the screen said "Shop deleted" either way')
   })
 }
 

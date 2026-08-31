@@ -1828,7 +1828,18 @@ app.post('/api/admin/shops/:id/status', wrap((req, res) => {
 app.delete('/api/admin/shops/:id', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
   if (+req.params.id === req.tenant?.id) return res.status(400).json({ error: "You can't delete your own admin account here." })
-  res.json({ ok: deleteTenantFully(+req.params.id) })
+  const r = deleteTenantFully(+req.params.id)
+  if (!r) return res.status(404).json({ error: 'No such shop.' })
+  // The removal of the DATA is reported separately from the removal of the shop, because they can
+  // and do come apart — and when they do, the next shop to take that slug used to inherit the old
+  // one's books. Say so on the screen; the operator is the only person who can move the directory.
+  res.json({
+    ok: true,
+    dataRemoved: r.dataRemoved,
+    ...(r.dataRemoved ? {} : {
+      warning: `The shop was removed, but its database is still on disk at ${r.path} (${r.error}). Move or delete that directory before the name "${r.slug}" is used again.`,
+    }),
+  })
 }))
 
 // Sign in as a client to help them set up. Swaps the current session for one on the target shop

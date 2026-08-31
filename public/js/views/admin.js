@@ -48,7 +48,19 @@ export async function adminView() {
       confirmModal(
         `Delete ${name}?`,
         `This permanently removes the shop and all its invoices, customers, and history. This can't be undone.`,
-        async () => { try { await api.del(`/api/admin/shops/${id}`); toast('Shop deleted'); adminView() } catch (ex) { toast(ex.message, true) } },
+        // The shop and its DATA are removed by two different things, and the second one can fail on
+        // its own (a read-only mount, a permissions change, an open handle). It used to fail
+        // silently and still say "Shop deleted", and the next shop to take that slug opened the old
+        // one's books. If the directory is still there, say so and keep it on screen: moving it is
+        // the operator's job and this toast is the only place they will ever be told.
+        async () => {
+          try {
+            const r = await api.del(`/api/admin/shops/${id}`)
+            if (r && r.dataRemoved === false) toast(r.warning || 'The shop was removed but its data is still on disk.', true)
+            else toast('Shop deleted')
+            adminView()
+          } catch (ex) { toast(ex.message, true) }
+        },
         'Delete forever')
     }
   })
