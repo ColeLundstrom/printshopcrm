@@ -15036,6 +15036,54 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('a screen may not delegate a shared data- attribute on the app shell')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(ROOT, f), 'utf8')
+  const code = (f) => read(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  /*
+   * #view is the app shell's one permanent <main> (public/index.html), and onOnce NEVER unbinds —
+   * that is what it is for. So a selector delegated on it stays live over every screen the shop
+   * opens for the rest of the session, and `data-edit` is not a private spelling.
+   *
+   * matrices.js bound `[data-edit]` on #view to open a price matrix. automations.js renders every
+   * rule row as <div class="autorow" data-edit="${a.id}">, and its own edit handler does not
+   * stopPropagation (its delete handler does). So after ONE visit to Price matrices, clicking any
+   * automation rule opened the rule dialog and simultaneously navigated the page to
+   * #/matrices/<that rule's id> — someone else's price matrix, or core.js's "Page not found"
+   * sitting underneath the dialog that had just opened.
+   *
+   * The rule is narrow on purpose. Four views legitimately delegate [data-job] on #view and all
+   * four do the identical `go('/jobs/<id>')`, so their cross-firing is a duplicate navigation and
+   * not a defect; widening this to every attribute would demand refactoring all of them and would
+   * be churn, not safety. What must never happen again is two screens giving the SAME attribute
+   * DIFFERENT meanings while one of them binds on the shell.
+   */
+  const EMITTERS = ['matrices.js', 'automations.js']
+  await t('sanity: data-edit really is emitted by more than one screen', () => {
+    for (const f of EMITTERS) assert.match(read(`public/js/views/${f}`), /data-edit=/, `${f} no longer emits data-edit — this rule is asserting on nothing`)
+  })
+
+  await t('matrices scopes its list to its own container, not the shell every screen shares', () => {
+    const mx = code('public/js/views/matrices.js')
+    const wire = mx.slice(mx.indexOf('function wireList()'))
+    const body = wire.slice(0, wire.indexOf('\n}'))
+    assert.ok(body.includes('[data-edit]'), 'sanity: wireList still delegates [data-edit]')
+    assert.doesNotMatch(body, /\$\('#view'\)/,
+      "wireList delegates on #view — the shell — so [data-edit] stays live over automations.js's rule rows for the rest of the session")
+  })
+
+  await t('…and automations keeps its own rows scoped too', () => {
+    const au = code('public/js/views/automations.js')
+    assert.doesNotMatch(au, /on\(\s*\$\('#view'\)\s*,\s*'\[data-edit\]'/,
+      'automations must keep binding [data-edit] on #au-body, or the same collision returns from the other side')
+  })
+}
+
 section('a zero-byte file is not a database, on the default handle either')
 {
   const { mkdtempSync, rmSync, writeFileSync, existsSync } = await import('node:fs')

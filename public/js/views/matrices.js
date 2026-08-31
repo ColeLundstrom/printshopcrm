@@ -68,7 +68,20 @@ const tplHtml = (t) => `<button class="mx-tpl-card" data-tpl="${esc(t.key)}" typ
 </button>`
 
 function wireList() {
-  const root = $('#view') // persistent: bind with onOnce, never on()
+  /* #mx-list, NOT #view.
+   *
+   * #view is the app shell's one permanent <main>, shared by every screen, and onOnce never
+   * unbinds — that is the point of it. So `[data-edit]` bound here stayed live for the rest of the
+   * session, over every screen the shop opened afterwards, and `data-edit` is not a private
+   * spelling: automations.js renders every rule row as <div class="autorow" data-edit="${a.id}">.
+   * Its own edit handler does not stopPropagation (its DELETE handler does), so after one visit to
+   * Price matrices, clicking any automation rule opened the rule dialog AND navigated the page to
+   * #/matrices/<that rule's id> — an unrelated matrix, or core.js's "Page not found" underneath the
+   * open dialog.
+   *
+   * #mx-list is rebuilt by matricesView() on each entry, so onOnce still binds exactly once per
+   * screen, and drawList()'s repaints (which only replace its innerHTML) do not re-bind. */
+  const root = $('#mx-list')
   onOnce(root, '[data-edit]', (_e, el) => go(`/matrices/${el.dataset.edit}`))
   onOnce(root, '[data-tpl]', async (_e, el) => {
     try {
