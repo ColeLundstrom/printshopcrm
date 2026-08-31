@@ -408,6 +408,19 @@ export async function settingsView() {
           <option value="manual" ${s.press_type === 'manual' ? 'selected' : ''}>Manual</option>
         </select><div class="dim" style="font-size:11px;margin-top:4px">Manual setup runs 12–72 min by color count</div></div>
 
+        <!-- The only door in the product to settings.service_pricing.
+             PUT /api/onboarding/service-pricing is its sole writer, and the only screen that calls
+             it is the setup wizard at #/welcome. app.js sends a shop there automatically ONLY while
+             onboarding_done is false and only from the root, and the single link to it lived on
+             #/dashboard — a registered route with no inbound link anywhere in the product. So the
+             moment a shop finished setup, the multipliers that price every embroidery, DTF, vinyl,
+             patch and laser quote became uneditable from any screen, for good. -->
+        <div class="field">
+          <div class="lbl" id="svc-mult-lbl">Service pricing multipliers</div>
+          <div class="dim" style="font-size:11px;margin-bottom:6px">What embroidery, DTF, vinyl, patches and laser cost relative to screen printing. The Price Calculator prices every one of those services off these.</div>
+          <a class="btn ghost sm" href="#/welcome" aria-describedby="svc-mult-lbl">Edit service pricing →</a>
+        </div>
+
         <details class="disc"><summary>Advanced costing — ${esc(cv('utilization_pct', '30'))}% utilization · ${esc(cv('spoilage_pct', '2'))}% spoilage · ${esc(cv('target_margin_pct', '45'))}% target margin</summary>
           <div class="disc-b">
             <p class="dim" style="font-size:12px;line-height:1.6">These are set to what the industry actually measures, so you can leave them alone.

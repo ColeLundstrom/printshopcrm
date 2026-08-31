@@ -15036,6 +15036,66 @@ section('every auxiliary server in the e2e suite is waited on by something that 
   })
 }
 
+section('the shop can still reach the multipliers that price half its work')
+{
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const read = (f) => readFileSync(join(ROOT, f), 'utf8')
+  const views = readdirSync(join(ROOT, 'public/js/views'))
+
+  /*
+   * settings.service_pricing holds the shop's own multipliers for embroidery, DTF, vinyl, patches
+   * and laser against a screen-print base of 1.0. server.mjs reads them as `decoMult` on every
+   * Price Calculator matrix, so they price a large fraction of a decorator's work.
+   *
+   * They had exactly one editor — the setup wizard at #/welcome — and #/welcome had exactly two
+   * doors: app.js's automatic redirect, which fires ONLY while onboarding_done is false and only
+   * from the root, and a "Resume →" button on #/dashboard. #/dashboard is a REGISTERED ROUTE WITH
+   * NO INBOUND LINK ANYWHERE IN THE PRODUCT: NAV's first entry is '/', `g d` goes to '/', the
+   * command palette's "Go to Dashboard" runs go('/'), and onboarding's own skip link is href="#/".
+   * All of them land on todayView.
+   *
+   * So the moment a shop finished setup, the numbers pricing every non-screen-print quote became
+   * uneditable from any screen, for ever, with no error and nothing to click. The only exit was an
+   * UPDATE on the settings table, which is a shell, which is the failure this project is defined
+   * against.
+   *
+   * The sanity assertions matter as much as the rule: if service_pricing gains a second editor
+   * this becomes a nice-to-have, and the rule should be re-read rather than silently kept.
+   */
+  await t('sanity: service_pricing still has exactly one writer, and it is the wizard', () => {
+    const srv = read('server.mjs')
+    const writes = [...srv.matchAll(/setSetting\('service_pricing'/g)].length
+    assert.equal(writes, 1, `service_pricing has ${writes} writers — if that changed, re-read the rule below rather than deleting it`)
+    assert.match(srv, /app\.put\('\/api\/onboarding\/service-pricing'/, 'sanity: the route is still where this rule thinks it is')
+    // Comments stripped first, HTML ones too: misc.js's new link carries an explanatory
+    // <!-- … --> that names this very endpoint, and without this the rule reports the file it
+    // was just fixed by as a second caller. That mistake has now been made three times in this
+    // codebase; the strip is the cheap half of the lesson.
+    const decomment = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/<!--[\s\S]*?-->/g, '')
+    const callers = views.filter((f) => decomment(read(`public/js/views/${f}`)).includes('/api/onboarding/service-pricing'))
+    assert.deepEqual(callers, ['onboarding.js'], `only the wizard should call it; found ${callers.join(', ') || 'nobody'}`)
+  })
+
+  await t('…and the wizard is reachable from a screen a shop can always get to', () => {
+    // Settings, specifically: it is in NAV for every role and is not gated on onboarding state.
+    assert.match(read('public/js/views/misc.js'), /href="#\/welcome"/,
+      'nothing in Settings links to #/welcome — once onboarding_done flips true the multipliers pricing every embroidery, DTF, vinyl, patch and laser quote can never be edited again')
+  })
+
+  await t('…and that link is not the one on the orphaned dashboard', () => {
+    // #/dashboard is registered and linked from nowhere. The door must not depend on it.
+    const linksToDash = views.concat(['../app.js']).some((f) => {
+      const p2 = f.startsWith('..') ? `public/js/${f.slice(3)}` : `public/js/views/${f}`
+      return /['"`]#\/dashboard/.test(read(p2))
+    })
+    assert.equal(linksToDash, false,
+      'something now links #/dashboard — good, but this rule assumed it was orphaned; re-read it')
+  })
+}
+
 section('Floor Mode\'s stage buttons do not also navigate away')
 {
   const { readFileSync, readdirSync } = await import('node:fs')
