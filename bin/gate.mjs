@@ -7696,6 +7696,95 @@ await t('the overpayment arithmetic names the right difference', () => {
   assert.equal(over(3150, 0), 3150, 'a payment against a zero balance is entirely an overpayment')
 })
 
+section('a deal won by approving the quote is still a deal won')
+{
+  /*
+   * `opportunity.won` and `opportunity.lost` are declared triggers (lib/automations.mjs:27-28),
+   * published webhook events (server.mjs:6288, docs-api.html:101) and TWO OF THE ELEVEN STARTER
+   * automations every shop is seeded with — including "Thank + ask review on a won deal", enabled
+   * by default.
+   *
+   * They had exactly one firing site: server.mjs, inside PATCH /api/opportunities/:id/stage —
+   * a card dragged by hand on the pipeline board. But that is not how deals are actually won.
+   * Approving a quote is, and all three Approve doors go through lib/pipeline.js syncFromEstimate,
+   * which calls setStage() — a bare UPDATE that fired nothing.
+   *
+   * So the shipped rule never ran, no opportunity.won webhook ever delivered, and it could not be
+   * recovered by hand afterwards: re-dragging the card to Won is a no-op, because the guard is
+   * `stage !== o.stage` and the stage is already 'won'.
+   *
+   * The firing therefore belongs in setStage — the one place every writer passes through — over
+   * the same emit-hook idiom lib/db.mjs already uses for contact.created and payment.recorded,
+   * because lib/ cannot reach server.mjs's module-private fireAuto.
+   */
+  await t('approving a quote fires opportunity.won, the way dragging the card does', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const P = await import('../lib/pipeline.mjs')
+    const db = new DatabaseSync(':memory:')
+    const prev = dbm.getDb()
+    dbm.initDb(db); dbm.setDefaultDb(db)
+    const fired = []
+    dbm.onOpportunityStage((e) => fired.push(e))
+    try {
+      dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Northgate High')")
+      dbm.run("INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total) VALUES (1,1,'EST-1','draft','[]',4800,0,4800)")
+      const est = dbm.get('SELECT * FROM estimates WHERE id = 1')
+      P.syncFromEstimate(est, 'sent')
+      assert.deepEqual(fired.map((f) => f.stage), [], 'sent is not won — nothing should have fired yet')
+
+      P.syncFromEstimate(est, 'approved')
+      assert.deepEqual(fired.map((f) => f.stage), ['won'],
+        'approving the quote won the deal and fired nothing — the shipped "won deal" rule can never run')
+      assert.equal(fired[0].opportunity.stage, 'won', 'the listener must be handed the updated deal')
+      assert.equal(fired[0].opportunity.value, 4800, 'and its value, which is what the rule conditions on')
+      assert.equal(fired[0].from, 'sent', 'and the stage it came from, so a listener can tell a move from a no-op')
+
+      // Idempotent: the approve doors can run twice (convert, then the portal callback).
+      P.syncFromEstimate(dbm.get('SELECT * FROM estimates WHERE id = 1'), 'approved')
+      assert.equal(fired.length, 1, 'a second approve re-fired the event — the customer gets thanked twice')
+    } finally { dbm.setDefaultDb(prev); dbm.onOpportunityStage(null) }
+  })
+
+  await t('…and a lost deal too, from the same one place', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const P = await import('../lib/pipeline.mjs')
+    const db = new DatabaseSync(':memory:')
+    const prev = dbm.getDb()
+    dbm.initDb(db); dbm.setDefaultDb(db)
+    const fired = []
+    dbm.onOpportunityStage((e) => fired.push(e))
+    try {
+      dbm.run("INSERT INTO contacts (id, name) VALUES (1, 'Northgate High')")
+      dbm.run("INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total) VALUES (1,1,'EST-1','draft','[]',900,0,900)")
+      const est = dbm.get('SELECT * FROM estimates WHERE id = 1')
+      P.syncFromEstimate(est, 'declined')
+      assert.deepEqual(fired.map((f) => f.stage), ['lost'], 'a declined quote loses the deal and must say so')
+    } finally { dbm.setDefaultDb(prev); dbm.onOpportunityStage(null) }
+  })
+
+  await t('there is exactly ONE place that fires opportunity.won, and the route is not it', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const srv = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+    const pipe = readFileSync(join(ROOT, 'lib/pipeline.mjs'), 'utf8')
+    assert.match(srv, /onOpportunityStage\(/, 'server.mjs must register the hook, or nothing turns the stage change into an automation')
+    assert.match(pipe, /emitOpportunityStage\(/, 'lib/pipeline.mjs setStage must emit it — that is the one path every writer takes')
+    // Exactly one firing site, and it is the hook listener — not the route. Two would mean every
+    // hand-dragged card sends the customer two thank-yous and every subscriber two webhooks.
+    const sites = srv.match(/fireAuto\(`opportunity\.\$\{stage\}`/g) || []
+    assert.equal(sites.length, 1, `opportunity.* is fired from ${sites.length} places; there must be exactly one`)
+    const routeAt = srv.indexOf("app.patch('/api/opportunities/:id/stage'")
+    assert.ok(routeAt > 0, 'the stage route moved — re-point this test')
+    const route = srv.slice(routeAt, srv.indexOf('\napp.', routeAt + 10))
+    assert.doesNotMatch(route, /fireAuto\(`opportunity/,
+      'the drag route fires opportunity.* inline as well as through the hook — every hand-moved card now fires twice')
+  })
+}
+
 section('the board and the pipeline are usable without a mouse')
 // `.jcard { touch-action: none }` existed so pointermove could drive the drag. On a phone it meant
 // a finger on a card scrolled nothing — and cards fill the column, so the job board, the pipeline

@@ -10,7 +10,7 @@ import {
   freezeUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, canWrite, SECRET_KEYS,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, onOpportunityStage, canWrite, SECRET_KEYS,
   stampShipDate,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
@@ -907,6 +907,19 @@ const fireAuto = (trigger, ctx) => {
 // cannot import this file — they emit a signal through db.mjs instead. Wire it to the same
 // automation dispatch the manual and API paths use, so a bot-captured lead gets the nurture drip.
 onContactCreated((contact) => { try { fireAuto('contact.created', { contact }) } catch (e) { console.error('contact.created:', e && e.message) } })
+// Every writer that wins or loses a deal goes through lib/pipeline.mjs setStage(), so this is the
+// one place opportunity.won / opportunity.lost is turned into an automation and a webhook. It used
+// to be fired inline by the hand-drag route only, which is not how deals are actually won —
+// approving the quote is, and that path fired nothing at all.
+onOpportunityStage(({ opportunity, stage }) => {
+  try {
+    fireAuto(`opportunity.${stage}`, {
+      opportunity,
+      contact: get('SELECT * FROM contacts WHERE id = ?', opportunity.contact_id),
+      total: opportunity.value,
+    })
+  } catch (e) { console.error(`opportunity.${stage}:`, e && e.message) }
+})
 /* The other half of POST /api/invoices/:id/payments, for the doors that live in lib/ and cannot
  * import this file. Everything below the INSERT there happens here too, so a payment is the same
  * payment whichever door it came through: the order card walks forward, the shop's own
@@ -4483,9 +4496,8 @@ app.patch('/api/opportunities/:id/stage', wrap((req, res) => {
   if (stage !== o.stage) {
     const label = pipeline.STAGES.find((s) => s.key === stage).label
     logActivity('note', `${o.title} moved to ${label}${stage === 'won' ? ' 🎉' : ''}`, { contact_id: o.contact_id })
-    if (stage === 'won' || stage === 'lost') {
-      fireAuto(`opportunity.${stage}`, { opportunity: updated, contact: get('SELECT * FROM contacts WHERE id = ?', o.contact_id), total: updated.value })
-    }
+    // opportunity.won / opportunity.lost is NOT fired here any more. setStage() emits it for every
+    // caller, including this one; firing it again here would send two of everything on a drag.
   }
   res.json(updated)
 }))
