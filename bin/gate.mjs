@@ -9689,11 +9689,11 @@ section('three screens that threw away the shop’s work')
 
   await t('the price-sheet import listens for the file, not for the click', async () => {
     const src = await readView('public/js/views/pricing.js')
-    const i = src.indexOf("'#mx-file'")
+    const i = src.indexOf("'#pb-mx-file'")
     assert.ok(i > 0, 'the price-sheet input moved — re-point this test')
     // onOnce(root, sel, fn, evt = 'click'), and a display:none input inside a <label> gets a
     // synthetic click with no file on it. The handler has to be bound to 'change'.
-    assert.match(src.slice(i, i + 3000), /\},\s*'change'\)/, "#mx-file is still bound on click, so the import never runs")
+    assert.match(src.slice(i, i + 3000), /\},\s*'change'\)/, "#pb-mx-file is still bound on click, so the import never runs")
   })
 }
 
@@ -15543,6 +15543,97 @@ section('the e2e harness says WHY it failed, not just that it did')
     // undici nests: TypeError(fetch failed) -> Error(socket hang up) -> the errno. One level deep
     // still hides the code that names the failure.
     assert.match(code, /for\s*\(\s*let\s+c\s*=/, 'the cause chain should be walked in a loop')
+  })
+}
+
+
+section('a screen may not delegate a shared #id on the app shell either')
+{
+  const { readFileSync, readdirSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const VIEWS = join(ROOT, 'public/js/views')
+  const read = (f) => readFileSync(join(VIEWS, f), 'utf8')
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const files = readdirSync(VIEWS).filter((f) => f.endsWith('.js'))
+
+  /*
+   * The sibling section above legislates for shared `data-` attributes. The identical defect
+   * spelled as an `id` was not covered, and shipped: pricing.js delegated '#mx-file' on #view —
+   * the app shell's one permanent <main>, which onOnce never unbinds — while matrices.js renders
+   * its OWN <input type="file" id="mx-file"> inside #view for a completely different importer.
+   *
+   * `change` bubbles. So once a shop had opened Pricing -> "Your prices" in a session (which sets
+   * the once-per-page-load bookBound flag and registers the delegation for good), importing a CSV
+   * into a CUSTOM price matrix also ran the price book's importer: it POSTed the same file to
+   * /api/pricebook/import under the last-viewed service, then PUT the parsed cells into that
+   * service's matrix and replaced the shop's global quantity bands. A mug sheet's "11 oz Mug"
+   * headings and "1-11" rows parse cleanly as units and bands, so it succeeded silently — the
+   * shop's real screen-print price book, overwritten by a mug sheet, with no error.
+   *
+   * This rule is general on purpose. Hand-curating the pairs is what let the third instance ship.
+   *
+   * Ids emitted inside a setPage(...) call are exempt: setPage writes #page-actions, which is a
+   * SIBLING of #view, so a delegation on #view can never see them. matrices.js's own '#mx-save'
+   * lives there and is a name collision only.
+   */
+  const setPageRegions = (src) => {
+    const out = []
+    let at = 0
+    for (;;) {
+      const i = src.indexOf('setPage(', at)
+      if (i === -1) break
+      let depth = 0
+      let j = i + 'setPage'.length
+      for (; j < src.length; j++) {
+        if (src[j] === '(') depth++
+        else if (src[j] === ')') { depth--; if (depth === 0) { j++; break } }
+      }
+      out.push([i, j])
+      at = j
+    }
+    return out
+  }
+
+  // Every id another view renders into #view, mapped to the file that renders it.
+  const emitted = new Map()
+  for (const f of files) {
+    const src = strip(read(f))
+    const regions = setPageRegions(src)
+    for (const m of src.matchAll(/id="([a-zA-Z][\w-]*)"/g)) {
+      const at = m.index
+      if (regions.some(([a, b]) => at >= a && at < b)) continue
+      if (!emitted.has(m[1])) emitted.set(m[1], new Set())
+      emitted.get(m[1]).add(f)
+    }
+  }
+
+  // Every id delegated on the shell, mapped to the file that delegates it.
+  const delegated = []
+  for (const f of files) {
+    const src = strip(read(f))
+    for (const m of src.matchAll(/on(?:Once)?\(\s*\$\('#view'\)\s*,\s*'([^']+)'/g)) {
+      for (const sel of m[1].split(',')) {
+        const id = sel.trim().match(/^#([\w-]+)$/)
+        if (id) delegated.push({ file: f, id: id[1] })
+      }
+    }
+  }
+
+  await t('sanity: the scan still finds shell delegations and rendered ids to compare', () => {
+    assert.ok(delegated.length >= 5, `found only ${delegated.length} '#id' delegations on #view — the scan is broken, not the code`)
+    assert.ok(emitted.size >= 50, `found only ${emitted.size} rendered ids — the scan is broken, not the code`)
+  })
+
+  await t('no id delegated on #view is rendered by a different screen', () => {
+    const clashes = []
+    for (const { file, id } of delegated) {
+      const others = [...(emitted.get(id) || [])].filter((f) => f !== file)
+      if (others.length) clashes.push(`${file} delegates '#${id}' on the shell, but ${others.join(', ')} also renders id="${id}" into #view`)
+    }
+    assert.deepEqual(clashes, [],
+      `a delegation on the permanent shell fires for another screen's element of the same id — ${clashes.join(' | ')}`)
   })
 }
 

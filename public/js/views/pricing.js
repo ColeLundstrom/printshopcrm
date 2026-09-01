@@ -232,7 +232,16 @@ function wireBook(b) {
       announce(`The matrix was not saved. ${err.message}`, true)
     }
   })
-  onOnce($('#view'), '#mx-file', async (_e, el) => {
+  // The id is namespaced to this screen, and must stay that way. This is delegated on #view — the
+  // app shell's one permanent <main>, which onOnce never unbinds — and matrices.js renders its OWN
+  // <input type="file"> for a different importer inside that same #view. `change` bubbles, so
+  // while both spelled the id mx-file, importing a sheet into a CUSTOM matrix ALSO ran this
+  // handler: it POSTed the file to /api/pricebook/import under the last-viewed price-book service
+  // and overwrote that service's matrix and the shop's global quantity bands. A mug sheet's
+  // headings parse cleanly as units and bands, so it succeeded silently, and the shop's real
+  // screen-print price book was gone. bin/gate.mjs now fails the build for any id delegated on the
+  // shell that another screen also renders.
+  onOnce($('#view'), '#pb-mx-file', async (_e, el) => {
     const file = el.files && el.files[0]; if (!file) return
     const note = $('#mx-note'); note.textContent = 'Reading your sheet…'
     try {
@@ -320,7 +329,7 @@ function renderMatrix(card, r) {
         ${isColors ? `<div class="field" style="margin:0"><label style="font-size:11px">Colours on your press</label>
           <input class="input" id="mx-colors" type="number" min="1" max="14" value="${m.cols.length}" style="width:90px"></div>` : ''}
         <div class="spacer"></div>
-        <label class="btn ghost sm" style="cursor:pointer">Upload price sheet<input type="file" id="mx-file" accept=".csv,text/csv,text/plain" style="display:none"></label>
+        <label class="btn ghost sm" style="cursor:pointer">Upload price sheet<input type="file" id="pb-mx-file" accept=".csv,text/csv,text/plain" style="display:none"></label>
         <button class="btn sm" id="mx-save" type="button">Save matrix</button>
       </div>
       <div class="tbl-wrap"><table class="pm-table pm-editable">
