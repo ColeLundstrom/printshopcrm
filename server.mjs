@@ -2242,6 +2242,9 @@ app.post('/api/contacts/:id/reorder', wrap((req, res) => {
     c.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate,
     `Reorder — same as ${last.estimate_number}`, Math.max(0, Number(last.rush_days) || 0), now()).lastInsertRowid)
   logActivity('estimate', `Reorder drafted from ${last.estimate_number} for ${c.name}`, { contact_id: c.id })
+  // Same as the duplicate above: repeat business is most of a shop's volume, and it has to show up
+  // in the forecast as open work rather than appearing only once it has already closed.
+  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
   res.status(201).json({ ok: true, estimate_id: id, from: last.estimate_number })
 }))
 
@@ -2991,6 +2994,10 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
     contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total,
     src.notes || '', rate, src.quote_meta || '{}', Math.max(0, Number(src.rush_days) || 0), now()).lastInsertRowid)
   logActivity('estimate', `${num} created from ${src.estimate_number}`, { contact_id: contactId })
+  // A duplicate is a new quote, so it opens a new deal — the same call every other estimate writer
+  // makes. Without it the copy is invisible on the board and absent from the forecast until it is
+  // approved, and then born already won, which inflates win_rate structurally.
+  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
   res.json({ ok: true, id, estimate_number: num })
 }))
 

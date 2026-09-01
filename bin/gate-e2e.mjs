@@ -558,6 +558,38 @@ try {
   chk('…and approving it moves that one card rather than minting a second', String(probeCards.length), '^1$')
   chk('…to won', String(probeCards[0] && probeCards[0].stage), '^won$')
 
+  /* Commit 946f46d closed this for POST /api/v1/estimates. The same defect was left on the two
+   * REPEAT-BUSINESS doors, which is where a print shop's volume actually comes from:
+   * POST /api/estimates/:id/duplicate and POST /api/contacts/:id/reorder both INSERT a fresh draft
+   * estimate and neither calls syncPipeline. They were the only two estimate writers left without
+   * it.
+   *
+   * The consequence is the same one, and it is not cosmetic: the quote is invisible on the board
+   * and absent from the forecast until somebody approves it, at which point syncFromEstimate
+   * creates the deal and immediately sets it to won. It is born won, having never been open —
+   * created_at === won_at — so win_rate (wonN / (wonN + lostN)) counts every duplicate that closes
+   * and no duplicate that goes quiet. Both numbers a shop plans its year with read wrong,
+   * structurally, and the dashboard shows open_estimates money that pipeline.open_value does not. */
+  const dupBefore = (await req('GET', '/api/pipeline')).json.stats
+  r = await req('POST', `/api/estimates/${probeEstId}/duplicate`, { body: {} })
+  const dupEstId = r.json?.id
+  chk('a quote can be duplicated', String(r.json?.ok), '^true$')
+  const dupAfter = (await req('GET', '/api/pipeline')).json
+  chk('a duplicated quote enters the pipeline as an open deal', String(dupAfter.stats.open_count - dupBefore.open_count), '^1$')
+  chk('…carrying its value into the forecast', String(round2e(dupAfter.stats.open_value - dupBefore.open_value)), '^1000$')
+  const dupCard = dupAfter.columns.flatMap((c) => c.opps).find((o) => o.estimate_id === dupEstId)
+  chk('…as a card bound to the copy, not the original', String(dupCard && dupCard.stage), '^quoted$')
+
+  const reoBefore = (await req('GET', '/api/pipeline')).json.stats
+  const probeContact = (await req('GET', '/api/contacts?q=Pipeline%20Probe')).json?.contacts?.[0]
+  r = await req('POST', `/api/contacts/${probeContact?.id}/reorder`, { body: {} })
+  const reoEstId = r.json?.estimate_id
+  chk('"same as last time" drafts a reorder', String(r.status), '^201$')
+  const reoAfter = (await req('GET', '/api/pipeline')).json
+  chk('a reordered quote enters the pipeline as an open deal', String(reoAfter.stats.open_count - reoBefore.open_count), '^1$')
+  const reoCard = reoAfter.columns.flatMap((c) => c.opps).find((o) => o.estimate_id === reoEstId)
+  chk('…as its own card, at the quoted stage', String(reoCard && reoCard.stage), '^quoted$')
+
   // The `== null` guard above caught null and undefined — and nothing an integration actually
   // sends. A form posts "", an unbound Zapier line-item mapping sends "" or [], a toggle sends
   // false. Each coerced to 0 and returned a 201 with a $0 estimate a customer could approve.
