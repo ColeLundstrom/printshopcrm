@@ -201,7 +201,7 @@ export function contactForm(c, after) {
 export async function contactDetailView(id) {
   const d = await api.get(`/api/contacts/${id}`)
   const c = d.contact
-  setPage(c.name, `<a class="btn ghost" href="/api/contacts/${id}/statement.pdf" target="_blank">Statement</a><button class="btn ghost" id="edit">Edit</button>${d.jobs.length || d.estimates.length ? '<button class="btn ghost" id="same-again">↻ Same as last time</button>' : ''}<button class="btn" id="new-est">+ New Estimate</button>`,
+  setPage(c.name, `<a class="btn ghost" href="/api/contacts/${id}/statement.pdf" target="_blank">Statement</a><button class="btn ghost" id="edit">Edit</button>${d.jobs.length || d.estimates.length ? '<button class="btn ghost" id="same-again">↻ Same as last time</button>' : ''}<button class="btn" id="new-est">+ New Estimate</button><button class="btn danger" id="del-contact">Delete</button>`,
     `<a href="#/contacts">Customers</a> /`)
 
   const docRow = (rows, kind) => rows.length ? `<table class="tbl"><tbody>${rows.map((r) => `
@@ -270,6 +270,24 @@ export async function contactDetailView(id) {
   onOnce($('#view'), '[data-go]', (_e, t) => go(t.dataset.go))
   $('#edit').onclick = () => contactForm(c, () => contactDetailView(id))
   $('#new-est').onclick = () => go(`/estimates/new?contact=${id}`)
+  /* DELETE /api/contacts/:id has been fully built and carefully guarded since v10 — it refuses a
+   * customer with a live invoice, with a recorded payment, or with a purchase order still out, and
+   * each refusal is a 409 written in words a shop owner can act on. No screen had ever called it,
+   * so the cases the route exists for — a typo, a duplicate, a spam lead — could be created here
+   * and removed only with an API key or sqlite3, and those three refusals had never been read by
+   * anyone.
+   *
+   * The catch is not optional: without it a 409 throws uncaught inside confirmModal and the dialog
+   * just sits there, which is the dead end the route's own wording exists to avoid. */
+  $('#del-contact').onclick = () => confirmModal(`Delete ${c.name}?`,
+    'Their quotes, jobs, proofs and history are deleted with them. A customer who has been invoiced or has paid cannot be deleted — you will be told what is in the way.',
+    async () => {
+      try {
+        await api.del(`/api/contacts/${id}`)
+        toast(`${c.name} deleted`)
+        go('/contacts')
+      } catch (ex) { toast(ex.message, true) }
+    }, 'Delete')
   const again = $('#same-again')
   if (again) again.onclick = async () => {
     again.disabled = true

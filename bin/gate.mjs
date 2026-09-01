@@ -15704,6 +15704,50 @@ section('the e2e harness says WHY it failed, not just that it did')
 }
 
 
+section('a customer can be deleted from a screen, not only from the API')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const contacts = readFileSync(join(ROOT, 'public/js/views/contacts.js'), 'utf8')
+  const srv = readFileSync(join(ROOT, 'server.mjs'), 'utf8')
+
+  /*
+   * DELETE /api/contacts/:id is fully built and carefully guarded: it refuses a customer with a
+   * live invoice, with a recorded payment, or with a purchase order still out, and each refusal is
+   * a 409 written in words a shop owner can act on ("Receive or short-close it on the job first").
+   *
+   * No screen has ever called it. The contact detail page offers Statement, Edit, Same as last
+   * time and New Estimate. So a typo, a duplicate or a spam lead — the cases the route exists for —
+   * could be created from the UI and removed only with an API key or sqlite3, and the three
+   * carefully worded refusals had never been read by a human.
+   *
+   * The gate tested the route and never the wiring, which is why five rounds went past it.
+   */
+  await t('sanity: the server still offers the delete this screen is meant to reach', () => {
+    assert.match(srv, /app\.delete\('\/api\/contacts\/:id'/, 'the route moved — re-point this test')
+  })
+
+  await t('the customer screen can delete a customer', () => {
+    assert.match(contacts, /api\.del\(`\/api\/contacts\/\$\{[^}]+\}`\)/,
+      'no screen calls DELETE /api/contacts/:id — a duplicate or a spam lead can be created in the UI and removed only with sqlite3')
+  })
+
+  await t('…behind a confirm that names what goes with them', () => {
+    assert.match(contacts, /confirmModal\(/, 'deleting a customer cascades its quotes, jobs and history — it cannot be one unguarded click')
+  })
+
+  await t('…and the refusal is shown to the shop, not thrown away inside the dialog', () => {
+    // The three 409s are the whole point: without a catch they throw uncaught inside confirmModal
+    // and the dialog just sits there, which is the dead end the route was written to avoid.
+    const at = contacts.search(/api\.del\(`\/api\/contacts\//)
+    assert.ok(at > 0, 'the delete call moved — re-point this test')
+    const around = contacts.slice(at, at + 400)
+    assert.match(around, /catch/, 'the 409 refusals must reach the shop as a message')
+  })
+}
+
 section('the unsaved-changes guard on Settings works on the second visit too')
 {
   const { readFileSync } = await import('node:fs')
