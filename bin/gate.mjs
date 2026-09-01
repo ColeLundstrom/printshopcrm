@@ -6895,6 +6895,74 @@ await t('a garment line that states no colours still inherits the job\'s screen 
   } finally { dbm.setDefaultDb(prev) }
 })
 
+await t('a live distributor blank price is what the job is costed at, not the catalogue guess', async () => {
+  /*
+   * lib/roi.mjs read `it.garment_cost` and nothing else. But the Price Calculator is only one of
+   * the writers: lib/quickquote.mjs stamps `blank_cost` — and that is the LIVE S&S/SanMar price it
+   * just looked up, which is the whole point of having looked it up. It is the field on every line
+   * Autopilot, the Slack quick-quote, the receptionist and the assistant produce.
+   *
+   * public/js/shared/pricing.js:lineBlankCost defines the precedence (garment_cost -> blank_cost ->
+   * guess from the text) and its own docstring claimed "lib/roi.mjs has always applied this rule".
+   * It never had. So ROI silently fell through to the catalogue, which is a DIFFERENT and usually
+   * cheaper number, and the Profitability page under-costed every job these four writers created.
+   *
+   * Measured on the numbers below: cost $1,254.60 and a 56.3% "Healthy" margin, against a truth of
+   * $1,964.52 and 31.9%. $709.92 of real blank cost hidden, and the 45% floor — the product's
+   * headline guardrail — cleared a job 13 points under it.
+   */
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const db = new DatabaseSync(':memory:')
+  const prev = dbm.getDb()
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  try {
+    // The catalogue carries this style at 4.10. The live lookup that quoted the job said 6.42.
+    // initSuppliers already seeds this style; pin its catalogue price so the contrast is exact.
+    dbm.run("UPDATE garments SET cost = 4.10 WHERE sku = 'BC3001'")
+    assert.equal(dbm.get("SELECT cost FROM garments WHERE sku = 'BC3001'").cost, 4.10, 'sanity: the catalogue row this test contrasts against is not there')
+    const items = [
+      // No garment_cost. This is exactly the line lib/quickquote.mjs:161 writes.
+      { description: 'Bella+Canvas 3001 — 1/0 Front', sizes: { M: 300 }, unit_price: 9.5667, taxable: true,
+        blank_source: 'ss', blank_cost: 6.42, blank_sku: 'BC3001' },
+    ]
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+    dbm.run(
+      'INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+      'EST-3101', 'approved', JSON.stringify(items), 2870, 0, 2870, 0, dbm.now(),
+    )
+    const roi = jobRoi({ id: 1, estimate_id: 1 }, dbm.getSettings())
+    // 300 x 6.42 x 1.02 spoilage
+    assert.equal(roi.breakdown.garment, 1964.52,
+      `ROI costed the blank at the catalogue price, not the live price the quote was built on (got ${roi.breakdown.garment})`)
+  } finally { dbm.setDefaultDb(prev) }
+})
+
+await t('…and an explicit garment_cost still outranks it, as the shared rule says', async () => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const dbm = await import('../lib/db.mjs')
+  const sup = await import('../lib/suppliers.mjs')
+  const { jobRoi } = await import('../lib/roi.mjs')
+  const db = new DatabaseSync(':memory:')
+  const prev = dbm.getDb()
+  dbm.initDb(db); dbm.setDefaultDb(db); sup.initSuppliers(db)
+  try {
+    const items = [
+      { description: 'Bella+Canvas 3001 — 1/0 Front', sizes: { M: 100 }, unit_price: 14, taxable: true,
+        garment_cost: 3, blank_cost: 6.42 },
+    ]
+    dbm.run('INSERT INTO contacts (id, name, created_at, updated_at) VALUES (1, ?, ?, ?)', 'Gate Buyer', dbm.now(), dbm.now())
+    dbm.run(
+      'INSERT INTO estimates (id, contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, created_at) VALUES (1,1,?,?,?,?,?,?,?,?)',
+      'EST-3102', 'approved', JSON.stringify(items), 1400, 0, 1400, 0, dbm.now(),
+    )
+    const roi = jobRoi({ id: 1, estimate_id: 1 }, dbm.getSettings())
+    assert.equal(roi.breakdown.garment, 306, 'garment_cost must still win over blank_cost — 100 x 3 x 1.02')
+  } finally { dbm.setDefaultDb(prev) }
+})
+
 section('a fresh install is nobody else\'s shop')
 // This shipped wrong for every self-hosted install. The demo shop's name, address, phone and its
 // 7.75% California sales tax were the DEFAULTS, and createTenant() blanked them only for
