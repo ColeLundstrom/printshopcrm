@@ -4487,6 +4487,31 @@ try {
       chk('…so the owner is never locked out of their own shop', String(rightAnyway.json?.ok), '^true$')
       // A correct sign-in clears the counter, exactly as the code comment has always promised.
       chk('…and a correct sign-in clears the counter', String((await tryLogin('GatePass-123456')).status), '^200$')
+
+      /* ---------- support sign-in leaves a record, in the shop it signed in to ----------
+       * POST /api/admin/shops/:id/signin hands the operator a session bound to the shop's FIRST
+       * OWNER, which is deliberate — a null member_id is invisible to every
+       * `DELETE FROM sessions WHERE member_id = ?` in the product, so the owner's own password
+       * change could not end it. But it also means req.member IS that owner, so everything the
+       * operator then does is attributed to them: the shop's timeline read
+       * "Replied to Cust (email) by tina@target.test" for a customer email the vendor sent.
+       *
+       * The route's own docstring claims binding a real member "puts a name on everything the
+       * operator does while impersonating". The name it put was the victim's. The handover itself
+       * was recorded nowhere at all — not in the shop's activity feed, not in the operator's.
+       * So a shop had no way to know a vendor had been inside its books, which is the one thing an
+       * audit record exists for. */
+      jar6.clear()
+      await as6('POST', '/api/auth/login', { email: 'operator@example.com', password: 'GatePass-123456' })
+      const si = await as6('POST', `/api/admin/shops/${target?.id}/signin`, {})
+      chk('the operator can sign in to a shop to help it', String(si.status), '^200$')
+      chk('…landing in that shop', String(si.json?.slug), '^real-shop$')
+      // The cookie is now the target shop's, so this reads the SHOP's own timeline.
+      const feed = (await as6('GET', '/api/activities')).json || []
+      const supportEntries = (Array.isArray(feed) ? feed : []).filter((a) => /operator@example\.com/.test(String(a.description || '')))
+      chk('…and the shop can see that it happened', String(supportEntries.length > 0), '^true$')
+      chk('…named as the operator, not as the shop\'s own owner',
+        String(supportEntries.some((a) => !/real@shop\.test/.test(String(a.description || '')))), '^true$')
     } finally {
       try { s6.kill('SIGKILL') } catch { /* already gone */ }
       try { rmSync(T6, { recursive: true, force: true }) } catch { /* best effort */ }

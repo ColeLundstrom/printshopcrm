@@ -1900,9 +1900,17 @@ app.post('/api/admin/shops/:id/signin', wrap((req, res) => {
    * GET /api/export/all.json and POST /api/developers/key/rotate. Suspending the shop only gates
    * it; reactivating revives the same row. The only durable end was the 30-day expiry or sqlite3.
    *
-   * Binding a real member also puts a name on everything the operator does while impersonating,
-   * which nothing did before.
+   * Binding a real member also puts a name on everything the operator does while impersonating —
+   * but the name it puts is the SHOP OWNER'S, because req.member then IS that owner. The shop's
+   * timeline read "Replied to Cust (email) by tina@target.test" for a customer email the vendor
+   * sent. So the handover is recorded here, in the shop's OWN activity feed, before the cookie
+   * changes hands: it is the only place a shop can find out that a vendor has been inside its
+   * books, and everything after this line is indistinguishable from the owner's own work.
    */
+  const operator = req.member?.email || req.tenant?.owner_email || 'a platform administrator'
+  try {
+    withTenant(t.slug, () => logActivity('admin', `Support sign-in — ${operator} (PrintShopCRM) signed in to this shop`))
+  } catch (e) { console.error('admin signin audit:', e && e.message) }
   setSessionCookie(res, createSession(t.id, firstOwnerId(t.id)), req)
   res.json({ ok: true, slug: t.slug })
 }))
