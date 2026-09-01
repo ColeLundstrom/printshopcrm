@@ -3260,6 +3260,40 @@ try {
     const worst = Math.max(...lat)
 
     chk('a 9,000-order export imports', String(body.imported), '^9000$')
+
+  /* An upload that does not arrive intact is not a server fault, and the shop must not be told it
+   * is. multer throws a MulterError for its OWN limits (size, count), and that is mapped. But
+   * busboy throws PLAIN Errors for a body that stops early or arrives malformed — "Unexpected end
+   * of form", "Multipart: Boundary not found", "Request aborted" — and those fell through to the
+   * terminal handler's generic 500 "Something went wrong on our end.", with a full stack logged as
+   * an unattributable `unhandled:` line.
+   *
+   * A dropped wifi connection halfway through a 40 MB proof is the commonest upload failure a print
+   * shop has, and it is the one the shop can actually do something about. Telling them the server
+   * broke sends them to support instead of to Retry, and buries real 500s in the journal. */
+  {
+    const malformed = await fetch(`${BASE}/api/import/orders`, {
+      method: 'POST',
+      headers: { Cookie: cookieHeader(), 'Content-Type': 'multipart/form-data' },
+      body: 'not really a multipart body',
+    })
+    const mtext = await malformed.text()
+    chk('a multipart upload with no boundary is refused, not blamed on the server', String(malformed.status), '^4[0-9][0-9]$')
+    chk('…and is not reported as the server breaking', String(/went wrong on our end/.test(mtext)), '^false$')
+    chk('…and leaks no stack trace', String(/at \w+ \(|\.mjs:\d+/.test(mtext)), '^false$')
+
+    // A body that starts a part and then stops: what a dropped connection actually leaves behind.
+    const B = '----psc33boundary'
+    const truncated = `--${B}\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\nContent-Type: text/csv\r\n\r\nOrder Number,Customer\r\n`
+    const cut = await fetch(`${BASE}/api/import/orders`, {
+      method: 'POST',
+      headers: { Cookie: cookieHeader(), 'Content-Type': `multipart/form-data; boundary=${B}` },
+      body: truncated,
+    })
+    const ctext = await cut.text()
+    chk('an upload whose body stops early is refused, not blamed on the server', String(cut.status), '^4[0-9][0-9]$')
+    chk('…and says the upload did not finish', String(/went wrong on our end/.test(ctext)), '^false$')
+  }
     // Measured on this very file: 3 probes before the fix, 47 after. Ten sits between them with
     // room on both sides, and neither number is close to it.
     chk(`…while the app keeps answering other requests (${lat.length} health probes served in ${wall}ms, was 3)`,

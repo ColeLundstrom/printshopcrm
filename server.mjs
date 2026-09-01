@@ -8943,6 +8943,17 @@ app.use((err, req, res, _next) => {
     if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'That file is too large.' })
     return res.status(400).json({ error: 'That upload was rejected — check the file and try again.' })
   }
+  // …and the failures busboy raises as PLAIN Errors, which had no name and no code to branch on and
+  // so fell through to the generic 500 below. A body that stops early or arrives malformed is the
+  // CLIENT's half of the upload failing — a dropped wifi connection halfway through a 40 MB proof
+  // is the commonest upload failure a print shop has. Answering "Something went wrong on our end."
+  // sends the shop to support instead of to Retry, and logs a stack that buries real 500s.
+  if (/^(Unexpected end of form|Request aborted|Request closed|Multipart: Boundary not found)$/.test(String(err?.message || ''))) {
+    return res.status(400).json({
+      code: 'upload_incomplete',
+      error: 'That upload did not finish — it was cut off before the whole file arrived. Check your connection and try again.',
+    })
+  }
   // A shop whose database file has gone missing is not "something went wrong on our end" — it is
   // one specific thing, with one specific fix, and the person reading it is the owner of the shop
   // that is down. Say which failure it is and name the tool, the same way the startup banner does.
