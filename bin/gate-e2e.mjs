@@ -3325,6 +3325,47 @@ try {
     const repC = (await req('GET', '/api/contacts?q=Repeat%20Total%20Tees')).json?.contacts?.[0]
     chk('a repeated order total is still not multiplied by its line count', String(Number(repC?.lifetime_value || 0)), '^1900$')
 
+    /* Every fixture above carries a Unit Price column, and that is the whole blind spot.
+     *
+     * The tie-break weighs both readings against `evidence = qty x unit_price`. With no unit-price
+     * column evidence is 0, so `|sum - 0| <= |max - 0|` is just `sum <= max`, which is false for any
+     * multi-line order whose totals differ — the rule degenerated to "always take max". The early-out
+     * one line above only rescues the case where every total is IDENTICAL.
+     *
+     * Plenty of exporters emit per-line totals with no unit price at all. For them this was verbatim
+     * the regression the function's own docstring says it closed: 1000 + 600 + 300 imported as
+     * $1,000, and because the lines then out-total the document, the reconciler printed a fabricated
+     * -$900 "Discount" on the customer's estimate and statement to make it add up. */
+    const noUnitCsv = [
+      'Order Number,Customer,Email,Date,Qty,Total,Status,Product',
+      'SO-7004,No Unit Price Co,nounit@e2e.test,2026-04-05,100,1000.00,paid,Tee',
+      'SO-7004,No Unit Price Co,nounit@e2e.test,2026-04-05,50,600.00,paid,Hoodie',
+      'SO-7004,No Unit Price Co,nounit@e2e.test,2026-04-05,20,300.00,paid,Cap',
+    ].join('\n')
+    r = await req('POST', '/api/import/orders', { body: { text: noUnitCsv, preview: true } })
+    chk('an export with no unit price still previews as one order', String(r.json?.orders), '^1$')
+    chk('…worth what its lines add up to, with no unit price to weigh them against', String(r.json?.totalValue), '^1900$')
+
+    r = await req('POST', '/api/import/orders', { body: { text: noUnitCsv } })
+    chk('an export with no unit price imports as one order', String(r.json?.imported), '^1$')
+    const nuC = (await req('GET', '/api/contacts?q=No%20Unit%20Price%20Co')).json?.contacts?.[0]
+    chk('…and the shop keeps all $1,900 of its own history', String(Number(nuC?.lifetime_value || 0)), '^1900$')
+    const nuList = (await req('GET', '/api/estimates')).json
+    const nuEst = (Array.isArray(nuList) ? nuList : nuList?.data || []).find((e) => String(e.notes || '').includes('SO-7004'))
+    const nuItems = typeof nuEst?.items === 'string' ? JSON.parse(nuEst.items) : (nuEst?.items || [])
+    chk('…with no invented discount line to make a wrong total add up',
+      String(nuItems.filter((i) => /discount/i.test(String(i.description || ''))).length), '^0$')
+
+    // …and the repeated-order-total signature must still be read as one order total, unit price or not.
+    const noUnitRepCsv = [
+      'Order Number,Customer,Email,Date,Qty,Total,Status,Product',
+      'SO-7005,No Unit Repeat Co,nounitrep@e2e.test,2026-04-06,100,1900.00,paid,Tee',
+      'SO-7005,No Unit Repeat Co,nounitrep@e2e.test,2026-04-06,50,1900.00,paid,Hoodie',
+    ].join('\n')
+    await req('POST', '/api/import/orders', { body: { text: noUnitRepCsv } })
+    const nurC = (await req('GET', '/api/contacts?q=No%20Unit%20Repeat%20Co')).json?.contacts?.[0]
+    chk('a repeated total with no unit price is still one order total, not a sum', String(Number(nurC?.lifetime_value || 0)), '^1900$')
+
     // A total the lines cannot explain: setup + shipping on a single-line order.
     const gapCsv = [
       'Order Number,Customer,Email,Date,Qty,Unit Price,Total,Status,Product',

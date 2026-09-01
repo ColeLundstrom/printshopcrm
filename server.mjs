@@ -5790,7 +5790,14 @@ function groupImportedOrders(orders) {
     const sum = round2(totals.reduce((a, b) => a + b, 0))
     const max = Math.max(...totals)
     const hasUnitPrice = g._lines.some((l) => Number(l.unit_price) > 0)
-    if (!hasUnitPrice && totals.every((n) => n === totals[0])) { g.total = round2(max); continue }
+    // With no unit price there is no evidence to weigh, so the tie-break below must not run at all.
+    // It used to: `evidence` came out 0, `|sum - 0| <= |max - 0|` reduces to `sum <= max`, and that
+    // is false for every multi-line order whose totals differ — so the rule silently degenerated to
+    // "always take max" and re-opened, for every exporter that omits unit price, exactly the defect
+    // this function exists to close. Plenty of them do omit it. What is left to read is the shape:
+    // an identical total on every line is a repeated ORDER total; totals that differ are LINE
+    // totals, and line totals are added up.
+    if (!hasUnitPrice) { g.total = totals.every((n) => n === totals[0]) ? round2(max) : sum; continue }
     const evidence = round2(g._lines.reduce((a, l) => a + (Number(l.unit_price) || 0) * qtyOf(l), 0))
     g.total = Math.abs(sum - evidence) <= Math.abs(max - evidence) ? sum : round2(max)
   }
