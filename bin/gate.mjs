@@ -15704,6 +15704,61 @@ section('the e2e harness says WHY it failed, not just that it did')
 }
 
 
+section('the unsaved-changes guard on Settings works on the second visit too')
+{
+  const { readFileSync } = await import('node:fs')
+  const { join, dirname } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const misc = readFileSync(join(ROOT, 'public/js/views/misc.js'), 'utf8')
+
+  /*
+   * Settings is the screen holding the SMTP password, the Stripe keys and the shop's costing
+   * numbers, and it is the one screen whose reload/tab-close guard silently stopped working.
+   *
+   * `let settingsDirty` was declared INSIDE settingsView(), but the beforeunload listener is bound
+   * once per page load behind window.__pscSettingsGuard. The listener therefore closed over the
+   * FIRST render's variable; every later render — after a Save, a logo upload, a disconnect, an
+   * invite, or simply coming back to the screen — made a new one the listener could not see. So
+   * the protection worked on the first visit of a session and never again.
+   *
+   * Every other screen with this pattern (matrices.js, estimates.js, agent.js, pricing.js,
+   * onboarding.js) keeps the flag at module level. misc.js was the one copy that did not.
+   */
+  await t('the dirty flag outlives the render, because the guard that reads it does', () => {
+    assert.match(misc, /^let settingsDirty = false/m,
+      'settingsDirty is declared inside settingsView(), but beforeunload is bound once per page load — it closes over the first render and every later visit is unguarded')
+  })
+
+  await t('sanity: the beforeunload guard really is bound only once', () => {
+    assert.match(misc, /__pscSettingsGuard/,
+      'the once-per-page-load guard has gone — this rule is asserting on nothing')
+  })
+
+  /*
+   * The second half: what the guard can SEE. It tracked `#view [name]`, and two sets of real
+   * settings carry no `name` at all — the extended-size upcharge grid (data-up="2XL", id only) and
+   * the whole lite-edition "Sending Email" card (mail-user, mail-pass, mail-host, mail-port, all
+   * id-only). Both save correctly. Neither was visible to the guard, so typing real 2XL-5XL
+   * upcharges or a mail password and then clicking a sidebar link discarded them with no prompt —
+   * on the same page that DOES prompt if you touched the shop name.
+   */
+  await t('it watches the fields the shop actually types into, not only the named ones', () => {
+    const m = misc.match(/for \(const el of \$\$\((.+?)\)\) el\.addEventListener\('input'/)
+    assert.ok(m, 'the dirty-tracking loop moved — re-point this test')
+    assert.doesNotMatch(m[1], /^'#view \[name\]'$/,
+      "the guard watches only [name] fields, so the size upcharges and the lite mail card are invisible to it")
+    assert.match(m[1], /input/, 'it has to watch inputs, however they are addressed')
+  })
+
+  await t('…so the upcharge grid and the lite mail card are inside its reach', () => {
+    // These are the two field sets the [name] selector missed. They are id/data- addressed, so the
+    // selector has to be element-based to reach them.
+    assert.match(misc, /id="fs-up-\$\{sz\}"/, 'sanity: the upcharge inputs are still id-addressed with no name')
+    assert.match(misc, /id="mail-pass"/, 'sanity: the lite mail card is still id-addressed with no name')
+  })
+}
+
 section('a screen may not delegate a shared #id on the app shell either')
 {
   const { readFileSync, readdirSync } = await import('node:fs')

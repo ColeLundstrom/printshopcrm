@@ -1,6 +1,11 @@
 import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce } from '../core.js'
 import { DEFAULT_UPCHARGES, SIZES } from '../shared/pricing.js'
 
+// Lives out here, not inside settingsView(), because the beforeunload listener that reads it is
+// bound once per page load and would otherwise capture only the first render's copy. See the note
+// at its reset in settingsView().
+let settingsDirty = false
+
 /**
  * Which sizes get an upcharge box.
  *
@@ -620,8 +625,23 @@ export async function settingsView() {
    * beforeunload guard in the app is the price-matrix editor's, which is the pattern copied here.
    *
    * location.reload() was worse than a repaint: it also drops the hash route. */
-  let settingsDirty = false
-  for (const el of $$('#view [name]')) el.addEventListener('input', () => { settingsDirty = true })
+  // Module-level (declared at the foot of this file), NOT here. The beforeunload listener below is
+  // bound once per page load behind window.__pscSettingsGuard, so a flag declared in this function
+  // would be captured from the FIRST render only — and every later visit to Settings, after a Save,
+  // a logo upload, a disconnect, an invite, or simply coming back, made a new one the listener
+  // could not see. The reload/tab-close guard worked once per session and then silently never
+  // again, on the screen holding the SMTP password and the Stripe keys. Every other screen with
+  // this pattern (matrices, estimates, agent, pricing, onboarding) already keeps it at module
+  // level; this was the one copy that did not.
+  settingsDirty = false
+  // Element-based, not '#view [name]'. Two sets of real settings carry no name attribute at all:
+  // the extended-size upcharge grid (id/data-up only) and the whole lite-edition "Sending Email"
+  // card (mail-user, mail-pass, mail-host, mail-port). Both save correctly, and neither was
+  // visible to the guard — so typing real 2XL-5XL upcharges or a mail password and then clicking
+  // a sidebar link discarded them with no prompt, on the same page that DOES prompt if you touched
+  // the shop name. File inputs are excluded: choosing a logo triggers its own upload and repaint,
+  // and must not leave the page looking unsaved.
+  for (const el of $$('#view input:not([type=file]), #view select, #view textarea')) el.addEventListener('input', () => { settingsDirty = true })
   const repaint = () => {
     if (!settingsDirty) return settingsView()
     confirmModal('Reload settings?',
