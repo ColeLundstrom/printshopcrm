@@ -15309,7 +15309,10 @@ section('the only backup the documented upgrade takes can actually be written')
    * bin/restore.mjs got exactly this treatment for exactly this call and says so in its own
    * comment. snapshot.mjs — the half the upgrade actually runs — never did.
    */
-  await t('snapshot.mjs refuses in English when it cannot write the backup', () => {
+  // POSIX only: "somewhere nobody can write" is a directory under a root-owned `/`. On Windows that
+  // path resolves to `D:\psc-a-place-nobody-can-write`, which the runner can create, so the sanity
+  // precondition — that the write fails at all — is not true there.
+  await tPosix('snapshot.mjs refuses in English when it cannot write the backup', () => {
     const dir = mkdtempSync(join(tmpdir(), 'psc-snap-'))
     const d = new DatabaseSync(join(dir, 'printshop.db'))
     d.exec('CREATE TABLE t (a)')
