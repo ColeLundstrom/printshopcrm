@@ -5702,7 +5702,7 @@ await t('…and the chain ship.sh prints uses it, so the restore is not run agai
   }
 })
 
-await t('a deploy does not delete the artwork a restore set aside', async () => {
+await tPosix('a deploy does not delete the artwork a restore set aside', async () => {
   // release.sh pruned `$DATA_ROOT/backups/pre-*` to the five newest. bin/restore.mjs writes its
   // safety copy to `$DATA_ROOT/backups/pre-restore-<stamp>` in that same directory — and puts the
   // shop's live artwork inside it with renameSync, a MOVE, so after a restore that directory holds
@@ -5761,7 +5761,7 @@ await tPosix('a release that will not answer /health is rolled back, not announc
  * install that is down on an untested release.
  *
  * The gate never caught it because the harness's systemctl stub always exited 0. */
-await t('a unit systemd refuses to start still gets the rollback, not a bare systemctl error', async () => {
+await tPosix('a unit systemd refuses to start still gets the rollback, not a bare systemctl error', async () => {
   const r = await rehearseRelease({ healthy: false, restartFails: true })
   assert.notEqual(r.code, 0, `a deploy that could not start must exit non-zero:\n${r.out}`)
   assert.match(r.current, /releases\/v0\.0\.1$/,
@@ -5784,7 +5784,7 @@ await t('…and both deploy scripts keep the restart out of set -e\'s reach', as
   }
 })
 
-await t("a release that leaves one shop's database dark is rolled back, not announced as live", async () => {
+await tPosix("a release that leaves one shop's database dark is rolled back, not announced as live", async () => {
   const r = await rehearseRelease({ healthy: 'degraded' })
   assert.notEqual(r.code, 0, `a deploy that bricked a shop must exit non-zero:\n${r.out}`)
   assert.doesNotMatch(r.out, /✓ v9\.9\.9 is live/, 'a degraded 200 is not a successful deploy')
@@ -10893,7 +10893,13 @@ section('a backup can actually be put back')
     } finally { try { service.close() } catch { /* already gone */ } rmSync(f.dir, { recursive: true, force: true }) }
   })
 
-  await t('…and one that is mid-write is not either', () => {
+  // POSIX only for a reason that is not the deploy scripts: restore.mjs copies the live database,
+  // its -wal and its -shm to the safety directory BEFORE it probes for a running service, and on
+  // Windows SQLite holds mandatory byte-range locks on the -shm while a transaction is open. The
+  // copy itself throws there, so the process dies with a lock error instead of printing "still
+  // open". The restore is still refused — the right outcome — but this case is about the message,
+  // and the message is the POSIX one.
+  await tPosix('…and one that is mid-write is not either', () => {
     const f = fixture()
     const service = new DatabaseSync(f.live)
     try {
