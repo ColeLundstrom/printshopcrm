@@ -1,4 +1,4 @@
-import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, closeModal, store } from './core.js'
+import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, closeModal, store, setShopFormat } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
@@ -245,6 +245,10 @@ function drawTabbar(path) {
 async function drawChrome() {
   try {
     const [{ settings }, b] = await Promise.all([api.get('/api/settings'), api.get('/api/chrome/badges')])
+    // Before anything is painted: every view formats money through core.js, and this is where it
+    // learns the shop's currency and locale. Re-run on every chrome repaint, so a save in Settings
+    // is live on the next screen without a reload.
+    setShopFormat(settings)
     // In the lite edition the product brand is fixed by the deployment (stamped into the shell), not
     // a per-shop setting — don't let a shop's brand_name override the InkVoice chrome.
     if (window.__EDITION !== 'lite') {
@@ -563,6 +567,10 @@ async function boot() {
     bootFailed(e)
     return
   }
+  // The chrome fetch carries the shop's currency; the first screen must not paint before it. It is
+  // two small requests in parallel and it also removes the flash of default brand text that used to
+  // show for a frame before the debounced repaint replaced it.
+  await drawChrome()
   drawNav()
   navigate()
   connectRealtime()

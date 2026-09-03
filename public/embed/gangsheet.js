@@ -1,4 +1,5 @@
 import { nest, priceSheet, round2 } from '/js/shared/gangnest.js'
+import { moneyFormatter } from '/js/shared/format.js'
 
 /**
  * The embeddable DTF gang-sheet builder — this runs on the SHOP's website (in an iframe),
@@ -6,7 +7,8 @@ import { nest, priceSheet, round2 } from '/js/shared/gangnest.js'
  * see the price, and check out through the shop's own Stripe. Deliberately dead-simple.
  */
 
-const money = (n) => `$${(Number(n) || 0).toFixed(2)}`
+// The shop's currency, once /api/embed/config has said what it is; dollars until then.
+let money = moneyFormatter({}).money
 const PPI = 22 // canvas pixels per inch for the preview
 
 let cfg = { shop: 'Print Shop', dtf: { sheetWidth: 22, pricePerInch: 0.95, minCharge: 10 }, checkout: 'quote' }
@@ -46,6 +48,7 @@ async function boot() {
     const d = await readJson(r)
     if (!r.ok || !d?.dtf) throw new Error(d?.error || httpMsg(r.status))
     cfg = d
+    money = moneyFormatter(d).money
   } catch (e) {
     document.getElementById('gs-root').innerHTML = `<div class="gs"><div class="gs-done"><h2>Builder unavailable</h2><p>${esc(e.message)}</p></div></div>`
     return

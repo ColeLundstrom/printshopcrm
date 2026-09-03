@@ -2926,7 +2926,7 @@ section('the app does not discard what the shop has typed')
       // A shop that has never snoozed anyone: #ro-body was drawn, #ro-snoozed was not.
       const body = { addEventListener() {}, contains: () => false }
       globalThis.document = { querySelector: (sel) => (sel === '#ro-snoozed' ? null : body), querySelectorAll: () => [] }
-      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      const m = await import(${asSpecifier(join(root, 'public/js/core.js'))})
       try {
         m.on(m.$('#ro-body'), '[data-nudge]', () => {})
         m.on(m.$('#ro-snoozed'), '[data-unsnooze]', () => {})
@@ -4094,7 +4094,7 @@ for (const tz of ['America/Los_Angeles', 'Asia/Tokyo', 'UTC']) {
     const { fileURLToPath } = await import('node:url')
     const root = join(dirname(fileURLToPath(import.meta.url)), '..')
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
-      const m = await import(${JSON.stringify(join(root, 'public/js/core.js'))})
+      const m = await import(${asSpecifier(join(root, 'public/js/core.js'))})
       // The shape lib/db.mjs writes: CURRENT_TIMESTAMP, UTC, no T and no Z.
       const stored = new Date(Date.now() - 120000).toISOString().slice(0, 19).replace('T', ' ')
       process.stdout.write(JSON.stringify([m.relTime(stored), stored.slice(5, 16)]))
@@ -5222,7 +5222,7 @@ await t('every recovery line the deploy scripts print actually works', async () 
  * Driven, not read: a throwaway APP_ROOT with two real release directories, and PATH shims for
  * sudo and systemctl. */
 section('the rollback commands we hand an operator are commands that exist')
-await t('rollback goes back, twice, and a typo deploys nothing', async () => {
+await tPosix('rollback goes back, twice, and a typo deploys nothing', async () => {
   const { execFileSync } = await import('node:child_process')
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, chmodSync, existsSync, readFileSync, realpathSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -5362,7 +5362,7 @@ await t('every rollback instruction we hand an operator actually runs as root', 
 // — and exits 0. public/uploads ships as a real directory (tracked .gitkeep), so INSTALL.md's
 // sequence silently left artwork writing into the app directory while the backup archived an empty
 // data dir. Dockerfile and release.sh both rm -rf first; the hand-install path did not.
-await t('INSTALL.md clears public/uploads before symlinking it', async () => {
+await tPosix('INSTALL.md clears public/uploads before symlinking it', async () => {
   const { readFileSync } = await import('node:fs')
   const { join, dirname } = await import('node:path')
   const { fileURLToPath } = await import('node:url')
@@ -5595,7 +5595,7 @@ await t('nothing tells a shop to add QuickBooks keys in Settings while Settings 
 })
 
 section('a release does not contain the install it was cut from')
-await t('release.sh and ship.sh exclude `current` and `releases` from the copy', async () => {
+await tPosix('release.sh and ship.sh exclude `current` and `releases` from the copy', async () => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, lstatSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
@@ -5634,7 +5634,7 @@ await t('release.sh and ship.sh exclude `current` and `releases` from the copy',
 })
 
 section('the recovery chain printed after a deploy can actually be run')
-await t('release.sh rollback --no-restart flips the release without bringing the service back up', async () => {
+await tPosix('release.sh rollback --no-restart flips the release without bringing the service back up', async () => {
   const { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readlinkSync, existsSync, chmodSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join, dirname } = await import('node:path')
@@ -11012,7 +11012,7 @@ section('a backup can actually be put back')
    * environment, and nothing sources .env for a bash script — so the token was empty on every
    * real nightly run and the upload was skipped in silence. The existing case above passes the
    * token in via env:, which is the one way the real cron never does. */
-  await t('the documented cron entry reaches the Drive credentials the docs put in .env', async () => {
+  await tPosix('the documented cron entry reaches the Drive credentials the docs put in .env', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'psc-bk-env-'))
     try {
       mkdirSync(join(dir, 'app', 'bin'), { recursive: true })
@@ -11041,7 +11041,7 @@ section('a backup can actually be put back')
    * mid-write counts as "FAILED to back up", which sets failed>0, which DISABLES RETENTION. Since
    * nothing ever deletes pre-restore-*, the first restore a shop performs turns retention off for
    * good and every later night reports failure. */
-  await t('the nightly skips the backups directory it and its siblings write into', async () => {
+  await tPosix('the nightly skips the backups directory it and its siblings write into', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'psc-bk-self-'))
     try {
       const data = join(dir, 'data')
@@ -11071,7 +11071,7 @@ section('a backup can actually be put back')
    * INSTALL.md's own cron line redirects stdout and stderr to a log file, and cron mails on
    * OUTPUT rather than on exit status, so nobody is told. Thirty of those nights and the archive
    * that actually held the shop has aged out; what is left is thirty 363-byte tarballs. */
-  await t('a backup run that failed does not prune the backups that worked', async () => {
+  await tPosix('a backup run that failed does not prune the backups that worked', async () => {
     const { utimesSync } = await import('node:fs')
     const dir = mkdtempSync(join(tmpdir(), 'psc-bk-'))
     try {
@@ -11096,7 +11096,7 @@ section('a backup can actually be put back')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
-  await t('a clean backup run still prunes', async () => {
+  await tPosix('a clean backup run still prunes', async () => {
     const { utimesSync } = await import('node:fs')
     const dir = mkdtempSync(join(tmpdir(), 'psc-bk-'))
     try {
@@ -12516,7 +12516,7 @@ await t('the two foreign keys that had no index behind them have one', async () 
 
 section('a disk that is full says so, on the screen the shop is looking at')
 
-await t('node:sqlite really reports the three write failures the way the handler reads them', async () => {
+await tPosix('node:sqlite really reports the three write failures the way the handler reads them', async () => {
   const { DatabaseSync } = await import('node:sqlite')
   const { mkdtempSync, rmSync, chmodSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -12888,7 +12888,7 @@ await t('a temporary password cannot carry extra paragraphs into the invitation'
     // contains punctuation — so it is refused at the door, the way oneRecipient() refuses list
     // separators. addMember is the shared door every invite path goes through.
     const script = `
-      const tn = await import(${JSON.stringify(join(root, 'lib/tenants.mjs'))})
+      const tn = await import(${asSpecifier(join(root, 'lib/tenants.mjs'))})
       const t = await tn.createTenant({ shop_name: 'Invite Co', owner_email: 'owner@gate.test', password: 'originalpass123' })
       const tryAdd = async (email, password) => {
         try { await tn.addMember(t.id, { name: 'Ops Team', email, password, role: 'staff' }); return 'accepted' }
@@ -12947,7 +12947,7 @@ await t('changing the owner\'s password ends an admin "sign in as this shop" ses
   const box = mkdtempSync(join(tmpdir(), 'psc-imp-'))
   try {
     const script = `
-      const tn = await import(${JSON.stringify(join(root, 'lib/tenants.mjs'))})
+      const tn = await import(${asSpecifier(join(root, 'lib/tenants.mjs'))})
       const t = await tn.createTenant({ shop_name: 'Bravo Ink', owner_email: 'owner@bravo.test', password: 'originalpass123' })
       const owner = tn.listMembers(t.id).find((m) => m.role === 'owner')
       // The owner's own login, and the operator's impersonation of the same shop.
@@ -13313,25 +13313,27 @@ exec /usr/bin/readlink "$@"`)
     } finally { rmSync(box, { recursive: true, force: true }) }
   }
 
-  const r = rehearse()
+  // The rehearsal runs before any of the assertions, so the platform guard is out here — on
+  // Windows it dies at `ln -sfn` (or worse, Git Bash's ln makes a COPY and the cases fail wrong).
+  const r = POSIX ? rehearse() : null
 
-  await t('`release.sh rollback`, run the way the docs print it, rolls the APP back', () => {
+  await tPosix('`release.sh rollback`, run the way the docs print it, rolls the APP back', () => {
     assert.equal(r.code, 0, `the documented rollback failed outright:\n${r.out}`)
     assert.equal(r.pro, join(r.PRO, 'releases', 'v1.0.0'),
       `the app is still on the release we were running away from — this is the whole point of the command:\n${r.out}`)
   })
 
-  await t('…and does not touch the marketing website next door', () => {
+  await tPosix('…and does not touch the marketing website next door', () => {
     assert.equal(r.web, join(r.WEB, 'releases', 'w1'),
       `rolling back the app moved the WEBSITE — /opt/printshopcrm is a different install:\n${r.out}`)
   })
 
-  await t('…and restarts the app\'s unit, not the website\'s', () => {
+  await tPosix('…and restarts the app\'s unit, not the website\'s', () => {
     assert.match(r.units, /restart printshopcrm-pro/, `units restarted: ${JSON.stringify(r.units)}`)
     assert.ok(!/restart printshopcrm$/m.test(r.units), `it restarted the website's unit: ${JSON.stringify(r.units)}`)
   })
 
-  await t('…and points the operator at the snapshots of the install it just changed', () => {
+  await tPosix('…and points the operator at the snapshots of the install it just changed', () => {
     // The closing line names "$DATA_ROOT/backups". Derived wrong, it sends someone recovering from
     // a bad migration to a directory belonging to a different install, or to one that is not there.
     assert.ok(r.out.includes(join(r.PRO, 'data', 'backups')),
@@ -13600,7 +13602,7 @@ section('a signup that cannot create its database creates no account either')
         import { writeFileSync, rmSync, existsSync } from 'node:fs'
         import { join } from 'node:path'
         const data = process.env.PSC_DATA
-        const t = await import(${JSON.stringify(join(ROOT, 'lib/tenants.mjs'))})
+        const t = await import(${asSpecifier(join(ROOT, 'lib/tenants.mjs'))})
         const { DatabaseSync } = await import('node:sqlite')
         const ctl = new DatabaseSync(process.env.PSC_CONTROL_DB)
         const count = (tbl) => ctl.prepare('SELECT COUNT(*) AS n FROM ' + tbl).get().n
@@ -13727,7 +13729,7 @@ section('a new shop never opens the books of a shop that was deleted')
     try {
       const script = `
         import { existsSync } from 'node:fs'
-        const t = await import(${JSON.stringify(join(ROOT, 'lib/tenants.mjs'))})
+        const t = await import(${asSpecifier(join(ROOT, 'lib/tenants.mjs'))})
         const { DatabaseSync } = await import('node:sqlite')
         const ctl = new DatabaseSync(process.env.PSC_CONTROL_DB)
         const out = {}
@@ -13739,7 +13741,7 @@ section('a new shop never opens the books of a shop that was deleted')
           void db
         })
         // Put something unmistakable in the first shop's own database.
-        const dbm = await import(${JSON.stringify(join(ROOT, 'lib/db.mjs'))})
+        const dbm = await import(${asSpecifier(join(ROOT, 'lib/db.mjs'))})
         t.withTenant(a.slug, () => {
           dbm.run("INSERT INTO contacts (name, email) VALUES ('Northside High Athletics', 'ad@northside.test')")
         })
@@ -14461,19 +14463,21 @@ section('a restore leaves the databases owned by the account that runs the shop'
     } finally { rmSync(box, { recursive: true, force: true }) }
   }
 
-  const r = run()
+  // Mode bits are the subject here, and Windows has none: chmod is a no-op and every file reads
+  // back 0666. The comparison is meaningless there, not merely different.
+  const r = POSIX ? run() : null
 
-  await t('precondition: the missing shop database is actually put back', () => {
+  await tPosix('precondition: the missing shop database is actually put back', () => {
     assert.equal(r.exists, true, `restore.mjs did not write the file:\n${r.out}`)
   })
 
-  await t('…with the permissions its siblings have, not the ones the umask happened to give it', () => {
+  await tPosix('…with the permissions its siblings have, not the ones the umask happened to give it', () => {
     assert.equal(r.ref, 0o640, 'precondition: the reference database is 0640')
     assert.equal(r.mode, r.ref,
       `the restored database came back ${r.mode?.toString(8)} against a control.db of ${r.ref.toString(8)} — as root that is a shop that cannot be written to, and no screen can fix it`)
   })
 
-  await t('…and it prints what the service will actually see', () => {
+  await tPosix('…and it prints what the service will actually see', () => {
     assert.match(r.out, /owner \d+:\d+\s+mode \d{4}/,
       'an operator finding this out from a 500 an hour later is the whole failure mode')
   })
@@ -15925,6 +15929,118 @@ section('a screen may not delegate a shared #id on the app shell either')
     }
     assert.deepEqual(clashes, [],
       `a delegation on the permanent shell fires for another screen's element of the same id — ${clashes.join(' | ')}`)
+  })
+}
+
+/* ---------- money is written in the shop's own currency (issue #3) ----------
+ * Money was `'$' + n.toLocaleString('en-US')` in nine places — core.js, pdf.mjs, agent.mjs,
+ * assistant.mjs, quickquote.mjs, slack.mjs, automations.mjs, server.mjs, the gang-sheet embed — and
+ * dates were en-US in three more. A shop in the UK, Canada, the EU or Australia saw `$` on every
+ * screen and on every document it handed a customer, with no setting that could change it. On an
+ * invoice that is a legal document with the wrong currency on it.
+ *
+ * Now: two shop settings, one shared formatter (public/js/shared/format.js), and the defaults are
+ * exactly what the app always did — an existing install prints byte-for-byte what it printed. */
+section('money is written in the shop\'s own currency')
+{
+  const F = await import('../public/js/shared/format.js')
+  // NBSP vs narrow NBSP as a group separator varies by ICU build; a space is a space here.
+  const sp = (s) => String(s).replace(/\s/g, ' ')
+
+  await t('an existing shop prints byte-for-byte what it always printed', () => {
+    const f = F.moneyFormatter({})
+    for (const [n, want] of [[1234.5, '$1,234.50'], [0, '$0.00'], [-40, '-$40.00'], [99.999, '$100.00'], ['12.5', '$12.50'], [null, '$0.00'], ['x', '$0.00'], [-0, '$0.00'], [Infinity, '$0.00']]) {
+      assert.equal(f.money(n), want, `money(${n})`)
+    }
+    for (const [n, want] of [[1234.5, '$1,235'], [1234.4, '$1,234'], [0, '$0']]) assert.equal(f.money0(n), want, `money0(${n})`)
+    assert.equal(f.moneyShort(2), '$2'); assert.equal(f.moneyShort(2.5), '$2.50'); assert.equal(f.number(1234), '1,234')
+    assert.equal(f.symbol, '$'); assert.equal(f.currency, F.DEFAULT_CURRENCY); assert.equal(f.locale, F.DEFAULT_LOCALE)
+  })
+
+  await t('a shop abroad gets its own currency, and its own way of writing a number', () => {
+    assert.equal(sp(F.moneyFormatter({ currency: 'GBP', locale: 'en-GB' }).money(1234.5)), '£1,234.50')
+    assert.equal(sp(F.moneyFormatter({ currency: 'EUR', locale: 'de-DE' }).money(1234.5)), '1.234,50 €')
+    assert.equal(sp(F.moneyFormatter({ currency: 'CAD', locale: 'fr-CA' }).money(1234.5)), '1 234,50 $')
+    assert.equal(F.moneyFormatter({ currency: 'JPY', locale: 'en-US' }).money(1234.5), '¥1,235', 'yen has no minor unit')
+    assert.equal(F.moneyFormatter({ currency: 'EUR', locale: 'de-DE' }).symbol, '€')
+    assert.equal(sp(F.moneyFormatter({ currency: 'EUR', locale: 'de-DE' }).number(1234)), '1.234')
+  })
+
+  await t('a typo in Settings can never break a customer document', () => {
+    for (const bad of [{ currency: 'US$' }, { currency: 'usd' }, { currency: 'ABC' }, { currency: '' }, { locale: 'american' }, { locale: '' }, { locale: 'en_US' }, { currency: null, locale: null }]) {
+      assert.equal(F.moneyFormatter(bad).money(5), '$5.00', JSON.stringify(bad))
+    }
+    assert.equal(F.isCurrencyCode('EUR'), true); assert.equal(F.isCurrencyCode('ABC'), false); assert.equal(F.isCurrencyCode('usd'), false)
+    assert.equal(F.isLocale('pt-BR'), true); assert.equal(F.isLocale('en_US'), false); assert.equal(F.isLocale('american'), false); assert.equal(F.isLocale(''), false)
+  })
+
+  await t('the PDF spells a currency its font cannot draw by its code, and keeps the euro', () => {
+    assert.ok(F.moneyFormatter({ currency: 'EUR', locale: 'de-DE', charset: 'latin1' }).money(10).includes('€'))
+    const inr = F.moneyFormatter({ currency: 'INR', locale: 'en-IN', charset: 'latin1' }).money(1234.5)
+    assert.ok(!inr.includes('₹') && inr.includes('INR'), `₹ has no glyph in WinAnsi Helvetica, got ${inr}`)
+    assert.equal(F.moneyFormatter({ charset: 'latin1' }).money(5), '$5.00')
+  })
+
+  await t('…and an estimate in euros carries the euro byte, not a question mark', async () => {
+    const pdf = await import('../lib/pdf.mjs')
+    const settings = { shop_name: 'Druckerei Nord', shop_email: 'o@x.test', shop_address: 'Hafenstraße 1', shop_phone: '', currency: 'EUR', locale: 'de-DE' }
+    const doc = { estimate_number: 'EST-2001', number: 'EST-2001', subtotal: 1234.5, tax: 0, total: 1234.5, created_at: '2026-08-27', status: 'sent' }
+    const items = [{ description: 'Shirts', qty: 50, unit_price: 24.69, sizes: { M: 50 } }]
+    const buf = pdf.renderDocument('ESTIMATE', { doc, contact: { name: 'Jürgen Meyer', email: 'j@x.test' }, settings, items }).toString('latin1')
+    assert.ok(buf.includes('1.234,50\xa0\x80'), 'the total is written in euros, with WinAnsi 0x80 for the sign')
+    assert.ok(!/\?\s*\x80|\x80\s*\?/.test(buf), 'nothing beside the amount was substituted')
+    assert.ok(!/\$[0-9]/.test(buf), 'and there is no dollar sign anywhere on a German shop\'s estimate')
+  })
+
+  await t('a name with marks the font lacks is folded to its letters, not question marks (issue #2)', async () => {
+    const pdf = await import('../lib/pdf.mjs')
+    const settings = { shop_name: 'Rebel Ink Press', shop_email: 'o@x.test', shop_address: '500 Main St', shop_phone: '' }
+    const doc = { estimate_number: 'EST-1002', number: 'EST-1002', subtotal: 500, tax: 0, total: 500, created_at: '2026-08-27', status: 'sent' }
+    const items = [{ description: 'Tees', qty: 50, unit_price: 10, sizes: { M: 50 } }]
+    const render = (name) => pdf.renderDocument('ESTIMATE', { doc, contact: { name, email: 'n@x.test' }, settings, items }).toString('latin1')
+    assert.ok(render('Nguyễn Văn Đức').includes('Nguyen Van Duc'), 'Vietnamese marks fold to the base letter; Đ is mapped by hand')
+    assert.ok(render('Kowalski Łódź').includes('Kowalski L\xf3dz'), 'ł has no decomposition and is mapped by hand; ó is latin-1 and kept')
+    assert.ok(render('José Muñoz').includes('Jos\xe9 Mu\xf1oz'), 'latin-1 keeps its real accents — nothing the font can draw is folded')
+    assert.ok(/\?\?\?/.test(render('王小明')), 'a script with no fallback still substitutes rather than vanishing')
+  })
+
+  await t('currency and locale are settings with the historical defaults, and the server formats through them', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbm = await import('../lib/db.mjs')
+    const db = new DatabaseSync(':memory:')
+    dbm.initDb(db)
+    const prev = dbm.getDb(); dbm.setDefaultDb(db)
+    try {
+      assert.equal(dbm.getSettings().currency, 'USD'); assert.equal(dbm.getSettings().locale, 'en-US')
+      assert.equal(dbm.shopFormat().money(1234.5), '$1,234.50')
+      dbm.applySettingsPatch({ currency: 'EUR', locale: 'de-DE' })
+      assert.equal(sp(dbm.shopFormat().money(1234.5)), '1.234,50 €', 'a saved setting is live on the next call, no restart')
+      assert.equal(dbm.publicSettings().currency, 'EUR', 'and the browser is told, so every screen agrees with the PDF')
+    } finally { dbm.setDefaultDb(prev); db.close() }
+  })
+
+  await t('no screen or server module spells a currency itself any more', async () => {
+    const { readFileSync, readdirSync, statSync } = await import('node:fs')
+    const { join, dirname, relative } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    // The platform's own plan prices (billing.js) are the PLATFORM's dollars, not the shop's; the
+    // demo seed is a US shop by design and lives outside these trees. Everything else formats
+    // through format.js — so the tenth copy of `'$' + toLocaleString('en-US')` cannot land.
+    const skip = new Set(['public/js/views/billing.js', 'public/js/shared/format.js'])
+    const files = []
+    const walk = (d) => { for (const n of readdirSync(d)) { const p = join(d, n); if (statSync(p).isDirectory()) { if (n !== 'node_modules' && n !== 'uploads') walk(p) } else if (/\.m?js$/.test(n)) files.push(p) } }
+    walk(join(root, 'public', 'js')); walk(join(root, 'public', 'embed')); walk(join(root, 'lib')); files.push(join(root, 'server.mjs'))
+    const offenders = []
+    for (const f of files) {
+      const rel = relative(root, f).split('\\').join('/')
+      if (skip.has(rel)) continue
+      readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+        if (/^\s*(\/\/|\*|\/\*)/.test(line)) return
+        if (/\$\$\{|['"]\$['"]\s*\+|toLocaleString\(['"]en-US['"]|toLocaleDateString\(['"]en-US['"]/.test(line)) offenders.push(`${rel}:${i + 1}: ${line.trim().slice(0, 90)}`)
+      })
+    }
+    assert.deepEqual(offenders, [], `format money through money()/shopFormat(), never with a literal sign:\n      ${offenders.join('\n      ')}`)
   })
 }
 

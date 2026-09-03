@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast, onOnce, localDay, announce } from '../core.js'
+import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast, onOnce, localDay, announce, shopLocale } from '../core.js'
 
 /**
  * Capacity & Promise Dates — the question no MIS answers: can the shop physically hit this date
@@ -10,7 +10,7 @@ import { api, $, $$, esc, setPage, empty, on, go, fmtDate, today, toast, onOnce,
 let promiseTimer
 
 const hrs = (m) => `${Math.round((m / 60) * 10) / 10}h`
-const dow = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short' })
+const dow = (d) => new Date(`${d}T12:00:00`).toLocaleDateString(shopLocale(), { weekday: 'short' })
 const dnum = (d) => new Date(`${d}T12:00:00`).getDate()
 
 export async function capacityView() {

@@ -89,6 +89,29 @@ git push origin main --quiet || die "push failed"
 git push origin "$TAG" --quiet || die "tag push failed — GitHub and your tree now disagree"
 echo "  pushed $TAG (this also builds and publishes the container image)"
 
+# ---------------------------------------------------------------- 3b. the release page
+# A tag is not a release page. Thirty-one tags went up with no notes, so the Releases link on the
+# repository — where a self-hoster downloading the zip lands — stopped at v1.1.0 while the code was
+# at v1.33, and the AGPL "corresponding source" offer pointed a reader at a page two months stale.
+# --generate-notes writes them from the commit titles, which in this repository ARE the changelog.
+# Not fatal: the tag is already pushed, the server deploy below is the half that cannot wait, and
+# the page can be made by hand afterwards with the command printed here.
+if command -v gh >/dev/null 2>&1; then
+  if gh release view "$TAG" >/dev/null 2>&1; then
+    echo "  release page for $TAG already exists"
+  else
+    PREV_TAG="$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)"
+    if gh release create "$TAG" --title "$TAG${SUMMARY:+ — $SUMMARY}" --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"} >/dev/null 2>&1; then
+      echo "  release page: https://github.com/ColeLundstrom/printshopcrm/releases/tag/$TAG"
+    else
+      echo "  !  could not create the release page — after the deploy: gh release create $TAG --generate-notes"
+    fi
+  fi
+else
+  echo "  !  gh is not installed, so no release page was made — tags alone do not show under /releases"
+  echo "     after the deploy: gh release create $TAG --generate-notes"
+fi
+
 # ---------------------------------------------------------------- 4. app server
 REL_NAME="${TAG}-$(date +%Y-%m-%d)"
 REL="$APP_ROOT/releases/$REL_NAME"

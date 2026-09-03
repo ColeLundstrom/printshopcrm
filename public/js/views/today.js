@@ -1,4 +1,4 @@
-import { api, $, esc, money0, setPage, go, empty } from '../core.js'
+import { api, $, esc, money0, setPage, go, empty, shopLocale } from '../core.js'
 
 /**
  * Today: the role-aware action center that replaces the flat dashboard. One ranked "do this next"
@@ -92,7 +92,7 @@ export async function todayView() {
   $('#view').innerHTML = `
     <div class="tdy-head">
       <h1>${greet}${name ? ', ' + esc(name) : ''}</h1>
-      <p class="tdy-date">${new Date(`${d.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}${d.role !== 'owner' ? ` · <span class="dim">${esc(d.role)}</span>` : ''}</p>
+      <p class="tdy-date">${new Date(`${d.date}T12:00:00`).toLocaleDateString(shopLocale(), { weekday: 'long', month: 'long', day: 'numeric' })}${d.role !== 'owner' ? ` · <span class="dim">${esc(d.role)}</span>` : ''}</p>
     </div>
 
     ${lite ? litePulse(p, counts) : `<div class="tdy-pulse">

@@ -1,5 +1,6 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce } from '../core.js'
+import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce, setShopFormat, shopSymbol } from '../core.js'
 import { DEFAULT_UPCHARGES, SIZES } from '../shared/pricing.js'
+import { CURRENCY_CHOICES, LOCALE_CHOICES, moneyFormatter } from '../shared/format.js'
 
 // Lives out here, not inside settingsView(), because the beforeunload listener that reads it is
 // bound once per page load and would otherwise capture only the first render's copy. See the note
@@ -341,6 +342,10 @@ export async function settingsView() {
   const notif = await api.get('/api/notify/status').catch(() => ({ email: false, sms: false }))
   const aiInfo = await api.get('/api/ai/providers').catch(() => null)
 
+  // The shop's money settings, for the currency picker and for every "($/hr)" style label below —
+  // a shop that invoices in pounds should not be told its screen fee is in dollars.
+  const cur = String(s.currency || 'USD'), loc = String(s.locale || 'en-US')
+  const sym = shopSymbol()
   const f = (name, label, hint = '', type = 'text') => `<div class="field"><label for="fs-${name}">${label}</label>
     <input class="input" id="fs-${name}" name="${name}" type="${type}" value="${esc(s[name] || '')}">${hint ? `<div class="dim" style="font-size:11px;margin-top:4px">${hint}</div>` : ''}</div>`
   // Secret field: never prefills the stored value (it's redacted server-side). Shows a "saved"
@@ -388,6 +393,14 @@ export async function settingsView() {
       <div class="grid2">${f('shop_email', 'Email', '', 'email')}${f('shop_phone', 'Phone')}</div>
       ${f('shop_address', 'Address', 'Appears on estimate and invoice PDFs')}
       <div class="grid2">${f('tax_rate', 'Default tax rate (%)', '', 'number')}${window.__EDITION === 'lite' ? '' : f('brand_name', 'Product name', 'What the sidebar says')}</div>
+      <div class="grid2">
+        <div class="field"><label for="fs-currency">Currency</label>
+          <select class="input" id="fs-currency" name="currency">${[...new Set([cur, ...CURRENCY_CHOICES])].map((c) => `<option value="${esc(c)}" ${c === cur ? 'selected' : ''}>${esc(c)} — ${esc(moneyFormatter({ currency: c, locale: loc }).money(1234.5))}</option>`).join('')}</select>
+          <div class="dim" style="font-size:11px;margin-top:4px">Every screen, PDF, email and customer page writes money this way.</div></div>
+        <div class="field"><label for="fs-locale">Number &amp; date format</label>
+          <select class="input" id="fs-locale" name="locale">${[...(LOCALE_CHOICES.some(([t]) => t === loc) ? [] : [[loc, loc]]), ...LOCALE_CHOICES].map(([t, label]) => `<option value="${esc(t)}" ${t === loc ? 'selected' : ''}>${esc(label)} — ${esc(moneyFormatter({ currency: cur, locale: t }).number(1234.5))} · ${esc(new Date(2026, 7, 28, 12).toLocaleDateString(t, { month: 'short', day: 'numeric' }))}</option>`).join('')}</select>
+          <div class="dim" style="font-size:11px;margin-top:4px">How thousands, decimals and dates are written. Tax stays the rate above.</div></div>
+      </div>
     </div></div>
 
     <div class="card">
@@ -395,11 +408,11 @@ export async function settingsView() {
       <div class="card-b" id="costing">
         <p class="dim" style="font-size:12px;margin-bottom:13px;line-height:1.6">Your shop rate and screen fee are the two numbers you actually revisit — a raise, a rent hike, a new screen price. The three behind <strong style="color:var(--txt-2)">Advanced costing</strong> already hold working defaults; they're what lets the calculator tell you a job loses money.</p>
         <div class="grid2">
-          ${f('shop_hourly_rate', 'Shop rate ($/hr)', 'Wages + rent + equipment ÷ productive hours', 'number')}
-          ${f('screen_fee', 'Screen fee charged ($)', 'What you bill per screen', 'number')}
+          ${f('shop_hourly_rate', `Shop rate (${esc(sym)}/hr)`, 'Wages + rent + equipment ÷ productive hours', 'number')}
+          ${f('screen_fee', `Screen fee charged (${esc(sym)})`, 'What you bill per screen', 'number')}
         </div>
         <div class="field">
-          <div class="lbl" id="up-lbl">Extended-size upcharges ($ per piece)</div>
+          <div class="lbl" id="up-lbl">Extended-size upcharges (${esc(sym)} per piece)</div>
           <div class="dim" style="font-size:11px;margin-bottom:6px">Added on top of the base rate for big garments. Every estimate, invoice, PDF and export bills these.</div>
           <div class="grid4" role="group" aria-labelledby="up-lbl">
             ${UPCHARGE_SIZES(upNow).map((sz) => `<div class="field" style="margin:0">
@@ -839,7 +852,13 @@ export async function settingsView() {
       toast(bad.msg, true)
       return
     }
-    try { await api.put('/api/settings', payload); toast('Settings saved'); settingsDirty = false; settingsView(); window.dispatchEvent(new Event('psc:settings')) }
+    try {
+      const saved = await api.put('/api/settings', payload)
+      // The server answers with what it stored (normalised — 'eur' came back 'EUR'). Apply it here
+      // so the re-render below, and every screen after it, already writes money the new way.
+      setShopFormat(saved)
+      toast('Settings saved'); settingsDirty = false; settingsView(); window.dispatchEvent(new Event('psc:settings'))
+    }
     catch (e) { toast(e.message, true) }
   }
 

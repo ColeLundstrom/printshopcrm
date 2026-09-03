@@ -76,9 +76,22 @@ export const api = {
 
 /* ---------- formatting ---------- */
 
+import { moneyFormatter } from './shared/format.js'
+
+// The shop's currency and locale. app.js sets this from /api/settings before the first screen
+// renders, and again whenever Settings is saved; until then it is the app's historical default
+// (USD, en-US), so nothing a shop already sees changes. Every view formats money through these
+// three and never spells a currency symbol itself — the gate holds that.
+let fmt = moneyFormatter({})
+export const setShopFormat = ({ currency, locale } = {}) => { fmt = moneyFormatter({ currency, locale }) }
+export const shopLocale = () => fmt.locale
+export const shopSymbol = () => fmt.symbol
+
 // Negatives read as -$40.00, not $-40.00 — a discount line is a signed credit.
-export const money = (n) => { const v = Number(n) || 0; return `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
-export const money0 = (n) => `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`
+export const money = (n) => fmt.money(n)
+export const money0 = (n) => fmt.money0(n)
+/** Compact: "$2", "$2.50" — for a size-upcharge badge or a per-piece hint, never a total. */
+export const moneyShort = (n) => fmt.moneyShort(n)
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
@@ -115,7 +128,7 @@ export function fmtDate(d) {
   // nothing useful to say about a non-date anyway. relTime() falls through to here, so it is
   // covered by the same line.
   if (isNaN(dt)) return esc(String(d))
-  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: dt.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })
+  return dt.toLocaleDateString(fmt.locale, { month: 'short', day: 'numeric', year: dt.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' })
 }
 
 export function relTime(ts) {

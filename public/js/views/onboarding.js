@@ -1,4 +1,4 @@
-import { api, $, $$, esc, setPage, on, go, toast, announce, empty, confirmModal, guardLeave, onOnce } from '../core.js'
+import { api, $, $$, esc, money, setPage, on, go, toast, announce, empty, confirmModal, guardLeave, onOnce } from '../core.js'
 import { importContacts } from './contacts.js'
 
 /**
@@ -435,7 +435,6 @@ function wire(key) {
         const el = performance.now() - t0
         const secs = el < 950 ? `${Math.max(1, Math.round(el))}ms` : `${(el / 1000).toFixed(1)}s`
         const e = r.estimate || {}, o = r.order || {}
-        const money = (n) => `$${Number(n || 0).toFixed(2)}`
         out.hidden = false
         out.innerHTML = `<strong style="color:var(--accent)">✓ Quoted in ${secs}</strong>
           <ul>

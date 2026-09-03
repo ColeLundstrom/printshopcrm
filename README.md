@@ -241,6 +241,12 @@ Everything is environment variables plus per-shop settings stored in the databas
 hardcoded. See **[.env.example](.env.example)** for every variable with comments, and Settings
 inside the app for per-shop values (tax rate, hourly rate, mail, supplier accounts, Stripe keys).
 
+**Currency and number format are per-shop settings too** (Settings → Shop). Pick an ISO currency
+code and a locale, and every screen, PDF, email, customer page and the assistant write money and
+dates that way — `£1,234.50` and `28 Aug` for a shop in Manchester, `1.234,50 €` in Berlin. The
+default is USD / en-US, which is what the app always did, so an existing install changes nothing.
+One shop, one currency; per-customer currencies are deliberately out of scope.
+
 Secrets stored in settings are redacted out of any response sent to the browser.
 
 ---

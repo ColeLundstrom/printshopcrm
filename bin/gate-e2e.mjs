@@ -1904,6 +1904,44 @@ try {
       String((await req('DELETE', `/api/contacts/${cascC}`)).status), '^200$')
   }
 
+  /* ---------- a shop abroad invoices in its own currency (issue #3) ----------
+   * Money was `'$' + toLocaleString('en-US')` in nine places, so a UK or EU shop saw dollars on
+   * every screen and on every document it handed a customer, with no setting to change it. Now one
+   * shop setting and one shared formatter. This proves the whole path through the real server: the
+   * setting is validated on the way in, and the PDF a customer receives is in the shop's currency —
+   * including the euro sign, which the base-14 font only carries at WinAnsi 0x80. */
+  {
+    r = await req('PUT', '/api/settings', { body: { currency: 'US$' } })
+    chk('a currency that is not an ISO 4217 code is refused', String(r.status), '^400$')
+    chk('…with a code an integration can act on', String(r.json?.code || ''), '^currency_invalid$')
+    r = await req('PUT', '/api/settings', { body: { locale: 'american' } })
+    chk('a locale the server cannot format is refused', String(r.status), '^400$')
+    r = await req('PUT', '/api/settings', { body: { currency: 'eur', locale: 'de-DE' } })
+    chk('a lowercase ISO code is accepted', String(r.status), '^200$')
+    let cs = (await req('GET', '/api/settings')).json?.settings || {}
+    chk('…and stored normalised, so every screen and PDF agree', `${cs.currency}/${cs.locale}`, '^EUR/de-DE$')
+
+    // A real document, from a real invoice, read as the bytes the customer's PDF viewer receives.
+    const cx = await req('POST', '/api/contacts', { body: { name: 'Jürgen Meyer', email: 'juergen@e2e.test' } })
+    const ce = await req('POST', '/api/estimates', { body: {
+      contact_id: cx.json?.id, tax_rate: 0,
+      items: [{ description: 'Shirts', sizes: { M: 50 }, unit_price: 24.69 }],
+    } })
+    chk('the estimate for a German shop totals in plain numbers', String(ce.json?.total), '^1234.5$')
+    const cv = await req('POST', `/api/estimates/${ce.json?.id}/convert`)
+    const cInv = cv.json?.invoice?.id ?? cv.json?.invoice_id ?? cv.json?.id
+    const pdfRes = await fetch(`${BASE}/api/invoices/${cInv}/pdf`, { headers: { Cookie: cookieHeader() } })
+    const pdfBytes = Buffer.from(await pdfRes.arrayBuffer()).toString('latin1')
+    chk('the invoice PDF renders', String(pdfRes.status), '^200$')
+    chk('…in euros, written the German way, with the WinAnsi euro byte', String(pdfBytes.includes('1.234,50\xa0\x80')), '^true$')
+    chk('…and with no dollar sign anywhere on it', String(/\$[0-9]/.test(pdfBytes)), '^false$')
+    chk('…and the customer\'s ü intact', String(pdfBytes.includes('J\xfcrgen Meyer')), '^true$')
+
+    r = await req('PUT', '/api/settings', { body: { currency: '', locale: '' } })
+    cs = (await req('GET', '/api/settings')).json?.settings || {}
+    chk('clearing both fields means "back to the default", and the rest of the suite is in dollars again', `${cs.currency}/${cs.locale}`, '^USD/en-US$')
+  }
+
   /* ---------- a documented filter must actually filter ----------
    * docs/API.md has documented `?invoice_id=` on GET /api/v1/payments since the endpoint shipped.
    * The handler ignored it, so an integration reconciling ONE invoice was handed every payment in

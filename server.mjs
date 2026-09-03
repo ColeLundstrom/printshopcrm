@@ -6,7 +6,7 @@ import { join, dirname, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzip } from 'node:zlib'
 import {
-  all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, logActivity, computeTotals, getUpcharges,
+  all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, shopFormat, logActivity, computeTotals, getUpcharges,
   freezeUpcharges,
   syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
@@ -39,6 +39,7 @@ import { capacityReport, promise as capacityPromise, colorsFromItems } from './l
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
+import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
 import { ask } from './lib/assistant.mjs'
 import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
@@ -517,7 +518,7 @@ async function slackQuoteAndReply({ slug, token, channel, thread_ts, text, origi
       const body = slackToPlain(text)
       const result = await quickQuote({ text: body, contact_email: findEmail(body), source: 'slack' })
       const blocks = result.ok ? quoteBlocks({ result, origin }) : needsMoreBlocks(result.reason)
-      const fallback = result.ok ? `${result.estimate.estimate_number} — $${Number(result.total).toFixed(2)}` : 'I need a bit more detail to quote that.'
+      const fallback = result.ok ? `${result.estimate.estimate_number} — ${money(result.total)}` : 'I need a bit more detail to quote that.'
       await slackPost({ token, channel, thread_ts, text: fallback, blocks })
     } catch (e) {
       console.error('slack quote:', e)
@@ -713,8 +714,11 @@ const uploadUrl = (filename, slug = curSlug()) => {
   const f = String(filename || '')
   return `/uploads/${encodeURIComponent(f)}?t=${fileToken(f, slug)}${slug ? `&s=${encodeURIComponent(slug)}` : ''}`
 }
-// Negatives read as -$40.00, not $-40.00 — discount credits appear on customer documents.
-const money = (n) => { const v = Number(n) || 0; return `${v < 0 ? '-' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
+// Every amount this file prints — activity lines, emails, the public estimate and pay pages, the
+// dashboard's "Collect $X from" — in the shop's own currency and locale (lib/db.mjs shopFormat,
+// public/js/shared/format.js). Negatives read as -$40.00, not $-40.00 — discount credits appear on
+// customer documents.
+const money = (n) => shopFormat().money(n)
 
 /**
  * Timestamps are stored as UTC "YYYY-MM-DD HH:MM:SS". Without the Z, JS parses them as
@@ -7413,9 +7417,26 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
 }))
 
 app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
+  const patch = { ...(req.body || {}) }
+  // The two settings every document is formatted through are checked on the way IN, not folded to
+  // a default on the way out. format.js does fall back to USD/en-US on a value it cannot use, so a
+  // bad row can never break a PDF — but a 200 for `currency: "US$"` that then invoices in dollars
+  // is the setting silently not taking, which is the exact complaint this feature answers. An
+  // empty value means "back to the default", the way a cleared field reads to a person.
+  if ('currency' in patch) {
+    const c = String(patch.currency ?? '').trim().toUpperCase()
+    if (!c) patch.currency = 'USD'
+    else if (!isCurrencyCode(c)) return res.status(400).json({ error: `"${patch.currency}" is not an ISO 4217 currency code — use USD, CAD, GBP, EUR, AUD…`, code: 'currency_invalid' })
+    else patch.currency = c
+  }
+  if ('locale' in patch) {
+    const l = String(patch.locale ?? '').trim()
+    if (!l) patch.locale = 'en-US'
+    else if (!isLocale(l)) return res.status(400).json({ error: `"${patch.locale}" is not a locale this server can format — use a tag like en-GB, fr-CA, de-DE`, code: 'locale_invalid' })
+  }
   // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged),
   // and erases it for the one sentinel value that means erase — see CLEAR_SECRET.
-  applySettingsPatch(req.body || {})
+  applySettingsPatch(patch)
   res.json(publicSettings())
 }))
 
@@ -7585,6 +7606,9 @@ app.get('/api/embed/config', (req, res) => embedRun(req, res, () => {
   const s = getSettings()
   res.json({
     shop: s.shop_name, tagline: s.shop_tagline,
+    // The widget runs on the shop's own site and never loads core.js, so it is told how to write
+    // a price the same way every other surface is.
+    currency: s.currency || 'USD', locale: s.locale || 'en-US',
     dtf: { sheetWidth: Number(s.dtf_sheet_width) || 22, pricePerInch: Number(s.dtf_price_per_inch) || 0.95, minCharge: Number(s.dtf_min_charge) || 10 },
     checkout: paymentsReady(s) ? 'stripe' : 'quote',
   })
@@ -7827,7 +7851,7 @@ app.post('/api/embed/chat/message', embedLimit(60, 'You are sending messages ver
     rtBroadcast('notify', {
       kind: ev.type,
       title: ev.type === 'handoff' ? 'A visitor wants to talk to a person' : 'New lead from the website chat',
-      body: `${ev.name} — ${ev.summary}${ev.value ? ` (~$${Math.round(ev.value)})` : ''}`,
+      body: `${ev.name} — ${ev.summary}${ev.value ? ` (~${shopFormat().money0(ev.value)})` : ''}`,
       contact_id: ev.contact_id, session: ev.session_public,
     })
   }

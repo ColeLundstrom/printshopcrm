@@ -26,7 +26,7 @@ In order, stopping at the first failure:
 
 1. Working tree clean, on `main`, up to date with the remote
 2. `npm test` and `npm run test:e2e`
-3. Push `main`, tag, push the tag → the tag builds and publishes the container image
+3. Push `main`, tag, push the tag → the tag builds and publishes the container image; then create the GitHub release page for the tag, with notes generated from the commit titles (needs `gh`; a tag alone does not appear under *Releases*, which is where a self-hoster downloading the zip looks)
 4. Deploy to the app server as a new versioned release, run the gate **there**, flip the symlink, restart, health-check, roll back automatically if it fails to start
 5. `verify-sync.sh` — every runtime file on the server matches the tag
 6. Remind you, by name, of any product claim on the website that this release changed

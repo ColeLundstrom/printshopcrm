@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, money, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
+import { api, $, $$, el, esc, money, moneyShort, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
@@ -150,7 +150,7 @@ export async function estimateEditor(id) {
     </div>
     ${gridded ? `<div class="sizegrid" data-sg="${i}">
       ${sizesFor(it).map((s) => `<label class="sz ${Number(it.sizes[s]) > 0 ? 'on' : ''}">
-        <span>${esc(s)}${up[s] ? `<em>+$${esc(up[s])}</em>` : ''}</span>
+        <span>${esc(s)}${up[s] ? `<em>+${esc(moneyShort(up[s]))}</em>` : ''}</span>
         <input type="number" min="0" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0">
       </label>`).join('')}
       <button class="sz-more" data-more="${i}" title="Add another size" aria-label="Add another size to line ${i + 1}">+</button>
