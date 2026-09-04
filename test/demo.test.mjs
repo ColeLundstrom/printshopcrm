@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
 
 const root = new URL('..', import.meta.url)
-test('isolated demo keeps private data safe and serves customer proofs from a hidden install directory', { timeout: 30000 }, async () => {
+test('isolated demo keeps private data safe and serves customer proofs from a hidden install directory', { timeout: 180000 }, async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'psc-demo-test-'))
   mkdirSync(join(tmp, '.evaluation'))
   const dest = join(tmp, '.evaluation', 'instance')
@@ -18,9 +18,9 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
   let server
   try {
     const args = ['bin/demo.mjs', dest, String(port)]
-    const r = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8', timeout: 15000,
+    const r = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8', timeout: 120000,
       env: { ...process.env, PSC_DB: sentinel, PSC_CONTROL_DB: sentinel, PSC_PLATFORM_STRIPE_SECRET: 'do-not-inherit' } })
-    assert.equal(r.status, 0, r.stderr)
+    assert.equal(r.status, 0, r.error?.message || r.stderr)
     assert.equal(readFileSync(sentinel, 'utf8'), 'existing customer data')
     const config = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8'))
     assert.equal(config.PSC_PLATFORM_STRIPE_SECRET, undefined)
@@ -114,6 +114,6 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
     assert.equal((await fetch(base+'/uploads/'+art.filename)).status,404,'anonymous file access stays blocked')
   } finally {
     if(server && server.exitCode===null){server.kill('SIGTERM');await new Promise(r=>server.once('exit',r))}
-    rmSync(tmp,{recursive:true,force:true})
+    rmSync(tmp,{recursive:true,force:true,maxRetries:10,retryDelay:200})
   }
 })

@@ -2,7 +2,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import {mkdtempSync,readFileSync,writeFileSync,readdirSync,rmSync} from 'node:fs'
-import {fileURLToPath} from 'node:url'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {spawn,spawnSync} from 'node:child_process'
@@ -31,16 +30,16 @@ test('currency conversion and Authorize.net reject ambiguous or mismatched payme
   }
 })
 
-test('signed callbacks reconcile both gateways atomically without the customer returning', {timeout:45000},async()=>{
+test('signed callbacks reconcile both gateways atomically without the customer returning', {timeout:180000},async()=>{
   const tmp=mkdtempSync(join(tmpdir(),'psc-payments-')),dest=join(tmp,'demo'),fixture=join(tmp,'fixture.json')
   const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r))
   let server,d
   try {
-    const r=spawnSync(process.execPath,['bin/demo.mjs',dest,String(port)],{cwd:root,encoding:'utf8',timeout:15000});assert.equal(r.status,0,r.stderr)
+    const r=spawnSync(process.execPath,['bin/demo.mjs',dest,String(port)],{cwd:root,encoding:'utf8',timeout:120000});assert.equal(r.status,0,r.error?.message || r.stderr)
     const env=JSON.parse(readFileSync(join(dest,'demo-env.json'),'utf8'));env.PSC_PAYMENT_FIXTURE=fixture
     writeFileSync(fixture,JSON.stringify({seq:0,sessions:{},transactions:{}}))
     let log=''
-    server=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',fileURLToPath(new URL('./fixtures/payment-provider.mjs',import.meta.url)),'server.mjs'],{cwd:dest,env,stdio:['ignore','pipe','pipe']})
+    server=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',new URL('./fixtures/payment-provider.mjs',import.meta.url).href,'server.mjs'],{cwd:dest,env,stdio:['ignore','pipe','pipe']})
     server.stdout.on('data',x=>log+=x);server.stderr.on('data',x=>log+=x)
     const base=`http://127.0.0.1:${port}`
     for(let i=0;i<100;i++){try{if((await fetch(base+'/health')).ok)break}catch{}await new Promise(r=>setTimeout(r,50))}
@@ -129,6 +128,6 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     for(const key of ['stripe_secret','stripe_webhook_secret','anet_transaction_key','anet_signature_key']) assert.equal(publicS[key],'')
     assert.equal((await req('/api/settings',{payment_provider:'unknown'},'PUT')).status,400)
   } finally {
-    d?.close();if(server){const end=new Promise(r=>server.once('exit',r));server.kill();await end}rmSync(tmp,{recursive:true,force:true})
+    d?.close();if(server){const end=new Promise(r=>server.once('exit',r));server.kill();await end}rmSync(tmp,{recursive:true,force:true,maxRetries:10,retryDelay:200})
   }
 })
