@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -25,7 +29,7 @@ jobs:
       - run: npm ci
 
       - name: Unit tests
-        run: node bin/gate.mjs
+        run: npm test
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs
@@ -55,7 +59,7 @@ jobs:
       - run: npm ci
 
       - name: Unit tests
-        run: node bin/gate.mjs
+        run: npm test
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs
@@ -74,7 +78,7 @@ jobs:
       - run: npm ci
 
       - name: Unit tests
-        run: node bin/gate.mjs
+        run: npm test
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs

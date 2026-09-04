@@ -1,3 +1,6 @@
+> Community direction: the complete software is free and open source. Optional paid service is
+> server hosting and basic setup. [Roadmap](docs/ROADMAP.md) · [Evaluation demo](docs/DEMO.md)
+
 # PrintShopCRM
 
 **Open-source shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
@@ -381,8 +384,8 @@ made: the software is free, and the services around it are the business.
 - ⚖️ **If you run a modified version as a service for other people, publish your changes.** That's
   the copyleft bargain — improvements to a shared tool come back to the shops using it, instead of
   disappearing into someone's proprietary fork.
-- 💼 **Don't want that obligation?** Commercial licenses that release you from AGPL terms are
-  available — [get in touch](https://github.com/ColeLundstrom/printshopcrm/discussions).
+- **Optional paid hosting and basic setup** fund the community project. Hosted shops use the
+  same software as self-hosted shops; see [HOSTING.md](HOSTING.md).
 
 If you deploy this for others, set `PSC_SOURCE_URL` to your own repository. The app shows a source
 link to every user, which is how AGPL §13 is satisfied — pointing it at upstream while running

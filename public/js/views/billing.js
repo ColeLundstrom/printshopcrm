@@ -9,7 +9,7 @@ import { api, $, esc, setPage, on, toast } from '../core.js'
  * feature (2026-08-21). The page exists to take payment, not to upsell.
  */
 export async function billingView() {
-  setPage('Billing')
+  setPage('Hosting')
   const [d, me] = await Promise.all([api.get('/api/billing'), api.get('/api/auth/me').catch(() => ({}))])
   const st = d.state || {}
   const plans = d.plans || {}
@@ -17,9 +17,10 @@ export async function billingView() {
   let interval = 'month'
 
   const banner = () => {
+    if (!d.live) return '<div class="bill-status ok"><strong>Free and open source.</strong> Every feature is available, with unlimited users and no software subscription.</div>'
     if (st.subscribed) return `<div class="bill-status ok">✓ You're on the <strong>${esc((plans[st.plan] || {}).name || st.plan || 'active')}</strong> plan. Thanks for being a customer.</div>`
-    if (st.status === 'trial_expired' || st.locked) return `<div class="bill-status warn">Your free trial has ended. Choose a plan below to keep creating work — your data is safe and waiting.</div>`
-    return `<div class="bill-status">You're on a free trial — <strong>${st.trial_days_left} day${st.trial_days_left === 1 ? '' : 's'} left</strong>. Pick a plan any time; no card needed until you do.</div>`
+    if (st.status === 'trial_expired' || st.locked) return `<div class="bill-status warn">Your hosting trial has ended. Choose managed hosting below to continue on this server. The software remains free to self-host, and your data can be exported.</div>`
+    return `<div class="bill-status">You're on a hosting trial — <strong>${st.trial_days_left} day${st.trial_days_left === 1 ? '' : 's'} left</strong>. Pick a plan any time; no card needed until you do.</div>`
   }
 
   const planCard = (key) => {
@@ -55,13 +56,18 @@ export async function billingView() {
 
   $('#view').innerHTML = `<div class="bill">
     ${banner()}
-    <div class="bill-toggle">
+    ${d.live ? `<div class="bill-toggle">
       <button type="button" class="${interval === 'month' ? 'on' : ''}" data-int="month" aria-pressed="${interval === 'month'}">Monthly</button>
       <button type="button" class="${interval === 'year' ? 'on' : ''}" data-int="year" aria-pressed="${interval === 'year'}">Annual · 2 months free</button>
     </div>
-    <div class="plans">${order.map(planCard).join('')}</div>
+    <div class="plans">${order.map(planCard).join('')}</div>` : `<div class="card"><div class="card-b">
+      <h3>Run it yourself, or let us host it</h3>
+      <p>The community builds the same software for everyone. Optional paid hosting covers running it on our server and basic shop setup.</p>
+      <p>You keep your data and can move to your own server. There are no paid feature tiers.</p>
+      <a class="btn ghost" href="https://github.com/ColeLundstrom/printshopcrm" target="_blank" rel="noopener noreferrer">Source code and community</a>
+    </div></div>`}
     ${st.subscribed && st.stripe_customer_id ? '<div class="row" style="justify-content:center;margin-top:18px"><button class="btn ghost" id="manage">Manage or cancel subscription →</button></div>' : ''}
-    ${!d.live ? '<div class="dim" style="text-align:center;margin-top:16px;font-size:12.5px">Checkout goes live once the platform Stripe is connected.</div>' : ''}
+    ${d.live ? '<p class="dim">Payment covers managed hosting and basic setup. The same software is free to self-host.</p>' : ''}
     ${adminCard}
   </div>`
 

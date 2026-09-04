@@ -41,8 +41,8 @@ module cache: hard-reload.
 ## Tests
 
 ```bash
-npm test                 # bin/gate.mjs — 61 unit tests, no network, a few seconds
-npm run test:e2e         # bin/gate-e2e.mjs — 17 checks against a throwaway database
+npm test                 # regression and isolated demo tests
+npm run test:e2e         # complete workflow checks against throwaway databases
 ```
 
 Both must pass before anything merges. CI runs them on every push and pull request.
@@ -109,36 +109,17 @@ worth a page of prose.
 Say what you're trying to do in your shop, not just the feature you have in mind. The useful part of
 a request is usually the workflow behind it.
 
-Some things are deliberately absent: an online store / product designer, and a general ledger.
-Those are big surfaces that a shop is generally better served buying elsewhere, and adding them
-would compromise how simple this is to run.
+Online stores, a customer product designer, and accounting are substantial future work. Propose
+the shop workflow, data model, migration, and failure recovery before implementing a large module.
+Current releases do not replace those systems. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
-## License and the dual-licensing grant
+## License
 
-PrintShopCRM is [AGPL v3](LICENSE) — real open source. Run it, fork it, sell services around it.
+New contributions use the project's [AGPL-3.0-or-later license](LICENSE). Contributors retain
+ownership of their work. We do not request an additional grant for proprietary relicensing.
 
-**By opening a pull request you agree to two things:**
+Submit work you have the right to contribute and identify any third-party code or assets and
+their licenses. Do not include customer records, artwork, credentials, or production databases.
 
-1. Your contribution is licensed under the AGPL v3, like the rest of the project.
-2. You also grant the maintainer permission to distribute your contribution under other license
-   terms, including commercial licenses.
-
-Point 2 needs an honest explanation, because it's the part people rightly look twice at.
-
-The project is funded by hosting and by selling commercial licenses to companies that can't accept
-the AGPL's copyleft. That funding is what pays for this being maintained instead of abandoned. If
-every contributor's code were AGPL-only, a single merged PR would make it legally impossible to
-offer those licenses without tracking down every past contributor for permission — which in
-practice means the maintainer would have to reject contributions and write everything alone. That
-outcome is worse for everyone.
-
-**What this is not:** it is not a copyright assignment. You keep full ownership of your work and can
-relicense or reuse it anywhere you like. It's a non-exclusive grant, the same arrangement Qt, Mattermost,
-and Grafana use.
-
-**What you get in return:** the AGPL guarantees are permanent. The code you contribute stays open
-source, and no future owner can close it — AGPL grants are irrevocable, so every version ever
-published stays free forever, whatever happens to the company.
-
-If you're not comfortable with the grant, say so in the PR. A bug report with a reproduction, or an
-issue describing the fix, is genuinely valuable too and carries no such requirement.
+The project is supported by optional hosting and basic setup. Every shop receives the same
+open-source software; there is no feature tier reserved for paying customers.

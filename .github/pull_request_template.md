@@ -12,13 +12,13 @@
 
 ---
 
-- [ ] `npm test` passes (61 unit tests)
-- [ ] `npm run test:e2e` passes (17 end-to-end checks)
+- [ ] `npm test` passes
+- [ ] `npm run test:e2e` passes
 - [ ] **If this fixes a bug: there's a test that fails without the fix.** This is the one hard rule
       — see [CONTRIBUTING.md](../CONTRIBUTING.md). A test that never failed doesn't prove anything.
 - [ ] No new runtime dependencies (or the PR explains why one is unavoidable)
-- [ ] I agree to the licensing terms in [CONTRIBUTING.md](../CONTRIBUTING.md) — AGPL v3, plus
-      permission for the maintainer to also distribute this under commercial license terms
+- [ ] I agree to the licensing terms in [CONTRIBUTING.md](../CONTRIBUTING.md) — AGPL-3.0-or-later,
+      with no additional proprietary relicensing grant
 
 <!--
 First PR? Don't be put off by the checklist — open it anyway and we'll work through anything

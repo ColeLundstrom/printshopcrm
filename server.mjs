@@ -8530,7 +8530,9 @@ app.get('/uploads/:file', (req, res) => {
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; sandbox")
   // private: a shared proxy must not cache one shop's artwork and hand it to the next caller.
   res.setHeader('Cache-Control', 'private, max-age=86400')
-  res.sendFile(join(UPLOADS, f), { dotfiles: 'deny' }, (err) => {
+  // Deny hidden names relative to the upload directory. An absolute path also classifies
+  // a legitimate parent such as ~/.local or ~/.openclaw as a hidden upload and returns 404.
+  res.sendFile(f, { root: UPLOADS, dotfiles: 'deny' }, (err) => {
     if (err && !res.headersSent) res.status(404).end()
   })
 })

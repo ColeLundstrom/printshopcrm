@@ -4544,6 +4544,9 @@ await t('the recovery tool loads the .env the server uses, and does not lie abou
     // The gates themselves are the exception, deliberately: they must run against a throwaway
     // database with no shop's configuration anywhere near them.
     if (/bin\/gate(-e2e)?\.mjs/.test(cmd)) continue
+    // Demo provisioning builds an exclusive install with a clean environment; loading the
+    // operator's .env would violate that isolation. test/demo.test.mjs checks this boundary.
+    if (name === 'demo' && cmd === 'node bin/demo.mjs') continue
     if (!/\b(server|seed)\.mjs|\bbin\/[\w-]+\.mjs/.test(cmd)) continue
     assert.match(cmd, /--env-file-if-exists=\.env/, `npm run ${name} opens the database without loading .env`)
   }

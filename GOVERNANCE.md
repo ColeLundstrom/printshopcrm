@@ -72,16 +72,16 @@ Said upfront so you don't build it first:
   a clean `201` and a wrong number on a document a customer signs.
 - **A query that assumes one shop.** Multi-tenancy works because every request runs inside its
   shop's database; use the `all`/`get`/`run` helpers and it's automatic.
-- **An online store / product designer, or a general ledger.** Big surfaces a shop is better served
-  buying elsewhere, and carrying them would compromise how simple this is to run.
+- **An unreviewed expansion of a major workflow.** Stores, design tools, and accounting need an
+  agreed scope, data model, migration plan, and recovery tests before implementation.
 - **Large refactors that arrive as a surprise.** Not because they're unwelcome — because reviewing
   4,000 changed lines against a codebase you didn't write is how mistakes get merged. Open a
   discussion first and it can probably happen in reviewable pieces.
 
 ## How review actually works
 
-Every PR gets CI automatically: unit and end-to-end tests on Node 22 and current LTS, on Ubuntu
-**and** Windows, a Docker build that boots the container, and a scan for committed credentials.
+Every PR gets CI automatically: unit and end-to-end tests on Node 22 and current LTS on Ubuntu,
+plus Windows and macOS coverage, a Docker build that boots the container, and a credential scan.
 **CI must be green before a human review starts** — that isn't gatekeeping, it's so review time goes
 on judgement rather than on things a machine can catch.
 
@@ -96,24 +96,19 @@ Then the maintainer checks, in this order:
 
 ## Releases
 
-Everything on `main` that passes CI ships in the next release. There's no private branch and no
+Reviewed changes on `main` are candidates for the next release. Stable container images publish
+only from version tags after the full CI workflow succeeds for that tag. There's no private branch and no
 held-back "enterprise" version — the hosted product runs the same code, and you can
 [verify that](RELEASING.md) with `deploy/verify-sync.sh`.
 
 Release process and the rule that GitHub, the app server and the website move together is in
 [RELEASING.md](RELEASING.md).
 
-## Licensing, and the honest part
+## Community funding and licensing
 
-Contributions are AGPL-3.0, and you also grant permission to distribute your contribution under
-other terms, including commercial licences. [CONTRIBUTING.md](CONTRIBUTING.md) explains why in full,
-but the short version: the project is funded partly by selling licences to companies that can't
-accept copyleft, and one AGPL-only merged PR would make that legally impossible without tracking
-down every past contributor. It is **not** a copyright assignment — you keep your work and can reuse
-it anywhere.
-
-If that's not for you, a bug report with a reproduction is genuinely valuable and carries no such
-requirement.
+The project is supported by optional server hosting and basic setup. Every shop gets the same
+software. New contributions are AGPL-3.0-or-later, with no additional proprietary relicensing
+grant. Contributors keep ownership. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## If you have a problem with how this is run
 

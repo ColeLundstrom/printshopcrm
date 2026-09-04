@@ -26,7 +26,7 @@ In order, stopping at the first failure:
 
 1. Working tree clean, on `main`, up to date with the remote
 2. `npm test` and `npm run test:e2e`
-3. Push `main`, tag, push the tag → the tag builds and publishes the container image; then create the GitHub release page for the tag, with notes generated from the commit titles (needs `gh`; a tag alone does not appear under *Releases*, which is where a self-hoster downloading the zip looks)
+3. Push `main`, tag, push the tag → the tag runs the complete reusable CI workflow, then builds and publishes the container image only if CI succeeds; then create the GitHub release page for the tag, with notes generated from the commit titles (needs `gh`; a tag alone does not appear under *Releases*, which is where a self-hoster downloading the zip looks)
 4. Deploy to the app server as a new versioned release, run the gate **there**, flip the symlink, restart, health-check, roll back automatically if it fails to start
 5. `verify-sync.sh` — every runtime file on the server matches the tag
 6. Remind you, by name, of any product claim on the website that this release changed
@@ -56,7 +56,7 @@ Blog posts count. They are indexed, they rank, and they are the copy a stranger 
 
 ## Branch protection
 
-`main` requires all six CI jobs green, a code-owner review, and resolved conversations before a PR
+`main` requires all seven mandatory CI jobs green (including macOS), a code-owner review, and resolved conversations before a PR
 merges. Force-push and branch deletion are off.
 
 `enforce_admins` is deliberately **off**: with one maintainer, requiring them to open a PR to
@@ -107,3 +107,13 @@ ssh user@host "sudo systemctl stop printshopcrm-pro \
 Drop the `--yes` to see the plan first; it changes nothing without it.
 
 A rollback puts the server behind GitHub on purpose. That's an accepted, temporary state — but it is still drift, and the nightly check will say so until you either roll forward or revert the tag. That nagging is the point.
+
+## Stable image publication
+
+`latest` tracks validated version tags, not every push to `main`. The publishing job depends on
+the complete reusable CI workflow. The tag must equal `v` plus `package.json`'s version and its
+commit must belong to `main`. Manual publication must select that same version tag.
+
+A failed CI run cannot publish a stable image. Wait for the publishing workflow to finish before
+announcing that the registry contains a release. A deployment and a GitHub candidate PR are
+separate states: never describe a candidate as live.
