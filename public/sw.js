@@ -10,13 +10,13 @@
  * and statement PDFs. Offline convenience is not worth cross-tenant data disclosure.
  *
  * Strategy now:
- *   - App shell (/, JS, CSS, icons): stale-while-revalidate — instant open, silent refresh.
+ *   - App shell (/, JS, CSS, icons): network first; cached shell only when the network is unavailable.
  *   - Anything under /api/, /p/, /uploads/: network only, never stored.
  *   - Non-GET (writes, uploads, auth): untouched — never fake a write.
  *
  * `CLEAR_CACHES` from the page (sent on logout) wipes everything, belt and braces.
  */
-const SHELL = 'psc-shell-v2'
+const SHELL = 'psc-shell-v3'
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(['/'])).then(() => self.skipWaiting()))
@@ -45,17 +45,23 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/p/')
       || url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/ws')) return
 
-  // Shell assets: stale-while-revalidate.
-  e.respondWith(
-    caches.match(req).then((hit) => {
-      const refresh = fetch(req).then((res) => {
-        if (res.ok) {
-          const copy = res.clone()
-          caches.open(SHELL).then((c) => c.put(req, copy))
-        }
-        return res
-      }).catch(() => hit)
-      return hit || refresh
-    }),
-  )
+  // Only known public shell assets belong in the offline cache. Never cache login pages,
+  // documents or arbitrary future endpoints just because they are GET requests.
+  const shell = url.pathname === '/' || ['/manifest.json','/icon.svg'].includes(url.pathname)
+    || /^\/(css|js|fonts|icons)\//.test(url.pathname)
+  if (!shell) return
+
+  // Returning cached HTML/JS/CSS while refreshing them independently mixed releases: a new
+  // view could load with the previous stylesheet or module exports. Online requests must all
+  // read the current release. HTTP errors are real failures; only a network failure uses cache.
+  const response = fetch(req, {cache:'no-cache'}).then(async (res) => {
+    if (res.ok) {
+      try { const c=await caches.open(SHELL);await c.put(req,res.clone()) } catch { /* storage full */ }
+    }
+    return res
+  }).catch(async () => {
+    const hit=await caches.match(req)
+    return hit || new Response('Offline. Reconnect to load PrintShopCRM. Your shop data remains on the server.', {status:503,headers:{'Content-Type':'text/plain'}})
+  })
+  e.respondWith(response)
 })

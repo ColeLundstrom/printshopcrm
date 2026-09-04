@@ -23,6 +23,6 @@
     "macrostructure": "workbench",
     "design_system": "design.md",
     "designed_as_app": true,
-    "review": "Sequential provider selection and connection fields with specialist reconciliation under a disclosure. Desktop and 375px screenshots inspected. Phone document width equals scroll width (366px). Missing-credential feedback verified in the final local copy. Shared tokens and native form controls retained."
+    "review": "Sequential provider selection and connection fields with specialist reconciliation under a disclosure. Desktop and 375px screenshots inspected. Phone document width equals scroll width (366px). Missing-credential feedback verified in the final local copy. Shared tokens and native form controls retained. Reusing the original preview origin exposed stale service-worker styling. Fixed with network-first public assets and verified online/offline behavior in a focused worker test."
   }
 ]
