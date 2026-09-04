@@ -33,7 +33,9 @@ test(
       )
       child.stdout.on('data', (x) => (log += x))
       child.stderr.on('data', (x) => (log += x))
-      for (let i = 0; i < 100 && !log.includes('(ws /ws live'); i++)
+      // Windows under concurrent CI load can take longer than five seconds to start.
+      // Wait for this owned child, never for an unrelated listener on the chosen port.
+      for (let i = 0; i < 600 && child.exitCode === null && !log.includes('(ws /ws live'); i++)
         await new Promise((r) => setTimeout(r, 50))
       assert.match(log, /ws \/ws live/)
       const base = `http://127.0.0.1:${port}`
@@ -61,8 +63,40 @@ test(
         assert.equal(r.status, 200, await r.clone().text())
         return r.json()
       }
-      assert.equal((await req('/api/production?page_size=10000',undefined,'GET')).status,400)
-      assert.equal((await req('/api/costing/comparison?page=0',undefined,'GET')).status,400)
+      assert.equal((await req('/api/production?page_size=10000', undefined, 'GET')).status, 400)
+      assert.equal((await req('/api/costing/comparison?page=0', undefined, 'GET')).status, 400)
+      const originalBrand = (await json('/api/settings', undefined, 'GET')).settings
+      assert.equal(
+        (await req('/api/settings', { brand_primary: '#ffffff;bad', brand_name: 'Should not save' }, 'PUT'))
+          .status,
+        400
+      )
+      assert.equal(
+        (await json('/api/settings', undefined, 'GET')).settings.brand_name,
+        originalBrand.brand_name
+      )
+      await json(
+        '/api/settings',
+        { brand_primary: '#1234AB', brand_secondary: '#FFCC00', brand_theme: 'light' },
+        'PUT'
+      )
+      const branded = (await json('/api/settings', undefined, 'GET')).settings
+      assert.equal(branded.brand_primary, '#1234ab')
+      assert.equal(branded.brand_theme, 'light')
+      const uploadLogo = async (bytes, mime, name, cookie = owner) => {
+        const body = new FormData()
+        body.append('file', new Blob([bytes], { type: mime }), name)
+        return fetch(base + '/api/settings/logo', { method: 'POST', headers: { Cookie: cookie }, body })
+      }
+      assert.equal((await uploadLogo('not an image', 'image/png', 'bad.png')).status, 400)
+      const image = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJwAAAABJRU5ErkJggg==',
+        'base64'
+      )
+      const logoResponse = await uploadLogo(image, 'image/png', 'logo.png')
+      assert.equal(logoResponse.status, 200)
+      const logo = (await logoResponse.json()).shop_logo
+      assert.equal((await req('/uploads/' + logo, undefined, 'GET')).status, 200)
       const conf = await json('/api/production/templates', undefined, 'GET'),
         template = conf.templates[0]
       let d = await json('/api/production/jobs/1/workflow', { revision: 0, template_ids: [template.id] })
@@ -93,7 +127,27 @@ test(
         )
       const staffCookie = owner.replace(/=[^;]+/, '=test-production-staff')
       assert.equal((await req('/api/costing/config', undefined, 'GET', staffCookie)).status, 403)
+      assert.equal((await req('/api/settings', { brand_primary: '#abcdef' }, 'PUT', staffCookie)).status, 403)
+      assert.equal((await uploadLogo(image, 'image/png', 'staff-logo.png', staffCookie)).status, 403)
+
       assert.equal((await req('/api/production/templates', { ...template }, 'POST', staffCookie)).status, 403)
+      const neighbor = await req('/api/auth/signup', {
+        shop_name: 'Neighbor branding test',
+        owner_name: 'Other owner',
+        owner_email: 'neighbor-branding@example.test',
+        password: 'Neighbor-test-password-1'
+      })
+      assert.equal(neighbor.status, 200, await neighbor.clone().text())
+      const neighborCookie = neighbor.headers
+        .getSetCookie()
+        .map((c) => c.split(';')[0])
+        .join('; ')
+      assert.equal((await json('/api/settings', undefined, 'GET', neighborCookie)).settings.brand_primary, '')
+      assert.equal((await req('/uploads/' + logo, undefined, 'GET', neighborCookie)).status, 404)
+      assert.equal((await req('/api/production/jobs/1', undefined, 'GET', neighborCookie)).status, 404)
+      await json('/api/settings/logo', undefined, 'DELETE')
+      await json('/api/settings', { brand_primary: '', brand_secondary: '', brand_theme: '' }, 'PUT')
+
       d = await json(
         '/api/production/jobs/1/tasks/' + d.tasks[0].id,
         { ...d.tasks[0], revision: d.revision, assigned_id: first.id },

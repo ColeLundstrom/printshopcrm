@@ -1,3 +1,5 @@
+import { brandingView } from './views/branding.js'
+import { applyShopBranding,toggleShopTheme } from './shop-branding.js'
 import {suppliersView} from './views/suppliers.js'
 import {costingView,costingSettingsView,jobCostingView} from './views/costing.js'
 import { productionView,productionJobView,workflowsView } from './views/production.js'
@@ -114,6 +116,7 @@ route(/^\/production(?:\?.*)?$/, productionView)
 route(/^\/production\/workflows$/, workflowsView)
 route(/^\/production\/jobs\/(\d+)(?:\?.*)?$/, productionJobView)
 route(/^\/suppliers$/, suppliersView)
+route(/^\/branding$/, brandingView)
 route(/^\/costing(?:\?.*)?$/, costingView)
 route(/^\/costing\/settings$/, costingSettingsView)
 route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
@@ -267,6 +270,7 @@ async function drawChrome() {
     // learns the shop's currency and locale. Re-run on every chrome repaint, so a save in Settings
     // is live on the next screen without a reload.
     setShopFormat(settings)
+    applyShopBranding(settings)
     // In the lite edition the product brand is fixed by the deployment (stamped into the shell), not
     // a per-shop setting — don't let a shop's brand_name override the InkVoice chrome.
     if (window.__EDITION !== 'lite') {
@@ -464,11 +468,7 @@ wireSearchHotkey()
 wireKeys()
 
 // Theme toggle — persists, and the whole UI cross-fades via the body transition.
-$('#theme-toggle').onclick = () => {
-  const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light'
-  document.documentElement.setAttribute('data-theme', next)
-  store.set('psc-theme', next)
-}
+$('#theme-toggle').onclick = toggleShopTheme
 
 // Logout — clears the server session and returns to the login page.
 $('#logout-btn').onclick = async () => {
@@ -539,6 +539,8 @@ function handleRealtime(m) {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
   if (m.type === 'notify') {
     toast(`${m.data?.title || 'Update'}${m.data?.body ? ' — ' + m.data.body : ''}`)
+    refreshChrome()
+  } else if (m.type === 'branding') {
     refreshChrome()
   } else if (m.type === 'production') {
     if (/^#\/production(?:\?|$)/.test(location.hash||'')) runRouter()

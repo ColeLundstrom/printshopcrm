@@ -1,3 +1,4 @@
+import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
@@ -7588,6 +7589,8 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
 
 app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   const patch = { ...(req.body || {}) }
+  for(const key of ['brand_primary','brand_secondary'])if(key in patch){if(!validBrandColor(patch[key]))return res.status(400).json({error:'Choose a six-digit hex color, such as #2563eb, or leave it blank for the default.'});patch[key]=patch[key].toLowerCase()}
+  if('brand_theme' in patch && !BRAND_THEMES.includes(patch.brand_theme))return res.status(400).json({error:'Choose a light, dark or system appearance.'})
   if ('payment_provider' in patch && !['stripe','authorize_net','off'].includes(patch.payment_provider)) return res.status(400).json({error:'Choose Stripe, Authorize.net or off.'})
   if ('anet_environment' in patch && !['sandbox','live'].includes(patch.anet_environment)) return res.status(400).json({error:'Choose sandbox or live.'})
   if ('anet_currency' in patch && !/^[A-Z]{3}$/.test(String(patch.anet_currency))) return res.status(400).json({error:'Use a three-letter merchant currency.'})
@@ -7611,6 +7614,7 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged),
   // and erases it for the one sentinel value that means erase — see CLEAR_SECRET.
   applySettingsPatch(patch)
+  if(['brand_primary','brand_secondary','brand_theme','brand_name','brand_tagline'].some(k=>k in patch))rtBroadcast('branding',{})
   res.json(publicSettings())
 }))
 
@@ -7663,13 +7667,18 @@ app.post('/api/settings/logo', requireRole('manager'), upload.single('file'), re
     try { unlinkSync(join(UPLOADS, req.file.filename)) } catch { /* best effort */ }
     return res.status(400).json({ error: 'That needs to be an image (PNG, JPG, WEBP, GIF or SVG).' })
   }
+  if(req.file.size>5*1024*1024){dropUpload(req);return res.status(400).json({error:'Use a logo smaller than 5 MB.'})}
+  const logoError=req.file.mimetype==='image/gif' ? !/^GIF8[79]a/.test(readFileSync(req.file.path).subarray(0,6).toString('ascii')) : validArtFile(req.file)
+  if(logoError){dropUpload(req);return res.status(400).json({error:'That logo is corrupt or mislabeled. Re-export the image and try again.'})}
   setSetting('shop_logo', req.file.filename)
+  rtBroadcast('branding',{})
   res.json({ ok: true, shop_logo: req.file.filename })
 }))
 
 /** Remove the logo (the file itself stays — other documents may already reference it). */
 app.delete('/api/settings/logo', requireRole('manager'), wrap((_req, res) => {
   setSetting('shop_logo', '')
+  rtBroadcast('branding',{})
   res.json({ ok: true })
 }))
 

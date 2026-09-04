@@ -376,7 +376,7 @@ export async function settingsView() {
   })()
 
   $('#view').innerHTML = `<div class="settings-workspace stack"><nav class="settings-jumps" aria-label="Settings sections">
-      <a href="#/setup">Setup guide</a><button type="button" data-settings-jump="shop">Shop</button><button type="button" data-settings-jump="costing">Costing</button><button type="button" data-settings-jump="delivery">Email &amp; SMS</button><button type="button" data-settings-jump="ai">AI</button><button type="button" data-settings-jump="slack">Slack</button><button type="button" data-settings-jump="modes">Advanced controls</button></nav>
+      <a href="#/setup">Setup guide</a><a href="#/branding">Logo & colors</a><button type="button" data-settings-jump="shop">Shop</button><button type="button" data-settings-jump="costing">Costing</button><button type="button" data-settings-jump="delivery">Email &amp; SMS</button><button type="button" data-settings-jump="ai">AI</button><button type="button" data-settings-jump="slack">Slack</button><button type="button" data-settings-jump="modes">Advanced controls</button></nav>
     <div class="card"><div class="card-h"><h3>Shop</h3></div><div class="card-b" id="shop">
       <div class="field">
         <label>Your logo</label>

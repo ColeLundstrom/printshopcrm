@@ -18,7 +18,7 @@ export async function setupView() {
   const row = (n, title, text, href, action, state='') => `<div class="setup-row"><span class="setup-number" aria-hidden="true">${n}</span><div><h3>${title}</h3><p>${text}</p>${state ? `<span class="setup-status">${esc(state)}</span>` : ''}</div><a class="btn ghost" href="${href}">${action}</a></div>`
   const aiOn = !!s.ai_provider
   $('#view').innerHTML = `<div class="setup-workspace">
-    <header class="setup-intro"><h1>Your shop. Your way of working.</h1><p>Start with the essentials and connect services as you need them. Quotes, invoices, pricing, production, and customer records work without AI.</p></header>
+    <header class="setup-intro"><h1>Your shop. Your way of working.</h1><a class="btn ghost" href="#/branding">Make it yours · logo & colors</a><p>Start with the essentials and connect services as you need them. Quotes, invoices, pricing, production, and customer records work without AI.</p></header>
     <section class="setup-section"><h2>1. Make it yours</h2>
       ${row('01','Shop details & pricing','Put your name on documents. Review your currency, tax rate and costing before your first quote.','#/welcome?step=basics','Review basics',s.shop_name || '')}
       ${row('02','Bring your history','Import customer lists and order history from CSV exports. Preview the records before anything is written.','#/welcome?step=import','Import data')}
