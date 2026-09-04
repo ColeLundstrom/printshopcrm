@@ -24,6 +24,7 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
     const config = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8'))
     assert.equal(config.PSC_PLATFORM_STRIPE_SECRET, undefined)
     assert.equal(config.PSC_CONTROL_DB, undefined)
+    assert.equal(JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')).scripts.start, 'node start.mjs')
     const login = readFileSync(join(dest, 'LOGIN.txt'), 'utf8')
     assert.doesNotMatch(r.stdout, new RegExp(login.match(/Password: (.+)/)[1]))
     const again = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8' })

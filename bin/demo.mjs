@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Build a completely separate evaluation install. Never opens the caller's database or .env. */
-import { cpSync, mkdirSync, writeFileSync, readdirSync, chmodSync } from 'node:fs'
+import { cpSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync } from 'node:fs'
 import { resolve, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
@@ -24,6 +24,11 @@ for (const name of ['lib', 'public', 'node_modules']) {
   })
 }
 for (const name of ['server.mjs', 'seed.mjs', 'package.json', 'package-lock.json', 'LICENSE']) cpSync(join(ROOT, name), join(dest, name))
+// The usual npm start entry point must keep the outbound guard too.
+const demoPackage = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'))
+demoPackage.scripts = { start: 'node start.mjs' }
+writeFileSync(join(dest, 'package.json'), JSON.stringify(demoPackage, null, 2) + '\n')
+writeFileSync(join(dest, '.gitignore'), 'data/\npublic/uploads/\ndemo-env.json\nLOGIN.txt\nnode_modules/\n')
 mkdirSync(join(dest, 'bin'))
 cpSync(join(ROOT, 'bin/demo-network-guard.mjs'), join(dest, 'bin/demo-network-guard.mjs'))
 const credentials = {
