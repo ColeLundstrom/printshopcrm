@@ -1,3 +1,5 @@
+import { AGENT_SCOPES, requiredAgentScope } from './lib/agent-access.mjs'
+import * as agentProduction from './lib/production.mjs'
 import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack-operator.mjs'
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
@@ -31,7 +33,7 @@ import {
   listTenantsAdmin, setTenantStatus, deleteTenantFully,
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
-  getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants,
+  getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants, agentAccess,
   firstOwnerId,
 } from './lib/tenants.mjs'
 import {
@@ -1091,6 +1093,7 @@ app.use((req, res, next) => {
   // limiter never ran. Every integration built or debugged in a browser holds both.
   // Only a Bearer psc_… on /api/v1 suppresses the cookie; a plain cookie request to /api/v1 still
   // authenticates as the session with its real role, which is what requireRole() there depends on.
+  if(/^Bearer\s+psc_agent_/i.test(req.headers.authorization || '') && !lp.startsWith('/api/v1/'))return res.status(403).json({error:'Agent keys can only use the public API.',code:'agent_scope_denied'})
   const bearer = lp.startsWith('/api/v1/') ? /^Bearer\s+(psc_\S+)$/i.exec(req.headers.authorization || '') : null
   const session = bearer ? null : getSession(parseCookies(req).psc_session)
   if (session) {
@@ -1113,7 +1116,8 @@ app.use((req, res, next) => {
   // does — same store shape, same billing paywall — so every /api/v1 handler runs in the right
   // tenant database. Available on EVERY plan; the incumbents gate this behind their top tier.
   if (lp.startsWith('/api/v1/')) {
-    const tenant = bearer ? getTenantByApiKey(bearer[1]) : null
+    const agent = bearer?.[1].startsWith('psc_agent_') ? agentAccess.resolve(bearer[1]) : null
+    const tenant = agent?.tenant || (bearer && !bearer[1].startsWith('psc_agent_') ? getTenantByApiKey(bearer[1]) : null)
     if (!tenant) return res.status(401).json({ error: 'Provide your API key: Authorization: Bearer psc_live_…  (Settings → Developers)', code: 'invalid_api_key' })
     // Mirror the session rule: a lapsed shop can still READ (so an integration can export its own
     // data — the Data Freedom promise is worth nothing if a lapsed shop is locked out of it) but
@@ -1128,10 +1132,17 @@ app.use((req, res, next) => {
       return res.status(429).json({ error: `Rate limit exceeded (120 requests/min). Retry in ${lim}s.`, code: 'rate_limited' })
     }
     req.tenant = tenant
-    req.role = 'manager'
+    req.role = agent?.member.role || 'manager'
+    if(agent){
+      req.member=agent.member; req.agentKey=agent.key
+      const scope=requiredAgentScope(req.method,lp)
+      const auditPath=scope?lp:'/api/v1/(unrecognized)'
+      res.once('finish',()=>{try{agentAccess.record(agent.key.id,req.method,auditPath,res.statusCode)}catch{console.error('Could not record agent API request audit')}})
+      if(!scope || (scope!=='identity' && !agent.key.scopes.includes(scope)))return res.status(403).json({error:'This agent key does not have permission for this operation.',code:'agent_scope_denied',required_scope:scope})
+    }
     req.apiKeyAuth = true
     return tenantStore.run({ db: openTenantDb(tenant.slug), slug: tenant.slug, tenant }, () => {
-      if (getSettings().api_access === 'read' && !['GET','HEAD','OPTIONS'].includes(req.method)) return res.status(403).json({error:'This API key is read-only. An owner or manager can change access in Setup & connections.',code:'read_only_key'})
+      if (!agent && getSettings().api_access === 'read' && !['GET','HEAD','OPTIONS'].includes(req.method)) return res.status(403).json({error:'This API key is read-only. An owner or manager can change access in Setup & connections.',code:'read_only_key'})
       return next()
     })
   }
@@ -6206,7 +6217,7 @@ const v1EmailProblem = (raw, field = 'email') => {
 
 app.get('/api/v1/me', wrap((req, res) => {
   const s = getSettings()
-  res.json({ shop: s.shop_name || req.tenant?.shop_name || '', plan: req.tenant?.plan_tier || req.tenant?.plan || 'dev', rate_limit: '120/min', docs: '/docs-api.html' })
+  res.json({ shop: s.shop_name || req.tenant?.shop_name || '', plan: req.tenant?.plan_tier || req.tenant?.plan || 'dev', rate_limit: '120/min', docs: '/docs-api.html', ...(req.agentKey?{agent:{id:req.agentKey.id,name:req.agentKey.name,scopes:req.agentKey.scopes,expires_at:req.agentKey.expires_at}}:{}) })
 }))
 
 app.get('/api/v1/customers', wrap((req, res) => {
@@ -6259,6 +6270,7 @@ app.get('/api/v1/estimates/:id', wrap((req, res) => {
 }))
 app.post('/api/v1/estimates', wrap((req, res) => {
   const b = req.body || {}
+  if(req.agentKey && b.customer && !b.customer_id && !req.agentKey.scopes.includes('customers:write'))return res.status(403).json({error:'Use an existing customer_id or grant customers:write to this key.',code:'agent_scope_denied',required_scope:'customers:write'})
   // A customer_id that names nobody used to fall through to the customer{} block and CREATE
   // someone: `{"customer_id": 9999, "customer": {"name":"Ghost"}}` returned 201 with the estimate
   // attached to a brand-new contact 3. The caller asked to bill an existing account and got a
@@ -6553,7 +6565,38 @@ app.delete('/api/v1/webhooks/:id', requireRole('manager'), wrap((req, res) => {
   res.json({ ok: true })
 }))
 
+app.get('/api/v1/pricing',wrap((_req,res)=>{
+  const s=getSettings()
+  res.json({price_book:resolveBook(s.price_book),matrices:matrices.listMatrices().map(matrices.summary),defaults:{tax_rate:s.tax_rate,garment_cost:s.default_garment_cost,markup:s.default_markup,size_upcharges:getUpcharges()}})
+}))
+app.get('/api/v1/matrices/:id',wrap((req,res)=>{const m=matrices.getMatrix(Number(req.params.id));if(!m)return res.status(404).json({error:'Matrix not found'});res.json({matrix:m})}))
+app.get('/api/v1/matrices/:id/price',wrap((req,res)=>{const m=matrices.getMatrix(Number(req.params.id));if(!m)return res.status(404).json({error:'Matrix not found'});if(req.query.qty!==undefined && (!Number.isFinite(Number(req.query.qty)) || Number(req.query.qty)<0 || Number(req.query.qty)>1000000))return res.status(400).json({error:'Quantity must be a finite number between 0 and 1000000.'});res.json({matrix:{id:m.id,name:m.name,unit:m.unit},...(matrices.lookupPrice(m,req.query) || {price:null})})}))
+
+// Agent production tools use the same revision checks and workflow gates as the web UI.
+const agentRoute=fn=>async(req,res,next)=>{try{await fn(req,res)}catch(e){if(e.status)res.status(e.status).json({error:e.message});else next(e)}}
+const agentActor=req=>({id:req.member?.id || null,name:req.agentKey?'Agent: '+req.agentKey.name:req.member?.name || 'API operator',manager:hasRole(req,'manager')})
+const agentJob=req=>{const j=get('SELECT id FROM jobs WHERE id=?',Number(req.params.id));if(!j)throw Object.assign(new Error('Job not found'),{status:404});return j.id}
+app.get('/api/v1/production/queue',agentRoute((req,res)=>res.json(agentProduction.productionQueue({department:String(req.query.department || ''),mine:req.query.mine==='1',memberId:req.member?.id || null,page:Number(req.query.page)||1,pageSize:50}))))
+app.get('/api/v1/jobs/:id/workflow',agentRoute((req,res)=>res.json(agentProduction.workflow(agentJob(req)))))
+app.post('/api/v1/jobs/:id/tasks/:taskId/action',agentRoute((req,res)=>{
+  if(req.body?.action!=='complete')return res.status(400).json({error:'Choose complete; corrections use the web UI.'})
+  const result=agentProduction.transitionTask(agentJob(req),Number(req.params.taskId),req.body,agentActor(req));rtBroadcast('production',{});res.json(result)
+}))
+app.put('/api/v1/jobs/:id/timing',requireRole('manager'),agentRoute((req,res)=>{const result=agentProduction.saveJobTiming(agentJob(req),req.body,agentActor(req).name);rtBroadcast('production',{});res.json(result)}))
+app.put('/api/v1/jobs/:id/tasks/:taskId/assignment',requireRole('manager'),agentRoute((req,res)=>{
+  const id=agentJob(req),task=agentProduction.workflow(id).tasks.find(t=>t.id===Number(req.params.taskId))
+  if(!task)return res.status(404).json({error:'Task not found'})
+  if(!Object.hasOwn(req.body || {},'assigned_id'))return res.status(400).json({error:'Provide assigned_id or null to unassign.'})
+  const result=agentProduction.editTask(id,task.id,{...task,revision:req.body.revision,assigned_id:req.body.assigned_id},agentActor(req).name,req.tenant?listMembers(req.tenant.id):[]);rtBroadcast('production',{});res.json(result)
+}))
+
 /* ---- Developers (cookie-auth UI side): key management + subscriptions + delivery log ---- */
+const managedAgentRoute=fn=>[requireRole('manager'),agentRoute((req,res)=>{if(!AUTH_ENABLED || !req.tenant || !req.member)return res.status(400).json({error:'Agent keys require a signed-in shop account.'});return fn(req,res)})]
+app.get('/api/developers/agents',...managedAgentRoute((req,res)=>res.json({keys:agentAccess.list(req.tenant.id),scopes:AGENT_SCOPES})))
+app.post('/api/developers/agents',...managedAgentRoute((req,res)=>{const result=agentAccess.create(req.tenant.id,req.member.id,req.body || {});logActivity('note','Agent key created: '+result.key.name,{});res.status(201).json(result)}))
+app.delete('/api/developers/agents/:id',...managedAgentRoute((req,res)=>{agentAccess.revoke(req.tenant.id,Number(req.params.id));logActivity('note','Agent key revoked: '+req.params.id,{});res.json({ok:true})}))
+app.get('/api/developers/agents/:id/audit',...managedAgentRoute((req,res)=>res.json({requests:agentAccess.audit(req.tenant.id,Number(req.params.id))})))
+
 
 app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
   const key = req.tenant?.api_key || ''

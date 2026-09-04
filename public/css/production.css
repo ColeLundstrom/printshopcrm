@@ -121,3 +121,11 @@ body.production-focus .main {
     color: black;
   }
 }
+
+/* Agent grants are tap targets, including their full labels. */
+.agent-permissions { border:0; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; min-width:0; }
+.agent-permissions legend { margin-bottom:12px; font-weight:600; }
+.agent-permissions p { margin:0; }
+.agent-permissions label { display:flex; align-items:center; gap:10px; min-height:48px; padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-md); cursor:pointer; }
+.agent-permissions input { flex-shrink:0; }
+@media(max-width:700px) { .agent-permissions { grid-template-columns:1fr; } }

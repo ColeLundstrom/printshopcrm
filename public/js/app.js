@@ -1,3 +1,4 @@
+import { agentKeysView } from './views/agent-keys.js'
 import { slackOperatorView } from './views/slack-operator.js'
 import { calendarView } from './views/calendar.js'
 import { brandingView } from './views/branding.js'
@@ -124,6 +125,7 @@ route(/^\/costing\/settings$/, costingSettingsView)
 route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
 route(/^\/board$/, boardView)
 route(/^\/calendar$/, calendarView)
+route(/^\/agent-keys$/, agentKeysView)
 route(/^\/slack-assistant$/, slackOperatorView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)

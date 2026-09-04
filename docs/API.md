@@ -11,6 +11,8 @@ There is also a live, copy-pasteable version of this at **`/docs-api.html`** on 
 
 ## Authentication
 
+For a new agent, use **Setup & connections → Connect your own agent** to create a separate named key with selected scopes and expiry. See [Agent connections](AGENT-CONNECTIONS.md) for production tools, pricing reads and permission boundaries. The legacy shared key below remains supported.
+
 Every request carries a Bearer key:
 
 ```bash

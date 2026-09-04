@@ -40,6 +40,21 @@
   -H "Authorization: Bearer psc_live_XXXXXXXXXXXX"</code></pre>
   <p>Keys are shop-scoped and can be rotated or revoked at any time. Rotating invalidates the old key immediately.</p>
 
+  <h2>Separate agent connections</h2>
+  <p>For a new agent, use <strong>Setup &amp; connections → Connect your own agent</strong>. Named keys have independent permissions, expiry and revocation. They belong to their creator’s active manager account. <code>GET /api/v1/me</code> returns scopes and expiry. Copy the key once into your agent’s secret storage; the server stores only its hash.</p>
+  <p>Agent permissions cover pricing, customer/estimate reads and writes, invoice/payment reads, job stages, and production tasks. Unselected operations are refused even with a browser cookie. Agent keys cannot access internal endpoints, settings, credentials or webhook administration. Writes happen immediately; your agent must provide its own approval policy. Customer creation and stage changes may trigger configured automations.</p>
+  <table>
+    <tr><td><code>GET /api/v1/pricing</code></td><td>Resolved price book, custom matrix summaries and selected pricing defaults; requires pricing:read</td></tr>
+    <tr><td><code>GET /api/v1/matrices/:id</code></td><td>Custom matrix cells; pricing:read</td></tr>
+    <tr><td><code>GET /api/v1/matrices/:id/price?row=0&amp;col=0&amp;qty=24</code></td><td>Matrix lookup; pricing:read. A missing price is null.</td></tr>
+    <tr><td><code>GET /api/v1/production/queue?department=QC</code></td><td>Department queue; production:read</td></tr>
+    <tr><td><code>GET /api/v1/jobs/:id/workflow</code></td><td>Tasks and current revision; production:read</td></tr>
+    <tr><td><code>POST /api/v1/jobs/:id/tasks/:taskId/action</code></td><td>{revision, action:"complete"}; production:write</td></tr>
+    <tr><td><code>PUT /api/v1/jobs/:id/tasks/:taskId/assignment</code></td><td>{revision, assigned_id}; production:write. Null unassigns.</td></tr>
+    <tr><td><code>PUT /api/v1/jobs/:id/timing</code></td><td>{revision, timing:{enabled:true,production_date:"YYYY-MM-DD"}, reason}; production:write</td></tr>
+  </table>
+  <p>Use numeric record IDs. Workflow holds still apply. On a 409 conflict, reload the workflow and review before changing it again. Draft creation with a new inline customer also needs customers:write. Generic draft creation has no idempotency key yet: inspect drafts after an uncertain response before retrying. This connects an existing runtime; it does not install a Slack or model agent.</p>
+
   <h2>Endpoints</h2>
   <table>
     <tr><th>Route</th><th>What it does</th></tr>

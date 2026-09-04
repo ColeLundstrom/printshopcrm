@@ -41,7 +41,7 @@ Orders: customer,email,invoice #,date,status,product,qty,unit price,total</pre><
       <p><a class="btn ghost" href="#/autopilot">Open Autopilot</a> <span class="dim">Draft estimates from a customer request, with Review and Auto controls.</span></p>
       ${row('08','Connect Slack','Create your Slack app from a ready-made setup file. The built-in /quote command creates draft estimates for review.','#/settings?section=slack','Connect Slack',s.slack_bot_token_set && s.slack_signing_secret_set ? 'Credentials saved — test in Slack settings' : 'Optional — not connected')}
       <p><a class="btn ghost" href="#/slack-assistant">Set up Slack shop assistant</a></p>
-      <details><summary>Connect your own agent to the shop API</summary><p>Already use an agent in Slack? Give that agent your shop API endpoint and a PrintShopCRM key. Your agent keeps its existing Slack and model connection. This is different from the optional model key above.</p>
+      <p><a class="btn ghost" href="#/agent-keys">Connect your own agent</a> <span class="dim">Separate keys, selected permissions and individual revocation.</span></p><details><summary>Legacy shared API key</summary><p>Already use an agent in Slack? Give that agent your shop API endpoint and a PrintShopCRM key. Your agent keeps its existing Slack and model connection. This is different from the optional model key above.</p>
       <pre id="agent-connection">API base: ${esc(location.origin)}/api/v1
 Authentication: Authorization: Bearer YOUR_PRINTSHOPCRM_KEY
 Connection test: GET /me
