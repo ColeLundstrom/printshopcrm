@@ -29,3 +29,7 @@ An existing external agent can use the shop REST API while keeping its own Slack
 Keep the PrintShopCRM key in the agent runtime’s secret storage. It is not a model-provider key. Test with GET /api/v1/me. Read-only keys cannot invoke mutations, even when a valid owner browser cookie accompanies the request. External agents must implement their own workspace/user permissions and approval policy. This connector does not install or host an external agent.
 
 Use **Work manually** to turn off model selection and require human review in assisted workflows. Independently configured automation rules remain separately controlled in Automations.
+
+## Payments
+
+Use **Setup & connections → Set up payments** for Stripe or Authorize.net, or leave online payments off and record payments manually. Follow [Payment connections](PAYMENTS.md) for credentials, signed callbacks, test-mode verification and reconciliation limits. Existing Stripe users need the new callback signing secret before new checkouts can start.

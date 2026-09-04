@@ -7674,7 +7674,7 @@ await t('the clamp that dropped an overpayment is gone', async () => {
   const body = src.slice(i, src.indexOf('\napp.', i))
   assert.ok(!/const amount = Math\.min\(paid, bal\)/.test(body),
     'the arrived amount must not be clamped to the balance — that is what dropped the money')
-  assert.match(body, /refund the difference at Stripe/,
+  assert.match(body, /refund the difference at \$\{gateway\}/,
     'an overpayment must be recorded with something that tells the shop to refund it')
   assert.match(body, /OVERPAID/, 'and it must reach the activity log, not only the payment note')
 })
@@ -14841,7 +14841,7 @@ section('every credential a lite shop can enter, it can also remove')
   })
 
   await t('the lite Take Payments card offers a way to unlink the Stripe payout account', () => {
-    const card = slice('<h3>Take Payments</h3>', '<h3>Online Gang-Sheet Ordering</h3>')
+    const card = slice('<h3>Take Payments</h3>', '<h3>Online ordering & payments</h3>')
     assert.match(card, /disconnectBtn\('stripe'/,
       'lite has no Disconnect for Stripe: a shop onboarded onto the wrong account keeps paying out to it')
   })
@@ -14867,7 +14867,7 @@ section('every credential a lite shop can enter, it can also remove')
       'the note never reaches the DOM')
     assert.match(misc, /const \{ disconnect: group, label, note \} = btn\.dataset/, 'the handler never reads it')
     assert.match(misc, /confirmModal\(`Disconnect \$\{label\}\?`,\s*\n?\s*note \|\|/, 'the handler never prefers it')
-    const card = slice('<h3>Take Payments</h3>', '<h3>Online Gang-Sheet Ordering</h3>')
+    const card = slice('<h3>Take Payments</h3>', '<h3>Online ordering & payments</h3>')
     assert.ok(!/pasting the keys back in/.test(card), 'lite Stripe must not claim it is reconnected by pasting a key')
     assert.match(card, /Connect Stripe/, 'the confirm should name the button that undoes this')
   })

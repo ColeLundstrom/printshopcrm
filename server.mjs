@@ -51,6 +51,9 @@ import { jobRoi, shopRoi, laborActualMinutes } from './lib/roi.mjs'
 import { code128Svg } from './lib/barcode.mjs'
 import { nest, priceSheet } from './public/js/shared/gangnest.js'
 import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.mjs'
+import { currencyCode } from './lib/payment-currency.mjs'
+import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize } from './lib/authorizenet.mjs'
+import { newPaymentAttempt, paymentAttempt, attemptBySession, readyAttempt, failAttempt, completeAttempt, recentAttempts } from './lib/payment-attempts.mjs'
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
@@ -595,6 +598,40 @@ app.post('/api/sms/:key/incoming', slackLimit, express.urlencoded({extended:fals
       return res.type('text/xml').send('<Response></Response>')
     })
   } catch(e) { if(e.status===400) return res.status(400).send(e.message); next(e) }
+})
+
+app.post('/webhooks/payments/:key/:provider', slackLimit, express.raw({type:'application/json',limit:'256kb'}), async (req,res) => {
+  const tenant=AUTH_ENABLED ? getTenantByEmbedKey(String(req.params.key || '')) : null
+  if(AUTH_ENABLED ? !tenantOpen(tenant) : !getSettings().payment_callback_key || req.params.key!==getSettings().payment_callback_key) return res.status(404).send('Unknown shop')
+  if(!Buffer.isBuffer(req.body)) return res.status(415).send('Expected JSON')
+  try {
+    const receive=async () => {
+      const s=getSettings(), provider=req.params.provider, raw=req.body
+      const valid=provider==='stripe' ? verifyWebhook(raw.toString('utf8'),req.get('stripe-signature'),s.stripe_webhook_secret)
+        : provider==='authorize_net' ? verifyAuthorizeWebhook(raw,req.get('x-anet-signature'),s.anet_signature_key) : false
+      if(!valid) return res.status(401).send('Invalid signature')
+      const event=JSON.parse(raw.toString('utf8'))
+      if(provider==='stripe') {
+        if(!['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type)) return res.json({received:true,ignored:true})
+        const sessionId=String(event.data?.object?.id || '')
+        const confirmed=await retrieveSession({settings:s,sessionId})
+        const ref=confirmed.metadata?.checkout_ref
+        const a=ref ? paymentAttempt(ref) : attemptBySession('stripe',sessionId)
+        if(a) { try { reconcileCheckout(a,confirmed,sessionId) } catch(e) { failAttempt(a.reference,e.message);throw e } }
+        else if(confirmed.paid && confirmed.metadata?.slug===curSlug() && confirmed.currency===currencyCode(s.currency)) {
+          const inv=get('SELECT * FROM invoices WHERE id=?',Number(confirmed.metadata.invoice) || 0)
+          if(inv) recordStripePayment(inv,confirmed,sessionId,confirmed.metadata.kind)
+        }
+      } else {
+        if(!['net.authorize.payment.authcapture.created','net.authorize.payment.capture.created','net.authorize.payment.priorAuthCapture.created','net.authorize.payment.fraud.approved'].includes(event.eventType)) return res.json({received:true,ignored:true})
+        const confirmed=await retrieveAuthorizeTransaction({settings:s,transactionId:event.payload?.id})
+        const a=paymentAttempt(confirmed.reference)
+        if(a?.provider==='authorize_net') { try { reconcileCheckout(a,confirmed,confirmed.transactionId) } catch(e) { failAttempt(a.reference,e.message);throw e } }
+      }
+      return res.json({received:true})
+    }
+    await (tenant ? withTenant(tenant.slug,receive) : receive())
+  } catch(e) { console.error('payment webhook:',e.message); if(!res.headersSent) res.status(503).json({error:'Payment confirmation needs a retry or manual reconciliation.'}) }
 })
 
 app.use(express.json({ limit: process.env.PSC_JSON_LIMIT || '1mb' }))
@@ -7334,6 +7371,32 @@ app.get('/api/settings', wrap((req, res) => {
   res.json({ settings: publicSettings(), members, role: req.role || 'owner', single_tenant: !AUTH_ENABLED })
 }))
 
+app.get('/api/payments/setup', requireRole('manager'), wrap((req,res) => {
+  const s=getSettings(), origin=trustedOrigin(req)
+  let key=req.tenant?.embed_key || s.payment_callback_key
+  if(!key && !AUTH_ENABLED) { key=crypto.randomBytes(24).toString('hex');setSetting('payment_callback_key',key) }
+  res.json({provider:paymentProvider(s),ready:paymentsReady(s),currency:currencyCode(s.currency),
+    stripe_webhook_url:key ? `${origin}/webhooks/payments/${key}/stripe` : null,
+    authorize_webhook_url:key ? `${origin}/webhooks/payments/${key}/authorize_net` : null,
+    attempts:recentAttempts()})
+}))
+app.post('/api/payments/test-authorize',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap(async (req,res) => {
+  try { res.json(await testAuthorize(getSettings())) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.post('/api/payments/reconcile/:reference',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap(async (req,res) => {
+  const a=paymentAttempt(req.params.reference)
+  if(!a) return res.status(404).json({error:'Checkout not found'})
+  try {
+    const s=getSettings()
+    const id=a.provider==='stripe' ? a.session_id : String(req.body?.transaction_id || '')
+    if(!id) return res.status(400).json({error:'Provide the Authorize.net transaction ID from your merchant account.'})
+    const result=a.provider==='stripe' ? await retrieveSession({settings:s,sessionId:id}) : await retrieveAuthorizeTransaction({settings:s,transactionId:id})
+    const confirmed=reconcileCheckout(a,result,id)
+    res.json({ok:true,...confirmed})
+  } catch(e) { failAttempt(a.reference,e.message);res.status(400).json({error:e.message}) }
+}))
+
 app.get('/api/sms-setup', requireRole('manager'), wrap((req,res) => {
   if (!req.tenant) return res.json({reason:'Incoming SMS needs a signed-in shop. Enable multi-tenant accounts on your self-hosted installation.'})
   const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(req.tenant.slug)
@@ -7464,6 +7527,9 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
 
 app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   const patch = { ...(req.body || {}) }
+  if ('payment_provider' in patch && !['stripe','authorize_net','off'].includes(patch.payment_provider)) return res.status(400).json({error:'Choose Stripe, Authorize.net or off.'})
+  if ('anet_environment' in patch && !['sandbox','live'].includes(patch.anet_environment)) return res.status(400).json({error:'Choose sandbox or live.'})
+  if ('anet_currency' in patch && !/^[A-Z]{3}$/.test(String(patch.anet_currency))) return res.status(400).json({error:'Use a three-letter merchant currency.'})
   if ('api_access' in patch && !['read','full'].includes(patch.api_access)) return res.status(400).json({error:'API access must be read or full.'})
   // The two settings every document is formatted through are checked on the way IN, not folded to
   // a default on the way out. format.js does fall back to USD/en-US on a value it cannot use, so a
@@ -7501,8 +7567,10 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
  * QuickBooks connection. setSetting, NOT applySettingsPatch — see the note at /api/gdrive/disconnect.
  */
 const DISCONNECT_GROUPS = {
+  payments: ['payment_callback_key','stripe_secret','stripe_webhook_secret','anet_login_id','anet_transaction_key','anet_signature_key'],
   slack: ['slack_bot_token', 'slack_signing_secret'],
-  stripe: ['stripe_secret', 'stripe_publishable', 'stripe_account_id', 'stripe_charges_enabled'],
+  authorize_net: ['anet_login_id','anet_transaction_key','anet_signature_key'],
+  stripe: ['stripe_secret', 'stripe_webhook_secret', 'stripe_publishable', 'stripe_account_id', 'stripe_charges_enabled'],
   twilio: ['twilio_sid', 'twilio_token', 'twilio_from'],
   smtp: ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_secure'],
   ai: ['ai_api_key'],
@@ -8112,9 +8180,64 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
 
 /* ---- online payment: deposit or balance, on the SHOP's own Stripe ---- */
 
+function runPaymentEffects(effects) {
+  for (const effect of effects) { try { effect() } catch(e) { console.error('payment follow-up:',e.message) } }
+}
+function reconcileCheckout(attempt,session,transactionId) {
+  if (!session.paid) return {pending:true}
+  const effects=[]
+  const result=tx(() => {
+    // Re-read under the write transaction: the return page and webhook can arrive together.
+    attempt=paymentAttempt(attempt.reference)
+    if (!attempt) throw new Error('Checkout is unavailable')
+    if (session.currency !== attempt.currency || currencyCode(getSettings().currency)!==attempt.currency || session.amountCents !== attempt.amount_cents) throw new Error('Payment amount or currency differs from checkout; manual reconciliation required')
+    if (attempt.provider==='stripe' && (session.metadata?.checkout_ref!==attempt.reference || session.metadata?.slug!==curSlug() || (attempt.session_id && attempt.session_id!==transactionId))) throw new Error('Payment belongs to another checkout or shop')
+    if (attempt.provider==='authorize_net' && session.reference!==attempt.reference) throw new Error('Payment reference does not match')
+    if (Boolean(session.test)!==Boolean(attempt.is_test)) throw new Error('Payment test mode differs from checkout')
+    if (['paid','test_paid'].includes(attempt.status)) {
+      if(attempt.transaction_id!==transactionId) throw new Error('Another payment already completed this checkout; review the additional transaction')
+      return {duplicate:true,test:!!attempt.is_test}
+    }
+    if (attempt.is_test) {
+      completeAttempt(attempt.reference,transactionId,attempt.invoice_id,true)
+      return {test:true} // Sandbox money never settles a real invoice or starts production.
+    }
+    let inv=attempt.invoice_id ? get('SELECT * FROM invoices WHERE id=?',attempt.invoice_id) : null
+    if(!inv && attempt.estimate_id) {
+      const e=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
+      if(!e) throw new Error('Original estimate is unavailable; reconcile this payment manually')
+      inv=get("SELECT * FROM invoices WHERE estimate_id=? ORDER BY (status='void'),id DESC LIMIT 1",e.id)
+      if(!inv) {
+        const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,created_at) VALUES (?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,now()).lastInsertRowid)
+        inv=get('SELECT * FROM invoices WHERE id=?',id)
+      }
+    }
+    if(!inv) throw new Error('Invoice unavailable; reconcile this payment manually')
+    const id=attempt.provider==='authorize_net' ? `anet_${transactionId}` : transactionId
+    const updated=recordStripePayment(inv,{...session,provider:attempt.provider==='authorize_net' ? 'Authorize.net' : 'Stripe'},id,attempt.kind,effects)
+    completeAttempt(attempt.reference,transactionId,inv.id)
+    return {invoice:updated}
+  })
+  runPaymentEffects(effects)
+  return result
+}
+
 /** Record a confirmed Stripe payment against an invoice, idempotently (session id can't double-post). */
-function recordStripePayment(inv, session, sessionId, kind) {
-  if (get('SELECT 1 FROM payments WHERE stripe_session = ?', sessionId)) return syncInvoiceStatus(inv.id) // already recorded (idempotent)
+function recordStripePayment(inv, session, sessionId, kind, effects=null) {
+  if (session.test) return inv
+  if (!effects) {
+    const followups=[]
+    const result=tx(() => recordStripePayment(inv,session,sessionId,kind,followups))
+    runPaymentEffects(followups)
+    return result
+  }
+  inv=get('SELECT * FROM invoices WHERE id=?',inv.id)
+  if(!inv) throw new Error('Invoice unavailable')
+  if(!Number.isSafeInteger(session.amountCents) || session.amountCents<=0) throw new Error('Invalid payment amount')
+  const gateway=session.provider || 'Stripe'
+  const existing=get('SELECT invoice_id FROM payments WHERE stripe_session = ?',sessionId)
+  if(existing && existing.invoice_id!==inv.id) throw new Error('Payment is already recorded on another invoice')
+  if(existing) return syncInvoiceStatus(inv.id)
   // The pay page and the checkout route both refuse a voided invoice now, so the only way to land
   // here is a session that was already open when the shop voided it. That money is real and sitting
   // at Stripe: record it so it is visible, keep the invoice void, and say plainly that it needs
@@ -8123,8 +8246,9 @@ function recordStripePayment(inv, session, sessionId, kind) {
   if (live?.status === 'void') {
     const arrived = round2((Number(session.amountCents) || 0) / 100)
     run('INSERT INTO payments (invoice_id, amount, method, note, stripe_session, created_at) VALUES (?,?,?,?,?,?)',
-      inv.id, arrived, 'card', `Payment arrived AFTER ${inv.invoice_number} was voided — refund at Stripe`, sessionId, now())
-    logActivity('payment', `${money(arrived)} arrived by card on VOIDED ${inv.invoice_number} — refund it at Stripe`, { contact_id: inv.contact_id })
+      inv.id, arrived, 'card', `Payment arrived AFTER ${inv.invoice_number} was voided — refund at ${gateway}`, sessionId, now())
+    enqueueQbo(inv.id)
+    logActivity('payment', `${money(arrived)} arrived by card on VOIDED ${inv.invoice_number} — refund it at ${gateway}`, { contact_id: inv.contact_id })
     return syncInvoiceStatus(inv.id)
   }
   const paid = round2((Number(session.amountCents) || 0) / 100)
@@ -8143,25 +8267,48 @@ function recordStripePayment(inv, session, sessionId, kind) {
   // A/R aging filters on a positive balance so an overpaid invoice drops out of it cleanly.
   if (!(paid > 0)) return syncInvoiceStatus(inv.id)
   const over = Math.max(0, round2(paid - Math.max(0, bal)))
-  const label = `Online ${kind === 'deposit' ? 'deposit' : 'payment'} (Stripe)`
+  const label = `Online ${kind === 'deposit' ? 'deposit' : 'payment'} (${gateway})`
   run('INSERT INTO payments (invoice_id, amount, method, note, stripe_session, created_at) VALUES (?,?,?,?,?,?)',
-    inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at Stripe` : label, sessionId, now())
+    inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at ${gateway}` : label, sessionId, now())
   const amount = paid
   const updated = syncInvoiceStatus(inv.id)
   advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Online ${money(amount)} on ${inv.invoice_number} (card)`, { contact_id: inv.contact_id })
   if (over > 0.005) {
     // Loud, and on the customer's own timeline, because the shop has to act on it at Stripe.
-    logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at Stripe`, { contact_id: inv.contact_id })
-    rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` })
+    logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at ${gateway}`, { contact_id: inv.contact_id })
+    effects.push(() => rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` }))
   }
   if (updated.status === 'paid' && inv.status !== 'paid') {
-    fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
+    effects.push(() => fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due }))
   }
   enqueueQbo(inv.id) // online money in — queue the books update alongside the manual path
-  rtBroadcast('notify', { title: 'Payment received', body: `${money(amount)} on ${inv.invoice_number}` })
+  effects.push(() => rtBroadcast('notify', { title: 'Payment received', body: `${money(amount)} on ${inv.invoice_number}` }))
   return updated
 }
+
+app.get('/p/checkout/:reference', pPage((req,res) => {
+  const a=paymentAttempt(req.params.reference)
+  if(!a || a.provider!=='authorize_net' || !a.checkout_token || a.status!=='pending' || Date.now()-Date.parse(a.created_at+'Z') > 14*60*1000) return res.status(410).send(page('Checkout expired','<div class="wrap"><div class="card"><h1>Checkout expired</h1><p>Return to your invoice for a new payment link.</p></div></div>'))
+  if(!['https://accept.authorize.net/payment/payment','https://test.authorize.net/payment/payment'].includes(a.checkout_url)) return res.status(500).send('Invalid checkout destination')
+  res.setHeader('Content-Security-Policy',String(res.getHeader('Content-Security-Policy')).replace("form-action 'self'", "form-action 'self' https://accept.authorize.net https://test.authorize.net"))
+  res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer')
+  res.send(page('Secure checkout',`<div class="wrap"><div class="card"><h1>Continue to secure payment</h1><p>Your card details are entered on Authorize.net.</p><form id="gateway-form" method="POST" action="${a.checkout_url}"><input type="hidden" name="token" value="${esc(a.checkout_token)}"><button class="btn">Continue to Authorize.net</button></form></div></div><script>document.getElementById('gateway-form').submit()</script>`))
+}))
+app.get('/p/checkout/:reference/return', pPage(async (req,res) => {
+  const a=paymentAttempt(req.params.reference)
+  if(!a) return res.status(404).send('Checkout not found')
+  if(req.query.session_id && a.provider==='stripe') {
+    try {
+      const confirmed=await retrieveSession({settings:getSettings(),sessionId:String(req.query.session_id)})
+      reconcileCheckout(a,confirmed,String(req.query.session_id))
+    } catch(e) { failAttempt(a.reference,e.message) }
+  }
+  const fresh=paymentAttempt(a.reference), paid=fresh.status==='paid'
+  if(fresh.status==='test_paid') return res.type('html').send(page('Test payment complete','<div class="wrap"><div class="card"><h1>Test payment complete</h1><p>No real money was collected. The invoice balance and production status have not changed.</p></div></div>'))
+  res.setHeader('Cache-Control','no-store')
+  res.send(page(paid ? 'Payment received' : 'Payment confirmation',`<div class="wrap"><div class="card"><h1>${paid ? 'Payment received' : 'Waiting for payment confirmation'}</h1><p>${paid ? 'Your payment has been recorded. Thank you.' : 'We are checking with your payment provider. If your card was charged, do not pay again. Refresh this page in a moment or contact the shop.'}</p>${!paid ? '<button class="btn" onclick="location.reload()">Check again</button>' : ''}</div></div>`))
+}))
 
 app.get('/p/pay/:id', pPage(async (req, res) => {
   const id = +req.params.id
@@ -8208,10 +8355,10 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       // startCheckout has stamped `slug: curSlug()` into the metadata since 1.0.0. Read it back.
       // Nothing about what we send to Stripe or infer from it changes; this is our own field.
       const forThisShop = String(session.metadata?.slug ?? '') === curSlug()
-      if (session.paid && forThisShop && String(session.metadata?.invoice) === String(id)) {
+      if (session.paid && !session.test && forThisShop && String(session.metadata?.invoice) === String(id) && session.currency===currencyCode(s.currency)) {
         recordStripePayment(inv, session, String(req.query.session_id), session.metadata?.kind)
         outcome = 'paid'
-      } else if (session.paid && !forThisShop) {
+      } else if (session.paid && (!forThisShop || String(session.metadata?.invoice)!==String(id) || session.test || session.currency!==currencyCode(s.currency))) {
         // Deliberately NOT 'not_paid': that branch tells the customer nothing was charged and
         // offers them a Pay again button. This session really did pay something, somewhere else.
         console.error('pay-confirm: session belongs to another shop', String(session.metadata?.slug || '(none)'), '≠', curSlug())
@@ -8230,7 +8377,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       ? '<div class="ok">✓ Thank you — your payment went through.</div>'
       : outcome === 'not_paid'
         ? `<div class="ok">This payment was not completed. Nothing has been charged — you can try again below.</div>`
-        : `<div class="ok">We could not confirm this payment just yet. <strong>Do not pay again.</strong> If your card was charged it will be applied to ${esc(fresh.invoice_number)}; ${esc(s.shop_name)} has been notified and will be in touch.</div>`
+        : `<div class="ok">We could not confirm this payment just yet. <strong>Do not pay again.</strong> If your card was charged, the shop must verify the payment before applying it to ${esc(fresh.invoice_number)}; ${esc(s.shop_name)} has been notified and will be in touch.</div>`
     // Only invite another payment when we KNOW the first one did not happen. Offering it after a
     // failed confirm is exactly how a customer pays the same balance twice.
     const offerPay = bal > 0 && outcome === 'not_paid'
@@ -8275,7 +8422,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       ${depositBtn}
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>
     </form>
-    <div class="terms">Secure payment through ${s.shop_name}'s Stripe account. Your card details go straight to Stripe.</div>
+    <div class="terms">Secure payment through ${s.shop_name}'s ${providerName(s)} account. Your card details go directly to the payment provider.</div>
     <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
 }))
 
@@ -8293,7 +8440,7 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   const amount = kind === 'deposit' ? round2(Math.min(balance, inv.amount_due * 0.5)) : balance
   if (!(amount > 0)) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
-  const origin = `${req.protocol}://${req.get('host')}`
+  const origin = trustedOrigin(req)
   const back = `${origin}/p/pay/${id}?k=${req.query.k}${sQ(req)}`
   try {
     const { url } = await startCheckout(s, {
@@ -8805,10 +8952,30 @@ const authHtml = () => {
 // Control) are onboarded onto our platform via Connect Express and pay a 4% fee on collected
 // payments. Every payment call site routes through these three helpers so pro stays byte-identical.
 const isLite = EDITION === 'lite'
-const paymentsReady = (s) => (isLite ? connectReady(s) : stripeConfigured(s))
-const startCheckout = (s, args) => (isLite
-  ? createConnectedCheckout({ accountId: s.stripe_account_id, ...args })
-  : createCheckout({ settings: s, ...args }))
+const paymentProvider = s => s.payment_provider || 'stripe'
+const providerName = s => paymentProvider(s) === 'authorize_net' ? 'Authorize.net' : 'Stripe'
+const paymentsReady = (s) => isLite ? connectReady(s) : paymentProvider(s) === 'off' ? false : paymentProvider(s) === 'authorize_net' ? authorizeConfigured(s) : stripeConfigured(s) && /^whsec_/.test(s.stripe_webhook_secret || '')
+const startCheckout = async (s, args) => {
+  if (isLite) return createConnectedCheckout({ accountId: s.stripe_account_id, currency:s.currency, ...args })
+  if (!paymentsReady(s)) throw new Error('Connect a payment provider in Setup & connections')
+  const provider=paymentProvider(s), currency=currencyCode(s.currency)
+  const invoiceId=Number(args.metadata?.invoice) || null
+  const estimateId=invoiceId ? null : get('SELECT id FROM estimates WHERE estimate_number=?',args.metadata?.estimate || '')?.id
+  const amountCents=args.lineItems.reduce((total,l)=>total+Math.round(l.amountCents)*(l.qty || 1),0)
+  const attempt=newPaymentAttempt({provider,invoiceId,estimateId,amountCents,currency,kind:args.metadata?.kind,returnUrl:args.cancelUrl,isTest:provider==='authorize_net' ? s.anet_environment!=='live' : /^sk_test_/.test(s.stripe_secret)})
+  const returnUrl=new URL(`/p/checkout/${attempt.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href
+  try {
+    if(provider === 'authorize_net') {
+      const checkout=await createAuthorizeCheckout({settings:s,amountCents,currency,reference:attempt.reference,successUrl:returnUrl,cancelUrl:args.cancelUrl,customerEmail:args.customerEmail})
+      readyAttempt(attempt.reference,{token:checkout.token,url:checkout.formUrl})
+      return {id:attempt.reference,url:new URL(`/p/checkout/${attempt.reference}?s=${encodeURIComponent(curSlug())}`,args.successUrl).href}
+    }
+    const checkout=await createCheckout({settings:s,...args,successUrl:returnUrl+'&session_id={CHECKOUT_SESSION_ID}',idempotencyKey:attempt.reference,
+      metadata:{...args.metadata,slug:curSlug(),checkout_ref:attempt.reference,currency}})
+    readyAttempt(attempt.reference,checkout)
+    return checkout
+  } catch(e) { failAttempt(attempt.reference,e.message); throw e }
+}
 const confirmSession = (s, sessionId) => (isLite
   ? retrieveConnectedSession({ sessionId })
   : retrieveSession({ settings: s, sessionId }))

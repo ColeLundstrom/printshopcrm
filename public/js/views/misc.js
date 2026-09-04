@@ -523,16 +523,16 @@ export async function settingsView() {
       </div>
     </div>` : `
     <div class="card">
-      <div class="card-h"><h3>Online Gang-Sheet Ordering</h3><span class="pill ${s.stripe_secret_set ? 'green' : ''}">${s.stripe_secret_set ? 'Stripe connected' : 'add your Stripe key'}</span></div>
+      <div class="card-h"><h3>Online ordering & payments</h3><span class="pill ${s.stripe_secret_set ? 'green' : ''}">${s.payment_provider==='authorize_net' ? 'Authorize.net selected' : s.payment_provider==='off' ? 'Manual payments' : s.stripe_secret_set ? 'Stripe key saved' : 'Configure payments'}</span></div>
       <div class="card-b" id="online">
-        <p class="dim" style="font-size:12.5px;margin-bottom:14px;line-height:1.6">Let your customers build their own DTF gang sheets on <strong style="color:var(--txt-2)">your</strong> website and pay through <strong style="color:var(--txt-2)">your</strong> Stripe — the money lands in your account, we never touch it. No Stripe key? Orders still come in as quotes you follow up on.</p>
+        <p class="dim" style="font-size:12.5px;margin-bottom:14px;line-height:1.6">Let your customers build their own DTF gang sheets on <strong style="color:var(--txt-2)">your</strong> website and pay through <strong style="color:var(--txt-2)">your</strong> payment provider — the money lands in your account, we never touch it. Without online payments, orders still come in as quotes you follow up on.</p>
         <div class="grid2">
           ${f('dtf_price_per_inch', 'DTF price per linear inch ($)', 'What you charge per inch of roll used', 'number')}
           ${f('dtf_min_charge', 'Minimum charge ($)', 'Floor price for any sheet', 'number')}
         </div>
         ${f('dtf_sheet_width', 'Roll width (in)', 'Your DTF printer roll width — usually 22"', 'number')}
 
-        <details class="disc"><summary>Stripe keys — ${s.stripe_secret_set ? 'connected, replace the key' : 'take card payment on the builder'}</summary>
+        <p><a class="btn ghost" href="#/payments">Payment connections — Stripe or Authorize.net</a></p><details class="disc"><summary>Stripe keys — ${s.stripe_secret_set ? 'connected, replace the key' : 'take card payment on the builder'}</summary>
           <div class="disc-b">
             <div class="grid2">
               ${sf('stripe_secret', 'Your Stripe secret key', 'In Stripe: Developers → API keys → Secret key → Reveal. Starts <code>sk_live_</code> or <code>sk_test_</code> — not the publishable <code>pk_</code> one. Stays on your server.')}

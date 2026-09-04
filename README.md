@@ -110,13 +110,14 @@ Longer write-ups of the things people ask about most, on the project site:
 - Printable work tickets with a hard "NO APPROVED ART — do not print" block when the proof isn't signed off
 - Capacity planner: schedules a prospective job against the committed board and returns a real ship date
 - Floor Mode: Code 128 barcode scanning that feeds measured labor back into costing
-- DTF resize and a gang-sheet builder (embeddable on your own site, checking out through *your* Stripe key)
+- DTF resize and a gang-sheet builder (embeddable on your own site, checking out through your Stripe or Authorize.net account)
 
 **Money**
 - Quoting calculator: garment × markup + imprint charge scaled by run length and colors-per-location + one-time screens; tiered rush; dark garments automatically add an underbase
 - Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
 - Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins
 - Invoices with partial payments, running balance, and status always derived from the payments table
+- Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation and payment reconciliation ([setup and limits](docs/PAYMENTS.md))
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
 - QuickBooks IIF export (Online sync is API-only for now — it has no setup screen yet)
@@ -242,7 +243,7 @@ Set `PSC_SECRET` in production either way — customer share links derive from i
 
 Everything is environment variables plus per-shop settings stored in the database. Nothing is
 hardcoded. See **[.env.example](.env.example)** for every variable with comments, and Settings
-inside the app for per-shop values (tax rate, hourly rate, mail, supplier accounts, Stripe keys).
+inside the app for per-shop values (tax rate, hourly rate, mail, supplier accounts, payment providers).
 
 **Currency and number format are per-shop settings too** (Settings → Shop). Pick an ISO currency
 code and a locale, and every screen, PDF, email, customer page and the assistant write money and

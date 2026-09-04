@@ -58,3 +58,7 @@ for unbuilt systems.
 - Multiple independently revocable agent keys with endpoint scopes, audit attribution, expiry and install flows. The current single shop API key supports read-only or read-and-write access.
 - Full Slack agent installation and granular action approvals. Existing Slack /quote is a draft workflow; external agents can use the REST API.
 - Real customer-owned Twilio, SMTP and Slack end-to-end acceptance on a public staging host. Local tests use fixtures and the evaluation launcher blocks outbound network access.
+
+### Payment accounting after the provider adapters
+
+Stripe and Authorize.net hosted checkout now share verified, idempotent invoice posting. The next release gate is merchant-owned sandbox acceptance on public HTTPS. Refunds, chargebacks and processor-side voids still need automatic ledger reconciliation, explicit invoice credit/refund workflows and provider fixtures before claiming complete payment accounting. See [PAYMENTS.md](PAYMENTS.md).

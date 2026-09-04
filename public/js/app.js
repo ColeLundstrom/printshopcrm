@@ -25,6 +25,7 @@ import { gangSheetView } from './views/gangsheet.js'
 import { billingView } from './views/billing.js'
 import { capacityView } from './views/capacity.js'
 import { reorderView } from './views/reorder.js'
+import { paymentsView } from './views/payments.js'
 import { setupView } from './views/setup.js'
 import { todayView } from './views/today.js'
 import { dtfResizeView } from './views/dtfresize.js'
@@ -122,6 +123,7 @@ route(/^\/books$/, booksView)
 route(/^\/developers$/, developersView)
 route(/^\/welcome$/, onboardingView)
 route(/^\/setup$/, setupView)
+route(/^\/payments$/, paymentsView)
 route(/^\/billing$/, billingView)
 route(/^\/pipeline$/, pipelineView)
 route(/^\/conversations\/(\d+)$/, conversationsView)

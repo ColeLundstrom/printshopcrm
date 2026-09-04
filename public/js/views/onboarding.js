@@ -320,13 +320,7 @@ function panel(key) {
       </div>${foot()}`
   }
 
-  if (key === 'payments') return `<div class="ob-head"><h2>◈ Collect payments (Stripe)</h2>
-      <p>Paste your <strong>own</strong> Stripe secret key and you can email customers a link to pay a 50% deposit or the balance — the money lands in <strong>your</strong> account, we never touch it. Skip it and you'll still track payments manually.</p></div>
-    <div id="ob-form" class="ob-form">
-      ${sf('stripe_secret', 'Stripe secret key', s.stripe_secret_set, { hint: 'sk_live_… or sk_test_… — from dashboard.stripe.com → Developers → API keys.' })}
-      ${f('stripe_publishable', 'Publishable key (optional)', s.stripe_publishable, { ph: 'pk_live_…' })}
-      <div class="ob-note">Your key is stored on your server and never shown back.</div>
-    </div>${foot()}`
+  if (key === 'payments') return `<div class="ob-head"><h2>Collect payments</h2><p>Choose Stripe or Authorize.net for deposits and balances into your own account. You can also record payments manually without connecting a provider.</p></div><div id="ob-form" class="ob-form"><a class="btn" href="#/payments">Set up payment connections</a><p class="ob-note">The guided setup covers account credentials, payment callbacks and test mode.</p></div>${foot()}`
 
   if (key === 'ai') {
     const providers = state.ai?.providers || []
@@ -372,7 +366,7 @@ function panel(key) {
     ['AI', !!s.ai_api_key_set, 'Receptionist and quoting supercharged'],
     ['Email', !!s.smtp_host, 'Messages actually send to customers'],
     ['SMS', !!s.twilio_sid, 'Two-way texting with customers'],
-    ['Payments', !!s.stripe_secret_set, 'Deposits and balances into your account'],
+    ['Payments', s.payment_provider==='authorize_net' ? !!(s.anet_transaction_key_set && s.anet_signature_key_set) : s.payment_provider!=='off' && !!s.stripe_secret_set, 'Deposits and balances into your account'],
   ]
   const essRows = ess.map(([name, ok, why]) => `<div class="ob-ess-row" style="display:flex;align-items:center;gap:10px;padding:7px 0">
     <span style="font-weight:600;color:${ok ? 'var(--accent)' : 'var(--muted, #999)'}">${ok ? '✓' : '○'}</span>

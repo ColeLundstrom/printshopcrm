@@ -1635,3 +1635,10 @@ html, body { overflow-x: clip; }
 
 .settings-workspace .card { scroll-margin-top: calc(var(--sp-11) + var(--sp-9)); }
 #view.view-in { animation: none; }
+/* Payment setup follows the shop setup workbench. */
+.payment-attempt { display:grid; grid-template-columns:minmax(0,1fr) minmax(160px,240px); gap:20px; padding:18px 0; border-bottom:1px solid var(--line); }
+.payment-attempt small { overflow-wrap:anywhere; }
+.payment-attempt p { margin:6px 0; }
+#payment-form [hidden] { display:none; }
+#payment-form .field { margin:16px 0; }
+@media(max-width:600px) { .payment-attempt { grid-template-columns:1fr; } }
