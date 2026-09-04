@@ -35,7 +35,7 @@ test('scoped agent API keeps cookie/shop boundaries, gates production and logs i
     assert.equal((await request('/api/settings','PUT',{shop_name:'Forbidden'},read.token)).status,403)
     assert.equal((await request('/api/v1/jobs/1/stage','POST',{stage:'complete'},read.token)).status,403)
     assert.equal((await request('/api/v1/estimates','POST',{customer:{name:'Forbidden contact'},items:[]},quote.token)).status,403)
-    const slug=readdirSync(join(dest,'data/tenants'))[0];db=new DatabaseSync(join(dest,'data/tenants',slug,'printshop.db'));control=new DatabaseSync(join(dest,'data/control.db'))
+    const slug=readdirSync(join(dest,'data/tenants'))[0];db=new DatabaseSync(join(dest,'data/tenants',slug,'printshop.db'));control=new DatabaseSync(join(dest,'data/control.db'));db.exec('PRAGMA busy_timeout=5000');control.exec('PRAGMA busy_timeout=5000')
     assert.equal(db.prepare("SELECT count(*) n FROM contacts WHERE name='Forbidden contact'").get().n,0)
     const templateResponse=await request('/api/production/templates','POST',{name:'Agent gate fixture',steps:[{title:'QC inspection',department:'QC',stage:'qc'}]})
     assert.equal(templateResponse.status,200,await templateResponse.clone().text());const template=await templateResponse.json()
