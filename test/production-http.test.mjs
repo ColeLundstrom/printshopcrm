@@ -61,6 +61,8 @@ test(
         assert.equal(r.status, 200, await r.clone().text())
         return r.json()
       }
+      assert.equal((await req('/api/production?page_size=10000',undefined,'GET')).status,400)
+      assert.equal((await req('/api/costing/comparison?page=0',undefined,'GET')).status,400)
       const conf = await json('/api/production/templates', undefined, 'GET'),
         template = conf.templates[0]
       let d = await json('/api/production/jobs/1/workflow', { revision: 0, template_ids: [template.id] })

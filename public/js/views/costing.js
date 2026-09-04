@@ -184,7 +184,8 @@ function operationForm(id, d, c, o) {
   })
 }
 export async function costingView() {
-  const d = await api.get('/api/costing/comparison')
+  const query = new URLSearchParams(location.hash.split('?')[1] || '')
+  const d = await api.get('/api/costing/comparison?' + query.toString())
   setPage(
     'Production cost comparison',
     '<a class="btn" href="#/costing/settings">Shop costs & machines</a>',
@@ -202,5 +203,15 @@ export async function costingView() {
       )
       .join(
         ''
-      )}<section class="card card-b"><h2>Jobs with cost records</h2>${d.jobs.map((j) => `<p><a href="#/costing/jobs/${j.job.id}">${esc(j.job.job_number)} · ${esc(j.job.title)}</a> — ${money(j.profit)} · ${j.margin ?? '—'}% margin</p>`).join('')}</section></div>`
+      )}<section class="card card-b"><h2>Jobs with cost records</h2><p class="dim">${d.pagination.total} jobs in comparison. All pages contribute to the totals above.</p>${d.jobs.map((j) => `<p><a href="#/costing/jobs/${j.job.id}">${esc(j.job.job_number)} · ${esc(j.job.title)}</a> — ${money(j.profit)} · ${j.margin ?? '—'}% margin</p>`).join('')}${costPages(d.pagination, query)}</section></div>`
+}
+
+function costPages(p, query) {
+  if (p.pages <= 1) return ''
+  const link = (page, label) => {
+    const q = new URLSearchParams(query)
+    q.set('page', String(page))
+    return `<a class="btn ghost" href="#/costing?${esc(q.toString())}">${label}</a>`
+  }
+  return `<nav class="prod-toolbar" aria-label="Costed job pages">${p.page > 1 ? link(p.page - 1, 'Previous') : ''}<span>Page ${p.page} of ${p.pages}</span>${p.page < p.pages ? link(p.page + 1, 'Next') : ''}</nav>`
 }

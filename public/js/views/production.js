@@ -22,7 +22,7 @@ const input = (name, value = '', type = 'text') =>
   `<input class="input" name="${name}" type="${type}" value="${esc(value)}">`
 const collect = (el) => Object.fromEntries(new FormData(el))
 function buttons() {
-  return '<button class="btn ghost" id="prod-focus">Focus mode</button><a class="btn ghost" href="#/scan">Scan / find</a>'
+  return `<button class="btn ghost" id="prod-focus">${document.body.classList.contains('production-focus') ? 'Exit focus' : 'Focus mode'}</button><a class="btn ghost" href="#/scan">Scan / find</a>`
 }
 function focus() {
   document.body.classList.toggle('production-focus')
@@ -43,8 +43,9 @@ export async function productionView() {
   )
   $('#view').innerHTML =
     `<div class="stack production-page"><form id="prod-filter" class="prod-toolbar">${field('Department', `<select class="input" name="department"><option value="">All departments</option>${options(d.departments, d.department)}</select>`)}<label><input type="checkbox" name="mine" ${new URLSearchParams(query).get('mine') === '1' ? 'checked' : ''}> Assigned to me</label><button class="btn">Show queue</button><button class="btn ghost" type="button" id="prod-default">Make my start page</button></form>
-    <p class="dim">${d.rows.filter((r) => !r.blocked).length} ready · ${d.rows.filter((r) => r.blocked).length} waiting. Open a job to see counts, artwork, instructions and its next task.</p>
+    <p class="dim">${d.ready} ready · ${d.waiting} waiting. Open a job to see counts, artwork, instructions and its next task.</p>
     <div class="prod-queue">${d.rows.length ? d.rows.map((r) => `<a class="prod-queue-row" href="#/production/jobs/${r.job_id}"><div><span class="mono">${esc(r.job_number)}</span>${r.rush ? ' · RUSH' : ''}<h3>${esc(r.task.title)}</h3><span>${esc(r.title)}</span></div><div><strong>${esc(r.task.department)}</strong><div class="dim">${esc(d.members.find((m) => m.id === r.task.assigned_id)?.name || 'Unassigned')}${r.due_date ? ` · due ${esc(fmtDate(r.due_date))}` : ''}</div><div class="${r.blocked ? 'dim' : 'prod-ready'}">${esc(r.blocked || 'Ready to work')}</div></div></a>`).join('') : '<div class="card card-b">No open tasks in this queue. Add a workflow from a job’s Production tasks screen.</div>'}</div>
+    ${queuePages(d, query)}
     ${d.manager ? `<details class="card card-b"><summary>Automatic tasks for new jobs</summary><p>Match a workflow by decoration text. Existing jobs keep their current process. For recurring combinations, save a combined template once. For one-off combinations, select multiple workflows on the job.</p><label><input id="prod-auto" type="checkbox" ${d.auto ? 'checked' : ''}> Apply matching workflows automatically</label></details>` : ''}</div>`
   $('#prod-focus').onclick = focus
   $('#prod-filter').onsubmit = (e) => {
@@ -80,7 +81,7 @@ export async function productionJobView(id) {
   const next = d.tasks.find((t) => t.status === 'pending')
   $('#view').innerHTML =
     `<div class="stack production-page"><div class="prod-job-heading"><div><h2>${esc(j.title)}</h2><p>${esc(j.decoration || '')} · ${esc(j.quantities || 'Counts below')}${j.due_date ? ` · due ${esc(fmtDate(j.due_date))}` : ''}</p><p style="white-space:pre-wrap">${esc(j.notes || '')}</p></div><button id="prod-label" class="btn ghost">Print QR label</button></div>
-    ${next ? `<section class="card card-b prod-next"><span class="dim">NEXT TASK · ${esc(next.department)}</span><h2>${esc(next.title)}</h2><p>${esc(d.members.find((m) => m.id === next.assigned_id)?.name || 'Available to department')}</p>${next.blocked ? `<p role="status">${esc(next.blocked)}</p>` : `<button class="btn primary" data-task-action="complete" data-task-id="${next.id}">Complete task</button>`}</section>` : d.tasks.length ? '<p class="prod-ready">All tasks resolved.</p>' : '<p>No task workflow on this job yet.</p>'}
+    ${next ? `<section class="card card-b prod-next"><span class="dim">NEXT TASK · ${esc(next.department)}</span><h2>${esc(next.title)}</h2><p>${esc(d.members.find((m) => m.id === next.assigned_id)?.name || 'Available to any team member')}</p>${next.blocked ? `<p role="status">${esc(next.blocked)}</p>` : `<button class="btn primary" data-task-action="complete" data-task-id="${next.id}">Complete task</button>`}</section>` : d.tasks.length ? '<p class="prod-ready">All tasks resolved.</p>' : '<p>No task workflow on this job yet.</p>'}
     ${!d.tasks.length && d.manager ? '<button class="btn" id="prod-apply">Choose workflow</button>' : ''}
     <section class="card"><div class="card-h"><h3>Task sequence</h3>${d.manager ? '<button class="btn ghost" id="prod-add-task">Add task</button>' : ''}</div><div class="card-b">${d.tasks.map((t) => `<div class="prod-task"><div><strong>${esc(t.title)}</strong><div class="dim">${esc(t.department)} · ${esc(d.members.find((m) => m.id === t.assigned_id)?.name || 'Unassigned')} · ${esc(t.status)}${t.completed_by ? ` by ${esc(t.completed_by)}` : ''}</div>${t.note ? `<p>${esc(t.note)}</p>` : ''}</div>${d.manager ? `<div class="prod-actions">${t.status === 'pending' ? `<button class="btn ghost" data-edit-task="${t.id}">Edit</button><button class="btn ghost" data-task-action="skip" data-task-id="${t.id}">Skip</button>` : `<button class="btn ghost" data-task-action="reopen" data-task-id="${t.id}">Reopen</button>`}</div>` : ''}</div>`).join('')}</div></section>
     <details class="card card-b" ${next?.gate === 'receiving' ? 'open' : ''}><summary>Receiving & garment counts</summary><p>Enter total received so far for each size. Shortages stay open until received or resolved by a manager.</p>${
@@ -362,4 +363,14 @@ function supplierSummary(payload) {
   } catch {
     return ''
   }
+}
+
+function queuePages(d, query) {
+  if (d.pages <= 1) return ''
+  const link = (page, label) => {
+    const q = new URLSearchParams(query)
+    q.set('page', String(page))
+    return `<a class="btn ghost" href="#/production?${esc(q.toString())}">${label}</a>`
+  }
+  return `<nav class="prod-toolbar" aria-label="Task pages">${d.page > 1 ? link(d.page - 1, 'Previous') : ''}<span>Page ${d.page} of ${d.pages} · ${d.total} tasks</span>${d.page < d.pages ? link(d.page + 1, 'Next') : ''}</nav>`
 }

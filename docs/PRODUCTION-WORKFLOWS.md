@@ -36,3 +36,7 @@ Protocol references verified2026-09-04:
 - [SanMar Web Services24.6](https://d3vudmj4emi09t.cloudfront.net/medias/sys_master/pdf/h7a/ha0/33815499964446/SanMar-Web-Services-Integration-Guide-24.6/SanMar-Web-Services-Integration-Guide-24.6.pdf)
 
 Read paths have protocol fixture coverage; production supplier credentials and physical scanners have not been verified in this local demo. No AI is required for any of these workflows.
+
+## Larger queues and reports
+
+Department queues show ready work before waiting work and page large task lists. Cost comparisons page the job list while keeping totals across every saved job cost record. [Scale verification](SCALE-VERIFICATION.md) records the synthetic fixtures, query bounds, pagination contract and remaining capacity work.
