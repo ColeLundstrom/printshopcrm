@@ -4105,7 +4105,7 @@ app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   if (requireCustomerEmail(c, res, 'proof')) return
   const s = getSettings()
   run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
-  run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress') AND NOT EXISTS(SELECT 1 FROM production_jobs WHERE job_id=jobs.id)`, now(), j.id)
+  run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress') AND NOT EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id)`, now(), j.id)
   queueEmail({ contact: c, kind: 'art', subject: `Proof v${a.version} for ${j.title} — approval needed`,
     template: s.email_template_art, vars: { contact_name: c?.name || '', version: a.version, job_title: j.title } })
   logActivity('art', `Proof v${a.version} sent to ${c?.email || 'customer'}`, { contact_id: j.contact_id, job_id: j.id })
@@ -4198,7 +4198,7 @@ function decideArt(a, approved, notes, by) {
   // stage='prepress' with status='complete': GET /api/board is WHERE j.status = 'active', so the
   // job was on NO board, out of Capacity, off Today and booking zero press time, while its own
   // page said Prepress. Nothing could put it back — every screen that moves a job reads the board.
-  run(`UPDATE jobs SET stage=CASE WHEN EXISTS(SELECT 1 FROM production_jobs WHERE job_id=jobs.id) THEN stage ELSE 'prepress' END, status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
+  run(`UPDATE jobs SET stage=CASE WHEN EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id) THEN stage ELSE 'prepress' END, status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
   logActivity('art', `Proof v${a.version} APPROVED by ${by} — released to prepress`, { contact_id: j.contact_id, job_id: j.id })
   fireAuto('art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
 

@@ -22,7 +22,7 @@ const input = (name, value = '', type = 'text') =>
   `<input class="input" name="${name}" type="${type}" value="${esc(value)}">`
 const collect = (el) => Object.fromEntries(new FormData(el))
 function buttons() {
-  return `<button class="btn ghost" id="prod-focus">${document.body.classList.contains('production-focus') ? 'Exit focus' : 'Focus mode'}</button><a class="btn ghost" href="#/scan">Scan / find</a>`
+  return `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn ghost" id="prod-focus">${document.body.classList.contains('production-focus') ? 'Exit focus' : 'Focus mode'}</button><a class="btn ghost" href="#/scan">Scan / find</a>`
 }
 function focus() {
   document.body.classList.toggle('production-focus')
@@ -44,7 +44,7 @@ export async function productionView() {
   $('#view').innerHTML =
     `<div class="stack production-page"><form id="prod-filter" class="prod-toolbar">${field('Department', `<select class="input" name="department"><option value="">All departments</option>${options(d.departments, d.department)}</select>`)}<label><input type="checkbox" name="mine" ${new URLSearchParams(query).get('mine') === '1' ? 'checked' : ''}> Assigned to me</label><button class="btn">Show queue</button><button class="btn ghost" type="button" id="prod-default">Make my start page</button></form>
     <p class="dim">${d.ready} ready · ${d.waiting} waiting. Open a job to see counts, artwork, instructions and its next task.</p>
-    <div class="prod-queue">${d.rows.length ? d.rows.map((r) => `<a class="prod-queue-row" href="#/production/jobs/${r.job_id}"><div><span class="mono">${esc(r.job_number)}</span>${r.rush ? ' · RUSH' : ''}<h3>${esc(r.task.title)}</h3><span>${esc(r.title)}</span></div><div><strong>${esc(r.task.department)}</strong><div class="dim">${esc(d.members.find((m) => m.id === r.task.assigned_id)?.name || 'Unassigned')}${r.due_date ? ` · due ${esc(fmtDate(r.due_date))}` : ''}</div><div class="${r.blocked ? 'dim' : 'prod-ready'}">${esc(r.blocked || 'Ready to work')}</div></div></a>`).join('') : '<div class="card card-b">No open tasks in this queue. Add a workflow from a job’s Production tasks screen.</div>'}</div>
+    <div class="prod-queue">${d.rows.length ? d.rows.map((r) => `<a class="prod-queue-row" href="#/production/jobs/${r.job_id}"><div><span class="mono">${esc(r.job_number)}</span>${r.rush ? ' · RUSH' : ''}<h3>${esc(r.task.title)}</h3><span>${esc(r.title)}</span></div><div><strong>${esc(r.task.department)}</strong><div class="dim">${esc(d.members.find((m) => m.id === r.task.assigned_id)?.name || 'Unassigned')}${r.task.planned_due_date ? ` · task due ${esc(fmtDate(r.task.planned_due_date))}` : r.due_date ? ` · job due ${esc(fmtDate(r.due_date))}` : ''}</div><div class="${r.blocked ? 'dim' : 'prod-ready'}">${esc(r.blocked || 'Ready to work')}</div></div></a>`).join('') : '<div class="card card-b">No open tasks in this queue. Add a workflow from a job’s Production tasks screen.</div>'}</div>
     ${queuePages(d, query)}
     ${d.manager ? `<details class="card card-b"><summary>Automatic tasks for new jobs</summary><p>Match a workflow by decoration text. Existing jobs keep their current process. For recurring combinations, save a combined template once. For one-off combinations, select multiple workflows on the job.</p><label><input id="prod-auto" type="checkbox" ${d.auto ? 'checked' : ''}> Apply matching workflows automatically</label></details>` : ''}</div>`
   $('#prod-focus').onclick = focus
@@ -81,9 +81,10 @@ export async function productionJobView(id) {
   const next = d.tasks.find((t) => t.status === 'pending')
   $('#view').innerHTML =
     `<div class="stack production-page"><div class="prod-job-heading"><div><h2>${esc(j.title)}</h2><p>${esc(j.decoration || '')} · ${esc(j.quantities || 'Counts below')}${j.due_date ? ` · due ${esc(fmtDate(j.due_date))}` : ''}</p><p style="white-space:pre-wrap">${esc(j.notes || '')}</p></div><button id="prod-label" class="btn ghost">Print QR label</button></div>
+    ${timingPanel(d)}
     ${next ? `<section class="card card-b prod-next"><span class="dim">NEXT TASK · ${esc(next.department)}</span><h2>${esc(next.title)}</h2><p>${esc(d.members.find((m) => m.id === next.assigned_id)?.name || 'Available to any team member')}</p>${next.blocked ? `<p role="status">${esc(next.blocked)}</p>` : `<button class="btn primary" data-task-action="complete" data-task-id="${next.id}">Complete task</button>`}</section>` : d.tasks.length ? '<p class="prod-ready">All tasks resolved.</p>' : '<p>No task workflow on this job yet.</p>'}
     ${!d.tasks.length && d.manager ? '<button class="btn" id="prod-apply">Choose workflow</button>' : ''}
-    <section class="card"><div class="card-h"><h3>Task sequence</h3>${d.manager ? '<button class="btn ghost" id="prod-add-task">Add task</button>' : ''}</div><div class="card-b">${d.tasks.map((t) => `<div class="prod-task"><div><strong>${esc(t.title)}</strong><div class="dim">${esc(t.department)} · ${esc(d.members.find((m) => m.id === t.assigned_id)?.name || 'Unassigned')} · ${esc(t.status)}${t.completed_by ? ` by ${esc(t.completed_by)}` : ''}</div>${t.note ? `<p>${esc(t.note)}</p>` : ''}</div>${d.manager ? `<div class="prod-actions">${t.status === 'pending' ? `<button class="btn ghost" data-edit-task="${t.id}">Edit</button><button class="btn ghost" data-task-action="skip" data-task-id="${t.id}">Skip</button>` : `<button class="btn ghost" data-task-action="reopen" data-task-id="${t.id}">Reopen</button>`}</div>` : ''}</div>`).join('')}</div></section>
+    <section class="card"><div class="card-h"><h3>Task sequence</h3>${d.manager ? '<button class="btn ghost" id="prod-add-task">Add task</button>' : ''}</div><div class="card-b">${d.tasks.map((t) => `<div class="prod-task"><div><strong>${esc(t.title)}</strong><div class="dim">${esc(t.department)} · ${esc(d.members.find((m) => m.id === t.assigned_id)?.name || 'Unassigned')} · ${esc(t.status)}${t.planned_due_date ? ' · task due ' + esc(fmtDate(t.planned_due_date)) : ''}${t.completed_by ? ` by ${esc(t.completed_by)}` : ''}</div>${t.note ? `<p>${esc(t.note)}</p>` : ''}</div>${d.manager ? `<div class="prod-actions">${t.status === 'pending' ? `<button class="btn ghost" data-edit-task="${t.id}">Edit</button><button class="btn ghost" data-task-action="skip" data-task-id="${t.id}">Skip</button>` : `<button class="btn ghost" data-task-action="reopen" data-task-id="${t.id}">Reopen</button>`}</div>` : ''}</div>`).join('')}</div></section>
     <details class="card card-b" ${next?.gate === 'receiving' ? 'open' : ''}><summary>Receiving & garment counts</summary><p>Enter total received so far for each size. Shortages stay open until received or resolved by a manager.</p>${
       d.pos.length
         ? d.pos
@@ -105,6 +106,7 @@ export async function productionJobView(id) {
     <details class="card card-b"><summary>Artwork</summary>${d.art.map((a) => `<p>Version ${a.version} · ${esc(a.status)} · <a href="${esc(a.url)}" target="_blank" rel="noopener">View artwork</a></p>`).join('') || '<p>No artwork attached.</p>'}</details>
     <details class="card card-b"><summary>Task history</summary>${d.events.map((e) => `<p>${esc(e.created_at)} · ${esc(e.actor)} · ${esc(e.action)}<br><small>${esc(e.detail)}</small></p>`).join('') || '<p>No task activity yet.</p>'}</details></div>`
   $('#prod-focus').onclick = focus
+  if ($('#prod-timing')) $('#prod-timing').onclick = () => editTiming(id, d)
   $('#prod-label').onclick = () =>
     modal({
       title: 'Job label',
@@ -243,12 +245,12 @@ export async function productionJobView(id) {
   )
 }
 function taskFields(t, members) {
-  return `${field('Task', input('title', t.title || ''))}${field('Department', input('department', t.department || 'Production'))}${field('Board stage', `<select class="input" name="stage">${options(stages, t.stage || 'production')}</select>`)}${field('Assigned employee', `<select class="input" name="assigned_id">${staff(members, t.assigned_id)}</select>`)}${field('Requirement', `<select class="input" name="gate"><option value="">None</option><option value="receiving" ${t.gate === 'receiving' ? 'selected' : ''}>Garments received / counted</option><option value="approval" ${t.gate === 'approval' ? 'selected' : ''}>Artwork approval</option></select>`)}`
+  return `${field('Task', input('title', t.title || ''))}${field('Days from production (− before, + after; blank = untimed)', input('due_offset', t.due_offset ?? '', 'number'))}${field('Department', input('department', t.department || 'Production'))}${field('Board stage', `<select class="input" name="stage">${options(stages, t.stage || 'production')}</select>`)}${field('Assigned employee', `<select class="input" name="assigned_id">${staff(members, t.assigned_id)}</select>`)}${field('Requirement', `<select class="input" name="gate"><option value="">None</option><option value="receiving" ${t.gate === 'receiving' ? 'selected' : ''}>Garments received / counted</option><option value="approval" ${t.gate === 'approval' ? 'selected' : ''}>Artwork approval</option></select>`)}`
 }
 function editJobTask(id, d, t) {
   modal({
     title: t ? 'Edit task' : 'Add task',
-    body: `<form id="prod-edit-task" class="prod-fields">${taskFields(t || {}, d.members)}${field('Order (lower comes first)', input('position', t?.position ?? d.tasks.length, 'number'))}</form>`,
+    body: `<form id="prod-edit-task" class="prod-fields">${taskFields(t || {}, d.members)}${field('Override task date (optional)', input('due_date', t?.due_override || '', 'date'))}${field('Order (lower comes first)', input('position', t?.position ?? d.tasks.length, 'number'))}</form>`,
     footer: '<button class="btn" id="prod-save-task">Save task</button>',
     onMount: (bg) =>
       ($('#prod-save-task', bg).onclick = async () => {
@@ -256,6 +258,7 @@ function editJobTask(id, d, t) {
           const b = collect($('#prod-edit-task', bg))
           b.assigned_id = b.assigned_id ? +b.assigned_id : null
           b.position = +b.position
+          b.due_offset = b.due_offset === '' ? null : Number(b.due_offset)
           b.revision = d.revision
           await api.req(t ? 'PUT' : 'POST', `/api/production/jobs/${id}/tasks${t ? `/${t.id}` : ''}`, b)
           closeModal()
@@ -274,7 +277,7 @@ export async function workflowsView() {
     '<a href="#/production">Production</a> /'
   )
   $('#view').innerHTML =
-    `<div class="stack production-page"><p>Define the work once. Each job keeps its own editable copy. Use a workflow for screen printing, embroidery, DTF, laser or any service you offer.</p>${d.templates.map((t) => `<section class="card card-b"><div class="row"><h2>${esc(t.name)}</h2>${d.manager ? `<button class="btn ghost" data-edit-flow="${t.id}">Edit workflow</button>` : ''}</div><p class="dim">${t.archived ? 'Archived' : `Auto-match decoration containing “${esc(t.match_text)}”`} · Revision ${t.revision}</p><ol>${t.steps.map((s) => `<li>${esc(s.title)} <span class="dim">· ${esc(s.department)}</span></li>`).join('')}</ol></section>`).join('')}</div>`
+    `<div class="stack production-page"><p>Define the work once. Each job keeps its own editable copy. Use a workflow for screen printing, embroidery, DTF, laser or any service you offer.</p>${d.templates.map((t) => `<section class="card card-b"><div class="row"><h2>${esc(t.name)}</h2>${d.manager ? `<button class="btn ghost" data-edit-flow="${t.id}">Edit workflow</button>` : ''}</div><p class="dim">${t.archived ? 'Archived' : `Auto-match decoration containing “${esc(t.match_text)}”`} · Revision ${t.revision}</p><p class="dim">${t.timing.enabled ? `${t.timing.turnaround_days} ${t.timing.day_basis === 'business' ? 'working' : 'calendar'} days from start to production` : 'Timeline off — task sequence only'}</p><ol>${t.steps.map((s) => `<li>${esc(s.title)} <span class="dim">· ${esc(s.department)}${s.due_offset != null ? ` · ${Math.abs(s.due_offset)} days ${s.due_offset < 0 ? 'before' : s.due_offset > 0 ? 'after' : 'from'} production` : ''}</span></li>`).join('')}</ol></section>`).join('')}</div>`
   if ($('#prod-new-flow')) $('#prod-new-flow').onclick = () => editFlow(null, d.members)
   $$('[data-edit-flow]').forEach(
     (b) =>
@@ -294,14 +297,14 @@ function editFlow(t, members) {
   modal({
     title: t ? 'Edit workflow' : 'New workflow',
     wide: true,
-    body: `<form id="prod-flow"><div class="prod-fields">${field('Workflow name', input('name', t?.name || ''))}${field('Auto-match decoration text', input('match_text', t?.match_text || ''))}</div><label><input type="checkbox" name="archived" ${t?.archived ? 'checked' : ''}> Archive for future jobs</label><div id="prod-steps"></div><button type="button" class="btn ghost" id="prod-add-step">Add step</button></form>`,
+    body: `<form id="prod-flow"><div class="prod-fields">${field('Workflow name', input('name', t?.name || ''))}${field('Auto-match decoration text', input('match_text', t?.match_text || ''))}</div><label><input type="checkbox" name="archived" ${t?.archived ? 'checked' : ''}> Archive for future jobs</label>${timingFields(t?.timing || {})}<div id="prod-steps"></div><button type="button" class="btn ghost" id="prod-add-step">Add step</button></form>`,
     footer: '<button class="btn" id="prod-save-flow">Save workflow</button>',
     onMount: (bg) => {
       const read = () =>
         $$('[data-flow-step]', bg).forEach((el, i) => {
           for (const input of $$('input,select', el))
             steps[i][input.name] =
-              input.name === 'assigned_id' ? (input.value ? +input.value : null) : input.value
+              ['assigned_id','due_offset'].includes(input.name) ? (input.value !== '' ? +input.value : null) : input.value
         })
       const draw = () => {
         $('#prod-steps', bg).innerHTML = steps
@@ -343,6 +346,7 @@ function editFlow(t, members) {
             match_text: form.elements.match_text.value,
             archived: form.elements.archived.checked,
             revision: t?.revision,
+            timing: readTiming(form),
             steps
           })
           closeModal()
@@ -373,4 +377,27 @@ function queuePages(d, query) {
     return `<a class="btn ghost" href="#/production?${esc(q.toString())}">${label}</a>`
   }
   return `<nav class="prod-toolbar" aria-label="Task pages">${d.page > 1 ? link(d.page - 1, 'Previous') : ''}<span>Page ${d.page} of ${d.pages} · ${d.total} tasks</span>${d.page < d.pages ? link(d.page + 1, 'Next') : ''}</nav>`
+}
+
+function timingFields(t, job = false) {
+  return `<fieldset><legend>Optional timeline</legend><label><input type="checkbox" name="timing_enabled" ${t.enabled ? 'checked' : ''}> Use timing for this ${job ? 'job' : 'workflow'}</label><p class="dim">Task order and completion work with timing off. Working days skip Saturday and Sunday; holidays are not excluded.</p><div class="prod-fields">${field('Normal days from start to production', input('turnaround_days', t.turnaround_days ?? 5, 'number'))}${field('Count days as', `<select class="input" name="day_basis"><option value="business" ${t.day_basis !== 'calendar' ? 'selected' : ''}>Working days (Mon–Fri)</option><option value="calendar" ${t.day_basis === 'calendar' ? 'selected' : ''}>Calendar days</option></select>`)}${job ? field('Planning start', input('start_date', t.start_date || '', 'date')) + field('Override production date', input('production_date', t.production_date || '', 'date')) : ''}</div></fieldset>`
+}
+function readTiming(form, job = false) {
+  return { enabled: form.elements.timing_enabled.checked, turnaround_days: Number(form.elements.turnaround_days.value), day_basis: form.elements.day_basis.value,
+    ...(job ? { start_date: form.elements.start_date.value || null, production_date: form.elements.production_date.value || null } : {}) }
+}
+function timingPanel(d) {
+  const t = d.timing
+  return `<section class="card card-b"><div class="prod-toolbar"><div><h3>Timeline ${t.enabled ? '' : '· off'}</h3><p>${t.enabled ? `Production: ${t.planned_production_date ? esc(fmtDate(t.planned_production_date)) : 'Set a date'} · ${t.turnaround_days} ${t.day_basis === 'business' ? 'working' : 'calendar'} days from start` : 'Use the task sequence without date targets, or add an optional plan.'}</p></div>${d.manager ? '<button class="btn ghost" id="prod-timing">Edit timeline</button>' : ''}</div>${t.enabled && t.planned_production_date && d.job.due_date && t.planned_production_date > d.job.due_date ? '<p role="status">Production is planned after the customer due date. Review the rush plan or delivery promise.</p>' : ''}<p class="dim">Changing production shifts relative task dates. Explicit task date overrides stay fixed. Customer due dates are edited on the full job.</p></section>`
+}
+function editTiming(id, d) {
+  modal({ title: 'Job timeline', wide: true,
+    body: `<form id="prod-timing-form">${timingFields(d.timing, true)}${field('Reason / scheduling note', input('reason'))}<p class="dim">For a rush or supplier delay, choose an override production date. Edit an individual task to pin its date. Dates are planning targets and never block completing a task early.</p></form>`,
+    footer: '<button class="btn ghost" data-close>Cancel</button><button class="btn" id="prod-save-timing">Save timeline</button>',
+    onMount: bg => { $('#prod-save-timing', bg).onclick = async e => {
+      e.target.disabled = true
+      try { const form = $('#prod-timing-form', bg); await api.put(`/api/production/jobs/${id}/timing`, { revision:d.revision, timing:readTiming(form,true), reason:form.elements.reason.value }); closeModal(); await productionJobView(id); toast('Timeline saved') }
+      catch(err) { toast(err.message,true); e.target.disabled = false }
+    } }
+  })
 }

@@ -29,7 +29,7 @@ const decoOptions = (cur) => {
 const boardState = { filter: 'all', assignee: 'all' }
 
 export async function boardView() {
-  setPage('Job Board', `<button class="btn" id="new-job">+ New Job</button>`)
+  setPage('Job Board', `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn" id="new-job">+ New Job</button>`)
   // The Job Board is the shared screen. A realtime 'board' event re-runs this whole function
   // (app.js handleRealtime), and so does every filter chip and the assignee select — and the
   // render below is `#view`.innerHTML, which destroys whatever had focus. A keyboard user tabbing

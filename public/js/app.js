@@ -1,3 +1,4 @@
+import { calendarView } from './views/calendar.js'
 import { brandingView } from './views/branding.js'
 import { applyShopBranding,toggleShopTheme } from './shop-branding.js'
 import {suppliersView} from './views/suppliers.js'
@@ -121,6 +122,7 @@ route(/^\/costing(?:\?.*)?$/, costingView)
 route(/^\/costing\/settings$/, costingSettingsView)
 route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
 route(/^\/board$/, boardView)
+route(/^\/calendar$/, calendarView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)
 route(/^\/art$/, artView)
@@ -543,12 +545,12 @@ function handleRealtime(m) {
   } else if (m.type === 'branding') {
     refreshChrome()
   } else if (m.type === 'production') {
-    if (/^#\/production(?:\?|$)/.test(location.hash||'')) runRouter()
+    if (/^#\/production(?:\?|$)/.test(location.hash||'') || path === '/calendar') runRouter()
     announce('Production tasks updated. Refresh an open job before continuing.')
   } else if (m.type === 'board') {
     // someone (or the bot) moved a job. Say so: the repaint is silent, so a screen-reader user
     // watching the board is given no reason for the columns having changed under them.
-    if (path.startsWith('/board')) { runRouter(); announce('The job board was updated.') }
+    if (path.startsWith('/board') || path === '/calendar') { runRouter(); announce('The job board was updated.') }
     refreshChrome()
   } else if (m.type === 'conversation' || m.type === 'chat') {
     // The receptionist screen holds an unsaved form — knowledge base, greeting, persona, FAQ rows

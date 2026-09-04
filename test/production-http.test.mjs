@@ -279,6 +279,18 @@ test(
       })
       assert.equal(cost.operations[0].output_hour, 98)
       assert.equal((await json('/api/costing/comparison', undefined, 'GET')).machines.length, 1)
+      const timingJob = await json('/api/jobs', { contact_id:1,title:'Calendar-only job',decoration:'Manual',quantities:'1 M' })
+      let timingDetail = await json('/api/production/jobs/' + timingJob.id, undefined, 'GET')
+      const timingBody = { revision:timingDetail.revision,timing:{enabled:true,start_date:'2026-09-04',turnaround_days:5,day_basis:'business'},reason:'Standard turnaround' }
+      assert.equal((await req(`/api/production/jobs/${timingJob.id}/timing`, timingBody, 'PUT', staffCookie)).status,403)
+      timingDetail = await json(`/api/production/jobs/${timingJob.id}/timing`, timingBody, 'PUT')
+      assert.equal(timingDetail.timing.planned_production_date,'2026-09-11')
+      assert.equal((await req(`/api/production/jobs/${timingJob.id}/timing`, timingBody, 'PUT')).status,409)
+      assert.equal((await req(`/api/jobs/${timingJob.id}/stage`,{stage:'production'},'PATCH')).status,200)
+      const calendar = await json('/api/production/calendar?start=2026-09-01&end=2026-09-30',undefined,'GET',staffCookie)
+      assert.ok(calendar.events.some(e=>e.job_id===timingJob.id && e.date==='2026-09-11'))
+      assert.equal((await req('/api/production/calendar?start=bad&end=2026-09-30',undefined,'GET')).status,400)
+
     } finally {
       db?.close()
       control?.close()
