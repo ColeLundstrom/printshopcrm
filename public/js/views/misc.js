@@ -289,7 +289,7 @@ function slackCard(esc) {
   return `<div class="card">
     <div class="card-h"><h3>Slack</h3><span class="pill" id="slack-pill">checking…</span>
       <div class="spacer"></div><span class="dim" style="font-size:11px">your workspace, your bot</span></div>
-    <div class="card-b" id="slack">
+    <div class="card-b" id="slack"><p><a class="btn ghost" href="#/slack-assistant">Shop assistant · modes & employees</a></p>
       <p class="dim" style="font-size:12.5px;margin-bottom:16px;line-height:1.6">Paste a customer's message in Slack — get a priced draft estimate back in the thread. Type <code>/quote</code> and paste what the customer sent, or @-mention the bot in any channel. Runs on <strong style="color:var(--txt-2)">your</strong> Slack app in <strong style="color:var(--txt-2)">your</strong> workspace; nothing is ever sent to the customer.</p>
 
       <ol class="steps">

@@ -1,3 +1,4 @@
+import { slackOperatorView } from './views/slack-operator.js'
 import { calendarView } from './views/calendar.js'
 import { brandingView } from './views/branding.js'
 import { applyShopBranding,toggleShopTheme } from './shop-branding.js'
@@ -123,6 +124,7 @@ route(/^\/costing\/settings$/, costingSettingsView)
 route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
 route(/^\/board$/, boardView)
 route(/^\/calendar$/, calendarView)
+route(/^\/slack-assistant$/, slackOperatorView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)
 route(/^\/art$/, artView)

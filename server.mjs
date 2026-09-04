@@ -1,3 +1,4 @@
+import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack-operator.mjs'
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
@@ -537,6 +538,19 @@ async function slackQuoteAndReply({ slug, token, channel, thread_ts, text, origi
   })
 }
 
+async function slackOperatorReply({tenant,settings,team_id,user_id,channel,thread,request_id,message,origin}) {
+  await withTenant(tenant.slug, async () => {
+    const result=await operatorMessage({team_id,user_id,channel,thread,request_id,message:slackToPlain(message)}, {tenantKey:tenant.slug,members:()=>listMembers(tenant.id)})
+    const text=result.reply.slice(0,2900)
+    const links=(result.links || []).slice(0,5)
+    const blocks=[{type:'section',text:{type:'plain_text',text}}]
+    if(links.length)blocks.push({type:'actions',elements:links.map((l,i)=>({type:'button',action_id:'open_'+i,text:{type:'plain_text',text:l.label.slice(0,70)},url:origin+'/#'+l.path}))})
+    const posted=await slackPost({token:settings.slack_bot_token,channel,thread_ts:/^(command|dm):/.test(thread)?undefined:thread,text,blocks,plain:true})
+    if(thread.startsWith('command:') && posted.ts)run('UPDATE slack_operator_threads SET thread_key=? WHERE thread_key=?',JSON.stringify([team_id,channel,posted.ts,user_id]),JSON.stringify([team_id,channel,thread,user_id]))
+    rtBroadcast('production',{})
+  })
+}
+
 app.post('/api/slack/:key/events', slackLimit, slackRaw, (req, res) => slackRun(req, res, async ({ tenant, settings, raw }) => {
   let body = null
   try { body = JSON.parse(raw) } catch { /* handled below */ }
@@ -553,6 +567,10 @@ app.post('/api/slack/:key/events', slackLimit, slackRaw, (req, res) => slackRun(
   const token = String(settings.slack_bot_token || '').trim()
   if (!token) return
   const origin = publicOrigin(req)
+  if (operatorConfig().enabled) {
+    slackOperatorReply({tenant,settings,team_id:body.team_id,user_id:ev.user,channel:ev.channel,thread:ev.channel_type==='im'?'dm:'+ev.channel:ev.thread_ts || ev.ts,request_id:body.event_id,message:ev.text,origin}).catch(e=>console.error('slack operator delivery:',e.message))
+    return
+  }
   // Reply in the thread when there is one, so a busy channel doesn't get a wall of loose quotes.
   slackQuoteAndReply({ slug: tenant.slug, token, channel: ev.channel, thread_ts: ev.thread_ts || ev.ts, text: ev.text, origin })
     .catch((e) => console.error('slack async:', e.message))
@@ -572,6 +590,10 @@ app.post('/api/slack/:key/command', slackLimit, slackRaw, (req, res) => slackRun
   res.json({ response_type: 'ephemeral', text: text.trim() ? 'Working on that quote…' : 'Paste the customer request after the command and I will draft an estimate.' })
   if (!text.trim() || !token || replay) return
   const origin = publicOrigin(req)
+  if (operatorConfig().enabled) {
+    slackOperatorReply({tenant,settings,team_id:form.get('team_id'),user_id:form.get('user_id'),channel,thread:'command:'+trigger,request_id:trigger,message:'quote '+text,origin}).catch(e=>console.error('slack operator command:',e.message))
+    return
+  }
   slackQuoteAndReply({ slug: tenant.slug, token, channel, text, origin })
     .catch((e) => console.error('slack cmd:', e.message))
 }))
@@ -6075,13 +6097,22 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // is exactly false here: every batch before this one is committed and durable. See
   // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
   let stopped = null
-  for (let i = 0; i < grouped.length; i += BATCH) {
-    const batch = grouped.slice(i, i + BATCH)
-    try { tx(() => { batch.forEach((o, n) => writeOne(o, i + n)) }) }
-    catch (e) { stopped = e; break }
-    // Between transactions, never inside one: this is what lets /health answer, another shop
-    // load a page, and a websocket stay alive while a big export is landing.
-    if (i + BATCH < grouped.length) await new Promise((r) => setImmediate(r))
+  for (let i = 0; i < grouped.length;) {
+    const start = i, started = performance.now()
+    const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
+    try {
+      tx(() => {
+        // A fixed row count is not a latency budget: slower disks or large orders can make
+        // 200 records monopolize the process. Yield after 25 ms at an ORDER boundary.
+        do { writeOne(grouped[i], i); i++ }
+        while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
+      })
+    } catch (e) {
+      // SQLite rolled back this whole batch; the partial-import report must do the same.
+      ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
+      stopped = e; break
+    }
+    if (i < grouped.length) await new Promise((r) => setImmediate(r))
   }
   if (stopped) {
     const report = interruptedImportReport({
@@ -7488,6 +7519,12 @@ app.get('/api/sms-setup', requireRole('manager'), wrap((req,res) => {
  * them a blob that already contains their own URLs and the exact scopes required. Paste, install,
  * copy two values back. That is the whole setup.
  */
+app.get('/api/slack-operator', requireRole('manager'), wrap((req,res)=>res.json(operatorConfig(req.tenant?listMembers(req.tenant.id):[]))))
+app.put('/api/slack-operator', requireRole('manager'), wrap((req,res)=>{
+  try { res.json(saveOperatorConfig(req.body,req.tenant?listMembers(req.tenant.id):[])) }
+  catch(e) { if(e.status)res.status(e.status).json({error:e.message});else throw e }
+}))
+
 app.get('/api/slack-setup', requireRole('manager'), wrap((req, res) => {
   const s = getSettings()
   const key = req.tenant?.embed_key || getSettings().embed_key || ''
@@ -7590,7 +7627,7 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
     if (!reachable) why = r.status === 401 ? 'signature' : `http_${r.status}`
   } catch (e) { why = 'unreachable'; console.error('slack self-test:', e.message) }
 
-  if (reachable) return res.json({ ok: true, team: auth.team, bot: auth.bot })
+  if (reachable) { if(token!==String(getSettings().slack_bot_token || '').trim() || secret!==String(getSettings().slack_signing_secret || '').trim()) return res.json({ok:false,error:'Save the Slack credentials, then test the connection again.'}); setSetting('slack_team_id', auth.team_id || ''); return res.json({ ok: true, team: auth.team, bot: auth.bot }) }
   if (why === 'signature') {
     return res.json({ ok: false, half: 'secret', team: auth.team, bot: auth.bot,
       error: `Token works \u2014 connected to ${auth.team} \u2014 but the Signing Secret doesn't match, so Slack can't reach your shop. Re-copy it from Basic Information \u2192 App Credentials \u2192 Signing Secret \u2192 Show.` })
@@ -7625,7 +7662,10 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   }
   // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged),
   // and erases it for the one sentinel value that means erase — see CLEAR_SECRET.
+  const slackBefore=getSettings()
   applySettingsPatch(patch)
+  const slackAfter=getSettings()
+  if(['slack_bot_token','slack_signing_secret'].some(k=>slackBefore[k]!==slackAfter[k]))setSetting('slack_team_id','')
   if(['brand_primary','brand_secondary','brand_theme','brand_name','brand_tagline'].some(k=>k in patch))rtBroadcast('branding',{})
   res.json(publicSettings())
 }))
@@ -7645,7 +7685,7 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
  */
 const DISCONNECT_GROUPS = {
   payments: ['payment_callback_key','stripe_secret','stripe_webhook_secret','anet_login_id','anet_transaction_key','anet_signature_key'],
-  slack: ['slack_bot_token', 'slack_signing_secret'],
+  slack: ['slack_bot_token', 'slack_signing_secret', 'slack_team_id'],
   authorize_net: ['anet_login_id','anet_transaction_key','anet_signature_key'],
   stripe: ['stripe_secret', 'stripe_webhook_secret', 'stripe_publishable', 'stripe_account_id', 'stripe_charges_enabled'],
   twilio: ['twilio_sid', 'twilio_token', 'twilio_from'],
