@@ -108,7 +108,7 @@ const shopDb = (slug, fn) => {
 /* ---------- boot a server against a throwaway db ---------- */
 const server = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
+  env: { ...process.env, PSC_IMPORT_DIAGNOSTICS: '1', PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
   stdio: ['ignore', 'pipe', 'pipe'], detached: true,
 })
 let serverLog = ''
@@ -3309,11 +3309,11 @@ try {
     // Poll /health as fast as it will answer for as long as the import runs. This counts what a
     // second shop — or a load balancer — actually gets served while the first one imports.
     const lat = []
-    let polling = true
+    let polling = true, healthFailures = 0
     const probe = (async () => {
       while (polling) {
         const t = Date.now()
-        try { await fetch(`${BASE}/health`) } catch { /* a refused connect is still a data point */ }
+        try { const r=await fetch(`${BASE}/health`); const body=await r.json(); if(r.status!==200 || !body.ok)healthFailures++ } catch { healthFailures++ }
         lat.push(Date.now() - t)
       }
     })()
@@ -3327,8 +3327,10 @@ try {
     await probe
     const body = await up.json().catch(() => ({}))
     const worst = Math.max(...lat)
+    for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
 
     chk('a 9,000-order export imports', String(body.imported), '^9000$')
+    chk('…and every concurrent health probe succeeds', String(healthFailures), '^0$')
 
   /* An upload that does not arrive intact is not a server fault, and the shop must not be told it
    * is. multer throws a MulterError for its OWN limits (size, count), and that is mapped. But
@@ -3394,11 +3396,11 @@ try {
     const cbig = crows.join('\n')
 
     const clat = []
-    let cpolling = true
+    let cpolling = true, customerHealthFailures = 0
     const cprobe = (async () => {
       while (cpolling) {
         const t = Date.now()
-        try { await fetch(`${BASE}/health`) } catch { /* still a data point */ }
+        try { const r=await fetch(`${BASE}/health`); const body=await r.json(); if(r.status!==200 || !body.ok)customerHealthFailures++ } catch { customerHealthFailures++ }
         clat.push(Date.now() - t)
       }
     })()
@@ -3414,6 +3416,7 @@ try {
     const cworst = Math.max(...clat)
 
     chk("a 30,000-row customer book imports", String(cbody.created), "^30000$")
+    chk("…and every concurrent customer-import health probe succeeds", String(customerHealthFailures), "^0$")
     chk(`…while the app keeps answering other requests (${clat.length} health probes served in ${cwall}ms, was 3)`,
       String(clat.length >= 10), '^true$')
     chk(`…and nobody waits the length of the import for a page (worst ${cworst}ms, was ${cwall}ms)`,

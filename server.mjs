@@ -5945,6 +5945,9 @@ function groupImportedOrders(orders) {
 }
 
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
+  const diagnostic = process.env.PSC_IMPORT_DIAGNOSTICS === '1'
+  const metrics = { parse_ms: 0, map_ms: 0, prepare_ms: 0, max_order_ms: 0, max_batch_ms: 0, max_commit_ms: 0 }
+  const preparedAt = performance.now()
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
   let rows = parseCsv(text)
@@ -5955,7 +5958,9 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     rows = applyImportMapping(rows, 'orders', req.body?.mapping)
   } catch (e) { return res.status(400).json({ error: e.message }) }
 
+  metrics.parse_ms = performance.now() - preparedAt
   const mapped = mapOrderRows(rows)
+  metrics.map_ms = performance.now() - preparedAt - metrics.parse_ms
   // Preview what the import will WRITE, not what the file contains. Folded per line-item rows are
   // one order, not four, and the value shown has to be the value that lands: a three-line $1,900
   // order previewed as "3 orders — $1,900 of history" and then wrote one $1,000 invoice.
@@ -6026,6 +6031,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
    * order number, so a re-import skips exactly what already arrived. The gate asserts both halves:
    * that the loop keeps breathing, and that a re-import writes nothing new.
    */
+  metrics.prepare_ms = performance.now() - preparedAt
   const BATCH = 200
   const writeOne = (o, rowIndex) => {
     // Idempotent on the source system's order number, matched EXACTLY against its own column.
@@ -6100,13 +6106,17 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   for (let i = 0; i < grouped.length;) {
     const start = i, started = performance.now()
     const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
+    let commitAt = started
     try {
       tx(() => {
         // A fixed row count is not a latency budget: slower disks or large orders can make
         // 200 records monopolize the process. Yield after 25 ms at an ORDER boundary.
-        do { writeOne(grouped[i], i); i++ }
+        do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
         while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
+        commitAt = performance.now()
       })
+      metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
+      metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
     } catch (e) {
       // SQLite rolled back this whole batch; the partial-import report must do the same.
       ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
@@ -6114,6 +6124,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     }
     if (i < grouped.length) await new Promise((r) => setImmediate(r))
   }
+  if (diagnostic) console.log('[import-diagnostics]', JSON.stringify({ orders: grouped.length, ...Object.fromEntries(Object.entries(metrics).map(([k,v])=>[k,Math.round(v)])) }))
   if (stopped) {
     const report = interruptedImportReport({
       written: created, total: grouped.length, noun: 'order', err: stopped,

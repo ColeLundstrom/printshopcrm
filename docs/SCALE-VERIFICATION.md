@@ -21,3 +21,9 @@ The CI fixture uses 1,500 jobs and 9,000 tasks. It checks bounded read counts, c
 ## Remaining load work
 
 These endpoints still aggregate the matching shop data in memory. This work removes repeated database scans and unbounded browser lists; it does not certify arbitrarily large installations. High concurrency, very large supplier catalogs, many operations per order, tens of thousands of runs sharing one estimate, and noisy-shop isolation still need dedicated load and recovery exercises before broader capacity claims.
+
+## Import latency diagnostics
+
+The order importer bounds each transaction at an order boundary by both 200 orders and 25 ms of work. This does not bound a single filesystem commit or scheduler stall. Windows run 33929643029 at 3dfcfcd passed 9,000 orders with 173 ms worst health latency; the preceding run at the same runtime code reached 3,023 ms. That variance remains under investigation rather than being dismissed by rerunning.
+
+Set `PSC_IMPORT_DIAGNOSTICS=1` temporarily to log preparation, largest order/batch/commit durations and health-write probes exceeding 500 ms. Logs contain counts and timings, not customer content. The E2E gate enables this and prints recent import diagnostics. Its concurrent probes now require HTTP 200 and `ok:true`, in addition to unchanged 1,500 ms latency and minimum probe-count thresholds. Slow errors or refused connections cannot count as successful health checks.
