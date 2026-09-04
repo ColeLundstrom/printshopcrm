@@ -25,8 +25,8 @@ test('signed Slack delivery uses linked identity, replies in DM and rejects repl
     const owner=control.prepare('SELECT id,tenant_id FROM members LIMIT 1').get(),tenant=control.prepare('SELECT embed_key FROM tenants WHERE id=?').get(owner.tenant_id)
     for(const [k,v]of Object.entries({slack_team_id:'TTEST',slack_bot_token:'xoxb-synthetic',slack_signing_secret:'synthetic-secret'}))db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k,v)
     const cfg=await fetch(base+'/api/slack-operator',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({enabled:true,mode:'review',links:[{user_id:'UOWNER',member_id:owner.id}]})});assert.equal(cfg.status,200,await cfg.clone().text())
-    const delivery=async(id,team='TTEST',bad=false)=>{
-      const raw=JSON.stringify({event_id:id,team_id:team,event:{type:'message',channel_type:'im',channel:'DTEST',user:'UOWNER',ts:'123.001',text:'job JOB-1001'}}),ts=String(Math.floor(Date.now()/1000))
+    const delivery=async(id,team='TTEST',bad=false,message='job JOB-1001')=>{
+      const raw=JSON.stringify({event_id:id,team_id:team,event:{type:'message',channel_type:'im',channel:'DTEST',user:'UOWNER',ts:'123.001',text:message}}),ts=String(Math.floor(Date.now()/1000))
       return fetch(base+'/api/slack/'+tenant.embed_key+'/events',{method:'POST',headers:{'Content-Type':'application/json','x-slack-request-timestamp':ts,'x-slack-signature':bad?'v0=wrong':'v0='+createHmac('sha256','synthetic-secret').update(`v0:${ts}:${raw}`).digest('hex')},body:raw})
     }
     const messages=()=>existsSync(captured)?readFileSync(captured,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[]
@@ -39,7 +39,18 @@ test('signed Slack delivery uses linked identity, replies in DM and rejects repl
     for(let i=0;i<100&&messages().length<2;i++)await new Promise(r=>setTimeout(r,20))
     assert.equal(messages().length,2,log);assert.match(messages()[1].text,/link your Slack/)
     const history=db.prepare('SELECT history FROM slack_operator_threads').get();assert.match(history.history,/JOB-1001/)
-    const rotate=await fetch(base+'/api/settings',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({slack_bot_token:'xoxb-replaced-synthetic'})});assert.equal(rotate.status,200)
+    const countBefore=db.prepare('SELECT count(*) n FROM estimates').get().n
+    assert.equal((await delivery('EQUOTE','TTEST',false,'quote 48 navy tees, 2 color front, new-buyer@example.test')).status,200)
+    for(let i=0;i<100&&messages().length<3;i++)await new Promise(r=>setTimeout(r,20))
+    const confirmation=messages()[2]?.text.match(/confirm ([a-f0-9]{8})/);assert.ok(confirmation,JSON.stringify(messages()))
+    assert.equal(db.prepare('SELECT count(*) n FROM estimates').get().n,countBefore)
+    assert.equal((await delivery('ECONFIRM','TTEST',false,'confirm '+confirmation[1])).status,200)
+    for(let i=0;i<100&&messages().length<4;i++)await new Promise(r=>setTimeout(r,20))
+    assert.match(messages()[3]?.text || '',/drafted for 48 pieces/)
+    assert.equal(db.prepare('SELECT count(*) n FROM estimates').get().n,countBefore+1)
+    assert.equal((await delivery('ECONFIRM','TTEST',false,'confirm '+confirmation[1])).status,200)
+    assert.equal(db.prepare('SELECT count(*) n FROM estimates').get().n,countBefore+1)
+    const rotate=await fetch(base+'/api/settings',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({slack_bot_token:'fixture-slack-rotated'})});assert.equal(rotate.status,200)
     assert.equal(db.prepare("SELECT value FROM settings WHERE key='slack_team_id'").get().value,'')
     const enableAgain=await fetch(base+'/api/slack-operator',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({enabled:true,mode:'review',links:[]})});assert.equal(enableAgain.status,400)
   } finally {db?.close();control?.close();if(child&&child.exitCode===null){child.kill('SIGTERM');await new Promise(r=>child.once('exit',r))}rmSync(tmp,{recursive:true,force:true})}
