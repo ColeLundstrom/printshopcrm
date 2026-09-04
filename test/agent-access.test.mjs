@@ -17,7 +17,7 @@ test('agent keys store hashes, expire, revoke independently and follow current s
   assert.throws(()=>api.audit(2,a.key.id),/not found/)
   api.record(a.key.id,'GET','/api/v1/jobs',200);assert.equal(api.audit(1,a.key.id)[0].status,200)
   api.revoke(1,a.key.id);assert.equal(api.resolve(a.token),null);assert.ok(api.resolve(b.token))
-  db.prepare("UPDATE members SET role='staff' WHERE id=1").run();assert.equal(api.resolve(b.token),null)
+  db.prepare("UPDATE members SET role='staff' WHERE id=1").run();assert.equal(api.resolve(b.token),null);assert.equal(api.list(1).find(k=>k.id===b.key.id).member_active,false)
   db.prepare("UPDATE members SET role='owner' WHERE id=1").run()
   db.prepare("UPDATE tenants SET status='suspended' WHERE id=1").run();assert.equal(api.resolve(b.token),null)
   db.prepare("UPDATE tenants SET status='active' WHERE id=1").run()
