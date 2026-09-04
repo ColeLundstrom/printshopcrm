@@ -106,6 +106,7 @@
   </div>
 
   <script>
+    const JOB_RETURN_HASH = /^#\/production\/jobs\/\d+(?:\?shop=[a-zA-Z0-9_-]+)?$/.test(location.hash) ? location.hash : ''
     const RESET_TOKEN = new URLSearchParams(location.search).get('token') || ''
     let M = location.pathname === '/reset' && RESET_TOKEN ? 'reset' : location.pathname === '/signup' ? 'signup' : 'login'
     const $ = (id) => document.getElementById(id)
@@ -143,7 +144,7 @@
       $('err').style.display = 'none'
       $('notice').style.display = 'none'
       document.querySelector('[name=password]').setAttribute('autocomplete', isSignup || isReset ? 'new-password' : 'current-password')
-      if (!isReset) history.replaceState(null, '', isSignup ? '/signup' : isForgot ? '/login' : '/login')
+      if (!isReset) history.replaceState(null, '', (isSignup ? '/signup' : '/login') + JOB_RETURN_HASH)
     }
     /**
      * A proxy 502 during a restart is HTML, not JSON, and this page called r.json() straight.
@@ -186,7 +187,7 @@
           btn.disabled = false; btn.textContent = TITLES[M]
           return false
         }
-        location.href = d.onboarding ? '/#/welcome' : '/'
+        location.href = d.onboarding ? '/#/welcome' : '/' + JOB_RETURN_HASH
       } catch (ex) {
         err.style.display = 'block'
         err.textContent = ex.fix ? `${ex.message}\n\n${ex.fix}` : ex.message

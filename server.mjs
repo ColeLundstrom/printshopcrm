@@ -1,3 +1,6 @@
+import { registerCostingRoutes } from './lib/costing-routes.mjs'
+import { registerProductionRoutes } from './lib/production-routes.mjs'
+import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
 import { verifyTwilio, ingestSms, phoneKey } from './lib/inbound-sms.mjs'
 import multer from 'multer'
@@ -3604,6 +3607,9 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
   res.send(pdf)
 }))
 
+registerCostingRoutes(app,{requireRole,listMembers})
+registerProductionRoutes(app,{requireRole,hasRole,listMembers,broadcast:rtBroadcast,origin:publicOrigin,artUrl})
+
 /* ================= JOBS / BOARD ================= */
 
 // One list, in lib/db.mjs, so the automation engine measures against the same seven keys the
@@ -3854,6 +3860,7 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
     order = Number(req.body.sort_order)
     if (!Number.isFinite(order)) return res.status(400).json({ error: 'sort_order must be a number', code: 'invalid_sort_order' })
   }
+  try { guardWorkflowStage(id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   const status = stage === 'complete' ? 'complete' : 'active'
   run('UPDATE jobs SET stage=?, sort_order=?, status=?, updated_at=? WHERE id=?', stage, order, status, now(), id)
   stampShipDate(j, stage)
@@ -3883,6 +3890,7 @@ const scanJobPayload = (j) => {
     id: j.id, job_number: j.job_number, title: j.title, stage: j.stage,
     stage_label: STAGES.find((s) => s.key === j.stage)?.label || j.stage,
     next_stage: next ? { key: next.key, label: next.label } : null,
+    workflow: productionWorkflow(j.id),
     stages: STAGES, due_date: j.due_date, rush: !!j.rush, decoration: j.decoration || '',
     contact_name: get('SELECT name FROM contacts WHERE id = ?', j.contact_id)?.name || '',
     pieces: sizeTotal(parse(j.sizes, {})),
@@ -3903,7 +3911,9 @@ const scanJobPayload = (j) => {
 app.get('/api/scan/:code', wrap((req, res) => {
   const raw = String(req.params.code || '').trim()
   const candidates = []
-  const ticket = raw.match(/\/p\/ticket\/(\d+)/)
+  const qr = raw.match(/\/#\/production\/jobs\/(\d+)\?shop=([a-zA-Z0-9_-]+)$/)
+  if(qr && qr[2]!==(req.tenant?.slug||'local'))return res.status(403).json({error:'This label belongs to another shop.'})
+  const ticket = raw.match(/\/p\/ticket\/(\d+)/) || qr
   const digits = raw.match(/^(?:job[-\s_]?)?(\d{1,10})$/i)
   if (digits) candidates.push(`JOB-${digits[1]}`)
   candidates.push(raw.toUpperCase().replace(/\s+/g, ''))
@@ -3925,6 +3935,7 @@ app.post('/api/scan', wrap((req, res) => {
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const stage = String(b.to_stage || '')
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `Unknown stage: ${stage}` })
+  try { guardWorkflowStage(j.id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   if (stage !== j.stage) {
     run('UPDATE jobs SET stage=?, status=?, updated_at=? WHERE id=?', stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
     stampShipDate(j, stage)
@@ -4087,7 +4098,7 @@ app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   if (requireCustomerEmail(c, res, 'proof')) return
   const s = getSettings()
   run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
-  run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress')`, now(), j.id)
+  run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress') AND NOT EXISTS(SELECT 1 FROM production_jobs WHERE job_id=jobs.id)`, now(), j.id)
   queueEmail({ contact: c, kind: 'art', subject: `Proof v${a.version} for ${j.title} — approval needed`,
     template: s.email_template_art, vars: { contact_name: c?.name || '', version: a.version, job_title: j.title } })
   logActivity('art', `Proof v${a.version} sent to ${c?.email || 'customer'}`, { contact_id: j.contact_id, job_id: j.id })
@@ -4180,7 +4191,7 @@ function decideArt(a, approved, notes, by) {
   // stage='prepress' with status='complete': GET /api/board is WHERE j.status = 'active', so the
   // job was on NO board, out of Capacity, off Today and booking zero press time, while its own
   // page said Prepress. Nothing could put it back — every screen that moves a job reads the board.
-  run(`UPDATE jobs SET stage='prepress', status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
+  run(`UPDATE jobs SET stage=CASE WHEN EXISTS(SELECT 1 FROM production_jobs WHERE job_id=jobs.id) THEN stage ELSE 'prepress' END, status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
   logActivity('art', `Proof v${a.version} APPROVED by ${by} — released to prepress`, { contact_id: j.contact_id, job_id: j.id })
   fireAuto('art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
 
@@ -6379,6 +6390,7 @@ app.post('/api/v1/jobs/:id/stage', wrap((req, res) => {
   const stage = String(req.body?.stage || '')
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `stage must be one of: ${STAGE_KEYS.join(', ')}` })
   const from = j.stage
+  try { guardWorkflowStage(j.id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   run("UPDATE jobs SET stage = ?, status = ?, updated_at = ? WHERE id = ?", stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
   stampShipDate(j, stage)
   const fresh = get('SELECT * FROM jobs WHERE id = ?', j.id)

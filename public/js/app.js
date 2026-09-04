@@ -1,3 +1,6 @@
+import {suppliersView} from './views/suppliers.js'
+import {costingView,costingSettingsView,jobCostingView} from './views/costing.js'
+import { productionView,productionJobView,workflowsView } from './views/production.js'
 import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, closeModal, store, setShopFormat } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
@@ -47,6 +50,8 @@ const NAV = [
   { advanced: true, href: '/followups', ico: 'followups', name: 'Follow-ups', badge: 'followups' },
   { advanced: true, href: '/reorders', ico: 'reorders', name: 'Reorder Radar' },
   { label: 'Production', section: true },
+  { href: '/costing', ico:'roi',name:'Machine & job costs',manage:true,advanced:true },
+  { href: '/production', ico: 'board', name: 'Department queue' },
   { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
   { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
   { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
@@ -105,6 +110,13 @@ route(/^\/pricing$/, pricingView)
 // simplified (2026-08-24) and this is a setup screen you visit, not a place you work all day.
 route(/^\/matrices$/, matricesView)
 route(/^\/matrices\/(\d+)$/, matrixEditor)
+route(/^\/production(?:\?.*)?$/, productionView)
+route(/^\/production\/workflows$/, workflowsView)
+route(/^\/production\/jobs\/(\d+)(?:\?.*)?$/, productionJobView)
+route(/^\/suppliers$/, suppliersView)
+route(/^\/costing$/, costingView)
+route(/^\/costing\/settings$/, costingSettingsView)
+route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
 route(/^\/board$/, boardView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)
@@ -528,6 +540,9 @@ function handleRealtime(m) {
   if (m.type === 'notify') {
     toast(`${m.data?.title || 'Update'}${m.data?.body ? ' — ' + m.data.body : ''}`)
     refreshChrome()
+  } else if (m.type === 'production') {
+    if (/^#\/production(?:\?|$)/.test(location.hash||'')) runRouter()
+    announce('Production tasks updated. Refresh an open job before continuing.')
   } else if (m.type === 'board') {
     // someone (or the bot) moved a job. Say so: the repaint is silent, so a screen-reader user
     // watching the board is given no reason for the columns having changed under them.
@@ -550,7 +565,7 @@ function handleRealtime(m) {
 async function boot() {
   try {
     const me = await api.get('/api/auth/me')
-    if (!me.authed) { location.href = '/login'; return }
+    if (!me.authed) { location.href = '/login' + (/^#\/production\/jobs\/\d+(?:\?shop=[a-zA-Z0-9_-]+)?$/.test(location.hash)?location.hash:''); return }
     window.__me = me
     if (!me.single_tenant) $('#logout-btn').hidden = false
     updateTrialBar(me.billing)
@@ -558,6 +573,7 @@ async function boot() {
     // (an emailed estimate/proof link, a bookmarked job) is honored, so onboarding never hijacks it.
     const h = (location.hash || '').replace(/^#/, '')
     const atRoot = h === '' || h === '/'
+    if(atRoot && me.onboarding_done !== false){try{const p=await api.get('/api/production');if(p.preferred)history.replaceState(null,'','#/production?department='+encodeURIComponent(p.preferred))}catch{}}
     if (me.authed && me.single_tenant !== true && me.onboarding_done === false && atRoot) {
       location.hash = '#/welcome'
     }

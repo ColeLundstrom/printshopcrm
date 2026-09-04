@@ -2,7 +2,7 @@
   "name": "printshopcrm",
   "version": "1.35.0",
   "type": "module",
-  "description": "Open-source shop management for screen printers, embroiderers and DTF shops \u2014 quoting, production, invoicing and per-job profitability, with the CRM built in.",
+  "description": "Open-source shop management for screen printers, embroiderers and DTF shops — quoting, production, invoicing and per-job profitability, with the CRM built in.",
   "keywords": [
     "screen-printing",
     "embroidery",
@@ -42,8 +42,10 @@
   },
   "dependencies": {
     "express": "^5.2.1",
+    "fast-xml-parser": "^5.11.1",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
+    "qrcode": "^1.5.4",
     "ws": "^8.21.1"
   }
 }

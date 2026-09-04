@@ -1,0 +1,123 @@
+/* Production: a task queue and focused work sheet, using the existing shop tokens. */
+.production-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  min-width: 0;
+}
+.prod-toolbar,
+.prod-job-heading,
+.prod-task,
+.prod-queue-row,
+.prod-actions {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.prod-toolbar .field {
+  margin: 0;
+  min-width: 180px;
+}
+.prod-queue-row {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--txt);
+  text-decoration: none;
+}
+.prod-queue-row:hover {
+  background: var(--bg-2);
+}
+.prod-queue-row h3 {
+  margin: 6px 0;
+}
+.prod-ready {
+  color: var(--accent);
+}
+.prod-task {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.prod-next h2 {
+  margin: 12px 0;
+}
+.prod-next .btn {
+  min-height: 48px;
+}
+.prod-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 12px;
+  min-width: 0;
+}
+.prod-fields .field {
+  min-width: 0;
+  margin: 0;
+}
+.prod-choice {
+  display: block;
+  padding: 14px 0;
+}
+.prod-receive {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.prod-label {
+  text-align: center;
+  color: var(--txt);
+}
+body.production-focus #sidebar,
+body.production-focus #tabbar {
+  display: none;
+}
+body.production-focus .app {
+  grid-template-columns: minmax(0, 1fr);
+}
+body.production-focus .main {
+  margin-left: 0;
+}
+@media (max-width: 600px) {
+  .prod-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .prod-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .prod-task > div,
+  .prod-queue-row > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .prod-actions {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+}
+@media print {
+  .prod-label {
+    display: block;
+  }
+  .prod-label img {
+    width: 45mm;
+    height: 45mm;
+  }
+}
+@media print {
+  body:has(.prod-label) * {
+    visibility: hidden;
+  }
+  body:has(.prod-label) .prod-label,
+  body:has(.prod-label) .prod-label * {
+    visibility: visible;
+  }
+  body:has(.prod-label) .prod-label {
+    position: fixed;
+    inset: 0 auto auto 0;
+    width: 65mm;
+    padding: 5mm;
+    background: white;
+    color: black;
+  }
+}

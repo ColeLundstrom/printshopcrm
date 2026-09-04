@@ -11838,11 +11838,8 @@ section('an automation writes a stage the board can draw, or it writes nothing')
   const fixture = () => {
     const mem = new DatabaseSync(':memory:')
     dbm.setDefaultDb(mem)
+    dbm.initDb(mem)
     auto.initAutomations(mem)
-    mem.exec("CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT, tags TEXT DEFAULT '', updated_at DATETIME)")
-    mem.exec("CREATE TABLE jobs (id INTEGER PRIMARY KEY, job_number TEXT, stage TEXT, status TEXT, rush INTEGER DEFAULT 0, updated_at DATETIME)")
-    mem.exec("CREATE TABLE activities (id INTEGER PRIMARY KEY, contact_id INTEGER, job_id INTEGER, type TEXT, description TEXT, created_at DATETIME)")
-    mem.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)')
     dbm.run("INSERT INTO jobs (id, job_number, stage, status) VALUES (1, 'JOB-1042', 'production', 'active')")
     // automation_runs.automation_id is a real FK, so the rule has to exist to be logged against.
     dbm.run("INSERT INTO automations (id, name, enabled, trigger, actions) VALUES (1, 'R', 1, 'invoice.paid', '[]')")

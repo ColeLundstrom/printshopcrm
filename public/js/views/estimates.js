@@ -349,7 +349,7 @@ export async function estimateEditor(id) {
           target.matrix = pick.matrix
           // The decoration field is a screen-printing-era default. A line priced off the shop's own
           // sheet says what it is in the matrix headings; leaving "Screen Print" on a mug line lies.
-          target.decoration = ''
+          target.decoration = pick.matrix.decoration || ''
           // A flat charge is a fee line by definition: it must not multiply by a size grid.
           if (pick.unit === 'flat' && target.sizes) { delete target.sizes; target.qty = 1; target.taxable = false }
         } else {
@@ -365,7 +365,7 @@ export async function estimateEditor(id) {
           const picked = Math.max(0, Math.floor(Number(pick.qty) || 0))
           items.push(pick.unit === 'flat'
             ? { ...blankFee(), description: pick.description, detail: pick.detail, qty: 1, unit_price: pick.price, matrix: pick.matrix }
-            : { ...blankItem(), decoration: '', description: pick.description, detail: pick.detail,
+            : { ...blankItem(), decoration: pick.matrix.decoration || '', description: pick.description, detail: pick.detail,
                 sizes: { S: 0, M: picked, L: 0, XL: 0 }, unit_price: pick.price, matrix: pick.matrix })
           markEditorDirty()
           draw()

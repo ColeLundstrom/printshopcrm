@@ -42,7 +42,7 @@ export async function scanView() {
       <div class="card scan-cam-card">
         <video id="scan-video" playsinline muted style="display:none"></video>
         <div id="scan-cam-hint" class="dim" style="padding:14px">
-          ${hasDetector ? '📷 Point the camera at a work-ticket barcode.' : 'Camera scanning needs Chrome on Android — type the job number below instead.'}
+          ${hasDetector ? '📷 Point the camera at a work-ticket barcode.' : 'Use your phone camera to open a QR label, or enter a job number here.'}
         </div>
         ${hasDetector ? '<button class="btn" id="scan-start">Start camera</button><button class="btn ghost" id="scan-stop" hidden>Stop camera</button>' : ''}
       </div>
@@ -63,7 +63,7 @@ export async function scanView() {
       $('#scan-start').hidden = true
       $('#scan-stop').hidden = false
       await v.play()
-      const detector = new window.BarcodeDetector({ formats: ['code_128'] })
+      const detector = new window.BarcodeDetector({ formats: ['code_128','qr_code'] })
       scanTimer = setInterval(async () => {
         try {
           const codes = await detector.detect(v)
@@ -126,6 +126,7 @@ export async function scanView() {
 async function lookup(code) {
   try {
     const d = await api.get(`/api/scan/${encodeURIComponent(code)}`)
+    if(d.workflow?.revision){location.hash=`#/production/jobs/${d.id}`;return}
     renderJob(d)
   } catch (e) { toast(e.message, true) }
 }

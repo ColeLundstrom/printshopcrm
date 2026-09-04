@@ -359,7 +359,7 @@ export async function jobDetailView(id) {
     : `<div class="schednote ok"><div><strong>Art approved ${fmtDate(sc.approvedOn)}</strong></div>
         <div class="dim">${j.turnaround_days} working days from approval → due ${fmtDate(sc.due)}.</div></div>`
 
-  setPage(j.title, `<button class="btn ghost" id="edit">Edit</button><button class="btn" id="upload-btn">+ Upload Art</button>`,
+  setPage(j.title, `<a class="btn ghost" href="#/production/jobs/${id}">Production tasks</a>${window.__me?.can_manage===false?'':`<a class="btn ghost" href="#/costing/jobs/${id}">Job margin</a>`}<button class="btn ghost" id="edit">Edit</button><button class="btn" id="upload-btn">+ Upload Art</button>`,
     `<a href="#/board">Board</a> /`)
 
   $('#view').innerHTML = `<div class="cols">
