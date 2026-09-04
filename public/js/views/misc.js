@@ -375,7 +375,8 @@ export async function settingsView() {
     catch { return DEFAULT_UPCHARGES }
   })()
 
-  $('#view').innerHTML = `<div style="max-width:820px" class="stack">
+  $('#view').innerHTML = `<div class="settings-workspace stack"><nav class="settings-jumps" aria-label="Settings sections">
+      <a href="#/setup">Setup guide</a><button type="button" data-settings-jump="shop">Shop</button><button type="button" data-settings-jump="costing">Costing</button><button type="button" data-settings-jump="delivery">Email &amp; SMS</button><button type="button" data-settings-jump="ai">AI</button><button type="button" data-settings-jump="slack">Slack</button><button type="button" data-settings-jump="modes">Advanced controls</button></nav>
     <div class="card"><div class="card-h"><h3>Shop</h3></div><div class="card-b" id="shop">
       <div class="field">
         <label>Your logo</label>
@@ -646,6 +647,16 @@ export async function settingsView() {
   // again, on the screen holding the SMTP password and the Stripe keys. Every other screen with
   // this pattern (matrices, estimates, agent, pricing, onboarding) already keeps it at module
   // level; this was the one copy that did not.
+  const jumpTo = (id) => {
+    const section = document.getElementById(id)
+    if (!section) return
+    section.closest('details')?.setAttribute('open', '')
+    section.scrollIntoView({ block: 'start' })
+    section.setAttribute('tabindex', '-1'); section.focus({ preventScroll: true })
+  }
+  for (const b of $$('[data-settings-jump]')) b.onclick = () => jumpTo(b.dataset.settingsJump)
+  const requestedSection = new URLSearchParams(location.hash.split('?')[1] || '').get('section')
+  if (['shop','costing','delivery','ai','slack','modes'].includes(requestedSection)) jumpTo(requestedSection)
   settingsDirty = false
   // Element-based, not '#view [name]'. Two sets of real settings carry no name attribute at all:
   // the extended-size upcharge grid (id/data-up only) and the whole lite-edition "Sending Email"

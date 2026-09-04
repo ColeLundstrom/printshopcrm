@@ -1,5 +1,5 @@
 import { api, $, $$, esc, money, setPage, on, go, toast, announce, empty, confirmModal, guardLeave, onOnce } from '../core.js'
-import { importContacts } from './contacts.js'
+import { importContacts, importOrders } from './contacts.js'
 
 /**
  * Guided setup wizard. Walks a new shop through everything that makes the app theirs — costing
@@ -15,7 +15,7 @@ Sizes roughly 8 S, 14 M, 14 L, 8 XL, 4 2XL. We need them by 2026-09-08 for the f
 
 Can you send a quote? Thanks - Jamie (jamie@example.edu)`
 
-const FLOW = ['welcome', 'quote', 'basics', 'pricing', 'drive', 'ai', 'email', 'sms', 'payments', 'distributors', 'import', 'done']
+const FLOW = ['welcome', 'basics', 'import', 'quote', 'pricing', 'email', 'sms', 'payments', 'drive', 'distributors', 'ai', 'done']
 const state = { i: 0, data: null, ai: null }
 
 export async function onboardingView() {
@@ -43,13 +43,15 @@ export async function onboardingView() {
   state.ai = await api.get('/api/ai/providers').catch(() => null)
   // A brand-new shop starts at the welcome/describe hero. A shop that's already made some progress
   // resumes at its first unfinished step, so "finish later" drops them exactly where they left off.
-  const steps = state.data.onboarding.steps
+  const steps = [...state.data.onboarding.steps].sort((a,b) => FLOW.indexOf(a.key) - FLOW.indexOf(b.key))
   if (state.i === 0) {
     const anyDone = steps.some((s) => s.done)
     const firstUndone = steps.findIndex((s) => !s.done)
     if (anyDone) state.i = firstUndone === -1 ? FLOW.indexOf('done') : FLOW.indexOf(steps[firstUndone].key)
     // else: leave at 0 (welcome)
   }
+  const requested = new URLSearchParams(location.hash.split('?')[1] || '').get('step')
+  if (FLOW.includes(requested)) state.i = FLOW.indexOf(requested)
   render()
 }
 
@@ -118,7 +120,7 @@ async function liteOnboarding() {
 function render() {
   const key = FLOW[state.i]
   const d = state.data
-  const steps = d.onboarding.steps
+  const steps = [...d.onboarding.steps].sort((a, b) => FLOW.indexOf(a.key) - FLOW.indexOf(b.key))
   const rail = steps.map((s) => {
     const active = s.key === key
     // aria-current="step", NOT aria-pressed: these navigate to a step in a linear flow, they are
@@ -214,7 +216,7 @@ function panel(key) {
     </div>`
 
   if (key === 'quote') return `<div class="ob-head"><h2>Price a real request</h2>
-      <p>This is the whole product in one move: paste what a customer actually sent you — email, text, whatever — and get a priced estimate back. Here's a real one to try. Change it or use your own.</p></div>
+      <p>This is the whole product in one move: paste what a customer actually sent you — email, text, whatever — and get a priced estimate back. Here's a sample to try. Change it or use your own.</p></div>
     <div class="ob-describe">
       <textarea id="ob-req" spellcheck="false">${esc(SAMPLE_REQUEST)}</textarea>
       <div class="row" style="gap:10px;margin-top:10px;align-items:center">
@@ -292,26 +294,29 @@ function panel(key) {
     return `<div class="ob-head"><h2>✉ Connect email so you can send</h2>
         <p>Estimates, proofs, and replies are emailed from <strong>your own address</strong>. Connect it, or your messages only save to the Outbox and <strong>never reach the customer</strong>. If a platform relay is enabled you can skip this, but connecting your own is best.</p></div>
       <div id="ob-form" class="ob-form">
-        ${f('smtp_host', 'SMTP host', s.smtp_host, { ph: 'smtp.gmail.com', hint: 'From your email provider.' })}
-        <div class="grid2">${f('smtp_port', 'Port', s.smtp_port ?? 587, { type: 'number', ph: '587' })}${f('smtp_user', 'Username', s.smtp_user, { ph: 'you@yourshop.com' })}</div>
-        ${sf('smtp_pass', 'Password', s.smtp_pass_set, { hint: 'App password if your provider requires one.' })}
-        <div class="grid2">${f('smtp_from', 'From address', s.smtp_from, { ph: 'quotes@yourshop.com' })}
-          <div class="field"><label>Encryption</label><select class="input" name="smtp_secure">
-            <option value="true" ${String(s.smtp_secure) === 'true' ? 'selected' : ''}>SSL/TLS (port 465)</option>
-            <option value="false" ${String(s.smtp_secure) !== 'true' ? 'selected' : ''}>STARTTLS (port 587)</option></select></div></div>
-        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="email-test" type="button">Send test email</button><span class="ob-hint" id="email-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">✓ Email connected — messages will actually send</span>' : ''}</span></div>
+        <div class="field"><label for="ob-mail-provider">Who hosts your email?</label><select class="input" id="ob-mail-provider"><option value="">Choose a provider or enter details below</option><option value="google">Google Workspace / Gmail</option><option value="custom">Other mailbox / custom SMTP</option></select><p class="ob-hint">Use your provider’s app password or supported SMTP credentials. Your ordinary account password may not work.</p></div>
+        ${f('smtp_user', 'Mailbox address / username', s.smtp_user, { ph: 'quotes@yourshop.com' })}
+        ${sf('smtp_pass', 'App password / SMTP password', s.smtp_pass_set, { hint: 'Google: enable 2-step verification, then create an app password if your administrator permits it.' })}
+        ${f('smtp_from', 'Send from', s.smtp_from || s.shop_email, { ph: 'quotes@yourshop.com', hint: 'Use an address your provider has authorized.' })}
+        <details class="disc" id="ob-mail-advanced" ${s.smtp_host && s.smtp_host !== 'smtp.gmail.com' ? 'open' : ''}><summary>Mail server &amp; encryption</summary>
+          ${f('smtp_host', 'SMTP host', s.smtp_host, { ph: 'mail.yourprovider.com', hint: 'Selecting Google fills this automatically.' })}
+          ${f('smtp_port', 'Port', s.smtp_port ?? 587, { type: 'number', ph: '587' })}
+          <div class="field"><label for="ob-smtp-secure">Encryption</label><select class="input" name="smtp_secure" id="ob-smtp-secure"><option value="true" ${String(s.smtp_secure) === 'true' ? 'selected' : ''}>SSL/TLS (port 465)</option><option value="false" ${String(s.smtp_secure) !== 'true' ? 'selected' : ''}>STARTTLS (port 587)</option></select></div>
+        </details>
+        <p class="ob-hint">SMTP sends mail from your domain. Replies go to your existing mailbox. Follow your email provider’s SPF, DKIM and DMARC setup; no universal DNS record works for every provider.</p>
+        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="email-test" type="button">Send test email</button><span class="ob-hint" id="email-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">Email server saved — send a test to verify delivery</span>' : ''}</span></div>
       </div>${foot()}`
   }
 
   if (key === 'sms') {
     const connected = !!s.twilio_sid
     return `<div class="ob-head"><h2>◌ Connect SMS for text conversations</h2>
-        <p>Two-way texting with customers needs your <strong>own Twilio number</strong>. This is optional, but conversations won't text anyone until it's connected.</p></div>
+        <p>Connect your <strong>own Twilio number</strong> for outgoing texts. After saving, <a href="#/setup">open Setup &amp; connections</a> to copy the incoming SMS webhook. No AI is required.</p></div>
       <div id="ob-form" class="ob-form">
         ${f('twilio_sid', 'Twilio Account SID', s.twilio_sid, { ph: 'AC…' })}
         ${sf('twilio_token', 'Auth token', s.twilio_token_set, { hint: 'From your Twilio console.' })}
         ${f('twilio_from', 'Your Twilio number', s.twilio_from, { ph: '+15551234567', hint: 'The number texts are sent from.' })}
-        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="sms-test" type="button">Send test text</button><span class="ob-hint" id="sms-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">✓ SMS connected — conversations can text</span>' : ''}</span></div>
+        <div class="row" style="gap:10px;align-items:center"><button class="btn ghost sm" id="sms-test" type="button">Send test text</button><span class="ob-hint" id="sms-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">Credentials saved — send a test, then connect incoming messages</span>' : ''}</span></div>
       </div>${foot()}`
   }
 
@@ -354,11 +359,11 @@ function panel(key) {
     </div>${foot()}`
 
   if (key === 'import') return `<div class="ob-head"><h2>◉ Bring your customers over</h2>
-      <p>Don't start from scratch. Export your customer list from Printavo, shopVOX, DecoNetwork, QuickBooks, or a spreadsheet, and import it here — we match the columns and skip anyone already in. Your history isn't the moat; moving in should be as easy as leaving.</p></div>
+      <p>Don't start from scratch. Export your customer list from Printavo, shopVOX, DecoNetwork, QuickBooks, or a spreadsheet, and import it here — we match the columns and skip anyone already in. Review a small sample before importing your full customer list.</p></div>
     <div id="ob-form" class="ob-form" style="align-items:flex-start">
-      <button class="btn" id="ob-import">Import a customer CSV</button>
+      <div class="wrap-row"><button class="btn" id="ob-import">Import customers</button><button class="btn ghost" id="ob-import-orders">Import order history</button></div><p class="ob-hint">CSV exports only. Review the preview before importing. PDFs, artwork, and mailbox archives need a separate migration.</p>
       <div class="ob-hint" style="margin-top:10px">Or <a href="#/contacts?new=1">add your first customer by hand</a>. You can always import later.</div>
-    </div>${foot('Done — finish setup')}`
+    </div>${foot('Continue')}`
 
   // done
   const p = state.data.onboarding
@@ -486,6 +491,11 @@ function wire(key) {
     // Falls through to the shared Save & continue handler below, which marks drive done and advances.
   }
 
+  if (key === 'email') $('#ob-mail-provider').onchange = () => {
+    if ($('#ob-mail-provider').value === 'google') {
+      $('[name=smtp_host]').value='smtp.gmail.com'; $('[name=smtp_port]').value='587'; $('[name=smtp_secure]').value='false'; $('#ob-mail-advanced').open=false; stepDirty=true
+    } else { $('#ob-mail-advanced').open=true }
+  }
   if (key === 'email' || key === 'sms') {
     const channel = key
     const testBtn = $(`#${channel}-test`), note = $(`#${channel}-note`)
@@ -495,7 +505,7 @@ function wire(key) {
       try {
         const form = $('#ob-form')
         if (form && $$('[name]', form).length) await saveSettings(form)
-      } catch { /* fall through — the send will report if creds didn't save */ }
+      } catch (e) { note.textContent = `Could not save: ${e.message}`; return }
       const guess = channel === 'email'
         ? (($('[name=smtp_from]') || {}).value || ($('[name=smtp_user]') || {}).value || '').trim()
         : (($('[name=twilio_from]') || {}).value || '').trim()
@@ -555,6 +565,7 @@ function wire(key) {
     }
   }
 
+  if (key === 'import') $('#ob-import-orders').onclick = () => importOrders(() => toast('Order history imported'))
   if (key === 'import') $('#ob-import').onclick = () => importContacts(async () => { await markStep('import', 'done'); state.data = await api.get('/api/onboarding').catch(() => state.data); toast('Customers imported') })
 
   if (key === 'done') $('#ob-finish').onclick = finishLater

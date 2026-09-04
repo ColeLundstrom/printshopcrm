@@ -1,0 +1,19 @@
+[
+  {
+    "date": "2026-09-04",
+    "scope": "app",
+    "genre": "modern-minimal",
+    "macrostructure": "workbench",
+    "design_system": "design.md",
+    "designed_as_app": true,
+    "critique": {
+      "P": 4,
+      "H": 4,
+      "E": 4,
+      "S": 4,
+      "R": 4,
+      "V": 4
+    },
+    "review": "Existing dark/light tokens inherited. Desktop setup and email screenshots inspected. Setup measured at 320/375/414/768 with no page overflow. Native tables and specialist routes preserved. Deep-link scrolling corrected during browser QA. No decorative art or invented metrics."
+  }
+]

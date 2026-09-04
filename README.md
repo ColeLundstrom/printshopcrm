@@ -390,3 +390,7 @@ made: the software is free, and the services around it are the business.
 If you deploy this for others, set `PSC_SOURCE_URL` to your own repository. The app shows a source
 link to every user, which is how AGPL §13 is satisfied — pointing it at upstream while running
 patched code is not compliance.
+
+### A guided workspace, with AI optional
+
+Open **Setup & connections** for shop basics, CSV migration, email on your domain, Twilio SMS, and optional Slack/agent connections. Daily work remains manual unless you choose assistance. Specialist tools remain under **More tools** and all settings remain editable. See [connection setup](docs/CONNECTIONS.md) and [migration limits and checks](docs/MIGRATION.md).

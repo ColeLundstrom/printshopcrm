@@ -1,4 +1,5 @@
 import express from 'express'
+import { verifyTwilio, ingestSms, phoneKey } from './lib/inbound-sms.mjs'
 import multer from 'multer'
 import crypto from 'node:crypto'
 import { mkdirSync, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
@@ -37,7 +38,7 @@ import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
-import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport } from './lib/csv.mjs'
+import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
 import { ask } from './lib/assistant.mjs'
@@ -576,6 +577,26 @@ app.post('/api/slack/:key/command', slackLimit, slackRaw, (req, res) => slackRun
 // multer, not here; the largest JSON body the app sends is a pasted price matrix, far under 1 MB.
 // Express answers an oversize body with 413 as soon as the declared length exceeds the cap, so the
 // giant payload is refused, not buffered. PSC_JSON_LIMIT can raise it for an unusual integration.
+app.post('/api/sms/:key/incoming', slackLimit, express.urlencoded({extended:false,limit:'64kb',parameterLimit:100}), (req,res,next) => {
+  const tenant=getTenantByEmbedKey(String(req.params.key || ''))
+  if (!tenantOpen(tenant)) return res.status(404).send('Unknown shop')
+  try {
+    return withTenant(tenant.slug, () => {
+      const s=getSettings(), p=req.body || {}
+      // No Host-header fallback: use exactly the trusted URL shown in this shop's setup.
+      const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(tenant.slug)
+      const url=origin+`/api/sms/${tenant.embed_key}/incoming`
+      if (!origin || req.originalUrl.includes('?') || !verifyTwilio({token:s.twilio_token,url,params:p,signature:req.get('x-twilio-signature')})) return res.status(401).send('Invalid signature')
+      if (!s.twilio_sid || p.AccountSid !== s.twilio_sid) return res.status(403).send('Wrong account')
+      const sender=String(s.twilio_from || '')
+      if (!sender || (sender.startsWith('MG') ? p.MessagingServiceSid !== sender : phoneKey(p.To)!==phoneKey(sender))) return res.status(403).send('Wrong receiving number')
+      const result=ingestSms(p)
+      if(!result.duplicate) broadcast(tenant.slug,'conversation',{contact_id:result.contact_id,channel:'sms'})
+      return res.type('text/xml').send('<Response></Response>')
+    })
+  } catch(e) { if(e.status===400) return res.status(400).send(e.message); next(e) }
+})
+
 app.use(express.json({ limit: process.env.PSC_JSON_LIMIT || '1mb' }))
 
 const upload = multer({
@@ -1033,7 +1054,10 @@ app.use((req, res, next) => {
     req.tenant = tenant
     req.role = 'manager'
     req.apiKeyAuth = true
-    return tenantStore.run({ db: openTenantDb(tenant.slug), slug: tenant.slug, tenant }, () => next())
+    return tenantStore.run({ db: openTenantDb(tenant.slug), slug: tenant.slug, tenant }, () => {
+      if (getSettings().api_access === 'read' && !['GET','HEAD','OPTIONS'].includes(req.method)) return res.status(403).json({error:'This API key is read-only. An owner or manager can change access in Setup & connections.',code:'read_only_key'})
+      return next()
+    })
   }
   if (isApiPath(lp)) {
     if (isPublicApi(lp)) return next()
@@ -5835,12 +5859,17 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // Fold ONCE. The commit path used to group the file a second time further down and throw this
   // copy away, which on a 60,000-row export is a second full pass for nothing.
   const grouped = groupImportedOrders(mapped.orders)
+  const strict = req.body?.status_policy === 'strict'
+  const unresolved = strict ? grouped.filter(o => !strictImportStatus(o.status)) : []
+  const payment_states = strict ? grouped.reduce((counts,o) => { const k=strictImportStatus(o.status) || 'needs_review'; counts[k]=(counts[k] || 0)+1; return counts },{}) : null
+
   const preview = req.body?.preview === 'true' || req.body?.preview === true
   if (preview) {
     const summary = summarizeImport({ orders: grouped, warnings: mapped.warnings })
-    return res.json({ preview: true, ...summary, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+    return res.json({ preview: true, ...summary, blocked:unresolved.length > 0, payment_states, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
   }
 
+  if (unresolved.length) return res.status(400).json({error:`${unresolved.length} order(s) need payment status review. Use paid, unpaid or quote. Completed jobs do not prove payment; partial payments need a separate balance reconciliation. No orders were imported.`,code:'import_status_review'})
   let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0
   const findContact = (name, email) => {
     let c = email ? get('SELECT * FROM contacts WHERE lower(email) = lower(?)', email) : null
@@ -5933,7 +5962,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     }
     const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
     const total = filed != null ? doc.total : t.total
-    const kind = classify(o.status)
+    const kind = strict ? strictImportStatus(o.status) : classify(o.status)
     // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
     const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
 
@@ -6406,6 +6435,7 @@ app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
   const key = req.tenant?.api_key || ''
   res.json({
     api_key_set: !!key,
+    api_access: getSettings().api_access || 'full',
     api_key_preview: key ? `${key.slice(0, 13)}…${key.slice(-4)}` : '',
     webhooks: listWebhooks(),
     // Failures first, then the rest of the window. This is the rule GET /api/qbo/queue already
@@ -6423,6 +6453,15 @@ app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
     events: ['contact.created', 'estimate.sent', 'estimate.approved', 'invoice.paid', 'job.stage', 'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received'],
     docs: '/docs-api.html',
   })
+}))
+app.post('/api/developers/key/create-readonly', requireRole('manager'), wrap((req,res) => {
+  if (!AUTH_ENABLED || !req.tenant) return res.status(400).json({error:'API keys need a signed-in shop.'})
+  // Re-read the registry so two tabs cannot rotate a newly created key behind one another.
+  if (getTenantById(req.tenant.id)?.api_key) return res.status(409).json({error:'This shop already has an API key. Manage it in Developers.'})
+  setSetting('api_access','read')
+  const api_key=rotateApiKey(req.tenant.id)
+  logActivity('note','Read-only agent API key created',{})
+  res.json({api_key})
 }))
 app.post('/api/developers/key/rotate', requireRole('manager'), wrap((req, res) => {
   if (!AUTH_ENABLED || !req.tenant) return res.status(400).json({ error: 'API keys need a signed-in shop (multi-tenant mode).' })
@@ -7295,6 +7334,13 @@ app.get('/api/settings', wrap((req, res) => {
   res.json({ settings: publicSettings(), members, role: req.role || 'owner', single_tenant: !AUTH_ENABLED })
 }))
 
+app.get('/api/sms-setup', requireRole('manager'), wrap((req,res) => {
+  if (!req.tenant) return res.json({reason:'Incoming SMS needs a signed-in shop. Enable multi-tenant accounts on your self-hosted installation.'})
+  const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(req.tenant.slug)
+  if (!origin) return res.json({reason:'Set PSC_PUBLIC_URL to the public HTTPS address, then reload setup.'})
+  res.json({url:`${origin}/api/sms/${req.tenant.embed_key}/incoming`,public_https:origin.startsWith('https://')})
+}))
+
 /* ---- Slack self-setup (authed) ---- */
 
 /**
@@ -7418,6 +7464,7 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
 
 app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   const patch = { ...(req.body || {}) }
+  if ('api_access' in patch && !['read','full'].includes(patch.api_access)) return res.status(400).json({error:'API access must be read or full.'})
   // The two settings every document is formatted through are checked on the way IN, not folded to
   // a default on the way out. format.js does fall back to USD/en-US on a value it cannot use, so a
   // bad row can never break a PDF — but a 200 for `currency: "US$"` that then invoices in dollars

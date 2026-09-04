@@ -66,8 +66,12 @@ export function importContacts(after) {
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn ghost" id="csv-preview">Preview</button><button class="btn" id="csv-go" disabled>Import</button>`,
     onMount: (bg) => {
       const fileInput = $('#csv-file', bg)
+      let busy = false
+      $('#csv-text', bg).oninput = () => { fileInput.value = ''; $('#csv-go', bg).disabled = true; $('#csv-out', bg).textContent = 'Preview the updated rows before importing.' }
       const send = async (preview) => {
         const out = $('#csv-out', bg)
+        if (busy) return
+        $('#csv-go', bg).disabled = true
         const fd = new FormData()
         fd.append('preview', preview ? 'true' : 'false')
         if (fileInput.files[0]) fd.append('file', fileInput.files[0])
@@ -75,6 +79,7 @@ export function importContacts(after) {
         else { out.innerHTML = '<span class="dim" style="color:var(--amber)">Choose a file or paste some rows first.</span>'; return }
         out.innerHTML = '<span class="dim">Reading…</span>'
         try {
+          busy = true; fileInput.disabled = true; $('#csv-text', bg).disabled = true
           const r = await api.req('POST', '/api/import/contacts', fd)
           if (r.preview) {
             const cols = Object.entries(r.columns).filter(([, v]) => v).map(([k]) => k)
@@ -89,7 +94,7 @@ export function importContacts(after) {
             toast(`Imported ${r.created} customers`)
             setTimeout(() => { closeModal(); after?.() }, 900)
           }
-        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` } finally { busy = false; fileInput.disabled = false; $('#csv-text', bg).disabled = false }
       }
       $('#csv-drop', bg).onclick = () => fileInput.click()
       fileInput.onchange = () => { if (fileInput.files[0]) { $('#csv-drop-txt', bg).textContent = `${fileInput.files[0].name}`; send(true) } }
@@ -109,7 +114,7 @@ export function importOrders(after) {
   modal({
     title: 'Import order history from CSV',
     wide: true,
-    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Drop your old system's <strong>orders / invoices export</strong> (Printavo: Reports → Export → Quotes/Invoices; also works with YoPrint, InkSoft and DecoNetwork order summaries). Each row becomes real history on the right customer — completed jobs, paid invoices, open quotes stay open — dated when it actually happened. Reorder Radar and "same as last time" light up immediately. Re-running the same export is safe — orders already on file are skipped, whether or not your export has an order-number column.</p>
+    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Drop your old system's <strong>orders / invoices export</strong> (Printavo: Reports → Export → Quotes/Invoices; also works with YoPrint, InkSoft and DecoNetwork order summaries). Review explicit payment states before importing: paid, unpaid, or quote. Unknown, completed-only, and partial-payment statuses pause the import for review. Historical jobs are treated as completed; migrate active production separately. Reorder Radar and "same as last time" light up immediately. Re-running the same export is safe — orders already on file are skipped, whether or not your export has an order-number column.</p>
       <label class="csv-drop" id="ocsv-drop"><input type="file" id="ocsv-file" accept=".csv,text/csv,text/plain" hidden>
         <div id="ocsv-drop-txt">Choose the orders CSV — or paste rows below</div></label>
       <div class="field" style="margin-top:10px"><label>…or paste CSV rows</label>
@@ -118,22 +123,30 @@ export function importOrders(after) {
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn ghost" id="ocsv-preview">Preview</button><button class="btn" id="ocsv-go" disabled>Import history</button>`,
     onMount: (bg) => {
       const fileInput = $('#ocsv-file', bg)
+      let busy = false
+      $('#ocsv-text', bg).oninput = () => { fileInput.value = ''; $('#ocsv-go', bg).disabled = true; $('#ocsv-out', bg).textContent = 'Preview the updated rows before importing.' }
       const send = async (preview) => {
         const out = $('#ocsv-out', bg)
+        if (busy) return
+        $('#ocsv-go', bg).disabled = true
         const fd = new FormData()
         fd.append('preview', preview ? 'true' : 'false')
+        fd.append('status_policy', 'strict')
         if (fileInput.files[0]) fd.append('file', fileInput.files[0])
         else if ($('#ocsv-text', bg).value.trim()) fd.append('text', $('#ocsv-text', bg).value)
         else { out.innerHTML = '<span class="dim" style="color:var(--amber)">Choose a file or paste some rows first.</span>'; return }
         out.innerHTML = '<span class="dim">Reading…</span>'
         try {
+          busy = true; fileInput.disabled = true; $('#ocsv-text', bg).disabled = true
           const r = await api.req('POST', '/api/import/orders', fd)
           if (r.preview) {
             out.innerHTML = `<div class="card-b" style="border:1px solid var(--line);border-radius:8px">
               <div style="font-size:13px"><strong style="color:var(--accent)">${r.orders}</strong> order${r.orders === 1 ? '' : 's'} across <strong>${r.customers}</strong> customer${r.customers === 1 ? '' : 's'} — ${money0(r.totalValue)} of history</div>
+              ${r.payment_states ? `<p class="dim">${r.payment_states.paid || 0} paid · ${r.payment_states.unpaid || 0} unpaid · ${r.payment_states.quote || 0} quotes · ${r.payment_states.needs_review || 0} need review</p>` : ''}
+              ${r.blocked ? '<p style="color:var(--amber)">Import paused: use an explicit paid, unpaid, or quote status. Completed production does not prove payment. Partial payments need balance reconciliation before importing.</p>' : ''}
               ${r.warnings?.length ? `<div class="dim" style="font-size:11.5px;margin-top:5px">${r.warnings.length} row(s) need attention: ${esc(r.warnings[0].message)}${r.warnings.length > 1 ? ` (+${r.warnings.length - 1} more)` : ''}</div>` : ''}
               ${r.sample?.length ? `<table class="tbl" style="margin-top:8px"><tbody>${r.sample.map((o) => `<tr><td style="font-weight:600">${esc(o.customer_name || o.customer_email || '?')}</td><td class="dim" style="font-size:12px">${esc(o.order_number || '')}</td><td class="dim" style="font-size:12px">${esc(o.date || '')}</td><td class="num">${money0(o.total || 0)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`
-            $('#ocsv-go', bg).disabled = r.orders === 0
+            $('#ocsv-go', bg).disabled = r.orders === 0 || r.blocked
           } else {
             // Say when a total did not match its own lines. The difference is written as a named
             // line on the document rather than left as a gap between subtotal and total, and the
@@ -143,7 +156,7 @@ export function importOrders(after) {
             toast(`Imported ${r.imported} orders with history`)
             setTimeout(() => { closeModal(); after?.() }, 1200)
           }
-        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` } finally { busy = false; fileInput.disabled = false; $('#ocsv-text', bg).disabled = false }
       }
       $('#ocsv-drop', bg).onclick = () => fileInput.click()
       fileInput.onchange = () => { if (fileInput.files[0]) { $('#ocsv-drop-txt', bg).textContent = `${fileInput.files[0].name}`; send(true) } }

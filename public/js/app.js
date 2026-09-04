@@ -25,6 +25,7 @@ import { gangSheetView } from './views/gangsheet.js'
 import { billingView } from './views/billing.js'
 import { capacityView } from './views/capacity.js'
 import { reorderView } from './views/reorder.js'
+import { setupView } from './views/setup.js'
 import { todayView } from './views/today.js'
 import { dtfResizeView } from './views/dtfresize.js'
 import { scanView } from './views/scan.js'
@@ -35,29 +36,31 @@ import { developersView } from './views/developers.js'
 // what someone is trying to DO, not by feature inventory. Rarely-touched tools live under "More".
 const NAV = [
   { href: '/', ico: 'today', name: 'Today' },
+  { href: '/setup', ico: 'settings', name: 'Setup & connections', manage: true },
+
   { label: 'Sales', section: true },
   { href: '/conversations', ico: 'conversations', name: 'Conversations', badge: 'unread' },
-  { href: '/pipeline', ico: 'pipeline', name: 'Pipeline' },
+  { advanced: true, href: '/pipeline', ico: 'pipeline', name: 'Pipeline' },
   { href: '/estimates', ico: 'estimates', name: 'Estimates' },
   { href: '/orders', ico: 'orders', name: 'Orders' },
-  { href: '/followups', ico: 'followups', name: 'Follow-ups', badge: 'followups' },
-  { href: '/reorders', ico: 'reorders', name: 'Reorder Radar' },
+  { advanced: true, href: '/followups', ico: 'followups', name: 'Follow-ups', badge: 'followups' },
+  { advanced: true, href: '/reorders', ico: 'reorders', name: 'Reorder Radar' },
   { label: 'Production', section: true },
   { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
   { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
   { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
   { advanced: true, href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
-  { href: '/capacity', ico: 'capacity', name: 'Capacity' },
+  { advanced: true, href: '/capacity', ico: 'capacity', name: 'Capacity' },
   { advanced: true, href: '/scan', ico: 'board', name: 'Floor Mode' },
   { label: 'Money', section: true },
   { href: '/pricing', ico: 'pricing', name: 'Pricing' },
   { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
-  { href: '/roi', ico: 'roi', name: 'Profitability' },
-  { href: '/books', ico: 'invoices', name: 'Books & A/R' },
+  { advanced: true, href: '/roi', ico: 'roi', name: 'Profitability' },
+  { advanced: true, href: '/books', ico: 'invoices', name: 'Books & A/R' },
   { label: 'Customers', section: true },
   { href: '/contacts', ico: 'customers', name: 'Customers' },
   { label: 'Automate', section: true },
-  { href: '/autopilot', ico: 'autopilot', name: 'Autopilot' },
+  { advanced: true, href: '/autopilot', ico: 'autopilot', name: 'Autopilot' },
   { advanced: true, href: '/receptionist', ico: 'receptionist', name: 'AI Receptionist' },
   { advanced: true, href: '/automations', ico: 'automations', name: 'Automations', badge: 'automations' },
   { label: 'More', section: true },
@@ -65,7 +68,7 @@ const NAV = [
   { advanced: true, href: '/activity', ico: 'activity', name: 'Activity' },
   { advanced: true, href: '/developers', ico: 'settings', name: 'Developers', manage: true },
   { advanced: true, href: '/outbox', ico: 'outbox', name: 'Outbox' },
-  { href: '/billing', ico: 'billing', name: 'Billing', owner: true },
+  { href: '/billing', ico: 'billing', name: 'Hosting', owner: true },
   { href: '/settings', ico: 'settings', name: 'Settings' },
   { label: 'Admin', section: true, admin: true },
   { href: '/admin', ico: 'admin', name: 'Control Room', admin: true },
@@ -118,6 +121,7 @@ route(/^\/scan$/, scanView)
 route(/^\/books$/, booksView)
 route(/^\/developers$/, developersView)
 route(/^\/welcome$/, onboardingView)
+route(/^\/setup$/, setupView)
 route(/^\/billing$/, billingView)
 route(/^\/pipeline$/, pipelineView)
 route(/^\/conversations\/(\d+)$/, conversationsView)
@@ -310,7 +314,10 @@ async function navigate() {
   if (!allowedRoute(path)) { location.hash = '#/'; return }
   drawNav()
   await runRouter()
-  window.scrollTo(0, 0)
+  const section = path === '/settings' ? new URLSearchParams(location.hash.split('?')[1] || '').get('section') : null
+  const target = ['shop','costing','delivery','ai','slack','modes'].includes(section) ? document.getElementById(section) : null
+  if (target) (target.closest('.card') || target).scrollIntoView({block:'start'})
+  else window.scrollTo(0, 0)
   // Replay the entrance animation on every navigation (force reflow so it re-triggers).
   const v = $('#view')
   v.classList.remove('view-in'); void v.offsetWidth; v.classList.add('view-in')
