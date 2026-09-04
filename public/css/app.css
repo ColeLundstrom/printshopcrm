@@ -194,11 +194,18 @@ a.host-badge:hover { color: var(--accent); }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
-  height: 58px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-6);
-  padding: 0 var(--sp-8); background: var(--glass); backdrop-filter: saturate(1.4) blur(14px); position: sticky; top: 0; z-index: 20;
+  min-height: 58px; flex-wrap: wrap; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8); background: var(--glass); backdrop-filter: saturate(1.4) blur(14px); position: sticky; top: 0; z-index: 20;
 }
 .topbar h2 { font-size: var(--fs-lg); font-weight: 650; letter-spacing: -.2px; }
 .topbar .spacer { flex: 1; }
+/* Task actions get a full row, so money controls never sit beyond the right edge. */
+#page-actions:not(:empty) { flex-basis: 100%; min-width: 0; flex-wrap: wrap; padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.topbar h2 { white-space: nowrap; }
+.invoice-workspace .tbl .num { white-space: nowrap; }
+.invoice-workspace .totbox > div { gap: var(--sp-5); }
+.invoice-workspace .totbox > div > span:last-child { white-space: nowrap; flex-shrink: 0; }
+@media (max-width: 1150px) { .cols.invoice-workspace { grid-template-columns: 1fr; } }
 .crumb { color: var(--txt-3); font-size: var(--fs-sm); }
 .crumb a:hover { color: var(--accent); }
 

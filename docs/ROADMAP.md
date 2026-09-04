@@ -61,4 +61,4 @@ for unbuilt systems.
 
 ### Payment accounting after the provider adapters
 
-Stripe and Authorize.net hosted checkout now share verified, idempotent invoice posting. The next release gate is merchant-owned sandbox acceptance on public HTTPS. Refunds, chargebacks and processor-side voids still need automatic ledger reconciliation, explicit invoice credit/refund workflows and provider fixtures before claiming complete payment accounting. See [PAYMENTS.md](PAYMENTS.md).
+Stripe and Authorize.net hosted checkout now share verified, idempotent invoice posting. The next release gate is merchant-owned sandbox acceptance on public HTTPS. Stripe refunds, Authorize.net refunds/voids and explicit invoice credits now preserve history and pause collections for review. Chargebacks, unmatched external transactions, background reconciliation, QuickBooks credit/refund documents and jurisdiction-specific tax records remain before claiming complete payment accounting. See [PAYMENTS.md](PAYMENTS.md).

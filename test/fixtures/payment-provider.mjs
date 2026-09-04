@@ -11,11 +11,13 @@ globalThis.fetch=async (url,opts={})=>{
     if(opts.method==='POST' && u.pathname==='/v1/checkout/sessions') {
       const p=new URLSearchParams(opts.body),id='cs_fixture_'+(++state.seq),metadata={}
       for(const [k,v] of p) if(k.startsWith('metadata[')) metadata[k.slice(9,-1)]=v
-      state.sessions[id]={id,payment_status:'paid',livemode:!opts.headers.Authorization.includes('sk_test_'),amount_total:Number(p.get('line_items[0][price_data][unit_amount]')),currency:p.get('line_items[0][price_data][currency]'),metadata}
+      state.sessions[id]={id,payment_intent:'pi_fixture_'+state.seq,payment_status:'paid',livemode:!opts.headers.Authorization.includes('sk_test_'),amount_total:Number(p.get('line_items[0][price_data][unit_amount]')),currency:p.get('line_items[0][price_data][currency]'),metadata}
       state.last={id,success:p.get('success_url'),idempotency:opts.headers['Idempotency-Key']};write(state)
       return reply({id,url:'https://checkout.stripe.com/c/pay/'+id})
     }
+    if(u.pathname==='/v1/checkout/sessions' && u.searchParams.has('payment_intent')) return reply({data:Object.values(state.sessions).filter(s=>s.payment_intent===u.searchParams.get('payment_intent')),has_more:false})
     const id=u.pathname.split('/').at(-1)
+    if(u.pathname.startsWith('/v1/refunds/') && state.refunds?.[id]) return reply(state.refunds[id])
     if(state.sessions[id]) return reply(state.sessions[id])
   }
   if(['https://api.authorize.net','https://apitest.authorize.net'].includes(u.origin)) {

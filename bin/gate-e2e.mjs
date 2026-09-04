@@ -17,12 +17,20 @@ import { DatabaseSync } from 'node:sqlite'
 import { WebSocket } from 'ws'
 import { request as rawHttp } from 'node:http'
 import { gunzipSync } from 'node:zlib'
+import { createServer as createPortProbe } from 'node:net'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
 // `PSC_GATE_PORT=4391 npm run test:e2e` is reachable where an npm-script argv is not.
 const PORT = Number(process.argv[2] || process.env.PSC_GATE_PORT) || 4390
 const BASE = `http://127.0.0.1:${PORT}`
+// Never run signup/payment tests against an app that already owns this port. A health response
+// is not ownership: database migration may delay our child's eventual EADDRINUSE beyond 300ms.
+await new Promise((resolve,reject)=>{
+  const probe=createPortProbe()
+  probe.once('error',()=>reject(new Error(`Port ${PORT} is occupied. Choose an unused PSC_GATE_PORT; no test requests were sent.`)))
+  probe.listen(PORT,'127.0.0.1',()=>probe.close(resolve))
+})
 const TMP = mkdtempSync(join(tmpdir(), 'psc-e2e-'))
 
 let fails = 0, skips = 0
@@ -154,6 +162,7 @@ async function waitForBoot() {
     let healthy = false
     try { healthy = (await fetch(`${BASE}/health`)).ok } catch { /* not up yet */ }
     if (healthy) {
+      if(!serverLog.includes('(ws /ws live')) {await sleep(100);continue}
       // Something is answering — but is it OURS? A server left behind by a run that was killed
       // holds the port, our server dies with EADDRINUSE, and the whole suite then runs against
       // the STALE database: "An account with that email already exists" followed by a cascade of
@@ -231,7 +240,7 @@ async function waitForAux(child, { optional = false } = {}) {
   }
   while (Date.now() - t0 < LIMIT_MS) {
     if (child.exitCode !== null) return fail(`exited (${child.exitCode}) before it ever answered /health`)
-    try { if ((await fetch(`http://127.0.0.1:${child.__port}/health`)).ok) return true } catch { /* not up yet */ }
+    try { if (child.__log.includes('(ws /ws live') && (await fetch(`http://127.0.0.1:${child.__port}/health`)).ok) return true } catch { /* not up yet */ }
     await sleep(500)
   }
   return fail(`never answered /health after ${Math.round((Date.now() - t0) / 1000)}s`)

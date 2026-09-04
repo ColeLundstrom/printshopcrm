@@ -50,7 +50,9 @@ import { liveInventory } from './lib/suppliers.mjs'
 import { jobRoi, shopRoi, laborActualMinutes } from './lib/roi.mjs'
 import { code128Svg } from './lib/barcode.mjs'
 import { nest, priceSheet } from './public/js/shared/gangnest.js'
-import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.mjs'
+import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund } from './lib/stripe.mjs'
+import { recordReversal, recentReversals } from './lib/payment-reversals.mjs'
+import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary } from './lib/invoice-credits.mjs'
 import { currencyCode } from './lib/payment-currency.mjs'
 import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize } from './lib/authorizenet.mjs'
 import { newPaymentAttempt, paymentAttempt, attemptBySession, readyAttempt, failAttempt, completeAttempt, recentAttempts } from './lib/payment-attempts.mjs'
@@ -612,6 +614,10 @@ app.post('/webhooks/payments/:key/:provider', slackLimit, express.raw({type:'app
       if(!valid) return res.status(401).send('Invalid signature')
       const event=JSON.parse(raw.toString('utf8'))
       if(provider==='stripe') {
+        if(['refund.created','refund.updated','refund.failed'].includes(event.type)) {
+          const result=await reconcileReversal('stripe',String(event.data?.object?.id || ''))
+          return res.json({received:true,...result})
+        }
         if(!['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type)) return res.json({received:true,ignored:true})
         const sessionId=String(event.data?.object?.id || '')
         const confirmed=await retrieveSession({settings:s,sessionId})
@@ -623,6 +629,10 @@ app.post('/webhooks/payments/:key/:provider', slackLimit, express.raw({type:'app
           if(inv) recordStripePayment(inv,confirmed,sessionId,confirmed.metadata.kind)
         }
       } else {
+        if(['net.authorize.payment.refund.created','net.authorize.payment.void.created'].includes(event.eventType)) {
+          const result=await reconcileReversal('authorize_net',String(event.payload?.id || ''))
+          return res.json({received:true,...result})
+        }
         if(!['net.authorize.payment.authcapture.created','net.authorize.payment.capture.created','net.authorize.payment.priorAuthCapture.created','net.authorize.payment.fraud.approved'].includes(event.eventType)) return res.json({received:true,ignored:true})
         const confirmed=await retrieveAuthorizeTransaction({settings:s,transactionId:event.payload?.id})
         const a=paymentAttempt(confirmed.reference)
@@ -820,13 +830,14 @@ function markDelivery(slug, rowId, result) {
  * has wired SMTP. With no credentials the message still records (tagged "logged"), so nothing
  * silently vanishes — the honesty rule, now with real delivery on top.
  */
-function queueEmail({ contact, subject, template, vars, kind, deliver = true }) {
+function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, deliver = true }) {
   const s = getSettings()
   const slug = curSlug()
   const merged = { first_name: String(contact?.name || '').split(' ')[0], ...vars }
   const body = String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => templateValue(k, merged, s))
   const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     contact?.id ?? null, contact?.email ?? '', subject, body, kind, deliver ? 'logged' : 'draft', now()).lastInsertRowid)
+  if(invoice_id)run('UPDATE email_log SET invoice_id=? WHERE id=?',invoice_id,rowId)
   recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'email', subject, body, kind })
   const to = contact?.email
   if (deliver && to) sendEmail({ to, subject, body, settings: s }).then((r) => markDelivery(slug, rowId, r)).catch((e) => markDelivery(slug, rowId, { delivered: false, via: 'error', error: String(e.message) })).catch(() => {})
@@ -834,11 +845,12 @@ function queueEmail({ contact, subject, template, vars, kind, deliver = true }) 
 }
 
 /** SMS: same path as email, delivered over Twilio when the shop has wired it. */
-function queueSms({ contact, body, deliver = true }) {
+function queueSms({ contact, body, invoice_id=null, deliver = true }) {
   const s = getSettings()
   const slug = curSlug()
   const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     contact?.id ?? null, contact?.phone ?? '', 'SMS', body, 'sms', deliver ? 'logged' : 'draft', now()).lastInsertRowid)
+  if(invoice_id)run('UPDATE email_log SET invoice_id=? WHERE id=?',invoice_id,rowId)
   recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'sms', subject: 'SMS', body, kind: 'sms' })
   const to = contact?.phone
   if (deliver && to) sendSms({ to, body, settings: s }).then((r) => markDelivery(slug, rowId, r)).catch((e) => markDelivery(slug, rowId, { delivered: false, via: 'error', error: String(e.message) })).catch(() => {})
@@ -961,6 +973,7 @@ function subscriptionData(ctx) {
 }
 
 const fireAuto = (trigger, ctx) => {
+  if(ctx.invoice?.id && get('SELECT payment_review FROM invoices WHERE id=?',ctx.invoice.id)?.payment_review) return
   try { fire(trigger, ctx, autoDeps) } catch (e) { console.error('automation:', e.message) }
   try { dispatchSubscriptions(trigger, subscriptionData(ctx)) } catch (e) { console.error('webhook dispatch:', e.message) }
 }
@@ -989,7 +1002,7 @@ onOpportunityStage(({ opportunity, stage }) => {
  * the books are queued without anyone clicking. */
 onPaymentRecorded(({ invoice_id, before_status }) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', invoice_id)
-  if (!inv) return
+  if (!inv || inv.payment_review) return
   advanceOrder(inv.estimate_id, 'paid')   // money in — never backward; see advanceOrder
   if (inv.status === 'paid' && before_status !== 'paid') {
     fireAuto('invoice.paid', { invoice: inv, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: inv.amount_due })
@@ -3337,13 +3350,13 @@ app.get('/api/invoices/:id', wrap((req, res) => {
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const est = i.estimate_id ? get('SELECT * FROM estimates WHERE id = ?', i.estimate_id) : null
   res.json({
-    ...i, items: est ? parse(est.items, []) : [], payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id),
+    ...i, ...invoiceCreditSummary(i), reversals:all('SELECT provider,provider_id,kind,status,applied_cents,amount_cents,is_test FROM payment_reversals WHERE invoice_id=? ORDER BY updated_at DESC',i.id), items: est ? parse(est.items, []) : [], payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id),
     // The invoice's own totals block prints these line items and then asks for amount_due, which is
     // subtotal + tax — so without the breakdown the screen shows a table that does not add up to the
     // number beside it. The invoice carries no subtotal/tax of its own; they live on the estimate it
     // was converted from, and this is the only route that can reach them.
     subtotal: est ? est.subtotal : null, tax: est ? est.tax : null, tax_rate: est ? est.tax_rate : null,
-    pay_link: shareUrl('pay', i.id), stripe_ready: paymentsReady(getSettings()),
+    pay_link: shareUrl('pay', i.id), payment_provider_label:providerName(getSettings()), stripe_ready: paymentsReady(getSettings()),
   })
 }))
 
@@ -3392,7 +3405,7 @@ app.post('/api/invoices/:id/void', requireRole('manager'), wrap((req, res) => {
   // payment attached to nothing. Say which payments and let the human decide.
   if (Number(inv.amount_paid) > 0) {
     return res.status(409).json({
-      error: `${inv.invoice_number} has ${money(inv.amount_paid)} in payments recorded against it. Remove those payments first, then void it.`,
+      error: `${inv.invoice_number} has ${money(inv.amount_paid)} in payments recorded against it. Refund processor payments in your merchant account, or correct mistaken manual entries, before voiding. For a partial cancellation, issue an invoice credit.`,
       code: 'invoice_has_payments',
     })
   }
@@ -3421,7 +3434,7 @@ app.post('/api/invoices/:id/request-payment', outboundLimit, wrap((req, res) => 
   const origin = publicOrigin(req)
   const link = origin + shareUrl('pay', id)
   const deliver = s.mode_followups !== 'manual'
-  queueEmail({ contact: c, kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
+  queueEmail({ contact: c, invoice_id:id, kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
     template: `Hi {{first_name}},\n\nYou can pay invoice ${inv.invoice_number} (balance ${money(balance)}) securely online here:\n\n${link}\n\nThank you,\n{{shop_name}}`,
     vars: { shop_name: s.shop_name }, deliver })
   logActivity('note', `Payment link ${deliver ? 'sent' : 'drafted'} for ${inv.invoice_number}`, { contact_id: inv.contact_id })
@@ -3496,7 +3509,7 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
     id, recorded, method, note, now())
   const updated = syncInvoiceStatus(id)
   // Money in — walk the order card forward (never backward; see advanceOrder).
-  advanceOrder(inv.estimate_id, 'paid')
+  if(!inv.payment_review) advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Payment ${money(recorded)} on ${inv.invoice_number} (${method})`, { contact_id: inv.contact_id })
   if (updated.status === 'paid' && inv.status !== 'paid') {
     fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
@@ -3519,6 +3532,7 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
 app.delete('/api/payments/:id', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM payments WHERE id = ?', +req.params.id)
   if (!p) return res.status(404).json({ error: 'Payment not found', code: 'not_found' })
+  if(p.stripe_session) return res.status(409).json({error:'Verified processor entries cannot be deleted. Reconcile refunds through Payment connections.',code:'processor_payment'})
   const inv = get('SELECT invoice_number, contact_id FROM invoices WHERE id = ?', p.invoice_id)
   run('DELETE FROM payments WHERE id = ?', p.id)
   const out = syncInvoiceStatus(p.invoice_id)
@@ -3547,6 +3561,7 @@ const requireCustomerEmail = (c, res, what) => {
 }
 /** A voided invoice is a cancelled demand. Nothing may chase money on it. */
 const refuseVoided = (inv, res) => {
+  if(inv.payment_review) { res.status(409).json({error:'Payment changes need review before requesting more money.',code:'payment_review'});return true }
   if (inv.status !== 'void') return false
   res.status(409).json({
     error: `${inv.invoice_number} was voided — raise a new invoice before asking the customer to pay it.`,
@@ -3561,7 +3576,7 @@ app.post('/api/invoices/:id/send', outboundLimit, wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
   if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'invoice')) return
   const s = getSettings()
-  queueEmail({ contact: c, kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
+  queueEmail({ contact: c, invoice_id:inv.id, kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
     template: s.email_template_invoice,
     vars: { contact_name: c?.name || '', invoice_number: inv.invoice_number, total: money(inv.amount_due), due_date: inv.due_date } })
   logActivity('invoice', `Invoice ${inv.invoice_number} emailed to ${c.email}`, { contact_id: inv.contact_id })
@@ -3575,7 +3590,7 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
   // Carry the real subtotal/tax onto the invoice doc so the PDF shows a proper Subtotal → Tax →
   // Total breakdown that reconciles to amount_due, instead of labeling the tax-inclusive total "Subtotal".
   const pdf = renderDocument('INVOICE', {
-    doc: { ...i, subtotal: est ? est.subtotal : round2(i.amount_due), tax: est ? est.tax : 0, total: i.amount_due, tax_rate: est?.tax_rate },
+    doc: { ...i, ...invoiceCreditSummary(i), notes: i.payment_review ? 'PAYMENT UNDER REVIEW — Do not pay again. '+i.payment_review : i.notes, subtotal: i.credit_base ? JSON.parse(i.credit_base).subtotal : est ? est.subtotal : round2(i.amount_due), tax: i.credit_base ? JSON.parse(i.credit_base).tax : est ? est.tax : 0, total: i.amount_due, tax_rate: est?.tax_rate },
     contact: get('SELECT * FROM contacts WHERE id = ?', i.contact_id),
     settings: getSettings(), items: est ? parse(est.items, []) : [{ description: 'Custom apparel order', qty: 1, unit_price: i.amount_due }],
     payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id), upcharges: getUpcharges(),
@@ -4257,7 +4272,7 @@ app.post('/api/invoices/:id/nudge', outboundLimit, wrap((req, res) => {
   if (refuseVoided(i, res) || requireCustomerEmail(c, res, 'reminder')) return
   const s = getSettings()
   const deliver = s.mode_followups !== 'manual'   // the same switch, for the same reason as above
-  queueEmail({ contact: c, kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
+  queueEmail({ contact: c, invoice_id:i.id, kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
     vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver })
   logActivity('invoice', `Payment reminder ${deliver ? 'sent' : 'drafted'} on ${i.invoice_number} to ${c.email}`, { contact_id: i.contact_id })
@@ -6075,7 +6090,7 @@ const v1List = (res, rows, limit) => res.json({ data: rows.slice(0, limit), has_
 
 const v1Customer = (c) => c && ({ id: c.id, name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', tags: c.tags || '', created_at: c.created_at })
 const v1Estimate = (e) => e && ({ id: e.id, number: e.estimate_number, customer_id: e.contact_id, status: e.status, items: parse(e.items, []), subtotal: e.subtotal, tax: e.tax, total: e.total, notes: e.notes || '', sent_at: e.sent_at, approved_at: e.approved_at, created_at: e.created_at })
-const v1Invoice = (i) => i && ({ id: i.id, number: i.invoice_number, customer_id: i.contact_id, estimate_id: i.estimate_id, status: i.status, amount_due: i.amount_due, amount_paid: i.amount_paid, balance: Math.round(((i.amount_due || 0) - (i.amount_paid || 0)) * 100) / 100, due_date: i.due_date, paid_at: i.paid_at, created_at: i.created_at })
+const v1Invoice = (i) => i && ({ id: i.id, number: i.invoice_number, customer_id: i.contact_id, estimate_id: i.estimate_id, status: i.status, amount_due: i.amount_due, amount_paid: i.amount_paid, balance: Math.round(((i.amount_due || 0) - (i.amount_paid || 0)) * 100) / 100, due_date: i.due_date, paid_at: i.paid_at, created_at: i.created_at, payment_review: i.payment_review || '', ...invoiceCreditSummary(i) })
 const v1Job = (j) => j && ({ id: j.id, number: j.job_number, customer_id: j.contact_id, estimate_id: j.estimate_id, invoice_id: j.invoice_id, title: j.title, status: j.status, stage: j.stage, decoration: j.decoration || '', sizes: parse(j.sizes, {}), due_date: j.due_date, rush: !!j.rush, created_at: j.created_at })
 const v1Payment = (p) => p && ({ id: p.id, invoice_id: p.invoice_id, amount: p.amount, method: p.method, created_at: p.created_at })
 
@@ -6756,6 +6771,8 @@ function syncInvoiceToQbo(invoiceId) {
 }
 
 async function syncInvoiceToQboInner(invoiceId) {
+  if(get('SELECT 1 FROM invoice_credits WHERE invoice_id=?',Number(invoiceId))) return {ok:false,error:'This invoice has credit adjustments. Reconcile the credit in QuickBooks; automatic credit documents are not supported yet.'}
+  if(get("SELECT 1 FROM payments WHERE invoice_id=? AND stripe_session LIKE 'reversal:%'",Number(invoiceId))) return {ok:false,error:'This invoice has processor reversals. Reconcile the refund/void in QuickBooks before syncing; automatic refund documents are not supported yet.'}
   const s = getSettings()
   if (!s.qbo_realm_id || !s.qbo_refresh_token) return { ok: false, error: 'QuickBooks is not connected' }
   const contactOf = (id) => get('SELECT * FROM contacts WHERE id = ?', id)
@@ -7319,6 +7336,7 @@ app.get('/api/outbox', wrap((req, res) => {
 app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   const row = get('SELECT * FROM email_log WHERE id = ?', +req.params.id)
   if (!row) return res.status(404).json({ error: 'Message not found', code: 'not_found' })
+  if(row.payment_stale || (row.invoice_id && get('SELECT payment_review FROM invoices WHERE id=?',row.invoice_id)?.payment_review)) return res.status(409).json({error:'Invoice payment details changed. Create a fresh message after reviewing the invoice.',code:'payment_review'})
   if (row.delivered) return res.status(409).json({ error: 'That message has already gone out.', code: 'already_sent' })
   const c = row.contact_id ? get('SELECT email, phone FROM contacts WHERE id = ?', row.contact_id) : null
   const to = String(row.to_email || '').trim() || String((row.kind === 'sms' ? c?.phone : c?.email) || '').trim()
@@ -7378,7 +7396,7 @@ app.get('/api/payments/setup', requireRole('manager'), wrap((req,res) => {
   res.json({provider:paymentProvider(s),ready:paymentsReady(s),currency:currencyCode(s.currency),
     stripe_webhook_url:key ? `${origin}/webhooks/payments/${key}/stripe` : null,
     authorize_webhook_url:key ? `${origin}/webhooks/payments/${key}/authorize_net` : null,
-    attempts:recentAttempts()})
+    attempts:recentAttempts(),reversals:recentReversals()})
 }))
 app.post('/api/payments/test-authorize',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap(async (req,res) => {
   try { res.json(await testAuthorize(getSettings())) }
@@ -7395,6 +7413,32 @@ app.post('/api/payments/reconcile/:reference',requireRole('manager'),rateLimit({
     const confirmed=reconcileCheckout(a,result,id)
     res.json({ok:true,...confirmed})
   } catch(e) { failAttempt(a.reference,e.message);res.status(400).json({error:e.message}) }
+}))
+
+app.post('/api/payments/reversals/:provider/:id/recheck',requireRole('manager'),rateLimit({windowMs:60000,max:20}),wrap(async(req,res)=>{
+  try { res.json(await reconcileReversal(req.params.provider,req.params.id)) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.get('/api/invoices/:id/credit-reference',requireRole('manager'),wrap((req,res)=>{
+  if(!get('SELECT 1 FROM invoices WHERE id=?',Number(req.params.id))) return res.status(404).json({error:'Invoice not found'})
+  res.setHeader('Cache-Control','no-store');res.json({reference:crypto.randomBytes(16).toString('hex')})
+}))
+app.post('/api/invoices/:id/credits',requireRole('manager'),wrap((req,res)=>{
+  try { res.json(addInvoiceCredit(Number(req.params.id),req.body || {})) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.post('/api/invoices/:id/credits/:reference/cancel',requireRole('manager'),wrap((req,res)=>{
+  try { res.json(cancelInvoiceCredit(Number(req.params.id),req.params.reference,req.body?.reason)) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.post('/api/invoices/:id/payment-review',requireRole('manager'),wrap((req,res)=>{
+  const id=Number(req.params.id),note=String(req.body?.note || '').trim()
+  if(!note || note.length>1000) return res.status(400).json({error:'Explain the reviewed balance before resuming collections (1–1,000 characters).'})
+  const inv=get('SELECT * FROM invoices WHERE id=?',id)
+  if(!inv) return res.status(404).json({error:'Invoice not found'})
+  if(get("SELECT 1 FROM payment_reversals WHERE invoice_id=? AND status IN ('pending','requires_action','refundPendingSettlement')",id)) return res.status(409).json({error:'A refund is still pending. Recheck it with the provider before resuming collections.'})
+  tx(()=>{run("UPDATE invoices SET payment_review='' WHERE id=?",id);logActivity('payment',`Payment review completed on ${inv.invoice_number}: ${note}`,{contact_id:inv.contact_id})})
+  res.json({ok:true})
 }))
 
 app.get('/api/sms-setup', requireRole('manager'), wrap((req,res) => {
@@ -8072,13 +8116,14 @@ function invoiceTotals(inv, balance, s, c) {
   const tax = Number(e?.tax) || 0
   const reconciles = !!e && Number.isFinite(sub)
     && Math.abs(round2(sub + tax) - (Number(inv.amount_due) || 0)) <= 0.005
+  const credit=invoiceCreditSummary(inv)
   const head = reconciles
     ? `<div><span>Subtotal</span><span>${money(sub)}</span></div>`
       + (Math.abs(tax) > 0.005
         ? `<div><span>Tax (${esc(e.tax_rate ?? s.tax_rate)}%)</span><span>${money(tax)}</span></div>`
         : `<div><span>Tax</span><span>${c?.tax_exempt ? 'Exempt (resale)' : money(0)}</span></div>`)
     : ''
-  return `<div class="totals">${head}<div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>`
+  return `<div class="totals">${head}${credit.credit_base ? `<div><span>Original invoice</span><span>${money(credit.credit_base.amount_due)}</span></div>${credit.credits.filter(c=>!c.cancelled_at).map(c=>`<div><span>Credit: ${esc(c.reason)}${c.tax_cents ? ` (includes ${money(c.tax_cents/100)} tax)` : ''}</span><span>-${money((c.subtotal_cents+c.tax_cents)/100)}</span></div>`).join('')}` : ''}<div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>`
     + `${inv.amount_paid > 0 ? `<div><span>Already paid</span><span>${money(inv.amount_paid)}</span></div>` : ''}`
     + `<div class="grand"><span>Balance due</span><span>${money(balance)}</span></div></div>`
 }
@@ -8180,9 +8225,85 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
 
 /* ---- online payment: deposit or balance, on the SHOP's own Stripe ---- */
 
+const reversalInFlight=new Map()
+function reconcileReversal(provider,id) {
+  const key=`${curSlug()}:${provider}:${id}`,prior=reversalInFlight.get(key) || Promise.resolve()
+  const task=prior.catch(()=>{}).then(()=>reconcileReversalInner(provider,id))
+  reversalInFlight.set(key,task)
+  return task.finally(()=>{if(reversalInFlight.get(key)===task)reversalInFlight.delete(key)})
+}
+async function reconcileReversalInner(provider,id) {
+  const settings=getSettings()
+  let data,session,attempt,parentId
+  if(provider==='stripe') {
+    data=await retrieveStripeRefund({settings,id})
+    if(data.unrelated)return {ignored:true}
+    session=data.session;parentId=session.id
+    if(session.metadata?.slug!==curSlug())return {ignored:true}
+    if(!session.paid || data.currency!==session.currency)throw new Error('Refund cannot be matched to a paid checkout in the same currency')
+    attempt=session.metadata.checkout_ref?paymentAttempt(session.metadata.checkout_ref):attemptBySession('stripe',parentId)
+    if(!attempt) {
+      // Legacy shop payments predate persisted attempts. Verify the provider's original invoice
+      // metadata and create a local mapping; never match by a browser-supplied invoice number.
+      const inv=get('SELECT * FROM invoices WHERE id=?',Number(session.metadata.invoice)||0)
+      if(!inv)return {ignored:true}
+      if(session.metadata.checkout_ref)throw new Error('Original checkout record is missing')
+      const reference='legacy-'+crypto.createHash('sha256').update(parentId).digest('hex').slice(0,32)
+      run('INSERT OR IGNORE INTO payment_attempts(reference,provider,invoice_id,amount_cents,currency,kind,session_id,is_test,created_at) VALUES (?,?,?,?,?,?,?,?,?)',reference,'stripe',inv.id,session.amountCents,session.currency,session.metadata.kind||'balance',parentId,session.test?1:0,now())
+      attempt=paymentAttempt(reference)
+    }
+  } else if(provider==='authorize_net') {
+    const r=await retrieveAuthorizeTransaction({settings,transactionId:id})
+    const refund=r.transactionType==='refundTransaction'
+    if(!refund && !(r.status==='voided' && ['authCaptureTransaction','priorAuthCaptureTransaction','captureOnlyTransaction'].includes(r.transactionType))) throw new Error('Transaction is not a refund or captured-payment void')
+    const parent=refund?await retrieveAuthorizeTransaction({settings,transactionId:r.originalTransactionId}):r
+    parentId=parent.transactionId;session=parent
+    attempt=paymentAttempt(parent.reference)
+    if(!attempt)return {ignored:true}
+    const states=refund?['refundPendingSettlement','refundSettledSuccessfully','voided','declined','settlementError']:['voided']
+    if(!states.includes(r.status))throw new Error('Refund state needs manual reconciliation')
+    if(refund && !parent.paid)throw new Error('Original refund payment cannot be verified')
+    const applied=refund?['refundPendingSettlement','refundSettledSuccessfully'].includes(r.status):true
+    data={id,kind:refund?'refund':'void',amountCents:r.amountCents,status:r.status,appliedCents:applied?r.amountCents:0,currency:r.currency}
+  } else throw new Error('Unknown payment provider')
+  if(attempt.provider!==provider || session.currency!==attempt.currency || data.currency!==attempt.currency || currencyCode(settings.currency)!==attempt.currency || session.amountCents!==attempt.amount_cents || !!session.test!==!!attempt.is_test) throw new Error('Payment amount, currency, provider or test mode differs from the original checkout')
+  if(provider==='stripe' && (attempt.session_id!==parentId || (session.metadata.checkout_ref && session.metadata.checkout_ref!==attempt.reference)))throw new Error('Refund belongs to another checkout')
+  if(provider==='authorize_net' && (session.reference!==attempt.reference || (attempt.transaction_id && attempt.transaction_id!==parentId)))throw new Error('Refund belongs to another transaction')
+  return tx(()=>{
+    attempt=paymentAttempt(attempt.reference)
+    const previous=get('SELECT * FROM payment_reversals WHERE provider=? AND provider_id=?',provider,id)
+    if(previous && previous.attempt_ref===attempt.reference && previous.kind===data.kind && previous.amount_cents===data.amountCents && previous.status===data.status && previous.applied_cents===(attempt.is_test?0:data.appliedCents)) return {ok:true,duplicate:true,test:!!attempt.is_test,invoice_id:attempt.invoice_id}
+    if(!attempt.is_test) {
+      const inv=invoiceForAttempt(attempt)
+      attempt={...attempt,invoice_id:inv.id}
+      run('UPDATE invoices SET payment_review=? WHERE id=?','Payment reversal received; review required.',inv.id)
+      const ledgerId=provider==='stripe'?parentId:`anet_${parentId}`
+      recordStripePayment(inv,{...session,provider:provider==='stripe'?'Stripe':'Authorize.net'},ledgerId,attempt.kind,[])
+      completeAttempt(attempt.reference,parentId,inv.id)
+    }
+    const result=recordReversal({provider,id,kind:data.kind,attempt,amountCents:data.amountCents,status:data.status,appliedCents:data.appliedCents})
+    return {ok:true,...result}
+  })
+}
+
 function runPaymentEffects(effects) {
   for (const effect of effects) { try { effect() } catch(e) { console.error('payment follow-up:',e.message) } }
 }
+function invoiceForAttempt(attempt) {
+  let inv=attempt.invoice_id ? get('SELECT * FROM invoices WHERE id=?',attempt.invoice_id) : null
+  if(!inv && attempt.estimate_id) {
+    const e=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
+    if(!e) throw new Error('Original estimate is unavailable; reconcile this payment manually')
+    inv=get("SELECT * FROM invoices WHERE estimate_id=? ORDER BY (status='void'),id DESC LIMIT 1",e.id)
+    if(!inv) {
+    const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,created_at) VALUES (?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,now()).lastInsertRowid)
+    inv=get('SELECT * FROM invoices WHERE id=?',id)
+    }
+  }
+  if(!inv) throw new Error('Invoice unavailable; reconcile this payment manually')
+  return inv
+}
+
 function reconcileCheckout(attempt,session,transactionId) {
   if (!session.paid) return {pending:true}
   const effects=[]
@@ -8202,17 +8323,7 @@ function reconcileCheckout(attempt,session,transactionId) {
       completeAttempt(attempt.reference,transactionId,attempt.invoice_id,true)
       return {test:true} // Sandbox money never settles a real invoice or starts production.
     }
-    let inv=attempt.invoice_id ? get('SELECT * FROM invoices WHERE id=?',attempt.invoice_id) : null
-    if(!inv && attempt.estimate_id) {
-      const e=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
-      if(!e) throw new Error('Original estimate is unavailable; reconcile this payment manually')
-      inv=get("SELECT * FROM invoices WHERE estimate_id=? ORDER BY (status='void'),id DESC LIMIT 1",e.id)
-      if(!inv) {
-        const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,created_at) VALUES (?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,now()).lastInsertRowid)
-        inv=get('SELECT * FROM invoices WHERE id=?',id)
-      }
-    }
-    if(!inv) throw new Error('Invoice unavailable; reconcile this payment manually')
+    const inv=invoiceForAttempt(attempt)
     const id=attempt.provider==='authorize_net' ? `anet_${transactionId}` : transactionId
     const updated=recordStripePayment(inv,{...session,provider:attempt.provider==='authorize_net' ? 'Authorize.net' : 'Stripe'},id,attempt.kind,effects)
     completeAttempt(attempt.reference,transactionId,inv.id)
@@ -8272,7 +8383,7 @@ function recordStripePayment(inv, session, sessionId, kind, effects=null) {
     inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at ${gateway}` : label, sessionId, now())
   const amount = paid
   const updated = syncInvoiceStatus(inv.id)
-  advanceOrder(inv.estimate_id, 'paid')
+  if(!inv.payment_review) advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Online ${money(amount)} on ${inv.invoice_number} (card)`, { contact_id: inv.contact_id })
   if (over > 0.005) {
     // Loud, and on the customer's own timeline, because the shop has to act on it at Stripe.
@@ -8305,6 +8416,8 @@ app.get('/p/checkout/:reference/return', pPage(async (req,res) => {
     } catch(e) { failAttempt(a.reference,e.message) }
   }
   const fresh=paymentAttempt(a.reference), paid=fresh.status==='paid'
+  res.setHeader('Cache-Control','no-store')
+  if(get('SELECT 1 FROM payment_reversals WHERE attempt_ref=? AND is_test=0',a.reference)) return res.send(page('Payment updated','<div class="wrap"><div class="card"><h1>Payment updated</h1><p>A refund or payment change has been recorded. Do not pay again from this checkout. Contact the shop for your current invoice and refund status.</p></div></div>'))
   if(fresh.status==='test_paid') return res.type('html').send(page('Test payment complete','<div class="wrap"><div class="card"><h1>Test payment complete</h1><p>No real money was collected. The invoice balance and production status have not changed.</p></div></div>'))
   res.setHeader('Cache-Control','no-store')
   res.send(page(paid ? 'Payment received' : 'Payment confirmation',`<div class="wrap"><div class="card"><h1>${paid ? 'Payment received' : 'Waiting for payment confirmation'}</h1><p>${paid ? 'Your payment has been recorded. Thank you.' : 'We are checking with your payment provider. If your card was charged, do not pay again. Refresh this page in a moment or contact the shop.'}</p>${!paid ? '<button class="btn" onclick="location.reload()">Check again</button>' : ''}</div></div>`))
@@ -8315,6 +8428,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   if (!checkToken('pay', id, req.query.k)) return res.status(403).send(page('Link expired', '<div class="wrap"><div class="card"><h1>Link expired</h1><p>Ask the shop to resend your payment link.</p></div></div>'))
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).send(page('Not found', '<div class="wrap"><div class="card"><h1>Not found</h1></div></div>'))
+  if(inv.payment_review) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The shop is reviewing a refund or payment change. Do not pay again; contact the shop for the updated invoice.</p></div></div>'))
   const s = escView(getSettings())
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
 
@@ -8392,7 +8506,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   }
 
   const balance = round2(inv.amount_due - inv.amount_paid)
-  if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">✓ This invoice is paid in full. Thank you!</div></div></div>`))
+  if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">${inv.credit_base ? 'This invoice is settled, including credit adjustments.' : '✓ This invoice is paid in full. Thank you!'}</div>${invoiceTotals(inv,balance,s,c)}</div></div>`))
 
   if (!paymentsReady(s)) {
     // Until the shop connects Stripe this IS the invoice its customers receive, so it has to be a
@@ -8433,6 +8547,7 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   if (!inv) return res.status(404).send('Not found')
   // Never open a Stripe session for a cancelled invoice — see the note on GET /p/pay/:id.
   if (inv.status === 'void') return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
+  if(inv.payment_review) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The shop is reviewing a refund or payment change. Do not pay again; contact the shop for the updated invoice.</p></div></div>'))
   const s = escView(getSettings())
   const balance = round2(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)

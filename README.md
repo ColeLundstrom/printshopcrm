@@ -117,7 +117,7 @@ Longer write-ups of the things people ask about most, on the project site:
 - Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
 - Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins
 - Invoices with partial payments, running balance, and status always derived from the payments table
-- Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation and payment reconciliation ([setup and limits](docs/PAYMENTS.md))
+- Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation, refund/void reconciliation and explicit invoice credits ([setup and limits](docs/PAYMENTS.md))
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
 - QuickBooks IIF export (Online sync is API-only for now — it has no setup screen yet)

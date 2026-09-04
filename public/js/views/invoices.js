@@ -24,7 +24,7 @@ export async function invoicesView() {
         return `<tr class="click" data-id="${i.id}">
           <td class="mono" data-label="Invoice" style="color:var(--txt)">${esc(i.invoice_number)}</td>
           <td data-label="Customer"><div style="font-weight:600">${esc(i.contact_name || '—')}</div><div class="dim" style="font-size:12px">${esc(i.company || '')}</div></td>
-          <td data-label="Status">${pill(late ? 'overdue' : i.status)}</td>
+          <td data-label="Status">${i.payment_review ? '<span class="pill amber">Review payment</span>' : pill(late ? 'overdue' : i.status)}</td>
           <td class="num" data-label="Total">${money(i.amount_due)}</td>
           <td class="num muted" data-label="Paid">${money(i.amount_paid)}</td>
           <td class="num" data-label="Balance"><strong style="${bal > 0 ? 'color:var(--amber)' : 'color:var(--txt-3)'}">${money(bal)}</strong></td>
@@ -66,16 +66,18 @@ export async function invoiceDetailView(id) {
   // row, it just is not owed — so this screen went on offering Request Payment and Email Invoice,
   // and the server built a live pay link and mailed the customer a demand for money the shop had
   // already withdrawn. The list's own balance expression got this right; the detail screen's did not.
-  const chaseable = bal > 0 && i.status !== 'void'
+  const manager=['owner','manager'].includes(cfg.role)
+  const chaseable = bal > 0 && i.status !== 'void' && !i.payment_review
   setPage(i.invoice_number, `
     ${chaseable ? `<button class="btn" id="reqpay">Request Payment</button>` : ''}
     ${chaseable ? `<button class="btn ghost" id="pay">Record Payment</button>` : ''}
-    ${i.status === 'void' ? '' : '<button class="btn ghost" id="send">Email Invoice</button>'}
+    ${i.status === 'void' || i.payment_review ? '' : '<button class="btn ghost" id="send">Email Invoice</button>'}
+    ${i.status !== 'void' && manager ? '<button class="btn ghost" id="credit">Issue credit</button>' : ''}
     <a class="btn ghost" href="/api/invoices/${id}/pdf" target="_blank">PDF</a>
     ${i.status === 'void' ? '' : `<button class="btn ghost" id="void">Void</button>`}`,
     `<a href="#/invoices">Invoices</a> /`)
 
-  $('#view').innerHTML = `<div class="cols">
+  $('#view').innerHTML = `${i.payment_review ? `<section class="setup-section" role="status"><h2>Review this payment change</h2><p>${esc(i.payment_review)}</p><p>Payment requests and invoice automations are paused. A refund returns money; an invoice credit reduces what the customer owes. Check both before resuming.</p>${manager ? '<button class="btn" id="review-payment">Review balance</button>' : '<p>An owner or manager must complete this review.</p>'} <a class="btn ghost" href="#/payments">Payment history & recheck</a></section>` : ''}<div class="cols invoice-workspace">
     <div class="card">
       <div class="card-h"><h3>${esc(i.invoice_number)}</h3>${pill(i.status)}<div class="spacer"></div>
         <a class="dim" href="#/contacts/${i.contact_id}" style="font-size:13px">${esc(i.contact_name || '')} →</a></div>
@@ -93,8 +95,9 @@ export async function invoiceDetailView(id) {
         <div class="totbox" style="margin-top:0">
           ${reconciles ? `<div><span>Subtotal</span><span>${money(i.subtotal)}</span></div>
           <div><span>Tax${i.tax_rate ? ` (${i.tax_rate}%)` : ''}</span><span>${money(i.tax)}</span></div>` : ''}
+          ${i.credit_base ? `<div><span>Original invoice</span><span>${money(i.credit_base.amount_due)}</span></div>${i.credits.filter(c=>!c.cancelled_at).map(c=>`<div><span>Credit: ${esc(c.reason)}${c.tax_cents ? ` (includes ${money(c.tax_cents/100)} tax)` : ''}</span><span>-${money((c.subtotal_cents+c.tax_cents)/100)}</span></div>`).join('')}` : ''}
           <div><span>Invoice total</span><span>${money(i.amount_due)}</span></div>
-          <div><span>Paid to date</span><span style="color:var(--accent)">-${money(i.amount_paid)}</span></div>
+          <div><span>Net received</span><span style="color:var(--accent)">-${money(i.amount_paid)}</span></div>
           <div class="g"><span>Balance due</span><span style="${bal > 0 ? 'color:var(--amber)' : 'color:var(--accent)'}">${money(bal)}</span></div>
         </div>
       </div>
@@ -117,18 +120,18 @@ export async function invoiceDetailView(id) {
       </div></div>
 
       <div class="card" id="pay-list">
-        <div class="card-h"><h3>Payments</h3><div class="spacer"></div>${bal > 0 ? `<button class="btn ghost sm" id="pay2">+ Add</button>` : ''}</div>
+        <div class="card-h"><h3>Payments</h3><div class="spacer"></div>${chaseable ? `<button class="btn ghost sm" id="pay2">+ Add</button>` : ''}</div>
         ${i.payments.length ? `<table class="tbl"><tbody>${i.payments.map((p) => `<tr>
           <td><strong>${money(p.amount)}</strong><div class="dim" style="font-size:11.5px">${esc(p.method)}${p.note ? ` · ${esc(p.note)}` : ''}</div></td>
           <td class="num dim" style="font-size:12px">${fmtDate(p.created_at)}</td>
-          <td class="num" style="width:34px"><button class="del btn danger sm" data-del-payment="${p.id}" aria-label="Delete the ${esc(money(p.amount))} ${esc(p.method || '')} payment">&times;</button></td>
+          <td class="num" style="width:34px">${p.stripe_session ? '<span class="dim" title="Verified processor entry; refund at your provider">Verified</span>' : `<button class="del btn danger sm" data-del-payment="${p.id}" aria-label="Delete the ${esc(money(p.amount))} ${esc(p.method || '')} payment">&times;</button>`}</td>
         </tr>`).join('')}</tbody></table>` : '<div class="card-b dim">No payments recorded.</div>'}
       </div>
 
-      ${bal > 0 ? `<div class="card"><div class="card-b">
+      ${chaseable ? `<div class="card"><div class="card-b">
         <div class="row" style="justify-content:space-between;margin-bottom:6px"><span class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px">Online payment</span>
-          <span class="pill ${i.stripe_ready ? 'green' : 'gray'}" style="font-size:9.5px">${i.stripe_ready ? 'Stripe on' : 'add Stripe'}</span></div>
-        <p class="dim" style="font-size:12px;line-height:1.55;margin-bottom:8px">${i.stripe_ready ? 'The customer pays a 50% deposit or the balance on your own Stripe. Money lands in your account, recorded here automatically.' : 'Add your Stripe key in Settings to collect deposits and balances online.'}</p>
+          <span class="pill ${i.stripe_ready ? 'green' : 'gray'}" style="font-size:9.5px">${i.stripe_ready ? esc(i.payment_provider_label)+' on' : 'Not connected'}</span></div>
+        <p class="dim" style="font-size:12px;line-height:1.55;margin-bottom:8px">${i.stripe_ready ? 'Customers pay a deposit or balance through '+esc(i.payment_provider_label)+'. Verified payments are recorded here automatically.' : 'Connect Stripe or Authorize.net in Setup & connections, or record payments taken elsewhere.'}</p>
         <div class="row" style="gap:8px">
           <button class="btn ghost sm" id="copylink">Copy pay link</button>
           <a class="btn ghost sm" href="${esc(i.pay_link)}" target="_blank">Preview ↗</a>
@@ -140,6 +143,21 @@ export async function invoiceDetailView(id) {
         </a></div></div>` : ''}
     </div>
   </div>`
+
+  // Credits change the amount owed; they never initiate a refund or move production.
+  onceClick($('#credit'),'Opening…',async()=>{
+    let reference
+    try { ({reference}=await api.get(`/api/invoices/${id}/credit-reference`)) }
+    catch(e) {toast(e.message,true);return}
+    modal({title:'Issue invoice credit',body:`<p>This reduces the invoice. It does not return money to the customer. Refund cards in your payment provider first when needed.</p><div class="field"><label for="credit-sub">Credit before tax</label><input class="input" type="number" min="0" step="0.01" name="subtotal" id="credit-sub" value="${Math.max(0,bal).toFixed(2)}"></div><div class="field"><label for="credit-tax">Tax to credit</label><input class="input" type="number" min="0" step="0.01" name="tax" id="credit-tax" value="0"></div><div class="field"><label for="credit-reason">Reason shown on invoice</label><input class="input" name="reason" id="credit-reason" maxlength="500" placeholder="e.g. Canceled 12 shirts"></div><p class="dim">Enter the actual tax adjustment; tax is not guessed. Review the balance afterward. Credit documents in QuickBooks require manual reconciliation.</p>`,footer:'<button class="btn ghost" data-close>Cancel</button><button class="btn" id="credit-save">Issue credit</button>',onMount:bg=>onceClick($('#credit-save',bg),'Saving…',async()=>{try{await api.post(`/api/invoices/${id}/credits`,{reference,...formData(bg)});closeModal();toast('Credit recorded; review the balance');await invoiceDetailView(id)}catch(e){toast(e.message,true)}})})
+  })
+  $('#review-payment')?.addEventListener('click',()=>modal({title:'Review the remaining balance',body:`<p>Invoice total: <strong>${money(i.amount_due)}</strong><br>Net received after refunds: <strong>${money(i.amount_paid)}</strong><br>Remaining balance: <strong>${money(bal)}</strong></p><p>If work was canceled, issue a credit before completing this review. If no money remains and the whole invoice was canceled, void the invoice. Continuing allows new payment requests for a positive balance. Old draft messages remain blocked.</p><div class="field"><label for="review-note">What did you verify?</label><textarea class="input" id="review-note" name="note" maxlength="1000" rows="3"></textarea></div>`,footer:'<button class="btn ghost" data-close>Back</button><button class="btn" id="review-save">Confirm reviewed balance</button>',onMount:bg=>onceClick($('#review-save',bg),'Saving…',async()=>{try{await api.post(`/api/invoices/${id}/payment-review`,formData(bg));closeModal();toast('Review saved');await invoiceDetailView(id)}catch(e){toast(e.message,true)}})}))
+  if(i.credits?.length) {
+    const section=document.createElement('section');section.className='setup-section'
+    section.innerHTML=`<h2>Credit history</h2>${i.credits.map(c=>`<div class="payment-attempt"><div><strong>${money((c.subtotal_cents+c.tax_cents)/100)}${c.cancelled_at ? ' · Canceled' : ''}</strong><p>${esc(c.reason)}${c.tax_cents ? ' · Tax '+money(c.tax_cents/100) : ''}<br>${fmtDate(c.created_at)}${c.cancel_reason ? ' · Canceled: '+esc(c.cancel_reason) : ''}</p></div>${manager && !c.cancelled_at && i.status!=='void' ? `<button class="btn ghost" data-cancel-credit="${esc(c.reference)}">Cancel credit</button>` : ''}</div>`).join('')}`
+    $('#view').append(section)
+    $$('[data-cancel-credit]',section).forEach(b=>b.onclick=()=>modal({title:'Cancel this credit',body:'<p>The invoice amount will increase again. No money moves; collections pause for review.</p><div class="field"><label for="cancel-reason">Reason</label><input class="input" id="cancel-reason" name="reason" maxlength="500"></div>',footer:'<button class="btn ghost" data-close>Back</button><button class="btn" id="cancel-save">Cancel credit</button>',onMount:bg=>onceClick($('#cancel-save',bg),'Saving…',async()=>{try{await api.post(`/api/invoices/${id}/credits/${b.dataset.cancelCredit}/cancel`,formData(bg));closeModal();await invoiceDetailView(id)}catch(e){toast(e.message,true)}})}))
+  }
 
   const openPay = () => modal({
     title: 'Record Payment',
@@ -228,7 +246,7 @@ export async function invoiceDetailView(id) {
     try {
       const r = await api.post(`/api/invoices/${id}/request-payment`)
       toast(r.delivered ? 'Payment link emailed to the customer' : 'Payment email drafted to Outbox (Manual mode)')
-      if (!r.stripe_ready) toast('Heads up: add your Stripe key in Settings so the link can take card payments', true)
+      if (!r.stripe_ready) toast('Connect a provider in Setup & connections to accept online card payments', true)
     } catch (e) { toast(e.message, true) }
   })
   $('#copylink')?.addEventListener('click', async () => {
