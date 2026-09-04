@@ -110,6 +110,38 @@ test(
       assert.equal((await req('/api/jobs/1/stage', { stage: 'complete' }, 'PATCH')).status, 409)
       const slug = readdirSync(join(dest, 'data', 'tenants'))[0]
       db = new DatabaseSync(join(dest, 'data', 'tenants', slug, 'printshop.db'))
+      const contactCsv = 'Buyer,Reply Address\nMapping Fixture,mapping@example.test'
+      const contactMapping = { name: 'buyer', email: 'reply address' }
+      const contactCount = () => db.prepare('SELECT count(*) AS n FROM contacts').get().n
+      const beforeMapping = contactCount()
+      const suggested = await json('/api/import/contacts', { text: contactCsv, mapping_only: true })
+      assert.deepEqual(suggested.headers, ['buyer', 'reply address'])
+      assert.equal(suggested.mapping.name, null)
+      const contactPreview = await json('/api/import/contacts', { text: contactCsv, mapping: contactMapping, preview: true })
+      assert.equal(contactPreview.sample[0].email, 'mapping@example.test')
+      assert.equal(contactCount(), beforeMapping)
+      assert.equal((await req('/api/import/contacts', { text: contactCsv, mapping: { name: 'missing' } })).status, 400)
+      assert.equal(contactCount(), beforeMapping)
+      assert.equal((await json('/api/import/contacts', { text: contactCsv, mapping: contactMapping })).created, 1)
+      assert.equal((await json('/api/import/contacts', { text: contactCsv, mapping: contactMapping })).created, 0)
+      const orderCsv = 'Buyer,Document,Settlement,Charge\nMapping Fixture,MAP-001,unpaid,120'
+      const orderMapping = { customer_name: 'buyer', order_number: 'document', status: 'settlement', total: 'charge' }
+      const invoiceCount = () => db.prepare('SELECT count(*) AS n FROM invoices').get().n
+      const beforeInvoices = invoiceCount()
+      const orderPreview = await json('/api/import/orders', { text: orderCsv, mapping: orderMapping, status_policy: 'strict', preview: true })
+      assert.equal(orderPreview.sample[0].total, 120)
+      assert.equal(orderPreview.payment_states.unpaid, 1)
+      assert.equal(invoiceCount(), beforeInvoices)
+      const multipart = new FormData()
+      multipart.append('file', new Blob([orderCsv], { type: 'text/csv' }), 'old-system.csv')
+      multipart.append('mapping', JSON.stringify(orderMapping))
+      multipart.append('status_policy', 'strict')
+      const importedOrder = await fetch(base + '/api/import/orders', { method: 'POST', headers: { Cookie: owner }, body: multipart })
+      assert.equal(importedOrder.status, 200, await importedOrder.clone().text())
+      assert.equal((await importedOrder.json()).imported, 1)
+      assert.equal(invoiceCount(), beforeInvoices + 1)
+      assert.equal(db.prepare('SELECT e.total FROM invoices i JOIN estimates e ON e.id=i.estimate_id ORDER BY i.id DESC LIMIT 1').get().total, 120)
+      assert.equal((await json('/api/import/orders', { text: orderCsv, mapping: orderMapping, status_policy: 'strict' })).skipped_duplicates, 1)
       control = new DatabaseSync(join(dest, 'data', 'control.db'))
       const first = control.prepare('SELECT * FROM members LIMIT 1').get()
       control

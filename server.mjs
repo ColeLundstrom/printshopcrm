@@ -42,7 +42,7 @@ import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
-import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus } from './lib/csv.mjs'
+import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
 import { ask } from './lib/assistant.mjs'
@@ -2511,8 +2511,14 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
 app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
-  const rows = parseCsv(text)
+  let rows = parseCsv(text)
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
+  try {
+    const info = importMapping(rows, 'contacts', req.body?.mapping)
+    if (req.body?.mapping_only === true || req.body?.mapping_only === 'true') return res.json(info)
+    rows = applyImportMapping(rows, 'contacts', req.body?.mapping)
+  } catch (e) { return res.status(400).json({ error: e.message }) }
+
   const columns = detectColumns(Object.keys(rows[0]))
   if (!columns.name) return res.status(400).json({ error: "Couldn't find a name column. Expected one of: Name, Customer, Company, or First + Last." })
 
@@ -5919,8 +5925,14 @@ function groupImportedOrders(orders) {
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
-  const rows = parseCsv(text)
+  let rows = parseCsv(text)
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
+  try {
+    const info = importMapping(rows, 'orders', req.body?.mapping)
+    if (req.body?.mapping_only === true || req.body?.mapping_only === 'true') return res.json(info)
+    rows = applyImportMapping(rows, 'orders', req.body?.mapping)
+  } catch (e) { return res.status(400).json({ error: e.message }) }
+
   const mapped = mapOrderRows(rows)
   // Preview what the import will WRITE, not what the file contains. Folded per line-item rows are
   // one order, not four, and the value shown has to be the value that lands: a three-line $1,900
