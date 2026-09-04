@@ -2444,6 +2444,10 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
   if (!c) return res.status(404).json({ error: 'Customer not found', code: 'not_found' })
   const live = get("SELECT COUNT(*) AS n FROM invoices WHERE contact_id = ? AND status != 'void'", id).n
   const paid = round2(get('SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.contact_id = ?', id).v)
+  const history=get(`SELECT i.id FROM invoices i WHERE i.contact_id=? AND (
+    EXISTS(SELECT 1 FROM payments p WHERE p.invoice_id=i.id)
+    OR EXISTS(SELECT 1 FROM invoice_credits c WHERE c.invoice_id=i.id)
+    OR EXISTS(SELECT 1 FROM payment_reversals r WHERE r.invoice_id=i.id)) LIMIT 1`,id)
 
   // The same guard DELETE /api/jobs/:id has, applied to the customer the jobs hang off.
   //
@@ -2466,12 +2470,13 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
     })
   }
 
-  if (live > 0 || paid > 0) {
+  if (live > 0 || paid > 0 || history) {
     const bits = []
     if (live > 0) bits.push(`${live} invoice${live === 1 ? '' : 's'}`)
     if (paid > 0) bits.push(`${money(paid)} in recorded payments`)
+    else if(history) bits.push('payment or credit history, even though no net payment remains')
     return res.status(409).json({
-      error: `${c.name} has ${bits.join(' and ')} — deleting the customer would delete ${bits.length > 1 ? 'them' : 'that'} too. Void an invoice raised in error and try again; a customer who has actually paid you stays on the books.`,
+      error: `${c.name} has ${bits.join(' and ')} — deleting the customer would delete ${bits.length > 1 ? 'them' : 'that'} too. ${history ? 'Keep this customer for your financial records. Refunds and canceled credits preserve their history.' : 'Void an invoice raised in error and try again.'}`,
       code: 'has_financials',
       invoices: live,
       amount_paid: paid,

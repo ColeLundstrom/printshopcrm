@@ -53,8 +53,8 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     const slug=readdirSync(join(dest,'data','tenants'))[0]
     d=new DatabaseSync(join(dest,'data','tenants',slug,'printshop.db'))
     let n=0
-    const invoice=async()=>{
-      const id=Number(d.prepare("INSERT INTO invoices(contact_id,invoice_number,amount_due,status) VALUES (1,?,100,'unpaid')").run('PAY-TEST-'+(++n)).lastInsertRowid)
+    const invoice=async(contactId=1)=>{
+      const id=Number(d.prepare("INSERT INTO invoices(contact_id,invoice_number,amount_due,status) VALUES (?,?,100,'unpaid')").run(contactId,'PAY-TEST-'+(++n)).lastInsertRowid)
       const inv=await json('/api/invoices/'+id,undefined,'GET')
       return {id,path:inv.pay_link.replace(/^https?:\/\/[^/]+/,'')}
     }
@@ -107,7 +107,8 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     assert.equal((await req('/api/invoices/'+first.id+'/payment-review',{note:'Reviewed'})).status,409)
     refund('re_fixture_pending',firstCs,1000,'succeeded');assert.equal((await refundHook('re_fixture_pending')).status,200);assert.equal(paid(first.id),90)
     // A refund can arrive first: original payment and reversal commit together, with no receipt automation.
-    const beforeRefund=await invoice();await checkout(beforeRefund);const earlyCs=state().last.id
+    const refundCustomer=Number(d.prepare("INSERT INTO contacts(name,email) VALUES('Refunded fixture','refund@example.test')").run().lastInsertRowid)
+    const beforeRefund=await invoice(refundCustomer);await checkout(beforeRefund);const earlyCs=state().last.id
     refund('re_fixture_early',earlyCs,10000)
     const emails=d.prepare('SELECT count(*) AS n FROM email_log').get().n
     d.exec("CREATE TRIGGER fail_reversal_commit BEFORE INSERT ON payment_reversals BEGIN SELECT RAISE(ABORT,'simulated disk failure'); END")
@@ -117,6 +118,14 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     assert.equal((await refundHook('re_fixture_early')).status,200);assert.equal(paid(beforeRefund.id),0)
     assert.equal(d.prepare('SELECT count(*) AS n FROM payments WHERE invoice_id=?').get(beforeRefund.id).n,2)
     assert.equal(d.prepare('SELECT count(*) AS n FROM email_log').get().n,emails)
+    await json('/api/invoices/'+beforeRefund.id+'/void',{})
+    assert.equal((await req('/api/contacts/'+refundCustomer,undefined,'DELETE')).status,409,'zero net receipts do not erase refund history')
+    assert.equal(d.prepare('SELECT count(*) AS n FROM payments WHERE invoice_id=?').get(beforeRefund.id).n,2)
+    const creditCustomer=Number(d.prepare("INSERT INTO contacts(name,email) VALUES('Credit fixture','credit@example.test')").run().lastInsertRowid),creditOnly=await invoice(creditCustomer)
+    await json('/api/invoices/'+creditOnly.id+'/credits',{reference:crypto.randomUUID(),subtotal:20,reason:'Canceled work'})
+    await json('/api/invoices/'+creditOnly.id+'/void',{})
+    assert.equal((await req('/api/contacts/'+creditCustomer,undefined,'DELETE')).status,409,'voiding does not make credit history deletable')
+    assert.equal(d.prepare('SELECT count(*) AS n FROM invoice_credits WHERE invoice_id=?').get(creditOnly.id).n,1)
     const verified=d.prepare('SELECT id FROM payments WHERE invoice_id=? LIMIT 1').get(first.id).id
     assert.equal((await req('/api/payments/'+verified,undefined,'DELETE')).status,409)
     // A credit adjusts the debt without inventing cash or replacing the original invoice.

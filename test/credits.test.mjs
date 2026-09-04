@@ -29,7 +29,7 @@ test('credits preserve original tax and cash, roll back failures, and stop delay
     assert.equal(invoiceCreditSummary(result.invoice).credit_base.tax,8)
     assert.equal(addInvoiceCredit(1,c).duplicate,true)
     for(const patch of [{subtotal:51,tax:0},{subtotal:0,tax:5},{subtotal:0.001,tax:0},{subtotal:[1],tax:0}])assert.throws(()=>addInvoiceCredit(1,{...c,reference:crypto.randomUUID(),...patch}))
-    setSetting('currency','CAD');assert.throws(()=>addInvoiceCredit(1,{...c,reference:crypto.randomUUID(),subtotal:1,tax:0}),/currency/);setSetting('currency','USD')
+    setSetting('currency','CAD');assert.throws(()=>addInvoiceCredit(1,{...c,reference:crypto.randomUUID(),subtotal:1,tax:0}),/currency/);assert.throws(()=>cancelInvoiceCredit(1,c.reference,'Wrong currency'),/currency/);setSetting('currency','USD')
     run("UPDATE automation_pending SET due_at='2020-01-01'");tick(deps)
     assert.equal(emails.length,0);assert.equal(get('SELECT status FROM automation_pending').status,'payment_review')
     run("UPDATE invoices SET payment_review='' WHERE id=1")
