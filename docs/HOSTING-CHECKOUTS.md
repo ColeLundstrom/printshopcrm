@@ -46,6 +46,43 @@ recover an existing intent. Switching to another account or between test and liv
 Aggregate in-flight, unresolved, stranded and anomaly counts are available to the administrator
 through `GET /api/admin/billing`.
 
+If a payment notification arrived while Stripe could not be reached, **Payments awaiting
+verification** retains its exact Checkout identity. The owner sees a pending-payment notice in Hosting;
+the administrator can choose **Check payment** in the shop's Hosting panel. This retrieves the
+recorded session and current subscription, then either reconciles hosting or creates a payment
+review for the operator. Failed checks remain visible and block a new payable checkout. A cleared
+receipt stays in the audit history, and retrying it does not make another provider request.
+
+## Deleting a shop
+
+Deletion does not cancel hosting. End its subscription using **Manage hosting** or Stripe, then
+retry **Delete** in Control Room. A scheduled cancellation still counts as active until the
+provider says the subscription ended. Local `canceled` text is not sufficient evidence.
+
+The server checks the actual account and test/live mode, exact customer and subscription, and
+the shop's hosting provenance. It also checks recorded extra subscriptions, resolved payment
+reviews and pending payment-verification receipts. These remain liabilities even when the local
+shop no longer has a current subscription binding. Only provider-confirmed `canceled` or
+`incomplete_expired` subscriptions, or an exact expired checkout with no subscription, permit
+removal. Unresolved payment reviews must first be reconciled using the controls above.
+
+Unavailable credentials/provider responses, mismatched records, active subscriptions, concurrent
+hosting changes and verification limits preserve the shop. Read failures need a retry; inconsistent
+history needs operator review. Neither deletion nor payment verification cancels, refunds or
+creates a Stripe payment.
+
+The control database retains a deletion tombstone and verified billing evidence. Retrying a
+successful deletion returns its recorded result without querying Stripe or deleting a directory
+again. If the registry was removed but data cleanup failed or its final result could not be saved,
+the response explicitly reports that the cleanup outcome needs operator review. It does not
+claim the shop is still present. Back up and retain the control database as part of financial
+recovery history.
+
+For integrations and operator scripts, `deleteTenantWithHostingCheck(id)` is the asynchronous
+entry point. The synchronous `deleteTenantFully(id)` still works for never-billed shops and
+refuses previously billed shops without the internal one-use verification. No caller-supplied
+boolean or local subscription-status edit bypasses that guard.
+
 ## Reliability boundaries
 
 - One unresolved hosting intent per shop is enforced in the control database. Creation parameters,
@@ -64,6 +101,18 @@ through `GET /api/admin/billing`.
   reports a hold; it does not silently discard payment history or create a replacement payment.
 - Back up the control database alongside shop databases. Recovery depends on the recorded intent,
   parameters and payment evidence, not only the tenant's current subscription ID.
+- Deletion uses a database-visible 120-second lease and checks the captured hosting revision and
+  retained-history digest again in the same transaction as registry removal. Provider reads run
+  outside that transaction. Checkout admission and received hosting-event verification share
+  database-visible leases; failed received-payment verification retains a durable receipt after
+  the active lease ends. Another process or a restarted server sees the same hold.
+- A deletion check permits at most 24 provider reads, 500 records per history category and four
+  combined deletion/event operations. It stops starting reads after a 60-second work budget;
+  an already-started request has its existing 15-second timeout, so an unsuccessful check may
+  take roughly 75 seconds before returning. Expired leases never grant approval: retry performs
+  fresh verification. A history beyond the configured limits requires operator review.
+- These checks cover recorded hosting liabilities and already-admitted payment notifications.
+  They do not discover arbitrary unrecorded subscriptions or unrelated products in Stripe.
 
 Isolated tests exercise these recovery paths without real payments. The deployment's actual Stripe
 account, webhook signing secret, public HTTPS callback and merchant-owned sandbox still require

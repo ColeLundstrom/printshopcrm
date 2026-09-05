@@ -64,3 +64,26 @@ test('an unresolved hosting checkout exposes recovery and prevents starting anot
   assert.match(node('#view').innerHTML,/Your shop owner manages hosting/)
   assert.doesNotMatch(node('#view').innerHTML,/data-plan=|id="manage"|id="hosting-/)
 })
+
+test('a received payment awaiting verification blocks checkout without an intent and refreshes without creating a payment', async () => {
+  const nodes=new Map()
+  const node=key=>{if(!nodes.has(key))nodes.set(key,{innerHTML:'',textContent:'',addEventListener(){},querySelector:()=>null});return nodes.get(key)}
+  globalThis.document={querySelector:key=>key.startsWith('#hosting-')&&!node('#view').innerHTML.includes(`id="${key.slice(1)}"`)?null:node(key)}
+  globalThis.location={origin:'http://localhost'}
+  const {api}=await import('../public/js/core.js')
+  const {billingView}=await import('../public/js/views/billing.js')
+  const data={live:true,can_manage:true,plans:{everything:{name:'Managed hosting',monthly:149,annual:1490,features:[]}},order:['everything'],state:{status:'trial',trial_days_left:20},
+    hosting_checkout:{intent:null,anomalies:[],pending_verifications:[{id:'a'.repeat(64),session_id:'cs_fixture'}]}}
+  const reads=[]
+  api.get=async path=>{reads.push(path);return path==='/api/billing'?data:{is_admin:false}}
+  api.post=async()=>assert.fail('Refreshing a pending receipt must not create or mutate a payment')
+  await billingView()
+  assert.match(node('#view').innerHTML,/received hosting payment is awaiting verification/)
+  assert.doesNotMatch(node('#view').innerHTML,/data-plan=|id="hosting-check"|id="hosting-resume"/)
+  assert.equal(typeof node('#hosting-refresh').onclick,'function')
+  const refresh=node('#hosting-refresh').onclick
+  data.hosting_checkout.pending_verifications=[]
+  await refresh()
+  assert.equal(reads.filter(path=>path==='/api/billing').length,2)
+  assert.match(node('#view').innerHTML,/data-plan="everything"/)
+})

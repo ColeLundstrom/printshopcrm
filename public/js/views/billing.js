@@ -11,7 +11,8 @@ export async function billingView() {
   const checkout = d.hosting_checkout || {}
   const intent = checkout.intent
   const pending = intent && !['complete','expired','closed'].includes(intent.state)
-  const needsReview = !!checkout.anomalies?.length
+  const needsVerification = !!checkout.pending_verifications?.length
+  const needsReview = !!checkout.anomalies?.length || needsVerification
   const order = (d.order && d.order.length ? d.order : ['everything']).filter((k) => plans[k])
   let interval = intent?.interval === 'year' ? 'year' : 'month'
 
@@ -41,7 +42,7 @@ export async function billingView() {
       <ul class="plan-feats">${p.features.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>
       ${isCurrent ? '<button class="btn ghost" disabled>Current plan</button>'
         : !canManage ? '<p class="dim">Your shop owner manages hosting.</p>'
-        : pending || needsReview ? '<button class="btn ghost" disabled>Resolve the saved checkout first</button>'
+        : pending || needsReview ? `<button class="btn ghost" disabled>${needsReview ? 'Resolve the payment review first' : 'Resolve the saved checkout first'}</button>`
         : manageExisting ? '<button class="btn ghost" disabled>Use Manage hosting below</button>'
         : `<button class="btn ${p.popular ? '' : 'ghost'}" data-plan="${key}">${isFree ? 'Start on Free' : (st.subscribed ? 'Switch to ' + esc(p.name) : 'Choose ' + esc(p.name))}</button>`}
     </div>`
@@ -61,10 +62,10 @@ export async function billingView() {
       <div class="card-b">
         <p>${esc(messages[intent?.state] || 'A hosting payment needs to be checked by the server operator before another checkout can begin.')}</p>
         ${intent ? `<p class="dim">${esc(plans[intent.plan]?.name || 'Managed hosting')} · ${intent.interval === 'year' ? 'Annual' : 'Monthly'}</p>` : ''}
-        ${needsReview ? '<p>A payment could not be matched safely to this shop. Contact the server operator before paying again.</p>' : ''}
+        ${needsReview ? `<p>${needsVerification ? 'A received hosting payment is awaiting verification.' : 'A payment could not be matched safely to this shop.'} Contact the server operator before paying again.</p>` : ''}
         <div class="row hosting-recovery-actions">
           ${d.live && intent?.can_retry && !needsReview ? '<button type="button" class="btn" id="hosting-resume">Continue checkout</button>' : ''}
-          ${d.live ? '<button type="button" class="btn ghost" id="hosting-check">Check payment status</button>' : '<p>Ask the server operator to reconnect hosting billing to check this payment.</p>'}
+          ${d.live ? needsVerification ? '<button type="button" class="btn ghost" id="hosting-refresh">Refresh hosting status</button>' : '<button type="button" class="btn ghost" id="hosting-check">Check payment status</button>' : '<p>Ask the server operator to reconnect hosting billing to check this payment.</p>'}
           ${d.live && intent?.can_expire && !needsReview ? '<button type="button" class="btn ghost" id="hosting-expire">Close unpaid checkout</button>' : ''}
         </div>
         ${d.live && pending ? `<details class="hosting-recovery-details"><summary>Recover a checkout with its Stripe ID</summary>
@@ -106,6 +107,8 @@ export async function billingView() {
   </div>`
 
   const rerender = () => billingView()
+  const refreshHosting = $('#hosting-refresh')
+  if(refreshHosting) refreshHosting.onclick=async()=>{refreshHosting.disabled=true;try{await rerender()}catch(error){toast(error.message,true);refreshHosting.disabled=false}}
 
   // Bound to the containers this render just created, never to the persistent #view — a #view
   // binding survives every revisit, so one plan click would open a Checkout Session per visit.

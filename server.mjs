@@ -41,7 +41,7 @@ import {
   getPlatformConfig, setPlatformConfig, isAdminEmail,
   listMembers, addMember, updateMember, deleteMember, getMemberById, ROLES, ROLE_RANK,
   activeTenantSlugs, automationTenantSlugs, purgeExpiredSessions, enrollNurture, stopNurtureByToken,
-  listTenantsAdmin, setTenantStatus, deleteTenantFully,
+  listTenantsAdmin, setTenantStatus, deleteTenantWithHostingCheck,
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
   getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants, agentAccess,
@@ -2059,6 +2059,17 @@ app.post('/api/admin/hosting-checkout/resolve', async (req,res) => {
   } catch(error) { hostingActionError(res,error) }
 })
 
+app.post('/api/admin/hosting-verification/reconcile', async (req,res) => {
+  if(!requireAdmin(req,res)) return
+  try {
+    const b=req.body || {}
+    if(!Number.isSafeInteger(b.tenant_id) || b.tenant_id < 1 || typeof b.verification_id !== 'string' || !/^[a-f0-9]{64}$/.test(b.verification_id)) {
+      return res.status(400).json({error:'Choose a saved hosting payment to check.',code:'hosting_verification_invalid'})
+    }
+    hostingActionResult(res,await hostingCheckouts.reconcileVerification({tenantId:b.tenant_id,verificationId:b.verification_id},processPlatformSubscriptionEvent))
+  } catch(error) { hostingActionError(res,error) }
+})
+
 // Create a client's shop for them (the hands-on onboarding Stan does) — returns the temp password
 // once so it can be handed off. Never emails it from here; the admin shares it directly.
 app.post('/api/admin/shops', wrap(async (req, res) => {
@@ -2087,10 +2098,32 @@ app.post('/api/admin/shops/:id/status', wrap((req, res) => {
   res.json({ ok: true, tenant: tenantPublic(setTenantStatus(+req.params.id, req.body?.status)) })
 }))
 
-app.delete('/api/admin/shops/:id', wrap((req, res) => {
+// Fixed public messages keep provider diagnostics out of an irreversible account operation.
+const hostingDeletionErrors = Object.freeze({
+  hosting_deletion_active: [409, 'Hosting is still active. End the recorded subscriptions in Stripe, then retry deleting this shop.'],
+  hosting_deletion_review: [409, 'Hosting payment history needs review before this shop can be deleted. Open Hosting to review its saved payments.'],
+  hosting_deletion_busy: [503, 'A hosting operation is already in progress. Wait for it to finish, then retry deleting this shop.'],
+  hosting_deletion_unavailable: [503, 'Could not verify that hosting has ended. The shop has been kept. Check the billing connection and retry.'],
+  hosting_deletion_changed: [409, 'Hosting changed during verification. The shop has been kept. Review its current hosting status, then retry.'],
+  hosting_deletion_verification_required: [409, 'Verify that hosting has ended before deleting this shop.'],
+  import_in_progress: [409, 'This shop has an import in progress. Try deleting it after the import finishes.'],
+})
+
+app.delete('/api/admin/shops/:id', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return
-  if (+req.params.id === req.tenant?.id) return res.status(400).json({ error: "You can't delete your own admin account here." })
-  const r = deleteTenantFully(+req.params.id)
+  const tenantId = Number(req.params.id)
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return res.status(400).json({ error: 'Choose a valid shop.' })
+  if (tenantId === req.tenant?.id) return res.status(400).json({ error: "You can't delete your own admin account here." })
+  let r
+  try { r = await deleteTenantWithHostingCheck(tenantId) }
+  catch (error) {
+    const known = Object.hasOwn(hostingDeletionErrors, error?.code)
+    const code = known ? error.code : 'hosting_deletion_unavailable'
+    const [status, safeMessage] = hostingDeletionErrors[code]
+    const message = known ? safeMessage : 'Could not confirm the deletion result. Refresh the shop list and review hosting before retrying.'
+    if (status === 503) res.setHeader('Retry-After', '10')
+    return res.status(status).json({ error: message, code })
+  }
   if (!r) return res.status(404).json({ error: 'No such shop.' })
   // The removal of the DATA is reported separately from the removal of the shop, because they can
   // and do come apart — and when they do, the next shop to take that slug used to inherit the old
