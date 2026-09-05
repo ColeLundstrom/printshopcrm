@@ -1,6 +1,7 @@
 import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
+import { mountCollections } from '../shared/payment-collections.js'
 
 let filter = 'all'
 
@@ -163,6 +164,13 @@ export async function invoiceDetailView(id) {
 
   $('#view').insertAdjacentHTML('afterbegin',recipientsPanel(i,'invoice',manager))
   bindRecipientEditor(i,'invoice',()=>invoiceDetailView(id))
+  if (manager) {
+    const collectionHost = document.createElement('div')
+    $('#view').append(collectionHost)
+    mountCollections(collectionHost,{invoiceId:Number(id),hideEmpty:true,onChange:()=>{
+      if(collectionHost.isConnected && location.hash===`#/invoices/${id}` && !document.querySelector('.modal-bg')) invoiceDetailView(id)
+    }})
+  }
   const openPay = () => modal({
     title: 'Record Payment',
     body: `<div class="field"><label>Amount</label><input class="input" name="amount" type="number" step="0.01" value="${bal.toFixed(2)}"></div>

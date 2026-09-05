@@ -56,8 +56,13 @@ test('signed callbacks reconcile both gateways atomically without the customer r
       return {id,path:inv.pay_link.replace(/^https?:\/\/[^/]+/,'')}
     }
     const checkout=async inv=>{
+      const page=await fetch(new URL(inv.path,base))
+      assert.equal(page.status,200,await page.clone().text())
+      const html=await page.text(),input=html.match(/<input\b[^>]*\bname=["']choice["'][^>]*>/)?.[0]
+      const choice=input?.match(/\bvalue=["']([^"']+)["']/)?.[1]
+      assert(choice,'the visible payment page supplies its signed amount choice')
       const u=new URL(inv.path,base);u.pathname+='/checkout'
-      const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'kind=balance',redirect:'manual'})
+      const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({kind:'balance',choice}),redirect:'manual'})
       assert.equal(r.status,303,await r.text());return r.headers.get('location')
     }
     const paid=id=>d.prepare('SELECT amount_paid FROM invoices WHERE id=?').get(id).amount_paid
@@ -146,11 +151,15 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     // Too many refunds and remapped refund identities never mutate the ledger.
     refund('re_fixture_over',firstCs,10000);assert.equal((await refundHook('re_fixture_over')).status,503);assert.equal(paid(first.id),90)
     refund('re_fixture_pending',earlyCs,1000);assert.equal((await refundHook('re_fixture_pending')).status,503);assert.equal(paid(first.id),90)
+    // Each conflicting provider transaction has its own identity. A verified transaction's
+    // captured amount/currency cannot later be rewritten to make the same receipt look valid.
+    for(const patch of [()=>({currency:'usd'}),()=>({amount_total:1}),s=>({metadata:{...s.metadata,slug:'another-shop'}})]){
+      const invalid=await invoice();await checkout(invalid);const invalidCs=state().last.id
+      mutate(s=>Object.assign(s.sessions[invalidCs],patch(s.sessions[invalidCs])))
+      assert.equal((await stripeHook(invalidCs)).status,503);assert.equal(paid(invalid.id),0)
+    }
     const bad=await invoice();await checkout(bad);cs=state().last.id
     const good={...state().sessions[cs]}
-    for(const patch of [{currency:'usd'},{amount_total:1},{metadata:{...good.metadata,slug:'another-shop'}}]){
-      mutate(s=>Object.assign(s.sessions[cs],good,patch));assert.equal((await stripeHook(cs)).status,503);assert.equal(paid(bad.id),0)
-    }
     mutate(s=>Object.assign(s.sessions[cs],good,{payment_status:'unpaid'}));assert.equal((await stripeHook(cs)).status,200);assert.equal(paid(bad.id),0)
     mutate(s=>Object.assign(s.sessions[cs],good))
     // A failure between payment insertion and attempt completion rolls back every financial write.
@@ -178,18 +187,21 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     assert.equal((await anetHook(id)).status,200,log);assert.equal(paid(anetInv.id),100)
     assert.equal((await anetHook(id)).status,200);assert.equal(paid(anetInv.id),100)
     const double=trans();mutate(s=>s.transactions[double]={...s.transactions[id],transId:double})
-    assert.equal((await anetHook(double)).status,503,'second transaction must require human review');assert.equal(paid(anetInv.id),100)
+    assert.equal((await anetHook(double)).status,200,'retain and acknowledge the second verified capture');assert.equal(paid(anetInv.id),200)
+    assert(d.prepare('SELECT payment_review FROM invoices WHERE id=?').get(anetInv.id).payment_review)
+    assert.equal(d.prepare('SELECT count(*) AS n FROM payments WHERE invoice_id=?').get(anetInv.id).n,2)
+    assert.equal((await anetHook(double)).status,200);assert.equal(paid(anetInv.id),200,'the same transaction is still idempotent')
     // Authorize.net refunds are matched through the original transaction, not refund invoice text.
     const refundId=trans(),refundEvent='net.authorize.payment.refund.created',voidEvent='net.authorize.payment.void.created'
     mutate(s=>s.transactions[refundId]={transId:refundId,transactionType:'refundTransaction',transactionStatus:'refundPendingSettlement',responseCode:1,authAmount:'25.00',settleAmount:'25.00',refTransId:id,order:{invoiceNumber:'untrusted-refund-reference'}})
-    assert.equal((await anetHook(refundId,undefined,refundEvent)).status,200);assert.equal(paid(anetInv.id),75)
-    assert.equal((await anetHook(refundId,undefined,refundEvent)).status,200);assert.equal(paid(anetInv.id),75)
+    assert.equal((await anetHook(refundId,undefined,refundEvent)).status,200);assert.equal(paid(anetInv.id),175)
+    assert.equal((await anetHook(refundId,undefined,refundEvent)).status,200);assert.equal(paid(anetInv.id),175)
     assert.equal((await req('/api/invoices/'+anetInv.id+'/payment-review',{note:'Pending'})).status,409)
     mutate(s=>s.transactions[refundId].transactionStatus='refundSettledSuccessfully')
-    assert.equal((await json('/api/payments/reversals/authorize_net/'+refundId+'/recheck',{})).ok,true);assert.equal(paid(anetInv.id),75)
+    assert.equal((await json('/api/payments/reversals/authorize_net/'+refundId+'/recheck',{})).ok,true);assert.equal(paid(anetInv.id),175)
     // Voiding a refund restores the returned amount; it does not void the original charge.
     mutate(s=>{s.transactions[refundId].transactionStatus='voided';s.transactions[refundId].settleAmount='0.00'})
-    assert.equal((await anetHook(refundId,undefined,voidEvent)).status,200);assert.equal(paid(anetInv.id),100)
+    assert.equal((await anetHook(refundId,undefined,voidEvent)).status,200);assert.equal(paid(anetInv.id),200)
     // Original capture void before its payment callback: one atomic pair, zero net money.
     const preVoid=await invoice(),preVoidRef=new URL(await checkout(preVoid)).pathname.split('/').at(-1),preVoidId=trans()
     mutate(s=>s.transactions[preVoidId]={...s.transactions[id],transId:preVoidId,transactionStatus:'voided',settleAmount:'0.00',authAmount:'100.00',order:{invoiceNumber:preVoidRef}})

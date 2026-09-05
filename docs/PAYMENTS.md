@@ -10,7 +10,7 @@ Online checkout supports **Stripe** and **Authorize.net Accept Hosted**. Choose 
 2. Copy the shop's callback URL from Payment connections into Stripe Workbench → Webhooks → add event destination for your account.
 3. Subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `refund.created`, `refund.updated` and `refund.failed`.
 4. Save that destination's `whsec_…` signing secret in PrintShopCRM. New checkouts require this secret as well as the account key.
-5. Verify a test checkout and callback. Check **Recent checkouts**, then verify the test did not change the invoice balance. Configure the live destination and live account key separately before collecting real money.
+5. Verify a test checkout and callback. Check **Online checkout activity**, then verify the test did not change the invoice balance. Configure the live destination and live account key separately before collecting real money.
 
 Existing Stripe users must configure the new callback before this release can start new checkouts. Existing return links still verify completed sessions. Callback URLs require a publicly reachable HTTPS installation; local previews cannot receive provider events.
 
@@ -33,15 +33,25 @@ Signed callbacks verify the checkout again against Stripe. Payment recording no 
 5. Use **Save & test credentials**. This authenticates only; it does not charge a card or verify callback delivery.
 6. Complete a sandbox hosted checkout and verify its callback before configuring a live account.
 
-The customer enters card details on Authorize.net. PrintShopCRM stores a short-lived hosted token, not card numbers or security codes. Hosted tokens expire; the customer can return to the invoice for a new link. Authorization-only, declined, held, and voided transactions do not settle invoices. A successful callback is verified through `getTransactionDetails` before recording payment. [Accept Hosted](https://developer.authorize.net/api/reference/features/accept-hosted.html), [payment webhooks](https://developer.authorize.net/api/reference/features/webhooks.html).
+The customer enters card details on Authorize.net. PrintShopCRM stores a short-lived hosted token, not card numbers or security codes. Hosted tokens have a limited window for opening the payment form. Expiry of that window does not prove that an already opened form cannot be paid. An unresolved checkout therefore stays on hold until its outcome is verified; it does not automatically create a replacement link. Authorization-only, declined, held, and voided transactions do not settle invoices. A successful callback is verified through `getTransactionDetails` before recording payment. [Accept Hosted](https://developer.authorize.net/api/reference/features/accept-hosted.html), [payment webhooks](https://developer.authorize.net/api/reference/features/webhooks.html).
 
 ## Reconciliation and reliability
 
 Each new checkout stores its shop-local invoice/estimate reference, provider, amount, currency, and test mode. Verification must match all of them. Changing shop currency during an open checkout requires reconciliation. Stripe and Authorize.net test payments appear as **test paid** without changing invoices, triggering payment automations, or moving production.
 
-The payment row, invoice balance, order stage, QuickBooks queue entry, and checkout completion are written in one SQLite transaction. Retried callbacks and simultaneous return-page confirmations do not double-post. A second Authorize.net transaction for an already completed checkout is flagged for review, not silently ignored. A payment arriving after an invoice is voided is recorded visibly while the invoice stays void. Overpayments retain the full amount and show a refund warning.
+The payment row, invoice balance, order stage, QuickBooks queue entry, and checkout completion are written in one SQLite transaction. Retried callbacks and simultaneous return-page confirmations do not double-post. A second verified Authorize.net capture for an already completed checkout records the full additional amount and pauses further collection for manager review. A payment arriving after an invoice is voided is recorded visibly while the invoice stays void. Overpayments retain the full amount and show a refund warning.
 
-**Recent checkouts → Recheck payment** retrieves the existing transaction; it never creates a charge. For Authorize.net, supply the transaction ID from your merchant dashboard. Errors are retained for staff review. Provider retries handle temporary callback failures; this version does not include a background polling reconciler. Email/automation notifications run after the financial commit and are not guaranteed across a process crash at that boundary.
+**Online checkout activity → Check provider** retrieves the existing transaction; it never creates a charge. For Authorize.net, supply the transaction ID from your merchant dashboard. Errors are retained for staff review. Provider retries handle temporary callback failures; this version does not include a background polling reconciler. Email/automation notifications run after the financial commit and are not guaranteed across a process crash at that boundary.
+
+### Open checkouts and recovery
+
+An invoice and its related estimate share one unresolved collection reservation. A second browser tab cannot open a competing deposit or balance checkout. The public payment page signs its displayed balance; a stale page must refresh before opening checkout. Manual payments or invoice changes while a checkout is open pause further collection.
+
+Owners and managers can find **Online checkout activity** on the invoice and Payment connections. Resume retrieves the saved checkout; it does not automatically redirect staff. Stripe and Connect can close an open session only after the provider confirms expiration. An interrupted Stripe create can replay the exact saved request and key for up to 23 hours. After that, enter the original session ID from the merchant account and check it; no new session is guessed. Authorize.net recovery uses the original transaction ID. There is no local “assume unpaid” override.
+
+Verified payment evidence is saved before applying it to the invoice, so a failed financial transaction cannot erase the provider receipt. Unexpected money appears under **Payments needing review**. A receipt that could not be applied remains held for reconciliation; changing an invoice or dismissing a warning is not proof that money was refunded. Historical pending checkouts also require verification before a replacement.
+
+These controls follow [Stripe idempotency](https://docs.stripe.com/api/idempotent_requests), [verified Checkout expiration](https://docs.stripe.com/api/checkout/sessions/expire), and [Authorize.net Accept Hosted](https://developer.authorize.net/api/reference/features/accept-hosted.html). They do not replace checking the merchant account when a provider outcome remains uncertain.
 
 ## Refunds, voids and invoice credits
 

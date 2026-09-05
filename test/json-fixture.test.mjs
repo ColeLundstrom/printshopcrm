@@ -1,10 +1,30 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, renameSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
-import { writeFixtureJson, readFixtureRecords } from './helpers/json-fixture.mjs'
+import { writeFixtureJson, readFixtureJson, readFixtureRecords } from './helpers/json-fixture.mjs'
+
+test('temporary replacement denial preserves the complete old fixture and never retries a permanent error',()=>{
+  const root=mkdtempSync(join(tmpdir(),'psc-fixture-lock-')),path=join(root,'fixture.json')
+  try {
+    writeFixtureJson(path,{revision:1,payload:'old'})
+    let attempts=0,waits=0
+    writeFixtureJson(path,{revision:2,payload:'new'},{publish:(source,target)=>{
+      assert.deepEqual(readFixtureJson(path),{revision:1,payload:'old'})
+      if(++attempts<3)throw Object.assign(new Error('Synthetic reader lock'),{code:'EPERM'})
+      renameSync(source,target)
+    },wait:()=>waits++})
+    assert.equal(waits,2);assert.deepEqual(readFixtureJson(path),{revision:2,payload:'new'})
+    assert.throws(()=>writeFixtureJson(path,{revision:3},{publish:()=>{throw Object.assign(new Error('Missing path'),{code:'ENOENT'})},wait:()=>assert.fail('Permanent errors cannot retry')}),/Missing path/)
+    assert.deepEqual(readFixtureJson(path),{revision:2,payload:'new'});assert.deepEqual(readdirSync(root),['fixture.json'])
+    let retries=0
+    assert.throws(()=>writeFixtureJson(path,{revision:4},{publish:()=>{throw Object.assign(new Error('Persistent lock'),{code:'EBUSY'})},wait:()=>retries++}),/Persistent lock/)
+    assert(retries>0 && retries<50,'publication retries remain bounded')
+    assert.deepEqual(readFixtureJson(path),{revision:2,payload:'new'});assert.deepEqual(readdirSync(root),['fixture.json'])
+  } finally {rmSync(root,{recursive:true,force:true})}
+})
 
 test('concurrent fixture config publication preserves complete JSON and every provider request', { timeout: 15000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'psc-json-fixture-')), config = join(root, 'provider.json'), records = join(root, 'requests')

@@ -72,14 +72,15 @@ import { liveInventory } from './lib/suppliers.mjs'
 import { jobRoi, shopRoi, laborActualMinutes } from './lib/roi.mjs'
 import { code128Svg } from './lib/barcode.mjs'
 import { nest, priceSheet } from './public/js/shared/gangnest.js'
-import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund } from './lib/stripe.mjs'
+import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund, createStripeCollectionClient } from './lib/stripe.mjs'
 import { recordReversal, recentReversals } from './lib/payment-reversals.mjs'
 import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary } from './lib/invoice-credits.mjs'
 import { currencyCode } from './lib/payment-currency.mjs'
 import { billingDefaults, recipientSnapshot, documentRecipient, documentForRecipient, recipientMessageIssue, updateDocumentRecipients } from './lib/billing-recipients.mjs'
-import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize } from './lib/authorizenet.mjs'
+import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize, createAuthorizeCollectionClient } from './lib/authorizenet.mjs'
 import { newPaymentAttempt, paymentAttempt, attemptBySession, readyAttempt, failAttempt, completeAttempt, recentAttempts } from './lib/payment-attempts.mjs'
-import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
+import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT, createConnectedCollectionClient } from './lib/connect.mjs'
+import { initPaymentCollections, collectionSnapshot, collectionSnapshotHash, collectionError, reserveCollection, resumeCollection, checkCollection, paymentCollection, finishCollection, verifyCollectionPayment, receiveCollectionPayment, markCollectionReceipt, holdCollectionReceipt, publicCollection, collectionStatus, invoiceCollectionHold } from './lib/payment-collections.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
 import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable, oneRecipient, oneDestination } from './lib/notify.mjs'
@@ -668,23 +669,17 @@ app.post('/webhooks/payments/:key/:provider', slackLimit, express.raw({type:'app
         }
         if(!['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type)) return res.json({received:true,ignored:true})
         const sessionId=String(event.data?.object?.id || '')
-        const confirmed=await retrieveSession({settings:s,sessionId})
-        const ref=confirmed.metadata?.checkout_ref
-        const a=ref ? paymentAttempt(ref) : attemptBySession('stripe',sessionId)
-        if(a) { try { reconcileCheckout(a,confirmed,sessionId) } catch(e) { failAttempt(a.reference,e.message);throw e } }
-        else if(confirmed.paid && confirmed.metadata?.slug===curSlug() && confirmed.currency===currencyCode(s.currency)) {
-          const inv=get('SELECT * FROM invoices WHERE id=?',Number(confirmed.metadata.invoice) || 0)
-          if(inv) recordStripePayment(inv,confirmed,sessionId,confirmed.metadata.kind)
-        }
+        const gateway=isLite?'stripe_connect':'stripe'
+        const {session,account}=await paymentEvidence(gateway,sessionId)
+        acceptPaymentEvidence(gateway,session,account,sessionId)
       } else {
         if(['net.authorize.payment.refund.created','net.authorize.payment.void.created'].includes(event.eventType)) {
           const result=await reconcileReversal('authorize_net',String(event.payload?.id || ''))
           return res.json({received:true,...result})
         }
         if(!['net.authorize.payment.authcapture.created','net.authorize.payment.capture.created','net.authorize.payment.priorAuthCapture.created','net.authorize.payment.fraud.approved'].includes(event.eventType)) return res.json({received:true,ignored:true})
-        const confirmed=await retrieveAuthorizeTransaction({settings:s,transactionId:event.payload?.id})
-        const a=paymentAttempt(confirmed.reference)
-        if(a?.provider==='authorize_net') { try { reconcileCheckout(a,confirmed,confirmed.transactionId) } catch(e) { failAttempt(a.reference,e.message);throw e } }
+        const {session,account}=await paymentEvidence('authorize_net',event.payload?.id)
+        acceptPaymentEvidence('authorize_net',session,account,session.transactionId)
       }
       return res.json({received:true})
     }
@@ -3790,9 +3785,9 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
     id, recorded, method, note, now())
   const updated = syncInvoiceStatus(id)
   // Money in — walk the order card forward (never backward; see advanceOrder).
-  if(!inv.payment_review) advanceOrder(inv.estimate_id, 'paid')
+  if(!inv.payment_review && updated.status==='paid') advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Payment ${money(recorded)} on ${inv.invoice_number} (${method})`, { contact_id: inv.contact_id })
-  if (updated.status === 'paid' && inv.status !== 'paid') {
+  if (updated.status === 'paid' && inv.status !== 'paid' && !inv.payment_review) {
     fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
   }
   enqueueQbo(id) // money moved — the books should hear about it without anyone clicking
@@ -8091,18 +8086,57 @@ app.post('/api/payments/test-authorize',requireRole('manager'),rateLimit({window
   try { res.json(await testAuthorize(getSettings())) }
   catch(e) { res.status(400).json({error:e.message}) }
 }))
-app.post('/api/payments/reconcile/:reference',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap(async (req,res) => {
-  const a=paymentAttempt(req.params.reference)
-  if(!a) return res.status(404).json({error:'Checkout not found'})
-  try {
-    const s=getSettings()
-    const id=a.provider==='stripe' ? a.session_id : String(req.body?.transaction_id || '')
-    if(!id) return res.status(400).json({error:'Provide the Authorize.net transaction ID from your merchant account.'})
-    const result=a.provider==='stripe' ? await retrieveSession({settings:s,sessionId:id}) : await retrieveAuthorizeTransaction({settings:s,transactionId:id})
-    const confirmed=reconcileCheckout(a,result,id)
-    res.json({ok:true,...confirmed})
-  } catch(e) { failAttempt(a.reference,e.message);res.status(400).json({error:e.message}) }
+app.get('/api/payments/collections',requireRole('manager'),wrap((req,res)=>{
+  res.set('Cache-Control','private, no-store')
+  const value=req.query.invoice_id
+  if(value!==undefined && (typeof value!=='string' || !/^[1-9][0-9]*$/.test(value) || /\s/.test(value) || !Number.isSafeInteger(Number(value)))) return res.status(400).json({error:'Invoice ID must be a positive integer.'})
+  res.json(collectionStatus(value===undefined?undefined:Number(value)))
 }))
+app.get('/api/payments/collections/:reference',requireRole('manager'),wrap((req,res)=>{
+  res.set('Cache-Control','private, no-store')
+  const collection=publicCollection(req.params.reference)
+  res.status(collection?200:404).json(collection?{collection}:{error:'Checkout not found.'})
+}))
+async function collectionManagerAction(req,res,action) {
+  res.set('Cache-Control','private, no-store')
+  const a=paymentAttempt(req.params.reference)
+  if(!a) return res.status(404).json({error:'Checkout not found.'})
+  try {
+    const c=paymentCollection(a.reference),revision=req.body?.revision
+    if(action!=='recheck' && (!Number.isSafeInteger(revision) || revision!==(c?.revision||0))) throw collectionError('collection_stale')
+    const client=collectionClient(getSettings(),a.provider)
+    let result
+    if(c) result=action==='resume'?await resumeCollection({reference:a.reference,revision,client}):await checkCollection({reference:a.reference,revision,client,transactionId:req.body?.transaction_id,sessionId:req.body?.session_id,expire:action==='expire'})
+    else {
+      if(action==='resume') throw collectionError('collection_review')
+      const id=a.provider==='authorize_net'?req.body?.transaction_id:a.session_id
+      if(!id) throw collectionError('collection_review')
+      const account=await client.account(),session=a.provider==='authorize_net'?await client.retrieveTransaction(id):await client.retrieve(id)
+      if(!client.matchesSettings(getSettings()) || !!session.test!==!!a.is_test || session.currency!==a.currency || session.amountCents!==a.amount_cents) throw collectionError('collection_account')
+      if(a.provider!=='authorize_net' && (session.metadata?.slug!==curSlug() || session.id!==a.session_id || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==a.reference))) throw collectionError('collection_account')
+      if(a.provider==='authorize_net' && session.reference!==a.reference) throw collectionError('collection_account')
+      let final=session
+      if(action==='expire') {
+        if(a.provider==='authorize_net') throw collectionError('collection_review')
+        if(!session.paid && session.status==='open') final=await client.expire({sessionId:a.session_id,idempotencyKey:a.reference+'_expire'})
+        if(!client.matchesSettings(getSettings())) throw collectionError('collection_account')
+        if(final.status==='expired' && !final.paid) run("UPDATE payment_attempts SET status='expired',error=NULL WHERE reference=? AND status='pending'",a.reference)
+      }
+      result={session:final,account}
+    }
+    let confirmed={}
+    if(result.session.paid) confirmed=reconcileCheckout(paymentAttempt(a.reference),result.session,a.provider==='authorize_net'?result.session.transactionId:result.session.id,result.account)
+    let url
+    if(action==='resume' && !result.session.paid && result.session.status!=='expired' && result.session.status!=='complete') url=a.provider==='authorize_net'?new URL(`/p/checkout/${a.reference}?s=${encodeURIComponent(curSlug())}`,a.return_url).href:result.url
+    res.json({ok:true,...confirmed,collection:publicCollection(a.reference),...(url?{url}:{})})
+  } catch(e) {
+    failAttempt(a.reference,e.collectionSafe?e.message:'Payment provider verification is unavailable. Recheck before paying again.')
+    res.status(e.collectionSafe?e.status:503).json({error:e.collectionSafe?e.message:'Payment provider verification is unavailable. Recheck before paying again.',code:e.collectionSafe?e.code:'collection_unavailable',collection:publicCollection(a.reference)})
+  }
+}
+app.post('/api/payments/reconcile/:reference',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap((req,res)=>collectionManagerAction(req,res,'recheck')))
+app.post('/api/payments/collections/:reference/resume',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap((req,res)=>collectionManagerAction(req,res,'resume')))
+app.post('/api/payments/collections/:reference/expire',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap((req,res)=>collectionManagerAction(req,res,'expire')))
 
 app.post('/api/payments/reversals/:provider/:id/recheck',requireRole('manager'),rateLimit({windowMs:60000,max:20}),wrap(async(req,res)=>{
   try { res.json(await reconcileReversal(req.params.provider,req.params.id)) }
@@ -8126,7 +8160,8 @@ app.post('/api/invoices/:id/payment-review',requireRole('manager'),wrap((req,res
   const inv=get('SELECT * FROM invoices WHERE id=?',id)
   if(!inv) return res.status(404).json({error:'Invoice not found'})
   if(get("SELECT 1 FROM payment_reversals WHERE invoice_id=? AND status IN ('pending','requires_action','refundPendingSettlement')",id)) return res.status(409).json({error:'A refund is still pending. Recheck it with the provider before resuming collections.'})
-  tx(()=>{run("UPDATE invoices SET payment_review='' WHERE id=?",id);logActivity('payment',`Payment review completed on ${inv.invoice_number}: ${note}`,{contact_id:inv.contact_id})})
+  if(invoiceCollectionHold(id)) return res.status(409).json({error:'An existing checkout or verified payment still needs reconciliation. Verify or close it before clearing this review.',code:'collection_review'})
+  tx(()=>{run("UPDATE payment_collection_receipts SET state='reviewed',updated_at=? WHERE invoice_id=? AND state='applied_review'",now(),id);run("UPDATE invoices SET payment_review='' WHERE id=?",id);logActivity('payment',`Payment review completed on ${inv.invoice_number}: ${note}`,{contact_id:inv.contact_id})})
   res.json({ok:true})
 }))
 
@@ -9020,33 +9055,102 @@ function invoiceForAttempt(attempt) {
   return inv
 }
 
-function reconcileCheckout(attempt,session,transactionId) {
+function reconcileCheckout(attempt,session,transactionId,account) {
   if (!session.paid) return {pending:true}
+  const c=paymentCollection(attempt.reference)
+  // Account, tenant, reference and environment must belong here before storing any receipt.
+  if(c && (c.account_id!==account?.account_id || !!c.is_test!==!!account?.is_test || (c.destination||null)!==(account?.destination||null))) throw collectionError('collection_account')
+  if(attempt.provider!=='authorize_net' && (session.metadata?.slug!==curSlug() || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==attempt.reference))) throw collectionError('collection_account')
+  if(attempt.provider==='authorize_net' && session.reference!==attempt.reference) throw collectionError('collection_account')
+  if(!!session.test!==!!attempt.is_test) throw collectionError('collection_account')
+  const receipt=account?receiveCollectionPayment({attempt,provider:attempt.provider,account,session,transactionId}):null
   const effects=[]
-  const result=tx(() => {
-    // Re-read under the write transaction: the return page and webhook can arrive together.
-    attempt=paymentAttempt(attempt.reference)
-    if (!attempt) throw new Error('Checkout is unavailable')
-    if (session.currency !== attempt.currency || currencyCode(getSettings().currency)!==attempt.currency || session.amountCents !== attempt.amount_cents) throw new Error('Payment amount or currency differs from checkout; manual reconciliation required')
-    if (attempt.provider==='stripe' && (session.metadata?.checkout_ref!==attempt.reference || session.metadata?.slug!==curSlug() || (attempt.session_id && attempt.session_id!==transactionId))) throw new Error('Payment belongs to another checkout or shop')
-    if (attempt.provider==='authorize_net' && session.reference!==attempt.reference) throw new Error('Payment reference does not match')
-    if (Boolean(session.test)!==Boolean(attempt.is_test)) throw new Error('Payment test mode differs from checkout')
-    if (['paid','test_paid'].includes(attempt.status)) {
-      if(attempt.transaction_id!==transactionId) throw new Error('Another payment already completed this checkout; review the additional transaction')
-      return {duplicate:true,test:!!attempt.is_test}
+  try {
+    const result=tx(() => {
+      attempt=paymentAttempt(attempt.reference)
+      if(!attempt) throw collectionError('collection_review')
+      verifyCollectionPayment(attempt,session,account)
+      if(attempt.provider!=='authorize_net' && !attempt.session_id) run('UPDATE payment_attempts SET session_id=? WHERE reference=?',transactionId,attempt.reference)
+      if(session.currency!==attempt.currency || currencyCode(getSettings().currency)!==attempt.currency || session.amountCents!==attempt.amount_cents) throw collectionError('collection_review')
+      if(attempt.provider!=='authorize_net' && attempt.session_id && attempt.session_id!==transactionId) throw collectionError('collection_account')
+      if(receipt && ['applied','applied_review','reviewed','test'].includes(get('SELECT state FROM payment_collection_receipts WHERE id=?',receipt.id)?.state)) return {duplicate:true,test:!!attempt.is_test}
+      const alreadyPaid=['paid','test_paid'].includes(attempt.status),extra=alreadyPaid && attempt.transaction_id!==transactionId
+      if(alreadyPaid && !extra) {
+        if(receipt) markCollectionReceipt(receipt.id,{invoiceId:attempt.invoice_id,state:attempt.is_test?'test':'applied'})
+        finishCollection(attempt.reference,attempt.is_test?'test_paid':'paid')
+        return {duplicate:true,test:!!attempt.is_test}
+      }
+      if(attempt.is_test) {
+        if(!extra) completeAttempt(attempt.reference,transactionId,attempt.invoice_id,true)
+        finishCollection(attempt.reference,'test_paid')
+        if(receipt) markCollectionReceipt(receipt.id,{invoiceId:attempt.invoice_id,state:'test'})
+        return {test:true}
+      }
+      let changed=false
+      if(c) {
+        const snapshot=JSON.parse(c.snapshot)
+        if(!attempt.invoice_id) {
+          const current=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
+          if(!current || current.commercial_revision!==snapshot.estimate?.commercial_revision || current.total!==snapshot.estimate?.total || current.contact_id!==snapshot.estimate?.contact_id) throw collectionError('collection_changed')
+        } else changed=c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:attempt.invoice_id,estimateId:attempt.estimate_id,currency:attempt.currency}))
+      }
+      const inv=invoiceForAttempt(attempt)
+      const review=extra || changed || inv.status==='void' || session.amountCents>Math.round((inv.amount_due-inv.amount_paid)*100)
+      if(review) {
+        run('UPDATE invoices SET payment_review=? WHERE id=?','Verified money arrived after the invoice or checkout changed. Review all receipts and the remaining balance before collecting again.',inv.id)
+        run('UPDATE email_log SET payment_stale=1 WHERE invoice_id=? AND delivered=0',inv.id)
+      }
+      // Close the reservation in the same transaction before amount_paid changes. A manual
+      // payment while it remains open instead triggers the durable collection-review hold.
+      if(!extra) completeAttempt(attempt.reference,transactionId,inv.id)
+      finishCollection(attempt.reference)
+      const id=attempt.provider==='authorize_net'?`anet_${transactionId}`:transactionId
+      const updated=recordStripePayment(get('SELECT * FROM invoices WHERE id=?',inv.id),{...session,provider:attempt.provider==='authorize_net'?'Authorize.net':'Stripe'},id,attempt.kind,effects)
+      if(receipt) markCollectionReceipt(receipt.id,{invoiceId:inv.id,state:review?'applied_review':'applied',reason:review?'Full verified amount was recorded. Review the additional or changed payment before resuming collections.':null})
+      return {invoice:updated,review}
+    })
+    runPaymentEffects(effects)
+    return result
+  } catch(error) {
+    if(receipt) holdCollectionReceipt(receipt)
+    throw error
+  }
+}
+
+function collectionClient(settings,provider) {
+  const p=provider || (isLite?'stripe_connect':paymentProvider(settings))
+  return p==='authorize_net'?createAuthorizeCollectionClient(settings):p==='stripe_connect'?createConnectedCollectionClient(settings):createStripeCollectionClient(settings)
+}
+async function paymentEvidence(provider,transactionId) {
+  const client=collectionClient(getSettings(),provider),account=await client.account()
+  const session=provider==='authorize_net'?await client.retrieveTransaction(transactionId):await client.retrieve(transactionId)
+  if(!client.matchesSettings(getSettings())) throw collectionError('collection_account')
+  return {session,account}
+}
+function acceptPaymentEvidence(provider,session,account,transactionId) {
+  const ref=provider==='authorize_net'?session.reference:session.metadata?.checkout_ref
+  if(provider!=='authorize_net' && session.metadata?.slug!==curSlug()) throw collectionError('collection_account')
+  const a=ref?paymentAttempt(ref):attemptBySession(provider,transactionId)
+  if(a) {
+    if(a.provider!==provider) throw collectionError('collection_account')
+    return reconcileCheckout(a,session,transactionId,account)
+  }
+  if(ref || session.metadata?.collection_version) {
+    if(session.paid) {
+      const iid=provider==='authorize_net'?null:Number(session.metadata?.invoice)||null
+      const inv=iid?get('SELECT id FROM invoices WHERE id=?',iid):null
+      const r=receiveCollectionPayment({attempt:inv?{reference:ref,invoice_id:inv.id}:null,reference:ref,provider,account,session,transactionId})
+      holdCollectionReceipt(r,'A verified payment has no matching checkout record. The shop must reconcile it before collecting again.')
     }
-    if (attempt.is_test) {
-      completeAttempt(attempt.reference,transactionId,attempt.invoice_id,true)
-      return {test:true} // Sandbox money never settles a real invoice or starts production.
-    }
-    const inv=invoiceForAttempt(attempt)
-    const id=attempt.provider==='authorize_net' ? `anet_${transactionId}` : transactionId
-    const updated=recordStripePayment(inv,{...session,provider:attempt.provider==='authorize_net' ? 'Authorize.net' : 'Stripe'},id,attempt.kind,effects)
-    completeAttempt(attempt.reference,transactionId,inv.id)
-    return {invoice:updated}
-  })
-  runPaymentEffects(effects)
-  return result
+    throw collectionError('collection_review')
+  }
+  // A genuine pre-receipt Stripe session retains the historical metadata path. A modern
+  // checkout reference can never fall through here simply because its local row is missing.
+  if(provider!=='authorize_net' && session.paid && !session.test && session.currency===currencyCode(getSettings().currency)) {
+    const inv=get('SELECT * FROM invoices WHERE id=?',Number(session.metadata?.invoice)||0)
+    if(inv) return {invoice:recordStripePayment(inv,session,transactionId,session.metadata.kind)}
+  }
+  return {pending:true}
 }
 
 /** Record a confirmed Stripe payment against an invoice, idempotently (session id can't double-post). */
@@ -9099,14 +9203,14 @@ function recordStripePayment(inv, session, sessionId, kind, effects=null) {
     inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at ${gateway}` : label, sessionId, now())
   const amount = paid
   const updated = syncInvoiceStatus(inv.id)
-  if(!inv.payment_review) advanceOrder(inv.estimate_id, 'paid')
+  if(!inv.payment_review && updated.status==='paid') advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Online ${money(amount)} on ${inv.invoice_number} (card)`, { contact_id: inv.contact_id })
   if (over > 0.005) {
     // Loud, and on the customer's own timeline, because the shop has to act on it at Stripe.
     logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at ${gateway}`, { contact_id: inv.contact_id })
     effects.push(() => rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` }))
   }
-  if (updated.status === 'paid' && inv.status !== 'paid') {
+  if (updated.status === 'paid' && inv.status !== 'paid' && !inv.payment_review) {
     effects.push(() => fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due }))
   }
   enqueueQbo(inv.id) // online money in — queue the books update alongside the manual path
@@ -9117,6 +9221,8 @@ function recordStripePayment(inv, session, sessionId, kind, effects=null) {
 app.get('/p/checkout/:reference', pPage((req,res) => {
   const a=paymentAttempt(req.params.reference)
   if(!a || a.provider!=='authorize_net' || !a.checkout_token || a.status!=='pending' || Date.now()-Date.parse(a.created_at+'Z') > 14*60*1000) return res.status(410).send(page('Checkout expired','<div class="wrap"><div class="card"><h1>Checkout expired</h1><p>Return to your invoice for a new payment link.</p></div></div>'))
+  const c=paymentCollection(a.reference)
+  if(c && c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:a.invoice_id,estimateId:a.estimate_id,currency:currencyCode(getSettings().currency)}))) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The invoice changed. Do not open another payment form; ask the shop to check this checkout.</p></div></div>'))
   if(!['https://accept.authorize.net/payment/payment','https://test.authorize.net/payment/payment'].includes(a.checkout_url)) return res.status(500).send('Invalid checkout destination')
   res.setHeader('Content-Security-Policy',String(res.getHeader('Content-Security-Policy')).replace("form-action 'self'", "form-action 'self' https://accept.authorize.net https://test.authorize.net"))
   res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer')
@@ -9125,10 +9231,11 @@ app.get('/p/checkout/:reference', pPage((req,res) => {
 app.get('/p/checkout/:reference/return', pPage(async (req,res) => {
   const a=paymentAttempt(req.params.reference)
   if(!a) return res.status(404).send('Checkout not found')
-  if(req.query.session_id && a.provider==='stripe') {
+  if(req.query.session_id && ['stripe','stripe_connect'].includes(a.provider)) {
     try {
-      const confirmed=await retrieveSession({settings:getSettings(),sessionId:String(req.query.session_id)})
-      reconcileCheckout(a,confirmed,String(req.query.session_id))
+      const {session,account}=await paymentEvidence(a.provider,String(req.query.session_id))
+      if(session.metadata?.checkout_ref!==a.reference) throw collectionError('collection_account')
+      acceptPaymentEvidence(a.provider,session,account,String(req.query.session_id))
     } catch(e) { failAttempt(a.reference,e.message) }
   }
   const fresh=paymentAttempt(a.reference), paid=fresh.status==='paid'
@@ -9138,6 +9245,23 @@ app.get('/p/checkout/:reference/return', pPage(async (req,res) => {
   res.setHeader('Cache-Control','no-store')
   res.send(page(paid ? 'Payment received' : 'Payment confirmation',`<div class="wrap"><div class="card"><h1>${paid ? 'Payment received' : 'Waiting for payment confirmation'}</h1><p>${paid ? 'Your payment has been recorded. Thank you.' : 'We are checking with your payment provider. If your card was charged, do not pay again. Refresh this page in a moment or contact the shop.'}</p>${!paid ? '<button class="btn" onclick="location.reload()">Check again</button>' : ''}</div></div>`))
 }))
+
+function paymentChoice(inv,settings) {
+  const data=Buffer.from(JSON.stringify({id:inv.id,slug:curSlug(),hash:collectionSnapshotHash(collectionSnapshot({invoiceId:inv.id,currency:currencyCode(settings.currency)})),expires:Date.now()+30*60000})).toString('base64url')
+  return data+'.'+crypto.createHmac('sha256',SECRET).update('invoice-choice:'+data).digest('hex')
+}
+function validPaymentChoice(token,inv,settings) {
+  if(typeof token!=='string' || token.length>1000)return false
+  const [data,sig,...rest]=token.split('.')
+  if(rest.length || !/^[a-f0-9]{64}$/.test(sig||''))return false
+  const expected=crypto.createHmac('sha256',SECRET).update('invoice-choice:'+data).digest()
+  if(!crypto.timingSafeEqual(expected,Buffer.from(sig,'hex')))return false
+  try {
+    const value=JSON.parse(Buffer.from(data,'base64url').toString())
+    return value.id===inv.id && value.slug===curSlug() && Number.isSafeInteger(value.expires) && value.expires>Date.now()
+      && value.hash===collectionSnapshotHash(collectionSnapshot({invoiceId:inv.id,currency:currencyCode(settings.currency)}))
+  } catch {return false}
+}
 
 app.get('/p/pay/:id', pPage(async (req, res) => {
   const id = +req.params.id
@@ -9170,7 +9294,8 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   if (req.query.session_id) {
     let outcome = 'unconfirmed'
     try {
-      const session = await confirmSession(s, String(req.query.session_id))
+      const gateway=isLite?'stripe_connect':'stripe'
+      const {session,account}=await paymentEvidence(gateway,String(req.query.session_id))
       // The session has to belong to THIS shop, and metadata.invoice is not enough to say so.
       //
       // In lite edition every shop is a Connect Express account on ONE platform Stripe key, so
@@ -9186,8 +9311,8 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       // Nothing about what we send to Stripe or infer from it changes; this is our own field.
       const forThisShop = String(session.metadata?.slug ?? '') === curSlug()
       if (session.paid && !session.test && forThisShop && String(session.metadata?.invoice) === String(id) && session.currency===currencyCode(s.currency)) {
-        recordStripePayment(inv, session, String(req.query.session_id), session.metadata?.kind)
-        outcome = 'paid'
+        const verified=acceptPaymentEvidence(gateway,session,account,String(req.query.session_id))
+        outcome = verified.invoice || verified.duplicate ? 'paid' : 'unconfirmed'
       } else if (session.paid && (!forThisShop || String(session.metadata?.invoice)!==String(id) || session.test || session.currency!==currencyCode(s.currency))) {
         // Deliberately NOT 'not_paid': that branch tells the customer nothing was charged and
         // offers them a Pay again button. This session really did pay something, somewhere else.
@@ -9239,9 +9364,9 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
   }
 
-  const deposit = round2(Math.min(balance, inv.amount_due * 0.5))
-  const depositBtn = (inv.amount_paid <= 0 && deposit > 0 && deposit < balance)
-    ? `<button class="btn" name="kind" value="deposit">Pay 50% deposit — ${money(deposit)}</button>`
+  const deposit = round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid)))
+  const depositBtn = (deposit > 0 && deposit < balance)
+    ? `<button class="btn" name="kind" value="deposit">Pay ${inv.amount_paid > 0 ? 'remaining ' : ''}50% deposit — ${money(deposit)}</button>`
     : ''
   res.send(page(`Pay ${inv.invoice_number}`, `<div class="wrap"><div class="card">
     <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">INVOICE</div><div class="num2">${inv.invoice_number}</div></div></div>
@@ -9249,6 +9374,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
     ${itemsTable(inv)}
     ${invoiceTotals(inv, balance, s, c)}
     <form method="POST" action="/p/pay/${id}/checkout?k=${req.query.k}${sQ(req)}" style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
+      <input type="hidden" name="choice" value="${paymentChoice(inv,getSettings())}">
       ${depositBtn}
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>
     </form>
@@ -9264,11 +9390,12 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   // Never open a Stripe session for a cancelled invoice — see the note on GET /p/pay/:id.
   if (inv.status === 'void') return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   if(inv.payment_review) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The shop is reviewing a refund or payment change. Do not pay again; contact the shop for the updated invoice.</p></div></div>'))
-  const s = escView(getSettings())
+  if(!validPaymentChoice(req.body?.choice,inv,getSettings())) return res.status(409).send(page('Payment changed','<div class="wrap"><div class="card"><h1>Refresh this invoice</h1><p>The amount or checkout details changed. Reopen the invoice and confirm its current amount before paying.</p></div></div>'))
+  const s = getSettings()
   const balance = round2(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const kind = req.body?.kind === 'deposit' ? 'deposit' : 'balance'
-  const amount = kind === 'deposit' ? round2(Math.min(balance, inv.amount_due * 0.5)) : balance
+  const amount = kind === 'deposit' ? round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid))) : balance
   if (!(amount > 0)) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
   const origin = trustedOrigin(req)
@@ -9300,7 +9427,7 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
       logActivity('note', `A customer could not start card checkout on ${inv.invoice_number} — ${String(e.message).slice(0, 140)}`, { contact_id: inv.contact_id })
     } catch { /* the customer's page must not depend on the note landing */ }
     const reach = [s.shop_phone, s.shop_email].filter(Boolean).join(' · ')
-    res.status(502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1>
+    res.status(e.collectionSafe?e.status:502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1>
       <p>We could not confirm that checkout opened. If you already submitted a payment, do not pay again until its status is verified.</p>
       <p>Contact ${esc(s.shop_name || 'the shop')} to check the payment${reach ? ` — ${esc(reach)}` : ''}.</p>
       <p><a href="${back}">Go back</a></p></div></div>`))
@@ -9792,25 +9919,22 @@ const paymentProvider = s => s.payment_provider || 'stripe'
 const providerName = s => paymentProvider(s) === 'authorize_net' ? 'Authorize.net' : 'Stripe'
 const paymentsReady = (s) => isLite ? connectReady(s) : paymentProvider(s) === 'off' ? false : paymentProvider(s) === 'authorize_net' ? authorizeConfigured(s) : stripeConfigured(s) && /^whsec_/.test(s.stripe_webhook_secret || '')
 const startCheckout = async (s, args) => {
-  if (isLite) return createConnectedCheckout({ accountId: s.stripe_account_id, currency:s.currency, ...args })
-  if (!paymentsReady(s)) throw new Error('Connect a payment provider in Setup & connections')
-  const provider=paymentProvider(s), currency=currencyCode(s.currency)
-  const invoiceId=Number(args.metadata?.invoice) || null
-  const estimateId=invoiceId ? null : get('SELECT id FROM estimates WHERE estimate_number=?',args.metadata?.estimate || '')?.id
-  const amountCents=args.lineItems.reduce((total,l)=>total+Math.round(l.amountCents)*(l.qty || 1),0)
-  const attempt=newPaymentAttempt({provider,invoiceId,estimateId,amountCents,currency,kind:args.metadata?.kind,returnUrl:args.cancelUrl,isTest:provider==='authorize_net' ? s.anet_environment!=='live' : /^sk_test_/.test(s.stripe_secret)})
-  const returnUrl=new URL(`/p/checkout/${attempt.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href
-  try {
-    if(provider === 'authorize_net') {
-      const checkout=await createAuthorizeCheckout({settings:s,amountCents,currency,reference:attempt.reference,successUrl:returnUrl,cancelUrl:args.cancelUrl,customerEmail:args.customerEmail})
-      readyAttempt(attempt.reference,{token:checkout.token,url:checkout.formUrl})
-      return {id:attempt.reference,url:new URL(`/p/checkout/${attempt.reference}?s=${encodeURIComponent(curSlug())}`,args.successUrl).href}
-    }
-    const checkout=await createCheckout({settings:s,...args,successUrl:returnUrl+'&session_id={CHECKOUT_SESSION_ID}',idempotencyKey:attempt.reference,
-      metadata:{...args.metadata,slug:curSlug(),checkout_ref:attempt.reference,currency}})
-    readyAttempt(attempt.reference,checkout)
-    return checkout
-  } catch(e) { failAttempt(attempt.reference,e.message); throw e }
+  if(!paymentsReady(s)) throw collectionError('collection_changed')
+  const client=collectionClient(s),currency=currencyCode(s.currency)
+  const invoiceId=Number(args.metadata?.invoice)||null
+  const estimateId=invoiceId?null:get('SELECT id FROM estimates WHERE estimate_number=?',args.metadata?.estimate||'')?.id
+  const amountCents=args.lineItems.reduce((n,l)=>n+Math.round(l.amountCents)*(l.qty||1),0)
+  const attempt=reserveCollection({client,invoiceId,estimateId,amountCents,currency,kind:args.metadata?.kind||'balance',returnUrl:args.cancelUrl,
+    buildRequest:a=>client.buildRequest({...args,amountCents,currency,reference:a.reference,
+      successUrl:new URL(`/p/checkout/${a.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href+(client.provider==='authorize_net'?'':'&session_id={CHECKOUT_SESSION_ID}'),
+      metadata:{...args.metadata,slug:curSlug(),checkout_ref:a.reference,collection_version:'1',currency}})})
+  const result=await resumeCollection({reference:attempt.reference,client})
+  if(result.session.paid) {
+    reconcileCheckout(paymentAttempt(attempt.reference),result.session,result.session.id,result.account)
+    return {id:attempt.reference,url:new URL(`/p/checkout/${attempt.reference}/return?s=${encodeURIComponent(curSlug())}`,args.cancelUrl).href}
+  }
+  if(result.expired || result.session.status==='complete') throw collectionError('collection_review')
+  return {id:attempt.reference,url:client.provider==='authorize_net'?new URL(`/p/checkout/${attempt.reference}?s=${encodeURIComponent(curSlug())}`,args.cancelUrl).href:result.url}
 }
 const confirmSession = (s, sessionId) => (isLite
   ? retrieveConnectedSession({ sessionId })
