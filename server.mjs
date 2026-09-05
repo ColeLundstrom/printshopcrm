@@ -1,3 +1,4 @@
+import { createWithRetry, createResult } from './lib/api-retries.mjs'
 import { AGENT_SCOPES, requiredAgentScope } from './lib/agent-access.mjs'
 import * as agentProduction from './lib/production.mjs'
 import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack-operator.mjs'
@@ -22,7 +23,7 @@ import {
   stampShipDate,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
-import { db, tenantStore } from './lib/db.mjs'
+import { db, tenantStore, getDb } from './lib/db.mjs'
 import {
   createTenant, authMember, createSession, getSession, getSessionTenant, deleteSession,
   openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, tenantOpen, saveOnboarding, tenantPublic,
@@ -6237,22 +6238,34 @@ app.get('/api/v1/customers/:id', wrap((req, res) => {
   const invoices = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? ORDER BY i.created_at DESC LIMIT 20`, todayIso(), c.id).map(v1Invoice)
   res.json({ ...v1Customer(c), recent_jobs: orders, recent_invoices: invoices })
 }))
-app.post('/api/v1/customers', wrap((req, res) => {
+// Store creation and its retry receipt in the same shop transaction. Authorization and
+// tenant selection have already run; credential rotation intentionally starts a new namespace.
+const v1Create = (operation, create) => wrap((req, res) => {
+  const principal = req.agentKey ? `agent:${req.agentKey.id}` : req.apiKeyAuth
+    ? `legacy:${crypto.createHash('sha256').update((req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()).digest('hex')}`
+    : req.member ? `member:${req.member.id}` : 'local'
+  const result = createWithRetry(getDb(), { principal, operation, key: req.headers['idempotency-key'], body: req.body }, afterCommit => create(req, afterCommit))
+  for (const fn of result.afterCommit || []) { try { fn() } catch (error) { console.error('API post-commit hook failed:', error.message) } }
+  if (req.headers['idempotency-key'] !== undefined && result.status >= 200 && result.status < 300) res.setHeader('Idempotency-Replayed', result.replayed ? 'true' : 'false')
+  res.status(result.status).json(result.body)
+})
+
+app.post('/api/v1/customers', v1Create('customers', (req, afterCommit) => {
   const b = req.body || {}
   const bad = v1TextProblem(b, ['name', 'email', 'phone', 'company'])
-  if (bad) return res.status(400).json(bad)
+  if (bad) return createResult(400, bad)
   const name = String(b.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'name is required' })
+  if (!name) return createResult(400, { error: 'name is required' })
   const badEmail = v1EmailProblem(b.email)
-  if (badEmail) return res.status(400).json(badEmail)
+  if (badEmail) return createResult(400, badEmail)
   const email = String(b.email || '').trim().toLowerCase()
   const dupe = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
-  if (dupe) return res.status(409).json({ error: 'A customer with that email already exists', id: dupe.id })
+  if (dupe) return createResult(409, { error: 'A customer with that email already exists', id: dupe.id })
   const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
     name.slice(0, 120), email.slice(0, 160), String(b.phone || '').slice(0, 40), String(b.company || '').slice(0, 120), 'api', now(), now()).lastInsertRowid)
   const c = get('SELECT * FROM contacts WHERE id = ?', id)
-  fireAuto('contact.created', { contact: c })
-  res.status(201).json(v1Customer(c))
+  afterCommit(() => fireAuto('contact.created', { contact: c }))
+  return createResult(201, v1Customer(c))
 }))
 
 app.get('/api/v1/estimates', wrap((req, res) => {
@@ -6268,9 +6281,9 @@ app.get('/api/v1/estimates/:id', wrap((req, res) => {
   if (!e) return res.status(404).json({ error: 'not_found' })
   res.json(v1Estimate(e))
 }))
-app.post('/api/v1/estimates', wrap((req, res) => {
+app.post('/api/v1/estimates', v1Create('estimates', (req, afterCommit) => {
   const b = req.body || {}
-  if(req.agentKey && b.customer && !b.customer_id && !req.agentKey.scopes.includes('customers:write'))return res.status(403).json({error:'Use an existing customer_id or grant customers:write to this key.',code:'agent_scope_denied',required_scope:'customers:write'})
+  if(req.agentKey && b.customer && !b.customer_id && !req.agentKey.scopes.includes('customers:write'))return createResult(403, {error:'Use an existing customer_id or grant customers:write to this key.',code:'agent_scope_denied',required_scope:'customers:write'})
   // A customer_id that names nobody used to fall through to the customer{} block and CREATE
   // someone: `{"customer_id": 9999, "customer": {"name":"Ghost"}}` returned 201 with the estimate
   // attached to a brand-new contact 3. The caller asked to bill an existing account and got a
@@ -6279,15 +6292,15 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   let contact = null
   if (b.customer_id !== undefined && b.customer_id !== null && b.customer_id !== '') {
     const cid = Number(b.customer_id)
-    if (!Number.isInteger(cid) || cid <= 0) return res.status(400).json({ error: 'customer_id must be a positive whole number', code: 'invalid_customer_id' })
+    if (!Number.isInteger(cid) || cid <= 0) return createResult(400, { error: 'customer_id must be a positive whole number', code: 'invalid_customer_id' })
     contact = get('SELECT * FROM contacts WHERE id = ?', cid)
-    if (!contact) return res.status(404).json({ error: `customer_id ${cid} does not exist`, code: 'customer_not_found' })
+    if (!contact) return createResult(404, { error: `customer_id ${cid} does not exist`, code: 'customer_not_found' })
   }
   if (!contact && b.customer && typeof b.customer === 'object' && !Array.isArray(b.customer) && b.customer.name) {
     const badC = v1TextProblem(b.customer, ['name', 'email', 'phone', 'company'], 'customer.')
-    if (badC) return res.status(400).json(badC)
+    if (badC) return createResult(400, badC)
     const badCEmail = v1EmailProblem(b.customer.email, 'customer.email')
-    if (badCEmail) return res.status(400).json(badCEmail)
+    if (badCEmail) return createResult(400, badCEmail)
     const email = String(b.customer.email || '').trim().toLowerCase()
     contact = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
     if (!contact) {
@@ -6296,11 +6309,11 @@ app.post('/api/v1/estimates', wrap((req, res) => {
       contact = get('SELECT * FROM contacts WHERE id = ?', id)
     }
   }
-  if (!contact) return res.status(400).json({ error: 'customer_id or customer{name,…} is required' })
-  if (!Array.isArray(b.items) || !b.items.length) return res.status(400).json({ error: 'items[] is required' })
+  if (!contact) return createResult(400, { error: 'customer_id or customer{name,…} is required' })
+  if (!Array.isArray(b.items) || !b.items.length) return createResult(400, { error: 'items[] is required' })
   // Reject, never coerce. An integration cannot see a silently-defaulted quantity or a dropped
   // line — it just gets a 201 and a wrong dollar figure on a document a customer will sign.
-  if (b.items.length > 50) return res.status(400).json({ error: 'items[] is limited to 50 lines per estimate', code: 'too_many_items' })
+  if (b.items.length > 50) return createResult(400, { error: 'items[] is limited to 50 lines per estimate', code: 'too_many_items' })
   const items = []
   for (const [i, it] of b.items.entries()) {
     const where = `items[${i}]`
@@ -6308,29 +6321,29 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     // the one malformed shape that reached `it.sizes` and threw — a 500 where every other bad
     // element ("str", 123, [], true) already answered 400. The docs promise refusals, not crashes.
     if (!it || typeof it !== 'object' || Array.isArray(it)) {
-      return res.status(400).json({ error: `${where} must be an object like {"description":"…","quantity":24,"unit_price":9.5}`, code: 'invalid_item' })
+      return createResult(400, { error: `${where} must be an object like {"description":"…","quantity":24,"unit_price":9.5}`, code: 'invalid_item' })
     }
     let sizes
     if (it.sizes != null) {
-      if (typeof it.sizes !== 'object' || Array.isArray(it.sizes)) return res.status(400).json({ error: `${where}.sizes must be an object like {"M":24}` })
+      if (typeof it.sizes !== 'object' || Array.isArray(it.sizes)) return createResult(400, { error: `${where}.sizes must be an object like {"M":24}` })
       sizes = {}
       for (const [k, v] of Object.entries(it.sizes)) {
-        if (!SIZES.includes(k)) return res.status(400).json({ error: `${where}.sizes has unknown size "${k}" — allowed: ${SIZES.join(', ')}` })
+        if (!SIZES.includes(k)) return createResult(400, { error: `${where}.sizes has unknown size "${k}" — allowed: ${SIZES.join(', ')}` })
         // The same "reject, never coerce" rule unit_price gets below. Number(true) is 1 and
         // Number([24]) is 24, and both pass Number.isInteger — so {"M":true} booked one piece and
         // {"M":[24]} booked twenty-four, each with a 201 and no way for the caller to see it.
         if (typeof v !== 'number' && !(typeof v === 'string' && v.trim() !== '')) {
-          return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
+          return createResult(400, { error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
         }
         const n = Number(v)
-        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
+        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return createResult(400, { error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
         // Number.isInteger(1e300) is true. Uncapped, that reached the money arithmetic and came
         // back a stored subtotal of 1e302. The app's own screens clamp to MAX_PIECES; the public
         // API refuses instead, because an integration must never see a silently-changed quantity.
-        if (n > MAX_PIECES) return res.status(400).json({ error: `${where}.sizes["${k}"] must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
+        if (n > MAX_PIECES) return createResult(400, { error: `${where}.sizes["${k}"] must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
         sizes[k] = n
       }
-      if (!Object.values(sizes).some((n) => n > 0)) return res.status(400).json({ error: `${where}.sizes must contain at least one quantity greater than zero` })
+      if (!Object.values(sizes).some((n) => n > 0)) return createResult(400, { error: `${where}.sizes must contain at least one quantity greater than zero` })
     } else {
       // `qty` is the canonical name in public/js/shared/pricing.js; `quantity` is its documented alias.
       // Same rule as unit_price: a real number or a string that says one. Number(true) is 1 and
@@ -6338,17 +6351,17 @@ app.post('/api/v1/estimates', wrap((req, res) => {
       // twenty-four, both with a 201 — while `taxable: 1` one field over was already a 400.
       const rawQ = it.quantity ?? it.qty
       if (typeof rawQ !== 'number' && !(typeof rawQ === 'string' && rawQ.trim() !== '')) {
-        return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
+        return createResult(400, { error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
       }
       const q = Number(rawQ)
-      if (!Number.isFinite(q) || q <= 0) return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
+      if (!Number.isFinite(q) || q <= 0) return createResult(400, { error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
       // Reject a fraction rather than rounding it. Math.round() was wrong in both directions:
       // 0.4 became 0 pieces and a $0 estimate, and 2.5 billed the caller for 3. Shirts do not
       // come in halves, so a fractional quantity is a caller bug worth reporting, not guessing at.
-      if (!Number.isInteger(q)) return res.status(400).json({ error: `${where}.quantity must be a whole number (got ${q})`, code: 'invalid_quantity' })
+      if (!Number.isInteger(q)) return createResult(400, { error: `${where}.quantity must be a whole number (got ${q})`, code: 'invalid_quantity' })
       // The operand PRICE_CAP's twin was missing. 1e300 pieces at $10,000,000 overflowed round2
       // and stored a $0 estimate, with a 201.
-      if (q > MAX_PIECES) return res.status(400).json({ error: `${where}.quantity must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
+      if (q > MAX_PIECES) return createResult(400, { error: `${where}.quantity must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
       sizes = { M: q }
     }
     // Reject, never coerce. An omitted unit_price used to default to 0, so a caller that forgot
@@ -6362,14 +6375,14 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     // pass unit_price: 0 explicitly, and that is what docs/API.md promises.
     const priceGiven = typeof it.unit_price === 'number' ||
       (typeof it.unit_price === 'string' && it.unit_price.trim() !== '')
-    if (!priceGiven) return res.status(400).json({ error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
+    if (!priceGiven) return createResult(400, { error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
     const price = Number(it.unit_price)
-    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: `${where}.unit_price must be a number >= 0`, code: 'invalid_unit_price' })
+    if (!Number.isFinite(price) || price < 0) return createResult(400, { error: `${where}.unit_price must be a number >= 0`, code: 'invalid_unit_price' })
     // Number.isFinite(1e308) is true, but multiplying it by a quantity is not: computeTotals
     // overflowed to Infinity, SQLite stored NULL, and the caller got a 201 for an estimate whose
     // subtotal and total were both null. Refuse a price no shop will ever charge instead.
     const PRICE_CAP = 1e7
-    if (price > PRICE_CAP) return res.status(400).json({ error: `${where}.unit_price must be at most ${PRICE_CAP}`, code: 'invalid_unit_price' })
+    if (price > PRICE_CAP) return createResult(400, { error: `${where}.unit_price must be at most ${PRICE_CAP}`, code: 'invalid_unit_price' })
     // Same "reject, never coerce" rule as unit_price above, and it was broken the same way.
     // `it.taxable !== false` is a strict identity test against the boolean, so EVERY other way an
     // integration expresses no came out taxable: the string "false" (a form post, a spreadsheet
@@ -6379,7 +6392,7 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     if (it.taxable !== undefined && it.taxable !== null) {
       if (typeof it.taxable === 'boolean') taxable = it.taxable
       else if (typeof it.taxable === 'string' && /^(true|false)$/i.test(it.taxable.trim())) taxable = it.taxable.trim().toLowerCase() === 'true'
-      else return res.status(400).json({ error: `${where}.taxable must be true or false`, code: 'invalid_taxable' })
+      else return createResult(400, { error: `${where}.taxable must be true or false`, code: 'invalid_taxable' })
     }
     items.push({
       description: String(it.description || 'Item').slice(0, 200),
@@ -6395,7 +6408,7 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   // Backstop: never store a total the arithmetic could not produce. A NULL subtotal on a document
   // a customer can approve is worse than a refusal.
   if (![t.subtotal, t.tax, t.total].every(Number.isFinite)) {
-    return res.status(400).json({ error: 'those line items do not add up to a representable total', code: 'invalid_total' })
+    return createResult(400, { error: 'those line items do not add up to a representable total', code: 'invalid_total' })
   }
   const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
     contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now()).lastInsertRowid)
@@ -6413,7 +6426,7 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   // estimate_id in its INSERT, so a card added by hand does not bind to the quote and approving it
   // later mints a second one on top.
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
-  res.status(201).json(v1Estimate(get('SELECT * FROM estimates WHERE id = ?', id)))
+  return createResult(201, v1Estimate(get('SELECT * FROM estimates WHERE id = ?', id)))
 }))
 
 app.get('/api/v1/invoices', wrap((req, res) => {

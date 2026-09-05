@@ -15,6 +15,8 @@ export async function agentKeysView(){
     <section class="card card-b"><h3>Connection guide</h3><pre id="agent-key-guide">API base: ${esc(location.origin)}/api/v1
 Authentication: Authorization: Bearer YOUR_AGENT_KEY
 Test: GET /me (returns granted permissions and expiry)
+Create customers/estimates: persist a unique Idempotency-Key header before sending.
+After a timeout, retry the same body with the same key and credential.
 Read pricing: GET /pricing
 Custom matrix: GET /matrices/MATRIX_ID
 Read job tasks: GET /jobs/JOB_ID/workflow

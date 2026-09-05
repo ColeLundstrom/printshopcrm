@@ -55,6 +55,16 @@ Missing or invalid key → `401`:
 - Errors return an appropriate status and `{ "error": "...", "code": "..." }`. `code` is stable;
   `error` is human-readable and may be reworded.
 
+### Safe retries for creation
+
+For `POST /api/v1/customers` and `POST /api/v1/estimates`, send `Idempotency-Key` with a unique value per intended creation (8–128 letters, digits, dots, colons, underscores or hyphens; a UUID works). Persist that value before sending. After a timeout, retry the same body with the same key and credential. A successful retry returns the original 201 response with `Idempotency-Replayed: true`; the first response uses `false`.
+
+Reusing a key with a different body returns 409 `idempotency_conflict`. Object field order is ignored; array order and value types are significant. Validation failures are rolled back and do not consume the key. Customer creation, estimate creation, pipeline records and the successful response receipt commit together. Rejected estimates leave no newly created inline customer, even without this header.
+
+Receipts are scoped to the shop, authenticated credential (or signed-in member), and endpoint. They persist across restarts with no automatic expiry. Rotating credentials starts a new namespace: reconcile existing records before retrying with a replacement key. Replays return the original response snapshot, even if the record has since changed or been deleted; GET the record for current state. Requests without the header retain ordinary creation behavior and have no retry protection. A database restore restores only the receipts and records contained in that backup.
+
+Replays do not repeat customer-created hooks. Those hooks run after commit and are not an exactly-once delivery guarantee: a process crash between commit and dispatch can omit an automation. The header does not add retry protection to other endpoints. Workflow writes continue to use revision conflicts.
+
 ### Errors are refusals, not guesses
 
 Writes **reject** bad input rather than coercing it. An integration cannot see a silently-defaulted
@@ -104,6 +114,7 @@ contact on email and creates one if there is no match.
 curl -X POST https://shop.example.com/api/v1/estimates \
   -H "Authorization: Bearer psc_live_xxxx" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: quote-20260904-001" \
   -d '{
     "customer": { "name": "Jamie Rivera", "email": "jamie@example.edu", "company": "Lakeside High School" },
     "items": [

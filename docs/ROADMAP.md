@@ -55,7 +55,7 @@ for unbuilt systems.
 
 - OAuth mailbox connections and reliable inbound email synchronization (outgoing SMTP already works).
 - Native migration adapters, editable column mapping, partial payment allocation, active production mapping, attachment reconciliation and resumable migration reports. The UI currently imports CSV customer/history records with strict payment-state review.
-- Independently revocable agent keys now provide endpoint scopes, request audit, expiry and production tools; the legacy shared key remains compatible. Automatic runtime installation, OAuth consent, external-agent approval policies and idempotent draft creation remain open. See [Agent connections](AGENT-CONNECTIONS.md).
+- Independently revocable agent keys now provide endpoint scopes, request audit, expiry and production tools; the legacy shared key remains compatible. Customer/estimate API creation now supports persistent idempotency keys and atomic rollback. Automatic runtime installation, OAuth consent and external-agent approval policies remain open. See [Agent connections](AGENT-CONNECTIONS.md).
 - Full Slack agent installation and granular action approvals. Existing Slack /quote is a draft workflow; external agents can use the REST API.
 - Real customer-owned Twilio, SMTP and Slack end-to-end acceptance on a public staging host. Local tests use fixtures and the evaluation launcher blocks outbound network access.
 

@@ -53,7 +53,7 @@
     <tr><td><code>PUT /api/v1/jobs/:id/tasks/:taskId/assignment</code></td><td>{revision, assigned_id}; production:write. Null unassigns.</td></tr>
     <tr><td><code>PUT /api/v1/jobs/:id/timing</code></td><td>{revision, timing:{enabled:true,production_date:"YYYY-MM-DD"}, reason}; production:write</td></tr>
   </table>
-  <p>Use numeric record IDs. Workflow holds still apply. On a 409 conflict, reload the workflow and review before changing it again. Draft creation with a new inline customer also needs customers:write. Generic draft creation has no idempotency key yet: inspect drafts after an uncertain response before retrying. This connects an existing runtime; it does not install a Slack or model agent.</p>
+  <p>Use numeric record IDs. Workflow holds still apply. On a 409 conflict, reload the workflow and review before changing it again. Draft creation with a new inline customer also needs customers:write. For POST /api/v1/customers and /api/v1/estimates, persist a unique Idempotency-Key (8–128 letters, digits, dots, colons, underscores or hyphens) before sending. Reuse the same key, credential and body after a timeout: successful replays return the original 201 response with Idempotency-Replayed: true. Changed bodies return 409; rejected requests roll back and do not consume the key. Receipts persist across restarts without automatic expiry. A new credential starts a new namespace, and replayed data is the original response snapshot; use GET for current state. Without the header, creation has no retry protection. Customer hooks run after commit and are not guaranteed exactly-once delivery. This connects an existing runtime; it does not install a Slack or model agent.</p>
 
   <h2>Endpoints</h2>
   <table>
