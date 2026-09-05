@@ -29,12 +29,12 @@ to find out early than to have a PR sit.
 ```bash
 git clone https://github.com/ColeLundstrom/printshopcrm.git
 cd printshopcrm
-npm install
+npm ci
 npm run seed      # demo shop, so screens aren't empty
 npm run dev       # restarts on change → http://localhost:3333
 ```
 
-Node 22 or newer. There is no build step, no bundler, and no transpiler — the browser loads the
+Node 22.13.0 or newer. There is no build step, no bundler, and no transpiler — the browser loads the
 same ES modules that are in the repository. If you edit a view and don't see the change, it's the
 module cache: hard-reload.
 
@@ -45,7 +45,8 @@ npm test                 # regression and isolated demo tests
 npm run test:e2e         # complete workflow checks against throwaway databases
 ```
 
-Both must pass before anything merges. CI runs them on every push and pull request.
+Both must pass before anything merges. CI runs on pull requests and pushes to `main`.
+Use sample data and an isolated checkout; never test against a shop's working database.
 
 ### The one hard rule: a bug fix needs a failing test first
 
@@ -60,16 +61,18 @@ Name the test after the behaviour, not the function:
 await t('a stored screen_fee of 0 is honoured, not re-defaulted to 25', async () => { … })
 ```
 
-Add unit tests to `bin/gate.mjs` under the closest existing section. Add route-level tests to
-`bin/gate-e2e.mjs` with `chk("<label>", response, "<regex>")`.
+Use `test/*.test.mjs` for focused Node tests, including isolated HTTP fixtures. Existing regression
+checks live in `bin/gate.mjs`; complete workflow checks live in `bin/gate-e2e.mjs`. Match the
+nearest relevant suite. Documentation-only fixes need source and link verification rather than
+tests that simply repeat their wording.
 
 ## Style
 
 Match the file you're in. Broadly:
 
 - ES modules, `async`/`await`, no semicolon-heavy formatting — read a neighbouring file.
-- No new runtime dependencies without a good reason. There are four, and that's a feature: the
-  install is `npm ci` and nothing else. Dev-only tooling is a separate conversation.
+- No new runtime dependencies without a good reason. Keep the dependency list small and reviewed;
+  the install uses `npm ci`. Dev-only tooling is a separate conversation.
 - Comments explain **why**, not what. The valuable comments in this codebase record a decision or a
   trap — "transitioning the `background` shorthand between CSS vars gets stuck", "invoice status is
   derived, never set". Write those. Skip `// loop over items`.
@@ -84,8 +87,8 @@ Match the file you're in. Broadly:
   `syncInvoiceStatus()`. Delete a payment and the invoice must reopen on its own.
 - **Coercing bad input on a write path.** Reject it. A silently-defaulted quantity or price produces
   a correct-looking `201` and a wrong number on a document a customer signs.
-- **A query that assumes one shop.** Multi-tenancy works because every request runs inside its
-  shop's database via `AsyncLocalStorage`. Use the `all`/`get`/`run` helpers and it's automatic.
+- **A query that assumes one shop.** Resolve the authorised shop before using its database handle
+  or tenant-scoped `all`/`get`/`run` helpers. Background work and callbacks need the same scope.
 - **Timestamps parsed without a `Z`.** They're stored UTC as `YYYY-MM-DD HH:MM:SS`; parsing them
   naively yields negative ages. Use the `parseUtc` / `ageInDays` helpers.
 

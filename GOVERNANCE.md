@@ -8,26 +8,28 @@ PrintShopCRM is maintained by **[@ColeLundstrom](https://github.com/ColeLundstro
 print shop and built this to run it. One maintainer, stated plainly rather than implied by a vague
 "the team" — you should know whose judgement you're dealing with.
 
-That has an obvious failure mode: a busy week means slow reviews. The commitments below exist to
-bound that, and if they slip you're entitled to say so in the thread.
+Maintainer availability affects review time. Voluntary funding can help pay contributors as the
+project grows, but it does not establish a staffed support desk or guaranteed response times.
 
 ## What happens to your contribution
 
-### Response times
+### Response targets
 
 | | |
 |---|---|
-| **First response to an issue** | within 5 working days |
-| **First response to a PR** | within 7 working days |
-| **Security report** | within 3 working days, ahead of everything else |
+| **First response to an issue** | target: 5 working days |
+| **First response to a PR** | target: 7 working days |
+| **Security report** | target: 3 working days; prioritised over ordinary requests |
 
 "First response" means a human reads it and tells you where it stands — accepted, needs changes,
-needs discussion, or declined with a reason. It doesn't mean merged. Silence past these windows is
-a failure on our side; `@`-mention the maintainer and it isn't rude.
+needs discussion, or declined with a reason. It does not mean merged or fixed. These are goals,
+not guaranteed deadlines or a support contract. If a target passes, follow up in the existing
+issue or PR. Keep security follow-ups in the private channel described in [SECURITY.md](SECURITY.md).
+Contributions do not buy a faster response. Optional hosting has its own agreed service terms.
 
 ### The states a PR can be in
 
-- **Merged.** It does what it says, it has a test, and it fits how the project works.
+- **Merged.** It does what it says, passes the relevant checks, and fits how the project works.
 - **Changes requested.** Specific and actionable. If the request is vague, ask — an unclear review
   is the reviewer's problem to fix, not yours to guess at.
 - **Discussion needed.** Usually design, not code: the change is reasonable but there's a better
@@ -62,16 +64,16 @@ merging.
 
 Said upfront so you don't build it first:
 
-- **A new runtime dependency without a strong reason.** There are four. That's a feature: the
-  install is `npm ci` and nothing else, and a shop owner can run it without a build toolchain.
+- **A new runtime dependency without a strong reason.** Keep the dependency list small and
+  reviewed. The install uses `npm ci`, and a shop owner can run it without a build toolchain.
 - **A build step.** No bundler, no transpiler. The browser loads the same files that are in the
   repo. This is load-bearing for how easy the thing is to run and audit.
 - **Money computed in a second place.** `public/js/shared/pricing.js` is imported by both the server
   and the browser so the total in the editor is produced by the same code that writes the invoice.
 - **Coercing bad input on a write path.** Reject it. A silently-defaulted quantity or price produces
   a clean `201` and a wrong number on a document a customer signs.
-- **A query that assumes one shop.** Multi-tenancy works because every request runs inside its
-  shop's database; use the `all`/`get`/`run` helpers and it's automatic.
+- **A query that assumes one shop.** Resolve the authorised shop before database access and use
+  its handle or tenant-scoped helpers. Background work and callbacks need the same explicit scope.
 - **An unreviewed expansion of a major workflow.** Stores, design tools, and accounting need an
   agreed scope, data model, migration plan, and recovery tests before implementation.
 - **Large refactors that arrive as a surprise.** Not because they're unwelcome — because reviewing
@@ -82,8 +84,12 @@ Said upfront so you don't build it first:
 
 Every PR gets CI automatically: unit and end-to-end tests on Node 22 and current LTS on Ubuntu,
 plus Windows and macOS coverage, a Docker build that boots the container, and a credential scan.
-**CI must be green before a human review starts** — that isn't gatekeeping, it's so review time goes
-on judgement rather than on things a machine can catch.
+Review can start while CI runs. **Required checks must pass on the exact commit before merge.**
+A failed check needs an explained fix; do not remove assertions or retry an unchanged candidate
+merely to obtain a passing run.
+GitHub branch protection requires the checks and code-owner approval. Administrators can bypass
+those restrictions; that exception and the maintainer's release procedure are documented in
+[RELEASING.md](RELEASING.md).
 
 Then the maintainer checks, in this order:
 
@@ -91,7 +97,8 @@ Then the maintainer checks, in this order:
 2. **Does the fix hold under a bad case?** Empty state, a shop with no data, a hostile input, a
    second shop's data nearby.
 3. **Does money still only get computed once?** See the declined list.
-4. **Is there a test that fails without this change?**
+4. **Does the evidence match the change?** Behaviour fixes need regression coverage; documentation
+   changes need source and link checks.
 5. **Does it read like the code around it?** Match the file you're in.
 
 ## Releases
@@ -124,9 +131,12 @@ publicly — a project where that can't be said out loud isn't worth contributin
 
 It could. One maintainer, a real shop to run. What protects you:
 
-- **AGPL grants are irrevocable.** Every version ever published stays free, forever, whatever
-  happens to the company or the maintainer.
-- **Your data is a single SQLite file**, every table exports as one JSON file, and the records a
+- **Released copies retain their license.** Copies already released remain available under their
+  existing license, subject to its terms, if the project or maintainer becomes inactive.
+- **Your records remain portable.** Each shop's records are stored in SQLite. Every table exports
+  as one JSON file, and the records a
   shop reconciles against — customers, quotes, invoices, payments, jobs, artwork, the timeline and
-  every line item — each export to CSV.
+  every line item — each export to CSV. A complete backup also needs uploaded files and, on a
+  multi-shop installation, the control database. Follow [INSTALL.md](INSTALL.md); a CSV or JSON
+  export alone is not a complete installation backup.
 - **Fork it.** That's not a threat to us, it's the point of the licence.

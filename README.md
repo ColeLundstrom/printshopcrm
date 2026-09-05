@@ -365,10 +365,9 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before a code PR — it covers the setup
 the one hard rule: **a bug fix needs a failing test first.** Planning something large? Open a
 [discussion](https://github.com/ColeLundstrom/printshopcrm/discussions) first so it doesn't sit.
 
-**[GOVERNANCE.md](GOVERNANCE.md) is the public contract**: who decides, how long you should wait for
-a first response (5 working days on an issue, 7 on a PR, 3 on anything security-related), exactly
-what gets merged, what gets declined and why, and what protects you if this project ever goes
-quiet.
+**[GOVERNANCE.md](GOVERNANCE.md) explains how the project is maintained**: who reviews changes,
+response targets, merge requirements, funding and continuity. Response targets depend on
+maintainer availability; voluntary support does not buy a response deadline or review priority.
 
 By contributing you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -388,21 +387,20 @@ See [project support setup](docs/PROJECT-SUPPORT.md).
 
 ## License
 
-**GNU AGPL v3** — see [LICENSE](LICENSE). Real, OSI-approved open source, the same deal WordPress
-made: the software is free, and the services around it are the business.
+**GNU AGPL v3 or later** — see [LICENSE](LICENSE). You can run, modify and share PrintShopCRM,
+including commercially, under the license's terms. [Hosting and basic setup](HOSTING.md) are
+optional paid services; voluntary project support does not unlock software features.
 
-- ✅ **Run it for your print shop, free, forever** — commercially, modified however you like. Your
-  shop's data and your private changes are yours; nothing obliges you to publish anything.
-- ✅ **Fork it, sell services around it, build on it.**
-- ⚖️ **If you run a modified version as a service for other people, publish your changes.** That's
-  the copyleft bargain — improvements to a shared tool come back to the shops using it, instead of
-  disappearing into someone's proprietary fork.
-- **Optional paid hosting and basic setup** fund the community project. Hosted shops use the
-  same software as self-hosted shops; see [HOSTING.md](HOSTING.md).
+If you modify the software and users interact with it remotely over a computer network,
+[AGPL §13](https://www.gnu.org/licenses/agpl-3.0.en.html#section13) requires a prominent offer of
+your version's **Corresponding Source**, available from a network server at no charge. This
+includes the program source and required build, installation and modification scripts, not your
+customer records or credentials. Sharing copies also carries the applicable license obligations.
+Contributing changes upstream is welcome; §13 does not require submission to this project.
 
-If you deploy this for others, set `PSC_SOURCE_URL` to your own repository. The app shows a source
-link to every user, which is how AGPL §13 is satisfied — pointing it at upstream while running
-patched code is not compliance.
+For a modified deployment, set `PSC_SOURCE_URL` to an accessible source archive or repository
+identifying the exact version running, including your changes. Keep that source offer current.
+The app's source link helps provide the offer; setting the URL alone does not establish compliance.
 
 ### A guided workspace, with AI optional
 
