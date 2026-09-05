@@ -2,7 +2,7 @@
 
 A stable REST API under `/api/v1`, plus signed outbound webhooks.
 
-There is also a live, copy-pasteable version of this at **`/docs-api.html`** on any running install.
+There is also a live, copy-pasteable version of this at **`/docs-api.html`** on any running install. Agent operations have an OpenAPI description at **`/openapi.json`**. Setup downloads a version filtered to a connection’s scopes with this installation’s absolute API URL; configure its bearer key separately. GET `/api/v1/production/team` lists active IDs/names under `production:read`.
 
 > The API requires multi-tenant mode (`PSC_AUTH=1`), because an API key belongs to a shop. On a
 > single-shop install the internal `/api/*` routes are open to whoever can reach the port.

@@ -6589,6 +6589,7 @@ app.get('/api/v1/matrices/:id/price',wrap((req,res)=>{const m=matrices.getMatrix
 const agentRoute=fn=>async(req,res,next)=>{try{await fn(req,res)}catch(e){if(e.status)res.status(e.status).json({error:e.message});else next(e)}}
 const agentActor=req=>({id:req.member?.id || null,name:req.agentKey?'Agent: '+req.agentKey.name:req.member?.name || 'API operator',manager:hasRole(req,'manager')})
 const agentJob=req=>{const j=get('SELECT id FROM jobs WHERE id=?',Number(req.params.id));if(!j)throw Object.assign(new Error('Job not found'),{status:404});return j.id}
+app.get('/api/v1/production/team',agentRoute((req,res)=>res.json({data:req.tenant?listMembers(req.tenant.id).filter(m=>m.status==='active').map(m=>({id:m.id,name:m.name})):[]})))
 app.get('/api/v1/production/queue',agentRoute((req,res)=>res.json(agentProduction.productionQueue({department:String(req.query.department || ''),mine:req.query.mine==='1',memberId:req.member?.id || null,page:Number(req.query.page)||1,pageSize:50}))))
 app.get('/api/v1/jobs/:id/workflow',agentRoute((req,res)=>res.json(agentProduction.workflow(agentJob(req)))))
 app.post('/api/v1/jobs/:id/tasks/:taskId/action',agentRoute((req,res)=>{

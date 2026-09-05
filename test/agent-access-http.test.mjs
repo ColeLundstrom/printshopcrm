@@ -22,6 +22,9 @@ test('scoped agent API keeps cookie/shop boundaries, gates production and logs i
     const create=async(name,scopes)=>{const r=await request('/api/developers/agents','POST',{name,scopes,expires_days:90});assert.equal(r.status,201,await r.clone().text());return r.json()}
     const read=await create('Read agent',['jobs:read']),production=await create('Production agent',['production:read','production:write']),quote=await create('Quote agent',['estimates:write'])
     const pricing=await create('Pricing reader',['pricing:read'])
+    const publicSchema=await fetch(base+'/openapi.json');assert.equal(publicSchema.status,200);const schema=await publicSchema.json();assert.equal(schema.openapi,'3.1.0');assert.ok(schema.paths['/production/team'])
+    const teamResponse=await request('/api/v1/production/team','GET',undefined,production.token);assert.equal(teamResponse.status,200);const team=(await teamResponse.json()).data;assert.equal(team.length,1);assert.ok(team.every(m=>Object.keys(m).sort().join(',')==='id,name'))
+    assert.equal((await request('/api/v1/production/team','GET',undefined,read.token)).status,403)
     const pricingResponse=await request('/api/v1/pricing','GET',undefined,pricing.token);assert.equal(pricingResponse.status,200);const priceData=await pricingResponse.json();assert.ok(priceData.price_book.services['DTF Transfer']);assert.ok(!JSON.stringify(priceData).includes('api_key'))
     assert.equal((await request('/api/v1/pricing','GET',undefined,read.token)).status,403)
     const matrix=await request('/api/matrices','POST',{template:'dtf'});assert.equal(matrix.status,200);const matrixId=(await matrix.json()).matrix.id
@@ -36,6 +39,8 @@ test('scoped agent API keeps cookie/shop boundaries, gates production and logs i
     assert.equal((await request('/api/v1/jobs/1/stage','POST',{stage:'complete'},read.token)).status,403)
     assert.equal((await request('/api/v1/estimates','POST',{customer:{name:'Forbidden contact'},items:[]},quote.token)).status,403)
     const slug=readdirSync(join(dest,'data/tenants'))[0];db=new DatabaseSync(join(dest,'data/tenants',slug,'printshop.db'));control=new DatabaseSync(join(dest,'data/control.db'));db.exec('PRAGMA busy_timeout=5000');control.exec('PRAGMA busy_timeout=5000')
+    control.prepare("INSERT INTO members(tenant_id,email,password_hash,name,role,status) SELECT tenant_id,'inactive-agent-fixture@example.test','not-a-login','Inactive fixture','staff','inactive' FROM members WHERE id=?").run(production.key.member_id)
+    const activeTeam=await request('/api/v1/production/team','GET',undefined,production.token);assert.deepEqual((await activeTeam.json()).data,team)
     assert.equal(db.prepare("SELECT count(*) n FROM contacts WHERE name='Forbidden contact'").get().n,0)
     const templateResponse=await request('/api/production/templates','POST',{name:'Agent gate fixture',steps:[{title:'QC inspection',department:'QC',stage:'qc'}]})
     assert.equal(templateResponse.status,200,await templateResponse.clone().text());const template=await templateResponse.json()
@@ -53,6 +58,7 @@ test('scoped agent API keeps cookie/shop boundaries, gates production and logs i
     const neighbor=await request('/api/auth/signup','POST',{shop_name:'Agent neighbor',owner_name:'Neighbor',owner_email:'agent-neighbor@example.test',password:'Agent-neighbor-fixture-1'})
     assert.equal(neighbor.status,200,await neighbor.clone().text());const neighborCookie=neighbor.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')
     assert.equal((await request('/api/developers/agents/'+read.key.id,'DELETE',undefined,undefined,neighborCookie)).status,404)
+    const scopedTeam=await request('/api/v1/production/team','GET',undefined,production.token,neighborCookie);assert.deepEqual((await scopedTeam.json()).data,team)
     const withCookie=await request('/api/v1/jobs','GET',undefined,read.token,neighborCookie);assert.equal(withCookie.status,200);assert.ok((await withCookie.json()).data.some(j=>j.id===job.id))
     assert.equal((await request('/api/v1/jobs','GET',undefined,read.token+'bad',neighborCookie)).status,401)
     assert.equal((await request('/api/v1/private-customer-name-secret','GET',undefined,production.token)).status,403)

@@ -41,6 +41,7 @@
   <p>Keys are shop-scoped and can be rotated or revoked at any time. Rotating invalidates the old key immediately.</p>
 
   <h2>Separate agent connections</h2>
+  <p><a href="/openapi.json">OpenAPI tool definitions</a> describe 22 supported agent operations. Use <strong>Download tools</strong> on a connection in Setup for a file filtered to its permissions with this installation’s absolute API URL. Import it into a compatible agent and configure bearer authentication separately. The file contains no key or shop records. GET <code>/api/v1/production/team</code> returns active employee IDs and names for assignments under the production:read permission.</p>
   <p>For a new agent, use <strong>Setup &amp; connections → Connect your own agent</strong>. Named keys have independent permissions, expiry and revocation. They belong to their creator’s active manager account. <code>GET /api/v1/me</code> returns scopes and expiry. Copy the key once into your agent’s secret storage; the server stores only its hash.</p>
   <p>Agent permissions cover pricing, customer/estimate reads and writes, invoice/payment reads, job stages, and production tasks. Unselected operations are refused even with a browser cookie. Agent keys cannot access internal endpoints, settings, credentials or webhook administration. Writes happen immediately; your agent must provide its own approval policy. Customer creation and stage changes may trigger configured automations.</p>
   <table>

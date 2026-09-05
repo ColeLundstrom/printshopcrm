@@ -1,0 +1,1886 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PrintShopCRM agent tools",
+    "version": "1.35.0",
+    "description": "Optional tools for an existing agent. All CRM work can be done without AI. Configure bearer authentication separately; this schema contains no keys or shop data. External agents must enforce Slack user authorization and their own approval policy.",
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "url": "https://www.gnu.org/licenses/agpl-3.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "Same PrintShopCRM installation; the Setup download supplies an absolute URL."
+    }
+  ],
+  "security": [
+    {
+      "shopKey": []
+    }
+  ],
+  "paths": {
+    "/me": {
+      "get": {
+        "operationId": "getConnection",
+        "summary": "Check shop connection and granted permissions",
+        "description": "Check shop connection and granted permissions",
+        "x-printshopcrm-scope": "identity",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "shop": {
+                      "type": "string"
+                    },
+                    "plan": {
+                      "type": "string"
+                    },
+                    "agent": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "expires_at": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/customers": {
+      "get": {
+        "operationId": "listCustomers",
+        "summary": "List customers",
+        "description": "List customers",
+        "x-printshopcrm-scope": "customers:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Customer"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            },
+            "description": ""
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": ""
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Search name, email or company"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createCustomer",
+        "summary": "Create a customer",
+        "description": "Writes immediately. May trigger configured contact-created automations.",
+        "x-printshopcrm-scope": "customers:write",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Customer"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present when Idempotency-Key was supplied: true for replay, false for first creation.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            },
+            "description": "Persist a unique key before creation. Reuse the same key, body and credential after a timeout. Same-body replay returns original 201; changed body gives409. Without this header, retries can duplicate records. Credential rotation starts a new namespace."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCustomer"
+              }
+            }
+          }
+        },
+        "x-printshopcrm-writes-immediately": true
+      }
+    },
+    "/customers/{id}": {
+      "get": {
+        "operationId": "getCustomer",
+        "summary": "Get customer",
+        "description": "Get customer",
+        "x-printshopcrm-scope": "customers:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Customer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/estimates": {
+      "get": {
+        "operationId": "listEstimates",
+        "summary": "List estimates",
+        "description": "List estimates",
+        "x-printshopcrm-scope": "estimates:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Estimate"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            },
+            "description": ""
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": ""
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createEstimate",
+        "summary": "Create a draft estimate",
+        "description": "Writes immediately. Use shop pricing tools and explicit unit prices; this tool does not calculate a quote from prose. Inline customer creation requires customers:write as well. Drafts are not sent to customers.",
+        "x-printshopcrm-scope": "estimates:write",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Estimate"
+                }
+              }
+            },
+            "headers": {
+              "Idempotency-Replayed": {
+                "description": "Present when Idempotency-Key was supplied: true for replay, false for first creation.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            },
+            "description": "Persist a unique key before creation. Reuse the same key, body and credential after a timeout. Same-body replay returns original 201; changed body gives409. Without this header, retries can duplicate records. Credential rotation starts a new namespace."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewEstimate"
+              }
+            }
+          }
+        },
+        "x-printshopcrm-writes-immediately": true
+      }
+    },
+    "/estimates/{id}": {
+      "get": {
+        "operationId": "getEstimate",
+        "summary": "Get estimate",
+        "description": "Get estimate",
+        "x-printshopcrm-scope": "estimates:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Estimate"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/invoices": {
+      "get": {
+        "operationId": "listInvoices",
+        "summary": "List invoices",
+        "description": "List invoices",
+        "x-printshopcrm-scope": "invoices:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Invoice"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            },
+            "description": ""
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": ""
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/invoices/{id}": {
+      "get": {
+        "operationId": "getInvoice",
+        "summary": "Get invoice",
+        "description": "Get invoice",
+        "x-printshopcrm-scope": "invoices:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invoice"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/jobs": {
+      "get": {
+        "operationId": "listJobs",
+        "summary": "List jobs",
+        "description": "List jobs",
+        "x-printshopcrm-scope": "jobs:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Job"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            },
+            "description": ""
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": ""
+          },
+          {
+            "name": "stage",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/jobs/{id}": {
+      "get": {
+        "operationId": "getJob",
+        "summary": "Get job",
+        "description": "Get job",
+        "x-printshopcrm-scope": "jobs:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/payments": {
+      "get": {
+        "operationId": "listPayments",
+        "summary": "List payments",
+        "description": "List payments",
+        "x-printshopcrm-scope": "payments:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Payment"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "has_more"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            },
+            "description": ""
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "description": ""
+          },
+          {
+            "name": "invoice_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/pricing": {
+      "get": {
+        "operationId": "getShopPricing",
+        "summary": "Read shop pricing and matrix list",
+        "description": "Read configured shop pricing. Defaults are not live supplier quotes. Retrieve a matrix before choosing a cell; never invent a missing price.",
+        "x-printshopcrm-scope": "pricing:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "price_book": {
+                      "type": "object",
+                      "properties": {}
+                    },
+                    "matrices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {}
+                      }
+                    },
+                    "defaults": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/matrices/{id}": {
+      "get": {
+        "operationId": "getPriceMatrix",
+        "summary": "Read a custom price matrix",
+        "description": "Read a custom price matrix",
+        "x-printshopcrm-scope": "pricing:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "matrix": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/matrices/{id}/price": {
+      "get": {
+        "operationId": "lookupMatrixPrice",
+        "summary": "Look up a configured matrix price",
+        "description": "Returns price:null for an unset or unmatched cell. Zero is a valid configured free price. amount is decoration-only; it excludes garments and tax.",
+        "x-printshopcrm-scope": "pricing:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "matrix": {
+                      "type": "object",
+                      "properties": {}
+                    },
+                    "price": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "amount": {
+                      "type": "number"
+                    },
+                    "unit": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "row",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Zero-based index or exact row label; omitted row can be selected by quantity."
+          },
+          {
+            "name": "col",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Zero-based index or exact column label."
+          },
+          {
+            "name": "qty",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/production/queue": {
+      "get": {
+        "operationId": "getProductionQueue",
+        "summary": "Read a department production queue",
+        "description": "Read a department production queue",
+        "x-printshopcrm-scope": "production:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "job_id": {
+                            "type": "integer"
+                          },
+                          "job_number": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "task": {
+                            "type": "object"
+                          },
+                          "revision": {
+                            "type": "integer"
+                          },
+                          "blocked": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "page": {
+                      "type": "integer"
+                    },
+                    "page_size": {
+                      "type": "integer"
+                    },
+                    "pages": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "ready": {
+                      "type": "integer"
+                    },
+                    "waiting": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "page",
+                    "page_size",
+                    "pages",
+                    "total",
+                    "ready",
+                    "waiting"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "department",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "mine",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1"
+              ]
+            },
+            "description": "Uses the manager who owns this connection, not the Slack message author."
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/production/team": {
+      "get": {
+        "operationId": "listProductionTeam",
+        "summary": "List active shop employees for assignment",
+        "description": "Returns only active member IDs and names in this shop. Resolve ambiguous names with the user. No email, login or credential data is exposed.",
+        "x-printshopcrm-scope": "production:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{id}/workflow": {
+      "get": {
+        "operationId": "getJobWorkflow",
+        "summary": "Read current job tasks and revision",
+        "description": "Read current job tasks and revision",
+        "x-printshopcrm-scope": "production:read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/jobs/{id}/tasks/{taskId}/action": {
+      "post": {
+        "operationId": "completeProductionTask",
+        "summary": "Complete a production task",
+        "description": "Writes immediately. Read the workflow first and use its revision. Ordered tasks, receiving, artwork and payment holds apply. On409 reload and review; never retry blindly. Skip/reopen corrections use the web UI.",
+        "x-printshopcrm-scope": "production:write",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "complete"
+                    ]
+                  }
+                },
+                "required": [
+                  "revision",
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "x-printshopcrm-writes-immediately": true
+      }
+    },
+    "/jobs/{id}/tasks/{taskId}/assignment": {
+      "put": {
+        "operationId": "assignProductionTask",
+        "summary": "Assign or unassign a pending task",
+        "description": "Use an active member ID from production/team; null unassigns. Read the workflow revision first. Only pending tasks can be edited.",
+        "x-printshopcrm-scope": "production:write",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "assigned_id": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "revision",
+                  "assigned_id"
+                ]
+              }
+            }
+          }
+        },
+        "x-printshopcrm-writes-immediately": true
+      }
+    },
+    "/jobs/{id}/timing": {
+      "put": {
+        "operationId": "setJobTiming",
+        "summary": "Replace optional job timing settings",
+        "description": "Replaces timing settings; merge with current timing if preserving fields. Enabled timing needs a start or production date. Task date pins remain separate. Timing is optional and does not gate task completion.",
+        "x-printshopcrm-scope": "production:write",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workflow"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "timing": {
+                    "type": "object",
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "turnaround_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 365,
+                        "default": 5
+                      },
+                      "day_basis": {
+                        "type": "string",
+                        "enum": [
+                          "business",
+                          "calendar"
+                        ],
+                        "default": "business"
+                      },
+                      "start_date": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "YYYY-MM-DD or empty"
+                      },
+                      "production_date": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "YYYY-MM-DD or empty"
+                      }
+                    },
+                    "required": [
+                      "enabled"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "revision",
+                  "timing"
+                ]
+              }
+            }
+          }
+        },
+        "x-printshopcrm-writes-immediately": true
+      }
+    },
+    "/jobs/{id}/stage": {
+      "post": {
+        "operationId": "setJobStage",
+        "summary": "Move a job to a production stage",
+        "description": "Writes immediately and may trigger shop automations. Workflow gates apply. This legacy stage tool has no revision parameter; prefer task completion for jobs with reusable workflows.",
+        "x-printshopcrm-scope": "jobs:stage",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Request rejected; see error and code. Authentication, permissions, validation, holds, conflicts and rate limits still apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "stage": {
+                    "type": "string",
+                    "enum": [
+                      "new",
+                      "art_approval",
+                      "prepress",
+                      "production",
+                      "qc",
+                      "shipping",
+                      "complete"
+                    ]
+                  }
+                },
+                "required": [
+                  "stage"
+                ]
+              }
+            }
+          }
+        },
+        "x-printshopcrm-writes-immediately": true
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "shopKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Use a separately scoped agent key from Setup. Configure it in the agent secret store, not in this document."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "Customer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "NewCustomer": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "company": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "Estimate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "number": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          "subtotal": {
+            "type": "number"
+          },
+          "tax": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "customer_id",
+          "status",
+          "items",
+          "total"
+        ]
+      },
+      "EstimateLine": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "sizes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "description": "Use supported garment sizes from the price book; total must be positive. Quantity and sizes are alternatives.",
+            "propertyNames": {
+              "enum": [
+                "YXS",
+                "YS",
+                "YM",
+                "YL",
+                "YXL",
+                "XS",
+                "S",
+                "M",
+                "L",
+                "XL",
+                "2XL",
+                "3XL",
+                "4XL",
+                "5XL",
+                "6XL",
+                "LT",
+                "XLT",
+                "2XLT",
+                "3XLT",
+                "4XLT",
+                "OSFA"
+              ]
+            },
+            "minProperties": 1
+          },
+          "unit_price": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10000000
+          },
+          "decoration": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "taxable": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "unit_price"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "quantity"
+            ]
+          },
+          {
+            "required": [
+              "sizes"
+            ]
+          }
+        ]
+      },
+      "NewEstimate": {
+        "type": "object",
+        "properties": {
+          "customer_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "customer": {
+            "$ref": "#/components/schemas/NewCustomer"
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/EstimateLine"
+            }
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "customer_id"
+            ]
+          },
+          {
+            "required": [
+              "customer"
+            ]
+          }
+        ]
+      },
+      "Invoice": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "number": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "balance": {
+            "type": "number"
+          },
+          "payment_review": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "number"
+        ]
+      },
+      "Payment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "invoice_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "amount": {
+            "type": "number"
+          },
+          "method": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "invoice_id",
+          "amount"
+        ]
+      },
+      "Job": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "number": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "customer_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rush": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "stage"
+        ]
+      },
+      "Workflow": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "timing": {
+            "type": "object",
+            "properties": {}
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "job_id": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "title": {
+                  "type": "string"
+                },
+                "department": {
+                  "type": "string"
+                },
+                "assigned_id": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        },
+        "required": [
+          "revision",
+          "tasks",
+          "timing"
+        ]
+      }
+    }
+  }
+}

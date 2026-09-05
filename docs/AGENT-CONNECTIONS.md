@@ -6,6 +6,14 @@ Open **Setup & connections → Connect your own agent**. Name the connection, se
 
 Each connection has its own key and permissions. Replacing one does not rotate the legacy shared shop key or another agent’s connection. To rotate safely: create a replacement, configure and test the agent, then revoke the old connection. The screen lists expiry and last use. Up to 50 unrevoked, unexpired keys may exist in a shop.
 
+## Import tool definitions
+
+After creating a connection, choose **Download tools** beside **Copy key**, or on the saved connection. The OpenAPI JSON file contains this installation’s absolute API URL and only the operations that connection is allowed to use. It contains no key, employee names or shop records. Import it into an agent or API client that supports OpenAPI, then configure bearer authentication separately in its secret store. A read-only connection exports read tools only.
+
+The complete public description is `/openapi.json`, with a relative server URL for the installation serving it. The downloaded file supplies an absolute URL for importers that need one. It describes 22 operations, including creation retries and workflow revisions. This is an [OpenAPI 3.1 description](https://spec.openapis.org/oas/v3.1.1.html), not an installer or a guarantee that every agent importer accepts the same schema features. Configure the external agent’s Slack identity mapping, approval policy and model separately; test read access before enabling writes.
+
+Use GET `/production/team` to resolve active employee IDs and names for assignments. Ambiguous names need clarification. This operation requires `production:read` and returns no email, login or credential fields.
+
 ## Request contract
 
 Use `Authorization: Bearer YOUR_AGENT_KEY` with the shop’s public HTTPS `/api/v1` base URL. `GET /me` returns the connection’s granted scopes and expiry. All keys share the existing per-shop limit of 120 requests/minute. A browser cookie cannot increase an agent key’s permissions or change its shop. Agent keys cannot use internal `/api/*` endpoints, edit settings, issue keys, or read/manage webhook signing secrets.
