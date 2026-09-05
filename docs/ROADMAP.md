@@ -1,8 +1,9 @@
 # Community roadmap and release standard
 
 The goal is to make PrintShopCRM the dependable open-source operating system for print shops.
-The optional paid service is hosting and basic setup. This is a direction, not a claim that the
-current release replaces every specialized product.
+The optional paid service is hosting and basic setup. Any future hosted artwork processing must
+be separately metered; shops can use their own devices or provider accounts. This is a direction,
+not a claim that the current release replaces every specialized product.
 
 ## Protect the shop's working day
 
@@ -26,6 +27,10 @@ imports/exports, staff roles, automations, and integration adapters. Automated t
 external integrations still need provider-specific validation with the shop's own configuration.
 
 Current-proof approval now invalidates replaced artwork, refuses obsolete decision links and refreshes production task revisions. [Artwork approval rules](ARTWORK.md) describe history, deletion and production-file limits. This does not supply reliable digitizing, separations or physical output validation.
+
+Customer imports now count only committed batches, recheck email duplicates inside each write transaction, and preserve partial results when activity logging fails. [Import reliability](IMPORT-RELIABILITY.md) records the tests and the unresolved synchronous SQLite latency issue. Later passing CI runs do not close that blocker.
+
+[Artwork compute ownership](ARTWORK-COMPUTE.md) separates researched adapters from implemented functionality. Native catalog composition, optional PSD/local-worker connections and physical separation validation remain open; the free core must continue to work without them.
 
 ## Expansion priorities
 

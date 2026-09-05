@@ -1,0 +1,29 @@
+# Import reliability and remaining responsiveness work
+
+## Customer import guarantees
+
+Customer CSV preview estimates the result from the current customer book. During import, email matching is checked again under the database write lock, so another import committing after the preview does not create another customer with that email. Matching is case-insensitive. Rows without an email still cannot be matched reliably on retry; review those for duplicates.
+
+Counters advance only after a batch commits. A failed INSERT or COMMIT rolls back the active batch; earlier batches remain saved. The partial response names the number actually committed and instructs the shop to retry the same file. A failure to write the final activity entry cannot turn a saved import into a generic error. This activity entry is best-effort, not a durable import ledger.
+
+An individual constraint violation can skip a row. A savepoint also removes that row's trigger side effects. Storage failures, transaction-level rollbacks and commit failures stop the import instead of being silently counted as bad rows. An ignored insert also counts as skipped, with its trigger effects removed. The normal response's skipped count includes rejected rows, and the import dialog stays open to show skipped rows until dismissed. Imports still use synchronous SQLite in batches; this change does not promise bounded server response time.
+
+Tests exercise actual deferred foreign-key failure at COMMIT, trigger rollback, row-trigger side effects, concurrent email matching and separate shop handles. The HTTP fixture commits 500 customers, fails the next batch and the activity write, checks a truthful partial response, then retries to finish exactly 600 customers without duplicating the first batch. Simulated disk-full error propagation is also covered; it is not a physical full-volume test.
+
+## Confirmed latency limitation
+
+The unchanged end-to-end gate requires every import health probe to return HTTP 200 with `ok:true` and the worst response to stay below 1,500 ms. A 9,000-order Windows import at revision `74bc9c3` recorded a 2,365 ms synchronous SQLite commit and a 2,396 ms health response (GitHub run 33932163227). Revision `e51bd86` subsequently passed all seven required jobs, with a 706 ms maximum commit, 749 ms worst order-import health response and 569 ms worst customer-import response (run 33932685808). Passing later runs does not eliminate the observed variance.
+
+A separate local SQLite experiment held a worker transaction for 1,800 ms. A main-thread WAL read took less than 1 ms, but a synchronous main-thread write waited 1,811 ms and delayed a timer by 1,793 ms. Moving import writes into a worker alone would therefore leave the process vulnerable: `/health` and ordinary writers use a synchronous connection with a five-second busy timeout.
+
+## Requirements before moving imports to workers
+
+- Extract parsing and graph-writing logic without importing modules that open or migrate databases as a side effect. `csv.mjs` currently depends on `db.mjs`, which opens the default database on import.
+- Capture the authorized tenant and existing database path before queueing. Never derive a filesystem path from an import request or create a missing shop database in a worker. Coordinate tenant removal and shutdown with active work.
+- Coordinate every writer for a given database, including HTTP handlers, payment callbacks, scheduled automations and health probes. A middleware-only lock would miss background work and public callbacks. A worker must not make the main process wait synchronously for its lock.
+- Preserve a real writable-health signal. Returning unconditional success, ignoring failed probes, relaxing the latency threshold or weakening SQLite durability would hide the defect.
+- Bound worker concurrency, queued bytes, runtime and memory. Preserve order-level atomicity, stable import identities, current pricing/settings semantics and accurate rollback counts.
+- Persist progress in the same transaction as imported rows before promising exact crash counts. A worker can die after COMMIT but before its acknowledgment reaches the parent. In-memory counters cannot establish what was saved in that window.
+- Verify same-shop reads and writes, neighboring-shop reads and writes, health checks, duplicate concurrent imports, lock contention, worker crashes, shutdown and tenant removal. Retain the current full-disk/read-only failure contracts.
+
+This is an unresolved architecture requirement, not a shipped worker implementation. The customer accounting corrections improve correctness while this responsiveness work remains open.

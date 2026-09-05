@@ -124,8 +124,11 @@ export function importContacts(after) {
             $('#csv-go', bg).disabled = r.to_import === 0
           } else {
             out.innerHTML = `<div style="color:var(--accent);font-size:13px">✓ Imported ${r.created} customer${r.created === 1 ? '' : 's'}.${r.duplicates ? ` ${r.duplicates} were already on file.` : ''}</div>`
-            toast(`Imported ${r.created} customers`)
-            setTimeout(() => { closeModal(); after?.() }, 900)
+            toast(`Imported ${r.created} customers${r.skipped ? ` · ${r.skipped} rows skipped` : ''}`)
+            if (r.skipped) {
+              out.innerHTML += `<p class="dim">${r.skipped} row${r.skipped === 1 ? ' was' : 's were'} skipped. Review the source file for missing names or rejected values.</p><button class="btn ghost" id="csv-done">Done</button>`
+              $('#csv-done', bg).onclick = () => { closeModal(); after?.() }
+            } else setTimeout(() => { closeModal(); after?.() }, 900)
           }
         } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` } finally { busy = false; mapper.lock(false); fileInput.disabled = false; $('#csv-text', bg).disabled = false }
       }

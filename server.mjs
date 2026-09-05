@@ -47,6 +47,7 @@ import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
+import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
 import { ask } from './lib/assistant.mjs'
@@ -2573,40 +2574,21 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
     return res.json({ preview: true, columns, total_rows: rows.length, to_import: toAdd.length, duplicates: dupes, skipped: skippedNoName, sample: toAdd.slice(0, 8) })
   }
 
-  // Batched, and handing the event loop back between batches, for the same reason the order
-  // importer is — see the comment there. A 2.94MB customer book (well inside the 8MB upload cap)
-  // was 4.65 SECONDS of unbroken blocking, with /health answering three times in the window and
-  // every other shop on the box waiting behind it. The per-row try/catch stays exactly where it
-  // was: a constraint violation is caught inside the transaction, so one bad row still skips
-  // itself rather than sinking its batch.
-  let created = 0
-  const BATCH = 500
-  // Same shape as the orders importer: batches commit as they go, so a failure part-way through
-  // has to report the count rather than let the generic handler claim nothing was saved.
-  let stopped = null
-  for (let i = 0; i < toAdd.length; i += BATCH) {
-    const batch = toAdd.slice(i, i + BATCH)
-    try {
-      tx(() => {
-        for (const c of batch) {
-          try {
-            run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-              c.name, c.email, c.phone, c.company, c.notes, c.tags, now(), now())
-            created++
-          } catch (e) { /* one bad row shouldn't sink the import */ }
-        }
-      })
-    } catch (e) { stopped = e; break }
-    if (i + BATCH < toAdd.length) await new Promise((r) => setImmediate(r))
+  // Only committed batches count. Storage failures stop the import; constraint failures may
+  // skip a row. Email dedupe is checked again inside each transaction because preview can be stale.
+  const { created, duplicates: newDupes, skipped: rejected, stopped } = await writeContactImport(getDb(), toAdd)
+  if (created) {
+    // The contacts are durable even if a full disk prevents writing this final timeline row.
+    try { logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {}) }
+    catch (error) { console.error('customer import activity:', error.message) }
   }
-  if (created) logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {})
   if (stopped) {
     return res.status(503).json(interruptedImportReport({
       written: created, total: toAdd.length, noun: 'customer', err: stopped,
       resume: 'Fix that, then upload the SAME file again — anyone whose email address is already in your customer list is skipped. Rows with no email address cannot be matched, so check those for duplicates afterwards.',
     }))
   }
-  res.json({ preview: false, created, duplicates: dupes, skipped: skippedNoName, total_rows: rows.length })
+  res.json({ preview: false, created, duplicates: dupes + newDupes, skipped: skippedNoName + rejected, total_rows: rows.length })
 }))
 
 app.post('/api/contacts/:id/note', wrap((req, res) => {
