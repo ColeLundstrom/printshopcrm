@@ -108,8 +108,11 @@ test('every recorded extra subscription remains a liability even after a review 
 })
 
 test('a second handle can write during verification, but changed revisions and parallel deletion cannot pass', async t => {
-  const directory = mkdtempSync(join(tmpdir(),'psc-deletion-unit-')); t.after(() => rmSync(directory,{recursive:true,force:true}))
-  const path = join(directory,'control.db'), h = fixture(t,{path}), other = new DatabaseSync(path); t.after(() => other.close())
+  const directory = mkdtempSync(join(tmpdir(),'psc-deletion-unit-'))
+  const path = join(directory,'control.db'), h = fixture(t,{path}), other = new DatabaseSync(path)
+  // after hooks run in registration order: fixture closes its handle first, then this
+  // handle closes before Windows is asked to unlink the database and its WAL files.
+  t.after(() => { other.close(); rmSync(directory,{recursive:true,force:true}) })
   h.seed(); let release
   h.state.subHook = () => new Promise(resolve => { release = resolve })
   const pending = h.manager.remove(1)

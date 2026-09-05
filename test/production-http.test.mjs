@@ -3,19 +3,16 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { DatabaseSync } from 'node:sqlite'
 test(
   'production HTTP: templates repeat, staff assignments hold, QR stays in its shop and costs stay private',
   { timeout: 120000 },
   async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'psc-production-')),
-      dest = join(tmp, 'demo'),
-      probe = createServer()
-    await new Promise((r) => probe.listen(0, '127.0.0.1', r))
-    const port = probe.address().port
-    await new Promise((r) => probe.close(r))
+      dest = join(tmp, 'demo')
+    const httpServer = await createHttpTestServer(), port = httpServer.port
     let child, db, control
     try {
       const built = spawnSync(process.execPath, ['bin/demo.mjs', dest, String(port)], {
@@ -26,19 +23,17 @@ test(
       assert.equal(built.status, 0, built.stderr)
       const env = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8'))
       let log = ''
-      child = spawn(
-        process.execPath,
-        ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'],
-        { cwd: dest, env, stdio: ['ignore', 'pipe', 'pipe'] }
-      )
-      child.stdout.on('data', (x) => (log += x))
-      child.stderr.on('data', (x) => (log += x))
+      await httpServer.start({cwd: dest, env,
+        args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'],
+        onOutput: text => { log += text },
+      })
+      child = httpServer.child
       // Windows under concurrent CI load can take longer than five seconds to start.
       // Wait for this owned child, never for an unrelated listener on the chosen port.
       for (let i = 0; i < 600 && child.exitCode === null && !log.includes('(ws /ws live'); i++)
         await new Promise((r) => setTimeout(r, 50))
       assert.match(log, /ws \/ws live/)
-      const base = `http://127.0.0.1:${port}`
+      const base = httpServer.base
       const login = await fetch(base + '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -294,10 +289,7 @@ test(
     } finally {
       db?.close()
       control?.close()
-      if (child && !child.killed) {
-        child.kill('SIGTERM')
-        await new Promise((r) => child.once('exit', r))
-      }
+      await httpServer.close()
       rmSync(tmp, { recursive: true, force: true })
     }
   }

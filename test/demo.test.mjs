@@ -4,8 +4,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 
 const root = new URL('..', import.meta.url)
 test('isolated demo keeps private data safe and serves customer proofs from a hidden install directory', { timeout: 180000 }, async () => {
@@ -13,9 +13,7 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
   mkdirSync(join(tmp, '.evaluation'))
   const dest = join(tmp, '.evaluation', 'instance')
   const sentinel = join(tmp, 'real-shop.db'); writeFileSync(sentinel, 'existing customer data')
-  const probe = createServer(); await new Promise(r => probe.listen(0, '127.0.0.1', r))
-  const port = probe.address().port; await new Promise(r => probe.close(r))
-  let server
+  const httpServer = await createHttpTestServer(), port = httpServer.port
   try {
     const args = ['bin/demo.mjs', dest, String(port)]
     const r = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8', timeout: 120000,
@@ -32,9 +30,8 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
     assert.notEqual(again.status, 0, 'never reseed an existing demo')
     assert.equal(readFileSync(join(dest, 'LOGIN.txt'), 'utf8'), login)
     let log = ''
-    server = spawn(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], { cwd: dest, env: config, stdio: ['ignore', 'pipe', 'pipe'] })
-    server.stdout.on('data', d => log += d); server.stderr.on('data', d => log += d)
-    const base = `http://127.0.0.1:${port}`
+    await httpServer.start({ cwd: dest, env: config, args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], onOutput: text => { log += text } })
+    const base = httpServer.base
     let ready = false
     for (let i=0;i<100;i++) {
       try { const h=await fetch(base+'/health'); if(h.ok){ready=true;break} } catch {}
@@ -113,7 +110,7 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
     assert.match(await image.text(),/DEMO-PROOF/)
     assert.equal((await fetch(base+'/uploads/'+art.filename)).status,404,'anonymous file access stays blocked')
   } finally {
-    if(server && server.exitCode===null){server.kill('SIGTERM');await new Promise(r=>server.once('exit',r))}
+    await httpServer.close()
     rmSync(tmp,{recursive:true,force:true,maxRetries:10,retryDelay:200})
   }
 })

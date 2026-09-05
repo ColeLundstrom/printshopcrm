@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { buildHostingCheckoutRequest, HOSTING_PURPOSE } from '../lib/billing.mjs'
@@ -59,13 +59,9 @@ function installDeletionProvider() {
 }
 
 test('admin HTTP deletion verifies recorded hosting before removing any shop data', { timeout: 180000 }, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'psc-hosting-deletion-http-')), demo = join(root, 'demo')
-  const probe = createServer()
-  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
-  const port = probe.address().port
-  await new Promise(resolve => probe.close(resolve))
-  const base = `http://127.0.0.1:${port}`, fixture = join(root, 'provider.json')
-  let child, control, ownerCookie, env, logs = '', deletionResponses = '', shopNumber = 0
+  const root = mkdtempSync(join(tmpdir(), 'psc-hosting-deletion-http-')), demo = join(root, 'demo'), server = await createHttpTestServer()
+  const {port,base} = server, fixture = join(root, 'provider.json')
+  let control, ownerCookie, env, logs = '', deletionResponses = '', shopNumber = 0
   const provider = () => JSON.parse(readFileSync(fixture, 'utf8'))
   const mutateProvider = callback => { const state = provider(); callback(state); writeFileSync(fixture, JSON.stringify(state)) }
   const cookies = response => response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
@@ -163,10 +159,8 @@ test('admin HTTP deletion verifies recorded hosting before removing any shop dat
     writeFileSync(fixture, JSON.stringify({ account_id: 'acct_deletionFixture', requests: [], unexpected: [], subscriptions: {}, sessions: {}, failures: {}, defer_subscription: null, release_read: false }))
     writeFileSync(join(demo, 'hosting-deletion-provider.mjs'), "import {readFileSync,writeFileSync} from 'node:fs';\n(" + installDeletionProvider.toString() + ')();\n')
     control = new DatabaseSync(join(demo, 'data', 'control.db')); control.exec('PRAGMA busy_timeout=5000')
-    child = spawn(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', '--import', './hosting-deletion-provider.mjs', 'server.mjs'], { cwd: demo, env, stdio: ['ignore', 'pipe', 'pipe'] })
-    for (const output of [child.stdout, child.stderr]) output.on('data', bytes => { logs += bytes })
-    for (let n = 0; n < 600 && child.exitCode === null && !logs.includes('(ws /ws live'); n++) await pause(50)
-    assert.match(logs, /ws \/ws live/, 'private deletion test server must start')
+    await server.start({cwd:demo,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import','./hosting-deletion-provider.mjs','server.mjs'],onOutput:text=>{logs+=text}})
+    await server.assertPortOwned()
     const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'dylan@example.test', password: readFileSync(join(demo, 'LOGIN.txt'), 'utf8').match(/Password: (.+)/)[1] }) })
     assert.equal(login.status, 200); ownerCookie = cookies(login)
     const owner = control.prepare("SELECT * FROM members WHERE email='dylan@example.test'").get()
@@ -321,11 +315,7 @@ test('admin HTTP deletion verifies recorded hosting before removing any shop dat
     }
     assert.doesNotMatch(logs, /External services are disabled|External request blocked/i, 'all provider reads stayed inside the synthetic fixture')
   } finally {
-    if (child && child.exitCode === null) {
-      const exited = new Promise(resolve => child.once('exit', resolve))
-      child.kill('SIGTERM'); await Promise.race([exited, pause(3000)])
-      if (child.exitCode === null) { child.kill('SIGKILL'); await exited }
-    }
+    await server.close()
     control?.close()
     rmSync(root, { recursive: true, force: true })
   }

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 
@@ -14,11 +14,9 @@ const specs = { method: 'Screen Print', print_width: 12, print_height: 14, units
   ink_notes: 'Fixture navy ink, white underbase', machine_profile: 'Fixture manual press' }
 
 test('production artwork HTTP binds a manual technical release to current proof and private files, with stage and task gates', { timeout: 180000 }, async () => {
-  const temp = mkdtempSync(join(tmpdir(), 'psc-art-production-')), dest = join(temp, 'demo'), probe = createServer()
-  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
-  const port = probe.address().port
-  await new Promise(resolve => probe.close(resolve))
-  let child, db, control, neighborDb
+  const temp = mkdtempSync(join(tmpdir(), 'psc-art-production-')), dest = join(temp, 'demo')
+  const server = await createHttpTestServer(), { port, base } = server
+  let db, control, neighborDb
   try {
     const built = spawnSync(process.execPath, ['bin/demo.mjs', dest, String(port)], {
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 90000,
@@ -26,13 +24,9 @@ test('production artwork HTTP binds a manual technical release to current proof 
     assert.equal(built.status, 0, built.stderr)
     const env = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8')); env.PSC_TICK_MS = '3600000'
     let log = ''
-    child = spawn(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], {
-      cwd: dest, env, stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    child.stdout.on('data', data => { log += data }); child.stderr.on('data', data => { log += data })
-    for (let i = 0; i < 600 && child.exitCode === null && !log.includes('(ws /ws live'); i++) await new Promise(resolve => setTimeout(resolve, 50))
+    await server.start({ cwd: dest, env,
+      args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], onOutput: text => { log += text } })
     assert.match(log, /ws \/ws live/)
-    const base = `http://127.0.0.1:${port}`
     const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: 'dylan@example.test', password: readFileSync(join(dest, 'LOGIN.txt'), 'utf8').match(/Password: (.+)/)[1] }) })
     assert.equal(login.status, 200)
@@ -330,13 +324,7 @@ test('production artwork HTTP binds a manual technical release to current proof 
     assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
   } finally {
     neighborDb?.close(); control?.close(); db?.close()
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM')
-      await new Promise(resolve => {
-        const timer = setTimeout(() => child.kill('SIGKILL'), 10000)
-        child.once('exit', () => { clearTimeout(timer); resolve() })
-      })
-    }
+    await server.close()
     rmSync(temp, { recursive: true, force: true })
   }
 })

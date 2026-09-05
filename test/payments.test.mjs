@@ -4,8 +4,8 @@ import crypto from 'node:crypto'
 import {mkdtempSync,readFileSync,writeFileSync,readdirSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {spawn,spawnSync} from 'node:child_process'
-import {createServer} from 'node:net'
+import {spawnSync} from 'node:child_process'
+import {createHttpTestServer} from './helpers/http-test-server.mjs'
 import {DatabaseSync} from 'node:sqlite'
 import {stripeUnits,stripeHundredths} from '../lib/payment-currency.mjs'
 import {verifyAuthorizeWebhook,createAuthorizeCheckout,retrieveAuthorizeTransaction} from '../lib/authorizenet.mjs'
@@ -32,17 +32,14 @@ test('currency conversion and Authorize.net reject ambiguous or mismatched payme
 
 test('signed callbacks reconcile both gateways atomically without the customer returning', {timeout:180000},async()=>{
   const tmp=mkdtempSync(join(tmpdir(),'psc-payments-')),dest=join(tmp,'demo'),fixture=join(tmp,'fixture.json')
-  const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r))
-  let server,d
+  const server=await createHttpTestServer(),{port,base}=server
+  let d
   try {
     const r=spawnSync(process.execPath,['bin/demo.mjs',dest,String(port)],{cwd:root,encoding:'utf8',timeout:120000});assert.equal(r.status,0,r.error?.message || r.stderr)
     const env=JSON.parse(readFileSync(join(dest,'demo-env.json'),'utf8'));env.PSC_PAYMENT_FIXTURE=fixture
     writeFileSync(fixture,JSON.stringify({seq:0,sessions:{},transactions:{}}))
     let log=''
-    server=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',new URL('./fixtures/payment-provider.mjs',import.meta.url).href,'server.mjs'],{cwd:dest,env,stdio:['ignore','pipe','pipe']})
-    server.stdout.on('data',x=>log+=x);server.stderr.on('data',x=>log+=x)
-    const base=`http://127.0.0.1:${port}`
-    for(let i=0;i<100;i++){try{if((await fetch(base+'/health')).ok)break}catch{}await new Promise(r=>setTimeout(r,50))}
+    await server.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',new URL('./fixtures/payment-provider.mjs',import.meta.url).href,'server.mjs'],onOutput:text=>{log+=text}})
     const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(dest,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})});assert.equal(login.status,200,log)
     const cookie=login.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')
     const req=(path,body,method='POST')=>fetch(base+path,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})})
@@ -215,6 +212,6 @@ test('signed callbacks reconcile both gateways atomically without the customer r
     for(const key of ['stripe_secret','stripe_webhook_secret','anet_transaction_key','anet_signature_key']) assert.equal(publicS[key],'')
     assert.equal((await req('/api/settings',{payment_provider:'unknown'},'PUT')).status,400)
   } finally {
-    d?.close();if(server){const end=new Promise(r=>server.once('exit',r));server.kill();await end}rmSync(tmp,{recursive:true,force:true,maxRetries:10,retryDelay:200})
+    d?.close();await server.close();rmSync(tmp,{recursive:true,force:true,maxRetries:10,retryDelay:200})
   }
 })

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { createHash, createHmac } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { deflateSync } from 'node:zlib'
@@ -29,20 +29,15 @@ const recipe = {version:1,renderer:'browser-canvas-v1',sizing_mode:'visual',canv
 
 test('browser mockup HTTP preserves originals, saves only drafts and safely retries without rendering or outbound providers', {timeout:180000}, async () => {
   // A supported installation may live under ~/.local or another hidden parent directory.
-  const root = mkdtempSync(join(tmpdir(),'.psc-mockup-http-')), demo = join(root,'demo'), probe = createServer()
-  await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve)); const port = probe.address().port
-  await new Promise(resolve=>probe.close(resolve))
-  let child
+  const root = mkdtempSync(join(tmpdir(),'.psc-mockup-http-')), demo = join(root,'demo')
+  const server = await createHttpTestServer(), { port, base } = server
   try {
     const built = spawnSync(process.execPath,['bin/demo.mjs',demo,String(port)],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:90000})
     assert.equal(built.status,0,built.stderr)
     const env = JSON.parse(readFileSync(join(demo,'demo-env.json'),'utf8')); env.PSC_TICK_MS='3600000'
     let logs=''
-    child=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'],{cwd:demo,env,stdio:['ignore','pipe','pipe']})
-    child.stdout.on('data',b=>{logs+=b}); child.stderr.on('data',b=>{logs+=b})
-    for(let n=0;n<600 && child.exitCode===null && !logs.includes('(ws /ws live');n++) await new Promise(resolve=>setTimeout(resolve,50))
+    await server.start({cwd:demo,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'],onOutput:text=>{logs+=text}})
     assert.match(logs,/ws \/ws live/,logs)
-    const base=`http://127.0.0.1:${port}`
     const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(demo,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})})
     assert.equal(login.status,200)
     const cookie=login.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')
@@ -139,7 +134,7 @@ test('browser mockup HTTP preserves originals, saves only drafts and safely retr
     assert.equal(expiredNew.status,409);assert.equal((await expiredNew.json()).code,'catalog_ticket_expired');assert.deepEqual(files(),catalogFiles)
     assert.doesNotMatch(logs,/external request blocked/i,'manual composition never needed an outbound provider')
   } finally {
-    if(child && child.exitCode===null){child.kill('SIGTERM');await new Promise(resolve=>{const timer=setTimeout(resolve,3000);child.once('exit',()=>{clearTimeout(timer);resolve()})});if(child.exitCode===null)child.kill('SIGKILL')}
+    await server.close()
     rmSync(root,{recursive:true,force:true})
   }
 })

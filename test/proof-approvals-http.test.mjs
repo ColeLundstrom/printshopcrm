@@ -3,20 +3,20 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { DatabaseSync } from 'node:sqlite'
 
 test('replacement proofs revoke old release, obsolete links cannot decide, and decisions commit atomically',{timeout:120000},async()=>{
- const temp=mkdtempSync(join(tmpdir(),'psc-proofs-')),dest=join(temp,'demo'),probe=createServer()
- await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r))
+ const temp=mkdtempSync(join(tmpdir(),'psc-proofs-')),dest=join(temp,'demo')
+  const httpServer=await createHttpTestServer(), port=httpServer.port
  let child,db
  try {
   const built=spawnSync(process.execPath,['bin/demo.mjs',dest,String(port)],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:90000});assert.equal(built.status,0,built.stderr)
   const env=JSON.parse(readFileSync(join(dest,'demo-env.json'),'utf8'));let log=''
-  child=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'],{cwd:dest,env,stdio:['ignore','pipe','pipe']});child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x)
+  await httpServer.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'],onOutput:text=>{log+=text}});child=httpServer.child
   for(let i=0;i<600&&child.exitCode===null&&!log.includes('(ws /ws live');i++)await new Promise(r=>setTimeout(r,50));assert.match(log,/ws \/ws live/)
-  const base=`http://127.0.0.1:${port}`
+  const base=httpServer.base
   const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(dest,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})});assert.equal(login.status,200)
   const cookie=login.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')
   const request=(path,body,method='POST')=>fetch(base+path,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)})
@@ -61,5 +61,5 @@ test('replacement proofs revoke old release, obsolete links cannot decide, and d
   assert.equal((await request('/api/art/'+mock1.id+'/decide',{decision:'approved'})).status,409)
   assert.equal((await request('/api/mockups/'+mock1.id+'/send',{})).status,409)
   await json('/api/art/'+mock2.id+'/decide',{decision:'approved'})
- } finally {db?.close();if(child&&child.exitCode===null){child.kill('SIGTERM');await new Promise(r=>child.once('exit',r))}rmSync(temp,{recursive:true,force:true})}
+ } finally {db?.close();await httpServer.close();rmSync(temp,{recursive:true,force:true})}
 })

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { createHmac } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -97,29 +97,14 @@ function installStripeFixture() {
 }
 
 test('hosting HTTP keeps one recoverable checkout, exact subscription ownership and private responses', { timeout: 180000 }, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'psc-hosting-http-')), demo = join(root, 'demo'), probe = createServer()
-  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
-  const port = probe.address().port
-  await new Promise(resolve => probe.close(resolve))
-  let child, control, logs = '', responseBodies = '', env, ownerCookie, annual, neighborCookie, neighborId
+  const root = mkdtempSync(join(tmpdir(), 'psc-hosting-http-')), demo = join(root, 'demo'), server = await createHttpTestServer()
+  const { port, base } = server
+  let control, logs = '', responseBodies = '', env, ownerCookie, annual, neighborCookie, neighborId
   const roleCookies = {}
-  const fixture = join(root, 'provider.json'), base = `http://127.0.0.1:${port}`
+  const fixture = join(root, 'provider.json')
   const state = () => JSON.parse(readFileSync(fixture, 'utf8'))
   const mutate = callback => { const current = state(); callback(current); writeFileSync(fixture, JSON.stringify(current)) }
-  const stop = async () => {
-    if (!child || child.exitCode !== null) return
-    const exited = new Promise(resolve => child.once('exit', resolve))
-    child.kill('SIGTERM')
-    await Promise.race([exited, pause(3000)])
-    if (child.exitCode === null) { child.kill('SIGKILL'); await exited }
-  }
-  const start = async () => {
-    let boot = ''
-    child = spawn(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', '--import', './hosting-provider-fixture.mjs', 'server.mjs'], { cwd: demo, env, stdio: ['ignore', 'pipe', 'pipe'] })
-    for (const output of [child.stdout, child.stderr]) output.on('data', bytes => { boot += bytes; logs += bytes })
-    for (let n = 0; n < 600 && child.exitCode === null && !boot.includes('(ws /ws live'); n++) await pause(50)
-    assert.match(boot, /ws \/ws live/, 'isolated hosting server failed to start')
-  }
+  const start = () => server.start({ cwd: demo, env, args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', '--import', './hosting-provider-fixture.mjs', 'server.mjs'], onOutput: text => { logs += text } })
   const request = async (path, { body, cookie = ownerCookie, method = body === undefined ? 'GET' : 'POST' } = {}) => {
     const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     const text = await response.text()
@@ -255,7 +240,15 @@ test('hosting HTTP keeps one recoverable checkout, exact subscription ownership 
       const status = await ok('/api/billing', { cookie: neighborCookie })
       assert.equal(status.hosting_checkout.intent.state, 'unknown'); assert.equal(status.hosting_checkout.intent.url, null)
       assert.equal(status.hosting_checkout.intent.can_retry, false)
-      await stop(); await start()
+      const previousPid = server.child.pid
+      const stopped = await server.stop()
+      assert.equal(stopped.pid, previousPid)
+      assert.ok(stopped.code !== null || stopped.signal !== null, 'the old app process really exited before restart')
+      await server.assertPortOwned()
+      const restarted = await start()
+      assert.notEqual(restarted.pid, previousPid, 'recovery runs in a new actual app process')
+      assert.equal(server.base, base, 'the original checkout origin remains unchanged')
+      await server.assertPortOwned()
       const delay = Math.max(0, saved.retry_at - Date.now() + 50)
       assert.ok(delay < 5000, 'fixture recovery backoff is bounded'); await pause(delay)
       const wrongSession = await request('/api/billing/checkout/reconcile', { cookie: neighborCookie, body: { session_id: annual.session_id } })
@@ -338,7 +331,7 @@ test('hosting HTTP keeps one recoverable checkout, exact subscription ownership 
     assert.deepEqual(state().unexpected, [], 'every synthetic provider request matches an explicit fixture endpoint')
     assert.doesNotMatch(logs, /External request blocked|External services are disabled/i, 'no provider request escaped the fixture into the outbound guard')
   } finally {
-    await stop()
+    await server.close()
     control?.close()
     rmSync(root, { recursive: true, force: true })
   }

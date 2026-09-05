@@ -3,19 +3,19 @@ import assert from 'node:assert/strict'
 import {mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {spawn,spawnSync} from 'node:child_process'
-import {createServer} from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import {DatabaseSync} from 'node:sqlite'
 test('scoped agent API keeps cookie/shop boundaries, gates production and logs individual requests',{timeout:120000},async()=>{
-  const tmp=mkdtempSync(join(tmpdir(),'psc-agent-http-')),dest=join(tmp,'demo'),probe=createServer()
-  await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r))
+  const tmp=mkdtempSync(join(tmpdir(),'psc-agent-http-')),dest=join(tmp,'demo')
+  const httpServer=await createHttpTestServer(), port=httpServer.port
   let child,db,control
   try{
     const built=spawnSync(process.execPath,['bin/demo.mjs',dest,String(port)],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:90000});assert.equal(built.status,0,built.stderr)
     const env=JSON.parse(readFileSync(join(dest,'demo-env.json'),'utf8'))
-    let log='';child=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'],{cwd:dest,env,stdio:['ignore','pipe','pipe']});child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x)
+    let log='';await httpServer.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'],onOutput:text=>{log+=text}});child=httpServer.child
     for(let i=0;i<600&&child.exitCode===null&&!log.includes('(ws /ws live');i++)await new Promise(r=>setTimeout(r,50));assert.match(log,/ws \/ws live/)
-    const base=`http://127.0.0.1:${port}`
+    const base=httpServer.base
     const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(dest,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})});assert.equal(login.status,200)
     const cookie=login.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')
     const request=(path,method='GET',body,token,cookieValue=cookie,extraHeaders={})=>fetch(base+path,{method,headers:{'Content-Type':'application/json',Cookie:cookieValue,...extraHeaders,...(token?{Authorization:'Bearer '+token}:{})},body:body===undefined?undefined:JSON.stringify(body)})
@@ -100,5 +100,5 @@ test('scoped agent API keeps cookie/shop boundaries, gates production and logs i
     control.prepare("UPDATE members SET role='staff' WHERE id=?").run(production.key.member_id)
     assert.equal((await request('/api/v1/me','GET',undefined,production.token)).status,401)
     assert.equal((await request('/api/developers/agents','POST',{name:'Staff key',scopes:['jobs:read'],expires_days:90})).status,403)
-  }finally{db?.close();control?.close();if(child&&child.exitCode===null){child.kill('SIGTERM');await new Promise(r=>child.once('exit',r))}rmSync(tmp,{recursive:true,force:true})}
+  }finally{db?.close();control?.close();await httpServer.close();rmSync(tmp,{recursive:true,force:true})}
 })

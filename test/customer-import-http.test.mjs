@@ -3,14 +3,14 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { DatabaseSync } from 'node:sqlite'
 
 test('customer import reports committed rows through COMMIT and activity failures, then resumes safely', { timeout: 120000 }, async () => {
-  const temp = mkdtempSync(join(tmpdir(), 'psc-contact-http-')), dest = join(temp, 'demo'), probe = createServer()
-  await new Promise(r => probe.listen(0, '127.0.0.1', r)); const port = probe.address().port; await new Promise(r => probe.close(r))
-  let child, db
+  const temp = mkdtempSync(join(tmpdir(), 'psc-contact-http-')), dest = join(temp, 'demo')
+  const server = await createHttpTestServer(), { port, base } = server
+  let db
   try {
     const built = spawnSync(process.execPath, ['bin/demo.mjs', dest, String(port)], { cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 90000 })
     assert.equal(built.status, 0, built.stderr)
@@ -25,11 +25,9 @@ test('customer import reports committed rows through COMMIT and activity failure
       BEGIN SELECT RAISE(ABORT, 'fixture activity unavailable'); END;`)
     const env = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8')); env.PSC_TICK_MS = '3600000'
     let log = ''
-    child = spawn(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], { cwd: dest, env, stdio: ['ignore', 'pipe', 'pipe'] })
-    child.stdout.on('data', x => log += x); child.stderr.on('data', x => log += x)
-    for (let i = 0; i < 600 && child.exitCode === null && !log.includes('(ws /ws live'); i++) await new Promise(r => setTimeout(r, 50))
+    await server.start({ cwd: dest, env,
+      args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], onOutput: text => { log += text } })
     assert.match(log, /ws \/ws live/)
-    const base = `http://127.0.0.1:${port}`
     const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'dylan@example.test', password: readFileSync(join(dest, 'LOGIN.txt'), 'utf8').match(/Password: (.+)/)[1] }) })
     assert.equal(login.status, 200)
     const cookie = login.headers.getSetCookie().map(c => c.split(';')[0]).join('; ')
@@ -58,7 +56,7 @@ test('customer import reports committed rows through COMMIT and activity failure
     assert.equal((await fetch(base + '/health')).status, 200, 'no transaction remains open after recovery')
   } finally {
     db?.close()
-    if (child && child.exitCode === null) { child.kill('SIGTERM'); await new Promise(r => child.once('exit', r)) }
+    await server.close()
     rmSync(temp, { recursive: true, force: true })
   }
 })

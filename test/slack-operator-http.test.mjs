@@ -3,22 +3,22 @@ import assert from 'node:assert/strict'
 import {mkdtempSync,readFileSync,writeFileSync,readdirSync,existsSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {spawn,spawnSync} from 'node:child_process'
-import {createServer} from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import {createHmac} from 'node:crypto'
 import {DatabaseSync} from 'node:sqlite'
 test('signed Slack delivery uses linked identity, replies in DM and rejects replay and foreign teams', {timeout:120000},async()=>{
-  const tmp=mkdtempSync(join(tmpdir(),'psc-slack-http-')), dest=join(tmp,'demo'), probe=createServer()
-  await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r))
+  const tmp=mkdtempSync(join(tmpdir(),'psc-slack-http-')), dest=join(tmp,'demo')
+  const httpServer=await createHttpTestServer(), port=httpServer.port
   let child,db,control
   try{
     const built=spawnSync(process.execPath,['bin/demo.mjs',dest,String(port)],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:90000});assert.equal(built.status,0,built.stderr)
     const env=JSON.parse(readFileSync(join(dest,'demo-env.json'),'utf8'))
     const captured=join(tmp,'messages.jsonl')
     writeFileSync(join(dest,'fake-slack.mjs'),`import {appendFileSync} from 'node:fs'; const blocked=globalThis.fetch; globalThis.fetch=async(url,options)=>{if(String(url)==='https://slack.com/api/chat.postMessage'){const body=JSON.parse(options.body);appendFileSync(${JSON.stringify(captured)},JSON.stringify(body)+'\\n');return new Response(JSON.stringify({ok:true,ts:'123.456'}),{status:200})}return blocked(url,options)};`)
-    let log='';child=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','--import','./fake-slack.mjs','server.mjs'],{cwd:dest,env,stdio:['ignore','pipe','pipe']});child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x)
+    let log='';await httpServer.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import','./fake-slack.mjs','server.mjs'],onOutput:text=>{log+=text}});child=httpServer.child
     for(let i=0;i<600&&child.exitCode===null&&!log.includes('(ws /ws live');i++)await new Promise(r=>setTimeout(r,50));assert.match(log,/ws \/ws live/)
-    const base=`http://127.0.0.1:${port}`
+    const base=httpServer.base
     const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(dest,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})});assert.equal(login.status,200)
     const cookie=login.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')
     const slug=readdirSync(join(dest,'data/tenants'))[0];db=new DatabaseSync(join(dest,'data/tenants',slug,'printshop.db'));control=new DatabaseSync(join(dest,'data/control.db'))
@@ -53,5 +53,5 @@ test('signed Slack delivery uses linked identity, replies in DM and rejects repl
     const rotate=await fetch(base+'/api/settings',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({slack_bot_token:'fixture-slack-rotated'})});assert.equal(rotate.status,200)
     assert.equal(db.prepare("SELECT value FROM settings WHERE key='slack_team_id'").get().value,'')
     const enableAgain=await fetch(base+'/api/slack-operator',{method:'PUT',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({enabled:true,mode:'review',links:[]})});assert.equal(enableAgain.status,400)
-  } finally {db?.close();control?.close();if(child&&child.exitCode===null){child.kill('SIGTERM');await new Promise(r=>child.once('exit',r))}rmSync(tmp,{recursive:true,force:true})}
+  } finally {db?.close();control?.close();await httpServer.close();rmSync(tmp,{recursive:true,force:true})}
 })

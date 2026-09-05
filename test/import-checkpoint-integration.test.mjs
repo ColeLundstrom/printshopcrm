@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { DatabaseSync } from 'node:sqlite'
 import { supportsImportCheckpointVersion } from '../lib/import-checkpoints.mjs'
 
@@ -200,10 +200,7 @@ test('process loss after a checkpoint preserves the committed batch and permits 
 
 test('order import HTTP receipts survive activity failures and checkpoint interruption without duplicating financial records', { timeout: 180000 }, async t => {
   const temp = mkdtempSync(join(tmpdir(), 'psc-order-checkpoint-http-')), dest = join(temp, 'demo')
-  const probe = createServer()
-  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
-  const port = probe.address().port
-  await new Promise(resolve => probe.close(resolve))
+  const httpServer = await createHttpTestServer(), port = httpServer.port
   let server, db, reader
   try {
     const built = spawnSync(process.execPath, ['bin/demo.mjs', dest, String(port)], {
@@ -220,13 +217,14 @@ test('order import HTTP receipts survive activity failures and checkpoint interr
     const env = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8'))
     env.PSC_TICK_MS = '3600000'; env.PSC_IMPORT_CHECKPOINTS = 'on'
     let log = ''
-    server = spawn(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'], {
-      cwd: dest, env, stdio: ['ignore', 'pipe', 'pipe'],
+    await httpServer.start({ cwd: dest, env,
+      args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'],
+      onOutput: text => { log += text },
     })
-    server.stdout.on('data', data => { log += data }); server.stderr.on('data', data => { log += data })
+    server = httpServer.child
     for (let i = 0; i < 600 && server.exitCode === null && !log.includes('(ws /ws live'); i++) await new Promise(resolve => setTimeout(resolve, 50))
     assert.match(log, /ws \/ws live/)
-    const base = `http://127.0.0.1:${port}`
+    const base = httpServer.base
     const login = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: 'dylan@example.test', password: readFileSync(join(dest, 'LOGIN.txt'), 'utf8').match(/Password: (.+)/)[1] }) })
     assert.equal(login.status, 200)
@@ -280,13 +278,7 @@ test('order import HTTP receipts survive activity failures and checkpoint interr
     assert.equal((await fetch(base + '/health')).status, 200)
   } finally {
     reader?.close(); db?.close()
-    if (server && server.exitCode === null && server.signalCode === null) {
-      server.kill('SIGTERM')
-      await new Promise(resolve => {
-        const timer = setTimeout(() => server.kill('SIGKILL'), 10000)
-        server.once('exit', () => { clearTimeout(timer); resolve() })
-      })
-    }
+    await httpServer.close()
     rmSync(temp, { recursive: true, force: true })
   }
 })

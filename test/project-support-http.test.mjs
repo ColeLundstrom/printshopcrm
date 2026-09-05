@@ -3,15 +3,14 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
+import { spawnSync } from 'node:child_process'
+import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { createHmac } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 
 test('project support is read-only and signed unrelated Stripe events cannot change hosting', {timeout:180000}, async () => {
-  const root=mkdtempSync(join(tmpdir(),'psc-support-http-')), demo=join(root,'demo'), probe=createServer()
-  await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=probe.address().port
-  await new Promise(resolve=>probe.close(resolve))
+  const root=mkdtempSync(join(tmpdir(),'psc-support-http-')), demo=join(root,'demo')
+  const httpServer=await createHttpTestServer(), port=httpServer.port
   let child, control
   try {
     const built=spawnSync(process.execPath,['bin/demo.mjs',demo,String(port)],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:90000})
@@ -29,11 +28,10 @@ test('project support is read-only and signed unrelated Stripe events cannot cha
     writeFileSync(join(demo,'fixture-platform-state.txt'),'unavailable')
     writeFileSync(join(demo,'fixture-platform-read.mjs'),`import{readFileSync}from'node:fs';const guardedFetch=globalThis.fetch;globalThis.fetch=async(input,options)=>{const url=String(input);if(url.startsWith('https://api.stripe.com/')){if(url!=='https://api.stripe.com/v1/subscriptions/sub_fixtureHosting?expand%5B%5D=items.data.price.product'||options?.method!=='GET'||options?.headers?.Authorization!=='Bearer sk_test_fixture_only')throw Error('Unexpected fixture Stripe request');console.log('FIXTURE_PLATFORM_SUBSCRIPTION_READ');if(readFileSync(new URL('./fixture-platform-state.txt',import.meta.url),'utf8')==='unavailable')return new Response(JSON.stringify({error:{message:'Fixture temporarily unavailable'}}),{status:503});return new Response(JSON.stringify({object:'subscription',id:'sub_fixtureHosting',customer:'cus_fixtureShop',status:'canceled',metadata:{tenant_id:'${tenantId}',plan:'everything',purpose:'printshopcrm_hosting'}}),{status:200,headers:{'Content-Type':'application/json'}})}return guardedFetch(input,options)};`)
     let logs=''
-    child=spawn(process.execPath,['--no-warnings','--import','./bin/demo-network-guard.mjs','--import','./fixture-platform-read.mjs','server.mjs'],{cwd:demo,env,stdio:['ignore','pipe','pipe']})
-    child.stdout.on('data',b=>{logs+=b});child.stderr.on('data',b=>{logs+=b})
+    await httpServer.start({cwd:demo,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import','./fixture-platform-read.mjs','server.mjs'],onOutput:text=>{logs+=text}});child=httpServer.child
     for(let n=0;n<600&&child.exitCode===null&&!logs.includes('(ws /ws live');n++)await new Promise(resolve=>setTimeout(resolve,50))
     assert.match(logs,/ws \/ws live/,logs)
-    const base=`http://127.0.0.1:${port}`
+    const base=httpServer.base
     assert.equal((await fetch(base+'/api/project-support')).status,401)
     const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(demo,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})})
     assert.equal(login.status,200)
@@ -89,7 +87,7 @@ test('project support is read-only and signed unrelated Stripe events cannot cha
     assert.doesNotMatch(logs,/external request blocked/i,'all provider I/O used the isolated fixture')
   } finally {
     control?.close()
-    if(child&&child.exitCode===null){child.kill('SIGTERM');await new Promise(resolve=>{const timer=setTimeout(resolve,3000);child.once('exit',()=>{clearTimeout(timer);resolve()})});if(child.exitCode===null)child.kill('SIGKILL')}
+    await httpServer.close()
     rmSync(root,{recursive:true,force:true})
   }
 })
