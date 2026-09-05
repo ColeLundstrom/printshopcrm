@@ -374,6 +374,18 @@ By contributing you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Security issues: please report privately, see [SECURITY.md](SECURITY.md).
 
+### Support the project
+
+Voluntary contributions help fund maintenance, documentation, release testing and outside
+contributors as more shops join. The software stays fully available for free. Contributions
+do not buy features, merge priority or a support contract; paid hosting and basic setup are
+separate services.
+
+Open **More tools → Support the project** for configured one-time or recurring options.
+Payment links stay hidden until the operator sets up and verifies a destination. You can also
+help by testing releases, improving documentation, reporting bugs and contributing code.
+See [project support setup](docs/PROJECT-SUPPORT.md).
+
 ## License
 
 **GNU AGPL v3** — see [LICENSE](LICENSE). Real, OSI-approved open source, the same deal WordPress

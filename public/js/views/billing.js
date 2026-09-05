@@ -13,6 +13,7 @@ export async function billingView() {
   const [d, me] = await Promise.all([api.get('/api/billing'), api.get('/api/auth/me').catch(() => ({}))])
   const st = d.state || {}
   const plans = d.plans || {}
+  const manageExisting = d.has_subscription && !['canceled','incomplete_expired'].includes(st.status)
   const order = (d.order && d.order.length ? d.order : ['everything']).filter((k) => plans[k])
   let interval = 'month'
 
@@ -40,6 +41,7 @@ export async function billingView() {
         : interval === 'year' ? `<div class="plan-annual">billed $${p.annual}/yr — 2 months free</div>` : '<div class="plan-annual">or save with annual</div>'}
       <ul class="plan-feats">${p.features.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>
       ${isCurrent ? '<button class="btn ghost" disabled>Current plan</button>'
+        : manageExisting ? '<button class="btn ghost" disabled>Use Manage hosting below</button>'
         : `<button class="btn ${p.popular ? '' : 'ghost'}" data-plan="${key}">${isFree ? 'Start on Free' : (st.subscribed ? 'Switch to ' + esc(p.name) : 'Choose ' + esc(p.name))}</button>`}
     </div>`
   }
@@ -66,8 +68,9 @@ export async function billingView() {
       <p>You keep your data and can move to your own server. There are no paid feature tiers.</p>
       <a class="btn ghost" href="https://github.com/ColeLundstrom/printshopcrm" target="_blank" rel="noopener noreferrer">Source code and community</a>
     </div></div>`}
-    ${st.subscribed && st.stripe_customer_id ? '<div class="row" style="justify-content:center;margin-top:18px"><button class="btn ghost" id="manage">Manage or cancel subscription →</button></div>' : ''}
+    ${d.live && st.stripe_customer_id ? '<div class="row" style="justify-content:center;margin-top:18px"><button class="btn ghost" id="manage">Manage hosting</button></div>' : ''}
     ${d.live ? '<p class="dim">Payment covers managed hosting and basic setup. The same software is free to self-host.</p>' : ''}
+    <p class="dim">Want to help maintain the free software? <a href="#/support">Support the project</a>. Contributions are optional and separate from hosting.</p>
     ${adminCard}
   </div>`
 

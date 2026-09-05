@@ -32,6 +32,7 @@ import { onboardingView } from './views/onboarding.js'
 import { ordersView } from './views/orders.js'
 import { gangSheetView } from './views/gangsheet.js'
 import { billingView } from './views/billing.js'
+import { projectSupportView } from './views/project-support.js'
 import { capacityView } from './views/capacity.js'
 import { reorderView } from './views/reorder.js'
 import { paymentsView } from './views/payments.js'
@@ -81,6 +82,7 @@ const NAV = [
   { advanced: true, href: '/developers', ico: 'settings', name: 'Developers', manage: true },
   { advanced: true, href: '/outbox', ico: 'outbox', name: 'Outbox' },
   { href: '/billing', ico: 'billing', name: 'Hosting', owner: true },
+  { advanced: true, href: '/support', ico: 'customers', name: 'Support the project' },
   { href: '/settings', ico: 'settings', name: 'Settings' },
   { label: 'Admin', section: true, admin: true },
   { href: '/admin', ico: 'admin', name: 'Control Room', admin: true },
@@ -148,6 +150,7 @@ route(/^\/welcome$/, onboardingView)
 route(/^\/setup$/, setupView)
 route(/^\/payments$/, paymentsView)
 route(/^\/billing$/, billingView)
+route(/^\/support$/, projectSupportView)
 route(/^\/pipeline$/, pipelineView)
 route(/^\/conversations\/(\d+)$/, conversationsView)
 route(/^\/conversations$/, conversationsView)

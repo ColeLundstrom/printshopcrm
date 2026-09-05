@@ -2,6 +2,9 @@ import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-c
 import * as artProduction from './lib/art-production.mjs'
 import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
 import { saveMockupComposition } from './lib/mockup-compositions.mjs'
+import { projectSupportConfig } from './lib/project-support.mjs'
+import { createPlatformSubscriptionEventProcessor } from './lib/platform-subscription-events.mjs'
+import { retrievePlatformSubscription } from './lib/billing.mjs'
 import { readRasterHeader, MOCKUP_LIMITS } from './public/js/shared/raster-header.js'
 import { createCatalogMedia } from './lib/catalog-media.mjs'
 import { open as openFile } from 'node:fs/promises'
@@ -1906,10 +1909,16 @@ app.post('/api/onboarding/configure', requireRole('manager'), wrap((req, res) =>
 
 /* ---- subscription billing (shops pay PrintShopCRM) ---- */
 
+// Public checkout destinations only; no shop data, payment calls or billing state changes.
+app.get('/api/project-support', (_req,res) => {
+  res.setHeader('Cache-Control','private, no-store')
+  res.json(projectSupportConfig())
+})
+
 app.get('/api/billing', wrap((req, res) => {
   // `order` drives what the billing page renders: one plan, everything included. PLANS still
   // carries the retired tier ids so an existing tenant row's plan_tier resolves to a name.
-  res.json({ live: billingLive(), plans: PLANS, order: PLAN_ORDER, state: req.tenant ? billingState(req.tenant) : null })
+  res.json({ live: billingLive(), plans: PLANS, order: PLAN_ORDER, has_subscription: !!req.tenant?.stripe_subscription_id, state: req.tenant ? billingState(req.tenant) : null })
 }))
 
 /** Start a subscription — returns a Stripe Checkout URL on the platform account. Owner-only. */
@@ -1918,13 +1927,20 @@ app.post('/api/billing/checkout', requireRole('owner'), async (req, res) => {
     if (!req.tenant) return res.status(401).json({ error: 'Not signed in' })
     if (!billingLive()) return res.status(503).json({ error: 'Billing is not live yet — the owner needs to connect the platform Stripe.' })
     const b = req.body || {}
+    if (!PLAN_ORDER.includes(b.plan)) return res.status(400).json({error:'Choose the current managed hosting plan.',code:'hosting_plan_unavailable'})
+    if (req.tenant.stripe_subscription_id && !['canceled','incomplete_expired'].includes(req.tenant.subscription_status)) {
+      return res.status(409).json({error:'This shop already has a hosting subscription. Use Manage hosting to update or cancel it.',code:'hosting_subscription_exists'})
+    }
     const origin = `${req.protocol}://${req.get('host')}`
     const { url } = await createSubscriptionCheckout({
       plan: b.plan, interval: b.interval === 'year' ? 'year' : 'month',
-      email: req.tenant.owner_email, tenantId: req.tenant.id, slug: req.tenant.slug, origin,
+      email: req.tenant.owner_email, customerId: req.tenant.stripe_customer_id, tenantId: req.tenant.id, slug: req.tenant.slug, origin,
     })
     res.json({ url })
-  } catch (e) { console.error('checkout:', e); res.status(500).json({ error: e.message }) }
+  } catch {
+    console.error('hosting checkout: request failed')
+    res.status(503).json({error:'Could not open hosting checkout. Try again shortly or contact the server operator.'})
+  }
 })
 
 /**
@@ -1956,7 +1972,10 @@ app.post('/api/billing/portal', requireRole('owner'), async (req, res) => {
     const origin = `${req.protocol}://${req.get('host')}`
     const { url } = await createBillingPortal({ customerId: st.stripe_customer_id, origin })
     res.json({ url })
-  } catch (e) { console.error('portal:', e); res.status(500).json({ error: e.message }) }
+  } catch {
+    console.error('hosting portal: request failed')
+    res.status(503).json({error:'Could not open hosting management. Try again shortly or contact the server operator.'})
+  }
 })
 
 /* ---- platform admin: connect the owner's Stripe (owner-only, key never sent back) ---- */
@@ -2073,36 +2092,21 @@ app.post('/api/admin/shops/:id/signin', wrap((req, res) => {
  * Stripe webhook — keeps each shop's subscription status in sync. Raw body (registered above),
  * signature-verified. Handles the events that move a shop between trial, active, past-due, canceled.
  */
-function stripeWebhook(req, res) {
+const processPlatformSubscriptionEvent = createPlatformSubscriptionEventProcessor({
+  getTenantById, getTenantByStripeCustomer, setSubscription, retrieveSubscription: retrievePlatformSubscription,
+})
+async function stripeWebhook(req, res) {
   try {
     const raw = req.body instanceof Buffer ? req.body.toString('utf8') : JSON.stringify(req.body || {})
     if (!verifyWebhook(raw, req.headers['stripe-signature'], webhookSecret())) return res.status(400).send('bad signature')
     const event = JSON.parse(raw)
-    const obj = event?.data?.object || {}
-    const tenantId = Number(obj.metadata?.tenant_id || obj.client_reference_id || 0) || null
-    switch (event.type) {
-      case 'checkout.session.completed':
-        if (tenantId) setSubscription(tenantId, { plan: obj.metadata?.plan, status: 'active', customerId: obj.customer, subscriptionId: obj.subscription })
-        break
-      case 'customer.subscription.updated': {
-        const t = tenantId ? getTenantById(tenantId) : getTenantByStripeCustomer(obj.customer)
-        if (t) setSubscription(t.id, { plan: obj.metadata?.plan, status: obj.status === 'active' || obj.status === 'trialing' ? 'active' : (obj.status === 'past_due' ? 'past_due' : obj.status), customerId: obj.customer, subscriptionId: obj.id })
-        break
-      }
-      case 'customer.subscription.deleted': {
-        const t = getTenantByStripeCustomer(obj.customer)
-        if (t) setSubscription(t.id, { status: 'canceled' })
-        break
-      }
-      case 'invoice.payment_failed': {
-        const t = getTenantByStripeCustomer(obj.customer)
-        if (t) setSubscription(t.id, { status: 'past_due' })
-        break
-      }
-      default: break
-    }
+    await processPlatformSubscriptionEvent(event)
     res.json({ received: true })
-  } catch (e) { console.error('webhook:', e); res.status(400).send('error') }
+  } catch (e) {
+    console.error('webhook:', e)
+    if (e?.retryable) { res.setHeader('Retry-After','10'); return res.status(503).json({error:'Hosting status could not be verified. Retry this event.'}) }
+    res.status(400).send('error')
+  }
 }
 
 /* ================= DASHBOARD ================= */

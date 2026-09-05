@@ -106,7 +106,11 @@ Release process and the rule that GitHub, the app server and the website move to
 
 ## Community funding and licensing
 
-The project is supported by optional server hosting and basic setup. Every shop gets the same
+The project is supported by voluntary contributions and optional server hosting and basic setup.
+Contributions help fund maintenance, documentation, release testing and outside contributors.
+One-time support and recurring sponsorship are optional; they do not buy feature access,
+merge priority or a support contract. Funding does not override review and release safeguards.
+See [project support](docs/PROJECT-SUPPORT.md) for setup and payment boundaries. Every shop gets the same
 software. New contributions are AGPL-3.0-or-later, with no additional proprietary relicensing
 grant. Contributors keep ownership. See [CONTRIBUTING.md](CONTRIBUTING.md).
 

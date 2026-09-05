@@ -11,6 +11,10 @@ workflow feedback, and documentation improvements are welcome through [CONTRIBUT
 
 ## Let MerchTroop run it
 
+Voluntary [project support](docs/PROJECT-SUPPORT.md) helps fund maintenance and contributors.
+It is separate from a hosting subscription and does not change software access or hosting terms.
+You can use every feature without contributing.
+
 The optional paid service covers **hosting on our server and basic setup**: shop identity, users,
 and the starting configuration. You are paying for operating the installation, not access to
 features or a different edition of the software.
