@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 import { createHmac } from 'node:crypto'
 import { writeFixtureJson } from './helpers/json-fixture.mjs'
 import { createHttpTestServer } from './helpers/http-test-server.mjs'
@@ -83,7 +84,7 @@ async function fixture(t, { lite = false } = {}) {
   if(lite){env.PSC_EDITION='lite';env.PSC_PLATFORM_STRIPE_SECRET='sk_live_platform_fixture'}
   writeFileSync(preload,providerSource,{mode:0o600})
   writeFileSync(stateFile,JSON.stringify({seq:0,anet_seq:0,sessions:{},transactions:{},idempotency:{},posts:[],reads:[],expirations:[],hosted:[],anet_calls:[],accounts:{sk_live_collect_fixture:'acct_fixture_primary',sk_live_rotated_fixture:'acct_fixture_other',sk_test_collect_fixture:'acct_fixture_primary',sk_live_platform_fixture:'acct_fixture_platform'}}),{mode:0o600})
-  const start=()=>server.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',preload,'server.mjs'],onOutput:s=>{logs+=s}})
+  const start=()=>server.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',pathToFileURL(preload).href,'server.mjs'],onOutput:s=>{logs+=s}})
   await start()
   const login=await fetch(server.base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(dest,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})})
   assert.equal(login.status,200)
