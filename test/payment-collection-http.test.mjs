@@ -82,7 +82,7 @@ async function fixture(t, { lite = false } = {}) {
   const env=JSON.parse(readFileSync(join(dest,'demo-env.json'),'utf8'));env.PSC_COLLECTION_FIXTURE=stateFile;env.PSC_TICK_MS='3600000'
   if(lite){env.PSC_EDITION='lite';env.PSC_PLATFORM_STRIPE_SECRET='sk_live_platform_fixture'}
   writeFileSync(preload,providerSource,{mode:0o600})
-  writeFileSync(stateFile,JSON.stringify({seq:0,anet_seq:0,sessions:{},transactions:{},idempotency:{},posts:[],reads:[],expirations:[],hosted:[],anet_calls:[],accounts:{sk_live_collection_fixture:'acct_fixture_primary',sk_live_rotated_fixture:'acct_fixture_other',sk_test_collection_fixture:'acct_fixture_primary',sk_live_platform_fixture:'acct_fixture_platform'}}),{mode:0o600})
+  writeFileSync(stateFile,JSON.stringify({seq:0,anet_seq:0,sessions:{},transactions:{},idempotency:{},posts:[],reads:[],expirations:[],hosted:[],anet_calls:[],accounts:{sk_live_collect_fixture:'acct_fixture_primary',sk_live_rotated_fixture:'acct_fixture_other',sk_test_collect_fixture:'acct_fixture_primary',sk_live_platform_fixture:'acct_fixture_platform'}}),{mode:0o600})
   const start=()=>server.start({cwd:dest,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import',preload,'server.mjs'],onOutput:s=>{logs+=s}})
   await start()
   const login=await fetch(server.base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'dylan@example.test',password:readFileSync(join(dest,'LOGIN.txt'),'utf8').match(/Password: (.+)/)[1]})})
@@ -116,7 +116,7 @@ async function fixture(t, { lite = false } = {}) {
   f.wait=async predicate=>{for(let n=0;n<500;n++){if(predicate())return;await new Promise(r=>setTimeout(r,10))}assert.fail('Fixture operation did not reach expected boundary')}
   f.restart=async()=>{await server.stop();await start()}
   f.stripeKey='whsec_collection_fixture';f.anetKey='AF'.repeat(64)
-  await f.config({payment_provider:'stripe',stripe_secret:'sk_live_collection_fixture',stripe_webhook_secret:f.stripeKey,currency:'USD'})
+  await f.config({payment_provider:'stripe',stripe_secret:'sk_live_collect_fixture',stripe_webhook_secret:f.stripeKey,currency:'USD'})
   // These fields are deliberately not writable through generic Settings; seed only
   // the isolated fixture's already-completed Connect onboarding state.
   if(lite)for(const [key,value]of Object.entries({stripe_account_id:'acct_fixture_destination',stripe_charges_enabled:'1'}))db.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').run(key,value)
@@ -270,7 +270,7 @@ test('Stripe collection never attributes another account or mode and ignores cal
   await f.stripeHook(id)
   assert.equal(f.paid(inv).amount_paid,0);assert.equal(f.paymentRows(inv).length,0)
   assert.equal((await f.receipts(inv)).length,0,'Another account must not create a receipt attributed to this invoice')
-  await f.config({stripe_secret:'sk_live_collection_fixture'})
+  await f.config({stripe_secret:'sk_live_collect_fixture'})
   f.mutate(s=>s.sessions[id].livemode=false)
   await f.stripeHook(id)
   assert.equal(f.paid(inv).amount_paid,0);assert.equal(f.paymentRows(inv).length,0)
