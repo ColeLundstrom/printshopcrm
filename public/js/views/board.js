@@ -379,7 +379,7 @@ export async function jobDetailView(id) {
       </div></div>
 
       <div class="card"><div class="card-h"><h3>Art & Proofs</h3><div class="spacer"></div>
-        <span class="dim" style="font-size:12px">${j.art.length} version${j.art.length === 1 ? '' : 's'}</span></div>
+        <span class="dim" style="font-size:12px">${j.art.length} version${j.art.length === 1 ? '' : 's'}</span><a class="btn ghost sm" href="#/jobs/${id}/mockup">Create mockup</a></div>
         <div class="card-b" id="art-list">
           <div class="drop" id="drop">Drop a new customer proof here or click to upload — PNG, JPG, WebP, SVG or PDF. A new version requires a new approval. Keep machine files in Prepared production files.</div>
           <input type="file" id="file" hidden accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf">

@@ -1,6 +1,10 @@
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import * as artProduction from './lib/art-production.mjs'
 import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
+import { saveMockupComposition } from './lib/mockup-compositions.mjs'
+import { readRasterHeader, MOCKUP_LIMITS } from './public/js/shared/raster-header.js'
+import { createCatalogMedia } from './lib/catalog-media.mjs'
+import { open as openFile } from 'node:fs/promises'
 import { createWithRetry, createResult } from './lib/api-retries.mjs'
 import { AGENT_SCOPES, requiredAgentScope } from './lib/agent-access.mjs'
 import * as agentProduction from './lib/production.mjs'
@@ -115,6 +119,7 @@ const PORT = process.env.PORT || 3333
  */
 const HOST = String(process.env.PSC_HOST || '').trim()
 const SECRET = process.env.PSC_SECRET || 'preview-secret-change-in-prod'
+const catalogMedia = createCatalogMedia({ secret: crypto.createHmac('sha256',SECRET).update('catalog-media-v1').digest('hex') })
 // In production (multi-tenant), the share-link HMAC secret MUST be set. Booting with the in-repo
 // default would make every estimate/pay/proof/ticket token forgeable — refuse to start.
 if (process.env.PSC_AUTH === '1' && SECRET === 'preview-secret-change-in-prod') {
@@ -695,6 +700,35 @@ const upload = multer({
 })
 // CSV imports stay in memory (they're text, and we never keep the file) — a separate, smaller cap.
 const uploadMem = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } })
+
+// Originals and the composed PNG stream to disk. Two saves at a time bound subsequent raster
+// metadata inspection; nothing decodes pixels or renders artwork in the server process.
+const mockupUpload = multer({
+  limits: { fileSize: 16 * 1024 * 1024, files: 3, fields: 4, parts: 8, fieldSize: 8192, fieldNameSize: 40, fieldNestingDepth: 0, fieldArrayIndexLimit: 0 },
+  storage: multer.diskStorage({ destination: UPLOADS, filename: (_req,file,cb) => {
+    const ext = extname(file.originalname || '').toLowerCase()
+    cb(null,`${Date.now()}-${crypto.randomBytes(16).toString('hex')}${/^\.[a-z0-9]{1,8}$/.test(ext) ? ext : ''}`)
+  } }),
+})
+let activeMockupSaves = 0
+const mockupSaveLimit = (req,res,next) => {
+  if (activeMockupSaves >= 2) { res.setHeader('Retry-After','3'); return res.status(429).json({error:'Mockup saving is busy. Keep this draft and try again shortly.'}) }
+  activeMockupSaves++
+  let released = false
+  const timer = setTimeout(() => { if (!res.headersSent) res.status(408).json({error:'The mockup upload timed out. Keep this draft and retry with a stable connection.'}); req.destroy() },60000)
+  timer.unref?.()
+  req.mockupWork = { processing: false, release() { if (released) return; released = true; clearTimeout(timer); activeMockupSaves-- } }
+  const abandoned = () => {
+    if (req.mockupWork.processing) return
+    // For example, the shop database may become unavailable after multipart parsing. The save
+    // route has not started, so none of these staged files can have acquired a database owner.
+    for (const file of Object.values(req.files || {}).flat()) { try { unlinkSync(file.path) } catch { /* multer may already have removed it */ } }
+    req.mockupWork.release()
+  }
+  res.once('finish',abandoned)
+  res.once('close',abandoned)
+  next()
+}
 
 /* ---------- helpers ---------- */
 
@@ -4115,6 +4149,129 @@ const productionArtResponse = (jobId, state = artProduction.getArtProduction(job
 }
 const artProductionChanged = jobId => { rtBroadcast('production',{}); rtBroadcast('board',{job_id:jobId}) }
 
+const catalogTenant = req => String(req.tenant?.id ?? 'single-tenant')
+const catalogResponses = new Map()
+let activeCatalogResponses = 0
+const catalogResponseLimit = (req,res,next) => {
+  const tenant = catalogTenant(req), active = catalogResponses.get(tenant) || 0
+  if (activeCatalogResponses >= 4 || active >= 2) { res.setHeader('Retry-After','3'); return res.status(429).json({error:'Photo downloads are busy. Try again shortly.',code:'catalog_response_busy'}) }
+  activeCatalogResponses++; catalogResponses.set(tenant,active+1)
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true; clearTimeout(timer); activeCatalogResponses--
+    const remaining = (catalogResponses.get(tenant) || 1)-1
+    if (remaining) catalogResponses.set(tenant,remaining); else catalogResponses.delete(tenant)
+  }
+  // Keep the lease through outgoing socket flush, not only the supplier fetch. Slow clients
+  // cannot accumulate an unbounded number of retained 10 MiB response buffers.
+  const timer = setTimeout(() => { res.destroy(); release() },30000)
+  timer.unref?.(); res.once('finish',release); res.once('close',release)
+  next()
+}
+app.get('/api/catalog/ss/products/:sku/media', wrap(async (req,res) => {
+  res.setHeader('Cache-Control','private, no-store')
+  try { res.json(await catalogMedia.resolveProduct({tenant:catalogTenant(req),sku:req.params.sku,settings:getSettings()})) }
+  catch (error) {
+    if (error.catalogSafe) return res.status(error.status).json({error:error.message,code:error.code})
+    throw error
+  }
+}))
+app.get('/api/catalog/ss/media/:mediaId', catalogResponseLimit, wrap(async (req,res) => {
+  let media
+  try { media = await catalogMedia.fetchMedia({tenant:catalogTenant(req),media_id:req.params.mediaId}) }
+  catch (error) {
+    if (req.aborted || res.destroyed) return
+    if (error.catalogSafe) return res.status(error.status).json({error:error.message,code:error.code})
+    throw error
+  }
+  if (req.aborted || res.destroyed) return
+  res.setHeader('Cache-Control','private, no-store')
+  res.setHeader('Content-Type',media.mime)
+  res.setHeader('X-Content-Type-Options','nosniff')
+  res.setHeader('Content-Security-Policy',"sandbox; default-src 'none'")
+  res.setHeader('X-PSC-Media-Ticket',media.ticket)
+  res.send(media.bytes)
+}))
+
+async function inspectMockupFile(file,limit) {
+  const bad = message => Object.assign(new Error(message),{status:400,expose:true,code:'invalid_mockup_file'})
+  if (!file) throw bad('Choose a product photo and artwork, then save the preview again.')
+  const handle = await openFile(file.path,'r')
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile() || stat.size < 1 || stat.size > limit) throw bad(`Choose an image up to ${limit / 1024 / 1024} MiB.`)
+    // Read a fixed-size buffer, not an unbounded read of a file that could grow. Pixel payloads
+    // remain compressed; the shared parser skips them to inspect container metadata only.
+    const bytes = Buffer.alloc(stat.size)
+    let position = 0
+    while (position < bytes.length) {
+      const {bytesRead} = await handle.read(bytes,position,Math.min(65536,bytes.length-position),position)
+      if (!bytesRead) throw bad('An upload changed while saving. Keep the draft and retry.')
+      position += bytesRead
+    }
+    if ((await handle.stat()).size !== stat.size) throw bad('An upload changed while saving. Keep the draft and retry.')
+    const header = readRasterHeader(bytes)
+    if (header.animated) throw bad('Use a still PNG, JPEG or WebP image for this mockup.')
+    const extensions = {png:['.png'],jpeg:['.jpg','.jpeg'],webp:['.webp']}
+    if (!extensions[header.format]?.includes(extname(file.originalname || '').toLowerCase())) throw bad('The image format does not match its filename. Export a still PNG, JPEG or WebP and retry.')
+    return {filename:file.filename,original_name:file.originalname,mime:header.mime,size:stat.size,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),header}
+  } finally { await handle.close() }
+}
+
+app.post('/api/jobs/:id/mockup-compositions', mockupSaveLimit,
+  mockupUpload.fields([{name:'photo',maxCount:1},{name:'artwork',maxCount:1},{name:'proof',maxCount:1}]), reTenant, wrap(async (req,res) => {
+  req.mockupWork.processing = true
+  const staged = Object.values(req.files || {}).flat()
+  let result, failure
+  try {
+    const jobId = +req.params.id
+    if (!get('SELECT id FROM jobs WHERE id=?',jobId)) throw Object.assign(new Error('Job not found.'),{status:404,expose:true,code:'job_not_found'})
+    if (req.aborted || res.destroyed) return
+    const body = req.body || {}
+    // This is a flat form. Never coerce multipart arrays/objects into numeric or string fields.
+    if (typeof body.revision !== 'string' || !/^(0|[1-9]\d{0,15})$/.test(body.revision) || !Number.isSafeInteger(Number(body.revision))) {
+      throw Object.assign(new Error('Refresh the job version before saving this draft.'),{status:400,expose:true,code:'invalid_mockup_revision'})
+    }
+    if (typeof body.request_id !== 'string' || (body.media_ticket !== undefined && typeof body.media_ticket !== 'string')) {
+      throw Object.assign(new Error('The mockup save fields are invalid. Keep the draft and retry.'),{status:400,expose:true,code:'invalid_mockup_fields'})
+    }
+    let recipe
+    try { if (typeof body.recipe !== 'string' || body.recipe.length > 8192) throw Error(); recipe = JSON.parse(body.recipe) }
+    catch { throw Object.assign(new Error('The mockup settings are incomplete. Keep the draft and save again.'),{status:400,expose:true,code:'invalid_mockup_recipe'}) }
+    const photo = await inspectMockupFile(req.files?.photo?.[0],MOCKUP_LIMITS.inputBytes)
+    const artwork = await inspectMockupFile(req.files?.artwork?.[0],MOCKUP_LIMITS.inputBytes)
+    const proof = await inspectMockupFile(req.files?.proof?.[0],MOCKUP_LIMITS.outputBytes)
+    if (req.aborted || res.destroyed) return
+    const replayOnly = !!get('SELECT 1 FROM mockup_composition_receipts WHERE job_id=? AND request_id=?',jobId,body.request_id)
+    // A lost response may be retried after its catalog ticket expires. Verify the signed
+    // identity/digest anyway, then require an exact existing receipt; never mint a new save.
+    const provenance = body.media_ticket ? catalogMedia.verifyTicket({tenant:catalogTenant(req),ticket:body.media_ticket,sha256:photo.sha256,allowExpired:replayOnly}) : null
+    result = saveMockupComposition(jobId,{
+      revision:Number(body.revision),
+      request_id:body.request_id,recipe,photo,artwork,proof,provenance,replay_only:replayOnly,
+    },artActor(req))
+    artProductionChanged(jobId)
+  } catch (error) {
+    failure = error
+  } finally {
+    // A successful retry has fresh temporary filenames but refers to the original saved files.
+    // Keep any committed ownership; failures and exact retries discard only unowned uploads.
+    for (const file of staged) {
+      try {
+        const owned = get('SELECT 1 FROM art_assets WHERE filename=? UNION ALL SELECT 1 FROM art_versions WHERE filename=? LIMIT 1',file.filename,file.filename)
+        if (!owned) { try { unlinkSync(file.path) } catch { /* already removed */ } }
+      } catch { /* uncertain database state: preserve the uploaded bytes */ }
+    }
+    req.mockupWork.release()
+  }
+  if (failure) {
+    if (failure.expose && Number.isInteger(failure.status) && failure.status >= 400 && failure.status < 500) return res.status(failure.status).json({error:failure.message,code:failure.code})
+    throw failure
+  }
+  res.json(result)
+}))
+
 app.get('/api/jobs/:id/art-production', wrap((req,res) => {
   res.json(productionArtResponse(+req.params.id))
 }))
@@ -4145,7 +4302,9 @@ app.get('/api/jobs/:jobId/art-assets/:assetId/download', wrap((req,res) => {
   if (!existsSync(path)) return res.status(404).json({error:'The stored file is missing. Restore it from a backup or upload a new version for review.'})
   res.setHeader('Cache-Control','private, no-store')
   // Source, separation and stitch files are authenticated attachments, never public proof URLs.
-  res.download(path,asset.original_name,{headers:{'Content-Type':'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"}})
+  // Anchor the validated basename at UPLOADS. An absolute pathname makes Express treat an
+  // operator's hidden parent directory (for example ~/.local) as a forbidden dotfile.
+  res.download(asset.filename,asset.original_name,{root:UPLOADS,dotfiles:'deny',headers:{'Content-Type':'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"}})
 }))
 
 app.post('/api/jobs/:id/art-release', requireRole('manager'), wrap(async (req,res) => {

@@ -16,6 +16,7 @@ import { contactsView, contactDetailView } from './views/contacts.js'
 import { estimatesView, estimateEditor, estimateDetailView } from './views/estimates.js'
 import { invoicesView, invoiceDetailView } from './views/invoices.js'
 import { boardView, jobDetailView } from './views/board.js'
+import { mockupComposerView } from './views/mockup-composer.js'
 import { artView, activityView, outboxView, settingsView } from './views/misc.js'
 import { adminView } from './views/admin.js'
 import { openSearch, closeSearch, wireSearchHotkey } from './views/search.js'
@@ -124,6 +125,7 @@ route(/^\/costing(?:\?.*)?$/, costingView)
 route(/^\/costing\/settings$/, costingSettingsView)
 route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
 route(/^\/board$/, boardView)
+route(/^\/jobs\/(\d+)\/mockup$/, mockupComposerView)
 route(/^\/calendar$/, calendarView)
 route(/^\/agent-keys$/, agentKeysView)
 route(/^\/slack-assistant$/, slackOperatorView)
