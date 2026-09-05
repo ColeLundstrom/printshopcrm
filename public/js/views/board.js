@@ -1,6 +1,7 @@
 import { api, $, $$, el, esc, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
+import { mountArtProduction } from '../art-production.js'
 
 const STAGE_COLOR = { new: '#5f6b7d', art_approval: '#f7b955', prepress: '#7c6cff', production: '#4aa8ff', qc: '#10d39a', shipping: '#10d39a', complete: '#333b49' }
 const DECORATIONS = ['Screen Print', 'DTF Transfer', 'Embroidery', 'UV DTF', 'Vinyl', 'Patch', 'Laser', 'Promo']
@@ -380,8 +381,8 @@ export async function jobDetailView(id) {
       <div class="card"><div class="card-h"><h3>Art & Proofs</h3><div class="spacer"></div>
         <span class="dim" style="font-size:12px">${j.art.length} version${j.art.length === 1 ? '' : 's'}</span></div>
         <div class="card-b" id="art-list">
-          <div class="drop" id="drop">Drop a new proof here or click to upload — PNG, JPG, PDF, AI, SVG. A new version requires a new approval.</div>
-          <input type="file" id="file" hidden accept="image/*,.pdf,.ai,.eps,.svg">
+          <div class="drop" id="drop">Drop a new customer proof here or click to upload — PNG, JPG, WebP, SVG or PDF. A new version requires a new approval. Keep machine files in Prepared production files.</div>
+          <input type="file" id="file" hidden accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf">
           ${j.art.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-top:14px">
             ${j.art.map((a) => `<div class="card" style="background:var(--panel-2)">
               ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" src="${esc(a.url || `/uploads/${a.filename}`)}" alt="v${a.version}">`
@@ -407,6 +408,8 @@ export async function jobDetailView(id) {
               </div></div>`).join('')}</div>` : ''}
         </div>
       </div>
+
+      <section id="art-production" class="card" aria-label="Production files and review"><div class="card-h"><h3>Production files & review</h3></div><div class="card-b" role="status">Loading file review…</div></section>
 
       <div class="card"><div class="card-h"><h3>Job Details</h3><div class="spacer"></div>
         <button class="btn ghost sm" id="print-ticket">Work ticket</button></div><div class="card-b">
@@ -461,11 +464,9 @@ export async function jobDetailView(id) {
           </div></div>`
       })() : ''}
 
-      <div class="card"><div class="card-h"><h3>Production Files</h3><span class="pill green">RIP-ready</span></div>
+      <div class="card"><div class="card-h"><h3>Blank garments</h3></div>
         <div class="card-b">
-          <p class="dim" style="font-size:12px;margin-bottom:11px;line-height:1.55">One bundle for the press — approved art, ink list and the full size grid — ready to drop into your RIP.</p>
           <div class="stack" style="gap:8px">
-            <a class="btn sm" href="/api/jobs/${id}/print-package?download=1" style="width:100%">↓ Print-ready package</a>
             <button class="btn ghost sm" id="po-order" style="width:100%">Order blanks from supplier</button>
             <a class="btn ghost sm" href="/api/jobs/${id}/po?download=1" style="width:100%">↓ Download PO (JSON)</a>
           </div>
@@ -484,6 +485,7 @@ export async function jobDetailView(id) {
     </div>
   </div>`
 
+  mountArtProduction($('#art-production'), id, j)
   $('#po-order')?.addEventListener('click', () => openPO(id, j.job_number))
   loadReceiving(id)
   $('#print-ticket').onclick = () => window.open(j.ticket_url || `/p/ticket/${id}`, '_blank')

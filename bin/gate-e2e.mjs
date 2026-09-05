@@ -3577,13 +3577,9 @@ try {
     chk('…with no "match the exact style first" warning left', JSON.stringify(vpo.warnings || []), '^(?![\\s\\S]*exact style)')
   }
 
-  /* ---------- a print package with approved art says so ----------
-   * ready/note gated on jobs.separation — a column NOTHING in the running product writes (only
-   * seed.mjs does, so the demo shop is the one install where this looks fine). Every real job
-   * therefore downloaded a "print-ready package" reading "Not print-ready: needs approved art"
-   * with the approved art's filename one key above the sentence. Prepress goes back to chase an
-   * approval that already happened, on DTF and embroidery jobs that cannot have a separation by
-   * definition, and no screen anywhere can record one — a permanent false negative. */
+  /* ---------- appearance approval does not certify a production file ----------
+   * Keep the approved proof available, while distinguishing the staff technical release from
+   * customer appearance approval. DTF/embroidery need their own prepared machine files too. */
   {
     r = await req('POST', '/api/contacts', { body: { name: 'RIP Ready Rita', email: 'rip@e2e.test' } })
     const ripC = r.json?.id
@@ -3595,7 +3591,7 @@ try {
 
     let pkg = (await req('GET', `/api/jobs/${ripJ}/print-package`)).json || {}
     chk('a job with no approved art is not print-ready', String(pkg.ready), '^false$')
-    chk('…and is told exactly what it is waiting for', String(pkg.note || ''), 'no approved art')
+    chk('…and is told exactly what it is waiting for', String(pkg.note || ''), 'No current approved artwork')
 
     const form = new FormData()
     form.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'proof.svg')
@@ -3605,8 +3601,9 @@ try {
     await req('POST', `/api/art/${art?.art?.id ?? art?.id}/decide`, { body: { decision: 'approved', by: 'Rita' } })
 
     pkg = (await req('GET', `/api/jobs/${ripJ}/print-package`)).json || {}
-    chk('a DTF job whose art IS approved is print-ready', String(pkg.ready), '^true$')
-    chk('…and its package does not claim the art is missing', String(pkg.note || ''), '^Ready for the RIP')
+    chk('a DTF job with an approved proof has appearance approval', String(pkg.appearance_approved), '^true$')
+    chk('…and still needs a staff technical release', String(pkg.ready), '^false$')
+    chk('…and its package does not claim the art is missing', String(pkg.note || ''), '^Customer appearance approval is recorded')
     chk('…and it still carries the approved art it is talking about', String(pkg.approved_art?.version ?? ''), '^1$')
 
     /* ---------- approving a proof on a FINISHED job does not take it off every board ----------
@@ -3715,12 +3712,13 @@ try {
     chk('…and not from a local path the upload already deleted', String(/src="\/uploads\//.test(proof)), '^false$')
 
     // The press's copy of the same picture. /p/ticket is token-gated, so ask the app for its link.
-    shopDb('gate-shop', (db) => db.prepare("UPDATE art_versions SET status='approved' WHERE id = ?").run(dart.id))
+    const driveApproval = await req('POST', `/api/art/${dart.id}/decide`, { body: { decision: 'approved', by: 'Drive proof fixture' } })
+    chk('…and the current Drive proof is approved through the complete workflow', String(driveApproval.status), '^200$')
     const tlink = String((await req('GET', `/api/jobs/${oj.id}`)).json?.ticket_url || '')
     chk('…and the shop has a ticket link to print', String(tlink.startsWith('/p/ticket/')), '^true$')
     const ticket = await (await fetch(`${BASE}${tlink}`)).text()
     chk('…and the pick ticket the press prints shows it too', ticket, 'drive\\.google\\.com')
-    chk('…rather than the "do not print" empty state', String(/NO APPROVED ART/.test(ticket)), '^false$')
+    chk('…rather than the no-current-proof empty state', String(/No current approved proof/.test(ticket)), '^false$')
   }
 
   /* ---------- a 6XL is quoted, printed and picked, not deleted on the way through ----------

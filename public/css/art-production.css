@@ -1,0 +1,55 @@
+/* Hallmark · component: production file review · theme: locked workbench
+ * states: default · hover · focus · active · disabled · loading · error · success
+ * Pre-emit critique: P5 H4 E4 S5 R5 V4. Uses the app's light/dark contrast tokens.
+ */
+#art-production { min-width: 0; }
+#art-production .card-h { flex-wrap: wrap; }
+#art-production h3, #art-production h4 { min-width: 0; overflow-wrap: anywhere; }
+.artp-body { display: grid; gap: var(--sp-5); min-width: 0; font-size: var(--fs-sm); }
+.artp-body p { margin: 0; line-height: 1.55; }
+.artp-status-row { display: grid; gap: var(--sp-2); }
+.artp-status-row > span, .artp-muted { color: var(--txt-2); }
+.artp-ready { color: var(--accent); }
+.artp-record { padding: var(--sp-4); border-left: 2px solid var(--accent); background: var(--panel-2); color: var(--txt); overflow-wrap: anywhere; }
+.artp-section { border-top: 1px solid var(--line); padding-top: var(--sp-5); display: grid; gap: var(--sp-4); min-width: 0; }
+.artp-section h4 { margin: 0; font-size: var(--fs-md); }
+.artp-files, .artp-reasons { padding: 0 0 0 var(--sp-6); margin: 0; display: grid; gap: var(--sp-4); }
+.artp-files { list-style: none; padding: 0; }
+.artp-files li { min-width: 0; }
+.artp-files a, .artp-files small, .artp-files code { display: block; overflow-wrap: anywhere; }
+.artp-files small { color: var(--txt-2); margin-top: var(--sp-2); }
+.artp-files code { font-family: var(--mono); font-size: var(--fs-xs); }
+.artp-body a { color: var(--txt); }
+.artp-body a:not(.btn) { text-decoration: underline; text-underline-offset: 3px; }
+.artp-upload { display: grid; gap: var(--sp-3); min-width: 0; }
+.artp-file-picker { position: relative; display: grid; align-items: center; min-height: var(--tap); padding: var(--sp-3) var(--sp-5); border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--panel-2); color: var(--txt); font-weight: 600; cursor: pointer; }
+.artp-file-picker input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.artp-file-picker:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: var(--ring); }
+.artp-selected { color: var(--txt-2); overflow-wrap: anywhere; font-size: var(--fs-xs); }
+.artp-review, .artp-advanced { border-top: 1px solid var(--line); padding-top: var(--sp-3); min-width: 0; }
+.artp-body summary { min-height: var(--tap); display: list-item; align-content: center; cursor: pointer; padding: var(--sp-3) 0; }
+.artp-files summary { font-size: var(--fs-xs); color: var(--txt-2); }
+.artp-review form, .artp-advanced form, .artp-advanced[open] { display: grid; gap: var(--sp-5); }
+.artp-field { display: grid; gap: var(--sp-3); min-width: 0; color: var(--txt-2); }
+.artp-field .input { width: 100%; min-width: 0; min-height: var(--tap); color: var(--txt); border-width: 1px; }
+.artp-field textarea { resize: vertical; }
+.artp-dimensions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--sp-4); }
+.artp-dimensions > :last-child { grid-column: 1 / -1; }
+.artp-file-selection { margin: 0; padding: var(--sp-4); border: 1px solid var(--line-2); border-radius: var(--r-sm); min-width: 0; display: grid; gap: var(--sp-2); }
+.artp-file-selection legend { color: var(--txt-2); padding: 0 var(--sp-2); }
+.artp-check { display: flex; align-items: flex-start; gap: var(--sp-4); min-height: var(--tap); padding: var(--sp-3) 0; cursor: pointer; }
+.artp-check input { margin-top: var(--sp-1); flex: 0 0 18px; width: 18px; height: 18px; accent-color: var(--accent); }
+.artp-check span { overflow-wrap: anywhere; min-width: 0; line-height: 1.5; }
+.artp-confirm { border-top: 1px solid var(--line); padding-top: var(--sp-4); }
+.artp-body .btn { min-height: var(--tap); max-width: 100%; white-space: nowrap; font-size: var(--fs-sm); }
+.artp-body :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: var(--ring); }
+.artp-body :disabled { opacity: .55; cursor: not-allowed; }
+.artp-body .btn:active, .artp-file-picker:active { transform: none; }
+#art-production[aria-busy="true"] .artp-message { color: var(--txt-2); }
+.artp-message:empty { display: none; }
+.artp-message { padding: var(--sp-4); border: 1px solid var(--line-2); border-radius: var(--r-sm); overflow-wrap: anywhere; }
+.artp-message[data-state="error"] { border-color: var(--red); color: var(--red); }
+.artp-message[data-state="success"] { border-color: var(--accent); color: var(--txt); }
+.artp-body .input[aria-invalid="true"] { border-color: var(--red); }
+@media (hover:hover) { .artp-file-picker:hover, .artp-body summary:hover, .artp-field .input:hover { background: var(--panel-2); color: var(--txt); } }
+@media (max-width:414px) { .artp-dimensions { grid-template-columns: minmax(0,1fr); } .artp-body { gap: var(--sp-4); } }

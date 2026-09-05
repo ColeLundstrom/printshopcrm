@@ -1,11 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { EventEmitter } from 'node:events'
+import { execFileSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import {
   createImportCheckpointManager, supportsImportCheckpointVersion, ImportCheckpointBacklogError, ImportCheckpointRestoreError,
@@ -34,6 +35,47 @@ const realWorker = data => new Worker(workerUrl, { workerData: data })
 test('checkpoint version guard rejects the WAL-reset-vulnerable supported Node floor', () => {
   for (const value of ['3.47.2', '3.51.2', '3.50.6', '3.44.5', '3.51', 'x', undefined, '999999999999999999999.1.2']) assert.equal(supportsImportCheckpointVersion(value), false, String(value))
   for (const value of ['3.51.3', '3.53.4', '3.100.0', '4.0.0']) assert.equal(supportsImportCheckpointVersion(value), true, value)
+})
+
+test('default launcher handles input-type and process flags while preserving worker preloads', { timeout: 30000 }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'psc-checkpoint-launch-'))
+  const helperUrl = new URL('../lib/import-checkpoints.mjs', import.meta.url).href
+  try {
+    for (const [index, inputType] of [['--input-type=module'], ['--input-type', 'module'], ['--input-type=commonjs']].entries()) {
+      const log = join(dir, `preload-${index}.log`), preload = join(dir, `preload-${index}.mjs`), path = join(dir, `shop-${index}.db`)
+      writeFileSync(preload, `import {threadId} from 'node:worker_threads'; import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(log)},String(threadId)+'\\n');`)
+      const code = `(async()=>{
+        const assert=(await import('node:assert/strict')).default;
+        const {DatabaseSync}=await import('node:sqlite');
+        const {createImportCheckpointManager,supportsImportCheckpointVersion}=await import(${JSON.stringify(helperUrl)});
+        const db=new DatabaseSync(${JSON.stringify(path)});
+        db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=37; CREATE TABLE sample(id INTEGER)');
+        const supported=supportsImportCheckpointVersion(db.prepare('SELECT sqlite_version() v').get().v);
+        const diagnostics=[],manager=createImportCheckpointManager({diagnostic:event=>diagnostics.push(event)});
+        try{
+          await manager.withImportCheckpoints(db,async checkpoint=>{
+            assert.equal(db.prepare('PRAGMA wal_autocheckpoint').get().wal_autocheckpoint,supported?0:37);
+            db.exec('INSERT INTO sample VALUES(1)');
+            assert.equal(Boolean(await checkpoint()),supported);
+            assert.equal(db.prepare('PRAGMA synchronous').get().synchronous,2);
+          });
+          assert.equal(db.prepare('PRAGMA wal_autocheckpoint').get().wal_autocheckpoint,37);
+          assert.equal(db.prepare('SELECT COUNT(*) n FROM sample').get().n,1);
+          assert.equal(manager.importCheckpointActive(db),false);
+          if(supported)assert.ok(!diagnostics.some(event=>event.event==='fallback'),JSON.stringify(diagnostics));
+          console.log(JSON.stringify({supported}));
+        }finally{await manager.shutdownImportCheckpoints();db.close()}
+      })().catch(error=>{console.error(error);process.exitCode=1})`
+      // --stack-trace-limit is a normal parent-process option but forbidden as explicit worker
+      // execArgv. Node's standard inheritance handles it without dropping the --import preload.
+      const output = execFileSync(process.execPath, ['--no-warnings', '--stack-trace-limit=17', '--import', pathToFileURL(preload).href, ...inputType, '--eval', code], { encoding: 'utf8', timeout: 10000 })
+      const result = JSON.parse(output.trim())
+      assert.equal(result.supported, fixedRuntime)
+      const threads = readFileSync(log, 'utf8').trim().split('\n').map(Number)
+      assert.ok(threads.includes(0), 'parent preload ran')
+      assert.equal(threads.some(id => id > 0), fixedRuntime, 'eligible worker inherits the preload too')
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 fixedTest('real PASSIVE checkpoint coexists with a writer and preserves FULL and original auto configuration', { timeout: 20000 }, async () => {

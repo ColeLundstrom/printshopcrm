@@ -1,4 +1,6 @@
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
+import * as artProduction from './lib/art-production.mjs'
+import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
 import { createWithRetry, createResult } from './lib/api-retries.mjs'
 import { AGENT_SCOPES, requiredAgentScope } from './lib/agent-access.mjs'
 import * as agentProduction from './lib/production.mjs'
@@ -2866,9 +2868,23 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
   // `?? e.rush_days`, so an edit that does not mention the rush cannot silently clear one — the
   // same rule every other column on this route already follows.
-  run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
-    contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
-    rushDaysIn(b.rush_days ?? e.rush_days), id)
+  // Older and directly linked jobs resolve their production lines from this estimate until
+  // they have their own line_sizes. Changing that fallback must revoke the same technical
+  // release as editing the job. Ignore prices, notes and size-key ordering in this comparison.
+  const linesChanged = JSON.stringify(artProduction.productionGarmentLines(parse(e.items,[]))) !== JSON.stringify(artProduction.productionGarmentLines(items))
+  const artChangedJobs = tx(() => {
+    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
+      contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
+      rushDaysIn(b.rush_days ?? e.rush_days), id)
+    if (!linesChanged) return []
+    const affected = all('SELECT id,line_sizes FROM jobs WHERE estimate_id=?',id).filter(job => {
+      const stored = parse(job.line_sizes,[])
+      return !Array.isArray(stored) || !stored.length
+    })
+    for (const job of affected) touchProofWorkflow(job.id,req.member?.name,'Estimate garment or quantities changed; technical review required again')
+    return affected.map(job => job.id)
+  })
+  for (const jobId of artChangedJobs) artProductionChanged(jobId)
   // The three sibling routes (create, send, approve) all sync; this one never did, so a quote
   // edited from $8,000 down to $4,000 left the deal in Open Pipeline at $8,000. One /api/dashboard
   // response then carried both numbers — open_estimates 4,670 beside pipeline.open_value 8,670 —
@@ -3161,13 +3177,12 @@ const requireCurrentProof = (a,res) => {
   return true
 }
 const touchProofWorkflow = (jobId, actor, detail) => {
-  if(!run('UPDATE production_jobs SET revision=revision+1 WHERE job_id=?',jobId).changes)return
-  run('INSERT INTO production_events(job_id,task_id,actor,action,detail) VALUES(?,?,?,?,?)',jobId,null,String(actor || 'Staff').slice(0,120),'art.changed',detail)
+  artProduction.recordArtChange(jobId,actor,detail)
 }
 const mockupRow = (a) => ({
   id: a.id, version: a.version, filename: a.filename, original_name: a.original_name, mime: a.mime,
   status: a.status, notes: a.notes, sent_at: a.sent_at, decided_at: a.decided_at, decided_by: a.decided_by,
-  created_at: a.created_at, url: artUrl(a), drive: !!a.drive_file_id, share_url: shareUrl('art', a.id),
+  created_at: a.created_at, url: artUrl(a), drive: !!a.drive_file_id, share_url: shareUrl('art', a.id), purpose: a.purpose,
 })
 
 app.get('/api/estimates/:id/mockups', wrap((req, res) => {
@@ -3817,7 +3832,7 @@ app.put('/api/jobs/:id', wrap((req, res) => {
     }
   }
   const reparsed = !explicitLines && b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
-  const nextSizes = explicitLines ? JSON.stringify(rollupSizes(explicitLines)) : (reparsed || j.sizes || '{}')
+  let nextSizes = explicitLines ? JSON.stringify(rollupSizes(explicitLines)) : (reparsed || j.sizes || '{}')
   // jobs.line_sizes is the per-garment grid the PO, the pick ticket, the work ticket and the print
   // package all read. It is written once at conversion, and PUT never touched it — so a shop that
   // bumped a job from 100 pieces to 150 (the ordinary case: the customer added shirts) got a board,
@@ -3865,12 +3880,26 @@ app.put('/api/jobs/:id', wrap((req, res) => {
       nextLines = JSON.stringify([{ ...cur[0], description: nextGarment, garment: nextGarment }])
     }
   }
+  // The ordinary form sends unchanged quantities when editing a title or date. Re-parsing
+  // those may reorder size keys or materialize an equivalent legacy/estimate fallback into
+  // line_sizes. Preserve the original storage when production inputs have not changed, so
+  // this harmless normalization cannot revoke a staff release or detach inherited lines.
+  const normalizedGrid = grid => Object.fromEntries(Object.entries(grid || {})
+    .map(([size,count]) => [size,Number(count)]).filter(([,count]) => Number.isFinite(count) && count > 0)
+    .sort(([a],[b]) => a.localeCompare(b)))
+  const normalizedLines = lines => lines.map(line => Object.fromEntries(Object.entries({ ...line, sizes: normalizedGrid(line.sizes) })
+    .sort(([a],[b]) => a.localeCompare(b))))
+  if (JSON.stringify(normalizedGrid(parse(nextSizes,{}))) === JSON.stringify(normalizedGrid(parse(j.sizes,{})))) nextSizes = j.sizes
+  const effectiveNext = jobLines({ ...j, garment: nextGarment, sizes: nextSizes, line_sizes: nextLines })
+  if (JSON.stringify(normalizedLines(effectiveNext)) === JSON.stringify(normalizedLines(jobLines(j)))) nextLines = j.line_sizes
+  const artChanged = str(b.decoration,j.decoration) !== j.decoration || nextGarment !== j.garment || nextQuantities !== j.quantities || nextSizes !== j.sizes || nextLines !== j.line_sizes
   // str() on every free-text field, not just `garment`. node:sqlite refuses to bind an object or
   // an array and — worse — reads a bare object as a NAMED-parameter bag, so `{"title":{"a":1}}`
   // came back "Unknown named parameter" and the route answered a bare 500 with no field named and
   // nothing the caller could act on. str() was written for exactly this and was applied to one
   // field out of seven. An omitted field still means "leave it alone"; a malformed one now falls
   // back to what was already stored rather than taking the route down.
+  tx(() => {
   run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
     str(b.title, j.title), str(b.decoration, j.decoration), nextGarment, nextQuantities, nextSizes, nextLines, b.due_date === undefined ? j.due_date : (String(b.due_date ?? '').trim() || null),
     // `??` on every other field, and `b.rush ? 1 : 0` on this one — so any partial update cleared
@@ -3878,11 +3907,16 @@ app.put('/api/jobs/:id', wrap((req, res) => {
     // lost its badge on the work ticket and on Today, and stopped being counted by the Rush filter.
     // Nothing said so, and nothing on the job records that it ever was one.
     str(b.notes, j.notes), str(b.assigned_to, j.assigned_to), b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), id)
+  if (artChanged) {
+    touchProofWorkflow(id,req.member?.name,'Production garment, decoration or quantities changed; technical review required again')
+  }
   // A split change moves what the shop BUYS, on a job that may already have blanks on order, so
   // it goes on the timeline rather than happening silently between two screens.
   if (explicitLines && nextLines !== j.line_sizes) {
     logActivity('job', `${j.job_number} size split changed — ${nextQuantities || 'no sizes'}`, { contact_id: j.contact_id, job_id: id })
   }
+  })
+  if (artChanged) artProductionChanged(id)
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
 
@@ -4066,6 +4100,90 @@ function validArtFile(file) {
   } catch { return 'Could not read the uploaded file' }
   return null
 }
+
+const artActor = req => ({ name: req.member?.name || 'Staff', id: req.member?.id || null })
+const productionArtResponse = (jobId, state = artProduction.getArtProduction(jobId)) => {
+  const file = asset => ({ ...asset, url: `/api/jobs/${jobId}/art-assets/${asset.id}/download` })
+  const proof = state.appearance && get('SELECT * FROM art_versions WHERE job_id=? AND id=?',jobId,state.appearance.id)
+  return {
+    ...state,
+    appearance: state.appearance ? { ...state.appearance, url: proof ? artUrl(proof) : null } : null,
+    source_files: state.source_files.map(file), production_files: state.production_files.map(file),
+    allowed_upload_types: ART_ASSET_EXTENSIONS, max_file_bytes: ART_ASSET_LIMIT,
+    validation: 'Files are stored unchanged. Technical release records a staff review, not automatic machine or stitch validation.',
+  }
+}
+const artProductionChanged = jobId => { rtBroadcast('production',{}); rtBroadcast('board',{job_id:jobId}) }
+
+app.get('/api/jobs/:id/art-production', wrap((req,res) => {
+  res.json(productionArtResponse(+req.params.id))
+}))
+
+app.post('/api/jobs/:id/art-assets', upload.single('file'), reTenant, wrap(async (req,res) => {
+  const jobId = +req.params.id
+  if (!get('SELECT id FROM jobs WHERE id=?',jobId)) { dropUpload(req); return res.status(404).json({error:'Job not found'}) }
+  if (!req.file) return res.status(400).json({error:'Choose an original artwork or prepared production file.'})
+  try {
+    const metadata = await inspectArtAsset(req.file)
+    const state = artProduction.addArtAsset(jobId, {
+      revision: req.body?.revision === '' || req.body?.revision === undefined ? null : Number(req.body.revision),
+      role: req.body?.role, filename: req.file.filename, original_name: req.file.originalname, ...metadata,
+    }, artActor(req))
+    artProductionChanged(jobId)
+    res.json(productionArtResponse(jobId,state))
+  } catch (error) {
+    // Keep a file once any committed row owns it, even if preparing the response later failed.
+    try { if (!get('SELECT id FROM art_assets WHERE filename=?',req.file.filename)) dropUpload(req) } catch { /* uncertain database state: preserve original bytes */ }
+    throw error
+  }
+}))
+
+app.get('/api/jobs/:jobId/art-assets/:assetId/download', wrap((req,res) => {
+  const asset = get('SELECT * FROM art_assets WHERE job_id=? AND id=?',+req.params.jobId,+req.params.assetId)
+  if (!asset || !SAFE_UPLOAD_NAME.test(asset.filename) || asset.filename.includes('..')) return res.status(404).end()
+  const path = join(UPLOADS,asset.filename)
+  if (!existsSync(path)) return res.status(404).json({error:'The stored file is missing. Restore it from a backup or upload a new version for review.'})
+  res.setHeader('Cache-Control','private, no-store')
+  // Source, separation and stitch files are authenticated attachments, never public proof URLs.
+  res.download(path,asset.original_name,{headers:{'Content-Type':'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"}})
+}))
+
+app.post('/api/jobs/:id/art-release', requireRole('manager'), wrap(async (req,res) => {
+  const jobId = +req.params.id, body = req.body || {}
+  const job = get('SELECT art_revision FROM jobs WHERE id=?',jobId)
+  if (!job) return res.status(404).json({error:'Job not found'})
+  if (!Number.isSafeInteger(body.revision) || job.art_revision !== body.revision) return res.status(409).json({error:'Artwork changed. Refresh the files and review the current version before releasing.'})
+  if (body.reviewed_confirmed !== true) return res.status(400).json({error:'Confirm that you reviewed the selected files in your production software.'})
+  if (!Array.isArray(body.production_asset_ids) || body.production_asset_ids.length < 1 || body.production_asset_ids.length > 20 || (body.source_asset_ids !== undefined && (!Array.isArray(body.source_asset_ids) || body.source_asset_ids.length > 20))) return res.status(400).json({error:'Choose 1–20 prepared production files and at most 20 originals.'})
+  const ids = [...(Array.isArray(body.production_asset_ids) ? body.production_asset_ids : []), ...(Array.isArray(body.source_asset_ids) ? body.source_asset_ids : [])]
+  if (ids.length > 40) return res.status(400).json({error:'Review at most 20 original files and 20 production files at a time.'})
+  // Stream the selected originals once before review. This hashes bytes; no server image decoding,
+  // rendering, separation or machine execution occurs. The module rechecks the revision after I/O.
+  for (const id of new Set(ids)) {
+    if (!Number.isSafeInteger(id)) return res.status(400).json({error:'Choose files from this job.'})
+    const asset = get('SELECT * FROM art_assets WHERE job_id=? AND id=?',jobId,id)
+    if (!asset || !SAFE_UPLOAD_NAME.test(asset.filename) || asset.filename.includes('..')) return res.status(400).json({error:'Choose files from this job.'})
+    let inspected
+    try { inspected = await inspectArtAsset({path:join(UPLOADS,asset.filename),originalname:asset.original_name}) }
+    catch { return res.status(409).json({error:'A selected file is missing or changed. Restore it or upload a new version before releasing this job.',code:'art_asset_changed'}) }
+    if (inspected.sha256 !== asset.sha256 || inspected.size !== asset.size) return res.status(409).json({error:'A selected file changed outside the CRM. Upload it as a new file and review it again.',code:'art_asset_changed'})
+  }
+  const state = artProduction.releaseArt(jobId,body,artActor(req))
+  artProductionChanged(jobId)
+  res.json(productionArtResponse(jobId,state))
+}))
+
+app.post('/api/jobs/:id/art-production/require', requireRole('manager'), wrap((req,res) => {
+  const state = artProduction.requireArtRelease(+req.params.id,req.body || {},artActor(req))
+  artProductionChanged(+req.params.id)
+  res.json(productionArtResponse(+req.params.id,state))
+}))
+
+app.post('/api/jobs/:id/art-release/revoke', requireRole('manager'), wrap((req,res) => {
+  const state = artProduction.revokeArtRelease(+req.params.id,req.body || {},artActor(req))
+  artProductionChanged(+req.params.id)
+  res.json(productionArtResponse(+req.params.id,state))
+}))
 
 app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, res) => {
   const jobId = +req.params.id
@@ -5798,15 +5916,16 @@ app.post('/api/purchase-orders/:id/reopen', requireRole('manager'), wrap((req, r
 /* ================= RIP / PRINT PACKAGE ================= */
 
 /**
- * Print-ready package for the RIP / hot folder: the approved art + any recorded screen spec (
- * inks, print order) + the size grid, as a manifest a RIP or DTF workflow can consume. The film
- * positives come from whatever prepress tool the shop already uses.
+ * Staff production manifest. Appearance approval and a technical release are separate records;
+ * a garment-photo proof must never be presented as input ready for a RIP or embroidery machine.
  */
 app.get('/api/jobs/:id/print-package', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const current=latestProof({job_id:j.id})
   const approved=j.art_approved_at && current?.status==='approved' ? current : null
+  const review = artProduction.getArtProduction(j.id)
+  const appearance = approved ? { file: artUrl(approved), version: approved.version, purpose: approved.purpose || 'legacy_proof' } : null
   const sep = parse(j.separation, null)
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="print-package-${j.job_number}.json"`)
   res.json({
@@ -5814,17 +5933,17 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
     // `sizes` is the rolled-up total; `lines` carries each garment with its own grid, so a RIP
     // package for a two-style order no longer describes it as one merged run.
     sizes: parse(j.sizes, {}), lines: jobLines(j), quantities: j.quantities,
-    approved_art: approved ? { file: artUrl(approved), version: approved.version } : null,
+    approved_art: appearance, // compatibility alias: this is an appearance proof, not machine input
+    appearance_proof: appearance, appearance_approved: !!approved,
+    technical_ready: review.technical_ready, release_required: review.required,
+    production_files: review.technical_ready ? review.release.production_manifest.map(a => ({ id:a.id, name:a.original_name, sha256:a.sha256, size:a.size, mime:a.mime, file:`/api/jobs/${j.id}/art-assets/${a.id}/download` })) : [],
+    release: review.technical_ready ? { id:review.release.id, reviewed_by:review.release.reviewed_by, reviewed_at:review.release.reviewed_at, specs:review.release.specs, notes:review.release.notes } : null,
+    blocking_reasons: review.blocking_reasons,
     separation: sep ? { mode: sep.mode, screens: sep.screens, inks: sep.inks, dark: sep.dark } : null,
-    // Print-readiness is APPROVED ART. A screen separation is a screen-print-only extra that
-    // nothing in the running product records any more — jobs.separation is read everywhere and
-    // written only by seed.mjs, so the demo shop was the one install where this looked right.
-    // Gating on it told every DTF, embroidery and vinyl job, and every job on a real install,
-    // "needs approved art" with the approved art's filename one key above the sentence.
-    ready: !!approved,
-    note: !approved ? 'Not print-ready: no approved art on this job yet — send a proof and get it signed off.'
-      : sep ? 'Ready for the RIP — approved art, ink list and the full size grid.'
-        : 'Ready for the RIP — approved art and the full size grid. No screen separation is recorded (DTF, embroidery and vinyl do not use one).',
+    ready: review.technical_ready,
+    note: !approved ? 'No current approved artwork proof. Obtain customer approval, then review the separate production files.'
+      : review.technical_ready ? 'Staff released the selected production files. This manifest records that review; it does not generate or validate machine output.'
+        : 'Customer appearance approval is recorded. A current technical production release is still needed; the proof is not a prepared machine file.',
   })
 }))
 
@@ -8817,8 +8936,9 @@ app.get('/p/ticket/:id', pPage((req, res) => {
     .map((l) => ({ garment: l.description || l.garment || '', cells: Object.entries(l.sizes || {}).filter(([, n]) => Number(n) > 0) }))
     .filter((b) => b.cells.length)
   const grandTotal = sizeTables.reduce((t, b) => t + b.cells.reduce((s, [, n]) => s + Number(n), 0), 0)
-  const art = all('SELECT * FROM art_versions WHERE job_id = ? ORDER BY version DESC', j.id)
-  const approved = art.find((a) => a.status === 'approved')
+  const current = latestProof({job_id:j.id})
+  const approved = j.art_approved_at && current?.status === 'approved' ? current : null
+  const technical = artProduction.getArtProduction(j.id)
 
   // AGPL §13 covers "all users interacting with it remotely through a computer network", and this
   // is a complete, styled, self-contained page fetched over the network by a press operator on a
@@ -8871,10 +8991,11 @@ app.get('/p/ticket/:id', pPage((req, res) => {
       })()}
       <div class="tk-cols">
         <div><h2>Notes</h2><div class="tk-notes">${esc(j.notes || 'None.')}</div></div>
-        <div><h2>Approved Art</h2>
+        <div><h2>Current appearance proof</h2>
           ${approved ? `<div class="tk-art"><img src="${esc(proofSrc(approved))}" alt="v${esc(approved.version)}">
             <div class="cap">v${esc(approved.version)} — approved ${esc((approved.decided_at || '').slice(0, 10))} by ${esc(approved.decided_by || '')}</div></div>`
-            : '<div class="warnbox">⚠ NO APPROVED ART — do not print.</div>'}
+            : '<div class="warnbox">No current approved proof. Do not use an older version.</div>'}
+          <p class="cap">${technical.technical_ready ? `Technical release recorded by ${esc(technical.release.reviewed_by)} on ${esc(String(technical.release.reviewed_at || '').slice(0,10))}. Open the job while signed in to download the reviewed production files.` : technical.required ? 'Technical production release required before production.' : 'Technical review not recorded. A customer proof is not a prepared production file.'}</p>
         </div>
       </div>
       <div class="tk-sign">

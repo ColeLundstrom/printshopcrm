@@ -27,7 +27,7 @@ test('replacement proofs revoke old release, obsolete links cannot decide, and d
   const first=await upload('/api/jobs/'+job.id+'/art','first.svg')
   const firstLink=(await art()).art.find(a=>a.id===first.id).share_url
   await json('/api/art/'+first.id+'/decide',{decision:'approved',by:'Fixture customer'})
-  assert.equal((await pkg()).ready,true)
+  assert.equal((await pkg()).appearance_approved,true)
   const second=await upload('/api/jobs/'+job.id+'/art','second.svg')
   assert.equal((await art()).art_approved_at,null);assert.equal((await pkg()).ready,false);assert.equal((await pkg()).approved_art,null)
   const oldPage=await fetch(base+firstLink);const html=await oldPage.text();assert.match(html,/replaced by a newer version/);assert.ok(!html.includes('Approve proof</button>'))
@@ -37,7 +37,7 @@ test('replacement proofs revoke old release, obsolete links cannot decide, and d
   assert.equal((await art()).art.length,2,'history remains on the job')
   assert.equal((await request('/api/art/'+second.id+'/decide',{decision:'typo'})).status,400)
   await json('/api/art/'+second.id+'/decide',{decision:'approved'})
-  await json('/api/jobs/'+job.id+'/art/'+first.id,undefined,'DELETE');assert.equal((await pkg()).ready,true)
+  await json('/api/jobs/'+job.id+'/art/'+first.id,undefined,'DELETE');assert.equal((await pkg()).appearance_approved,true)
   const third=await upload('/api/jobs/'+job.id+'/art','third.svg')
   await json('/api/jobs/'+job.id+'/art/'+third.id,undefined,'DELETE');assert.equal((await pkg()).ready,false,'deletion must not reactivate an older approval')
   const fourth=await upload('/api/jobs/'+job.id+'/art','fourth.svg'),fifth=await upload('/api/jobs/'+job.id+'/art','fifth.svg')
@@ -53,7 +53,7 @@ test('replacement proofs revoke old release, obsolete links cannot decide, and d
   assert.equal(db.prepare('SELECT status FROM art_versions WHERE id=?').get(fifth.id).status,'draft')
   db.exec('DROP TRIGGER fail_proof_release')
   await json('/api/art/'+fifth.id+'/decide',{decision:'approved'})
-  assert.equal((await pkg()).ready,true)
+  assert.equal((await pkg()).appearance_approved,true)
   const staleTask=await request('/api/production/jobs/'+job.id+'/tasks/'+workflow.tasks[0].id+'/action',{revision:workflow.revision,action:'complete'});assert.equal(staleTask.status,409);assert.match((await staleTask.json()).error,/changed/);
   const refreshed=await json('/api/v1/jobs/'+job.id+'/workflow',undefined,'GET');assert.ok(refreshed.revision>workflow.revision)
   await json('/api/production/jobs/'+job.id+'/tasks/'+workflow.tasks[0].id+'/action',{revision:refreshed.revision,action:'complete'})
