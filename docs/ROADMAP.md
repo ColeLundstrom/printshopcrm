@@ -30,19 +30,21 @@ Current-proof approval now invalidates replaced artwork, refuses obsolete decisi
 
 Customer imports now count only committed batches, recheck email duplicates inside each write transaction, and preserve partial results when activity logging fails. [Import reliability](IMPORT-RELIABILITY.md) records the tests and the unresolved synchronous SQLite latency issue. Later passing CI runs do not close that blocker.
 
-[Artwork compute ownership](ARTWORK-COMPUTE.md) separates researched adapters from implemented functionality. Native catalog composition, optional PSD/local-worker connections and physical separation validation remain open; the free core must continue to work without them.
+[Artwork compute ownership](ARTWORK-COMPUTE.md) separates researched adapters from implemented functionality. The manual browser composer now preserves original artwork and a shop photo or exact S&S catalog image, with bounded uploads and retry receipts. SanMar media, calibrated templates, PSD/local-worker connections and physical separation validation remain open; the free core continues to work without them.
+
+[Hosting checkout recovery](HOSTING-CHECKOUTS.md) now records one unresolved checkout per shop, reuses provider idempotency keys, verifies expiration and supports evidence-backed operator reviews. Subscription revisions and non-reused tenant IDs protect against stale callbacks and cross-shop history. Provider-owned sandbox acceptance remains required. [Voluntary project support](PROJECT-SUPPORT.md) is available when the operator configures verified funding links; it never changes feature access.
 
 ## Expansion priorities
 
 | Area | Current boundary | Acceptance work before calling it complete |
 |---|---|---|
 | Core shop operations | Implemented; continue real-shop validation | First-day walkthrough, cross-shop isolation, interrupted writes, replayed payments, upgrade and restore |
-| Community releases | PR checks and code-owner review exist | Make every supported OS required; validate exact release tags; establish additional trusted reviewers |
+| Community releases | Cross-platform PR checks and code-owner review exist | Verify branch-protection enforcement; validate exact release tags; establish additional trusted reviewers |
 | Stores and fundraising | Not a complete customer storefront product | Catalog, checkout, inventory reservations, order import, refunds, fulfillment, accessibility |
 | Customer product designer | Not a complete online personalization system | Placement constraints, safe uploads, proof versioning, production-ready output |
 | Decoration coverage | Screen print, embroidery, DTF and UV DTF; other methods vary | Shop-supplied fixtures for sublimation, vinyl, patches, laser, signs and wide format |
 | Accounting | Invoices, payments, exports and QuickBooks adapter | Reconciliation, credits, taxes, audit history; a general ledger is a separate large module |
-| Purchasing and inventory | Job purchasing documents and supplier adapters | Receiving, shortages, substitutions, stock reservations, partial shipments and returns |
+| Purchasing and inventory | Local POs, partial receiving/short-close, S&S submission and supplier status adapters | Real supplier acceptance, SanMar electronic POs, substitutions, stock reservations, carrier label/event integration and returns |
 | Localization | Currency/locale support exists; text largely inline | Translate strings, test dates and formats, accessibility review in each language |
 | Scale and recovery | Per-shop SQLite, snapshots, strict health checks | Measured load targets, noisy-shop limits, off-site restore drills, documented capacity limits |
 
@@ -61,9 +63,9 @@ for unbuilt systems.
 ## Guided workspace follow-up
 
 - OAuth mailbox connections and reliable inbound email synchronization (outgoing SMTP already works).
-- Native migration adapters, editable column mapping, partial payment allocation, active production mapping, attachment reconciliation and resumable migration reports. The UI currently imports CSV customer/history records with strict payment-state review.
+- Native migration adapters, partial payment allocation, active production mapping and attachment reconciliation. Existing CSV customer/history imports provide editable column mapping, strict payment-state review and resumable committed-batch reports.
 - Independently revocable agent keys now provide endpoint scopes, request audit, expiry and production tools; the legacy shared key remains compatible. Customer/estimate API creation now supports persistent idempotency keys and atomic rollback. Per-connection OpenAPI downloads now expose only granted operations and the shop URL; active staff IDs/names can be queried for assignment. Automatic runtime installation, OAuth consent and external-agent approval policies remain open. See [Agent connections](AGENT-CONNECTIONS.md).
-- Full Slack agent installation and granular action approvals. Existing Slack /quote is a draft workflow; external agents can use the REST API.
+- Real Slack installation and phone-workflow acceptance. The optional operator already verifies linked staff and team identity, checks scopes, preserves confirmations and replay protection, and can draft quotes, schedule, assign and complete permitted production tasks. It does not cover every shop action or send customer quotes automatically. External agents can also use the scoped REST API.
 - Real customer-owned Twilio, SMTP and Slack end-to-end acceptance on a public staging host. Local tests use fixtures and the evaluation launcher blocks outbound network access.
 
 ### Payment accounting after the provider adapters

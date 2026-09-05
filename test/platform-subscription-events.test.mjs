@@ -6,7 +6,9 @@ import { HOSTING_PURPOSE, PLANS, createSubscriptionCheckout, createBillingPortal
 const copy = value => value === undefined ? undefined : structuredClone(value)
 const event = (type, object) => ({ type, data: { object } })
 const metadata = (tenant = 1, plan = 'everything') => ({ tenant_id: String(tenant), plan, purpose: HOSTING_PURPOSE })
-const subscription = (patch = {}) => ({ object: 'subscription', id: 'sub_host', customer: 'cus_shop', status: 'active', metadata: metadata(), ...patch })
+const subscription = (patch = {}) => ({ object: 'subscription', id: 'sub_host', customer: 'cus_shop', status: 'active', metadata: metadata(),
+  items: { has_more: false, data: [{ quantity: 1, price: { currency: 'usd', unit_amount: 14900, recurring: { interval: 'month', interval_count: 1 },
+    product: { id: 'prod_host', name: 'PrintShopCRM Managed hosting', metadata: { purpose: HOSTING_PURPOSE, plan: 'everything' } } } }] }, ...patch })
 const checkout = (patch = {}) => event('checkout.session.completed', {
   object: 'checkout.session', id: 'cs_host', status: 'complete', mode: 'subscription',
   customer: 'cus_shop', subscription: 'sub_host', metadata: metadata(), client_reference_id: '1', ...patch,

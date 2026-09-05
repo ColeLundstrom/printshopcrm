@@ -38,7 +38,9 @@ export async function adminView() {
 
   on($('#ad-rows'), '[data-act]', async (e, t) => {
     const id = +t.dataset.id; const act = t.dataset.act; const name = t.dataset.name || 'this shop'
-    if (act === 'signin') {
+    if (act === 'hosting') {
+      await hostingReviewModal(id,name)
+    } else if (act === 'signin') {
       if (!confirm(`Sign in as ${name}? Your admin session will switch to their shop — sign back in to your own account afterward.`)) return
       try { await api.post(`/api/admin/shops/${id}/signin`, {}); location.href = '/' } catch (ex) { toast(ex.message, true) }
     } else if (act === 'suspend' || act === 'activate') {
@@ -82,11 +84,56 @@ function row(s) {
     <td>${money(s.revenue)}</td>
     <td class="dim" style="font-size:12px">${s.last_login ? esc(fmtDate(s.last_login)) : 'never'}</td>
     <td style="text-align:right;white-space:nowrap;padding-right:12px">
+      <button class="btn ghost sm" data-act="hosting" data-id="${s.id}" data-name="${esc(s.shop_name)}">Hosting</button>
       <button class="btn ghost sm" data-act="signin" data-id="${s.id}" data-name="${esc(s.shop_name)}">Sign in</button>
       <button class="btn ghost sm" data-act="${suspended ? 'activate' : 'suspend'}" data-id="${s.id}" data-name="${esc(s.shop_name)}">${suspended ? 'Reactivate' : 'Suspend'}</button>
       <button class="btn ghost sm" data-act="delete" data-id="${s.id}" data-name="${esc(s.shop_name)}" style="color:#ef4444">Delete</button>
     </td>
   </tr>`
+}
+
+let hostingReviewRequest=0
+async function hostingReviewModal(tenantId,name) {
+  const request=++hostingReviewRequest, rows=$('#ad-rows')
+  let data
+  try { data=await api.get(`/api/admin/shops/${tenantId}/hosting`) }
+  catch(error) { if(request===hostingReviewRequest && rows?.isConnected && !$('#modal-root')?.children.length) toast(error.message,true);return }
+  // Another dialog or navigation may have happened during the request. Never replace its draft.
+  if(request!==hostingReviewRequest || !rows?.isConnected || $('#modal-root')?.children.length) return
+  const issues=data.anomalies || []
+  modal({
+    title:`Hosting — ${name}`,
+    body:`<p>Subscription: <strong>${esc(data.state?.status || 'None')}</strong></p>
+      ${data.intent ? `<p>Latest checkout: <strong>${esc(data.intent.state)}</strong>${data.intent.session_id ? `<br><code class="hosting-session-id">${esc(data.intent.session_id)}</code>` : ''}</p>` : '<p>No saved checkout.</p>'}
+      ${issues.length ? `<p>Review each payment in the connected Stripe account. This action verifies its current state and records your review. Refunds and subscription changes must be handled in Stripe first.</p>
+        ${issues.map(issue=>`<section class="card hosting-recovery"><div class="card-b">
+          <p><strong>Payment needs review</strong><br>${esc(String(issue.code || '').replaceAll('_',' '))}</p>
+          ${issue.session_id ? `<p>Checkout<br><code>${esc(issue.session_id)}</code></p>` : ''}
+          ${issue.subscription_id ? `<p>Subscription<br><code>${esc(issue.subscription_id)}</code></p>` : ''}
+          <div class="field"><label for="hosting-note-${issue.id}">What did you check?</label><textarea class="input" id="hosting-note-${issue.id}" maxlength="1000" rows="3"></textarea></div>
+          <button type="button" class="btn ghost" data-hosting-resolve="${esc(issue.id)}">Verify and close review</button>
+        </div></section>`).join('')}` : '<p>No unresolved payment reviews.</p>'}
+      ${data.resolved_anomalies?.length ? `<details class="hosting-recovery-details"><summary>Recent completed reviews</summary>
+        ${data.resolved_anomalies.map(review=>`<div class="hosting-recovery"><strong>${esc(Number.isSafeInteger(review.resolved_at) && review.resolved_at > 0 && review.resolved_at <= 8640000000000000 ? fmtDate(new Date(review.resolved_at).toISOString()) : 'Date unavailable')}</strong><p>${esc(review.resolution_note || '')}</p></div>`).join('')}
+      </details>` : ''}
+      <p class="dim" id="hosting-review-error" role="alert"></p>`,
+    footer:'<button class="btn ghost" data-close>Close</button>',
+    onMount:bg=>{
+      let pending=false
+      on(bg,'[data-hosting-resolve]',async(_event,button)=>{
+        if(pending) return
+        const anomalyId=button.dataset.hostingResolve,note=$(`#hosting-note-${anomalyId}`,bg).value.trim()
+        if(!note) { $('#hosting-review-error',bg).textContent='Enter what you checked in Stripe.';return }
+        pending=true;button.disabled=true
+        try {
+          await api.post('/api/admin/hosting-checkout/resolve',{tenant_id:tenantId,anomaly_id:anomalyId,note})
+          if(!bg.isConnected) return
+          closeModal();toast('Payment review verified and recorded.');await hostingReviewModal(tenantId,name)
+        } catch(error) { if(bg.isConnected) $('#hosting-review-error',bg).textContent=error.message }
+        finally { pending=false;button.disabled=false }
+      })
+    },
+  })
 }
 
 function newShopModal() {

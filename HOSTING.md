@@ -26,6 +26,9 @@ included in basic setup. There is no promise of unlimited consulting or a partic
 Hosting prices and any one-time setup charge are confirmed before service starts. Existing hosting
 agreements remain unchanged. No payment is needed to download or run the software yourself.
 
+An interrupted hosting checkout can be resumed from **Hosting**. See
+[checkout recovery](docs/HOSTING-CHECKOUTS.md) for owner controls and operator payment reviews.
+
 The full database exports as one JSON file from Settings; customer, quote, invoice, payment,
 job, artwork history, and timeline CSV exports are also available. You can export your records or request your shop's database and artwork to move elsewhere. There
 is no export charge. Payment processors, email, SMS, domains, and other external services can have

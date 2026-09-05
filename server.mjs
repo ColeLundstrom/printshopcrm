@@ -45,10 +45,10 @@ import {
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
   getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants, agentAccess,
-  firstOwnerId,
+  firstOwnerId, hostingCheckouts,
 } from './lib/tenants.mjs'
 import {
-  PLANS, createSubscriptionCheckout, createBillingPortal, verifyWebhook, webhookSecret,
+  PLANS, createBillingPortal, verifyWebhook, webhookSecret,
   billingLive, setPlatformCredentials, LITE_PLAN_ORDER, PLAN_ORDER, litePlanAllows, isFreePlan,
 } from './lib/billing.mjs'
 import { initAutomations, seedAutomations, listAutomations, needsSetup, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
@@ -151,6 +151,9 @@ app.set('trust proxy', /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_P
 // and still reach the handler — a full auth + paywall bypass. Make routing case-sensitive so a
 // mangled-case path can never match a route, and (belt + suspenders) the gate normalises too.
 app.set('case sensitive routing', true)
+// Hosting responses contain private payment state, including validation and auth failures.
+app.use('/api/billing', (_req,res,next) => { res.setHeader('Cache-Control','private, no-store'); next() })
+app.use('/api/admin', (_req,res,next) => { res.setHeader('Cache-Control','private, no-store'); next() })
 
 // Express advertises itself by default; the version is a free hint for anyone matching CVEs.
 app.disable('x-powered-by')
@@ -1918,29 +1921,57 @@ app.get('/api/project-support', (_req,res) => {
 app.get('/api/billing', wrap((req, res) => {
   // `order` drives what the billing page renders: one plan, everything included. PLANS still
   // carries the retired tier ids so an existing tenant row's plan_tier resolves to a name.
-  res.json({ live: billingLive(), plans: PLANS, order: PLAN_ORDER, has_subscription: !!req.tenant?.stripe_subscription_id, state: req.tenant ? billingState(req.tenant) : null })
+  res.setHeader('Cache-Control','private, no-store')
+  res.json({ live: billingLive(), plans: PLANS, order: PLAN_ORDER, can_manage: hasRole(req,'owner'),
+    has_subscription: !!req.tenant?.stripe_subscription_id, state: req.tenant ? billingState(req.tenant) : null,
+    hosting_checkout: req.tenant && hasRole(req,'owner') ? hostingCheckouts.status(req.tenant.id) : null })
 }))
 
-/** Start a subscription — returns a Stripe Checkout URL on the platform account. Owner-only. */
+// Only locally defined errors reach the browser. A raw provider or database error must never
+// expose credentials, payment URLs or another shop's data through either logs or this response.
+const hostingActionError = (res,error) => {
+  if(error?.hostingSafe === true && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599) {
+    if(error.status === 503) res.setHeader('Retry-After','10')
+    return res.status(error.status).json({error:error.message,code:error.code})
+  }
+  console.error('hosting checkout: request failed')
+  res.setHeader('Retry-After','10')
+  return res.status(503).json({error:'Could not verify hosting checkout. Check its status before starting another payment.',code:'hosting_checkout_unavailable'})
+}
+const hostingActionResult = (res,result) => {
+  res.setHeader('Cache-Control','private, no-store')
+  return res.json({...result,url:result.intent?.url || null})
+}
+
+/** Start or resume the shop's one recorded hosting checkout. Owner-only. */
 app.post('/api/billing/checkout', requireRole('owner'), async (req, res) => {
   try {
     if (!req.tenant) return res.status(401).json({ error: 'Not signed in' })
     if (!billingLive()) return res.status(503).json({ error: 'Billing is not live yet — the owner needs to connect the platform Stripe.' })
     const b = req.body || {}
     if (!PLAN_ORDER.includes(b.plan)) return res.status(400).json({error:'Choose the current managed hosting plan.',code:'hosting_plan_unavailable'})
+    if (b.interval != null && !['month','year'].includes(b.interval)) return res.status(400).json({error:'Choose monthly or annual hosting.',code:'hosting_interval_invalid'})
     if (req.tenant.stripe_subscription_id && !['canceled','incomplete_expired'].includes(req.tenant.subscription_status)) {
       return res.status(409).json({error:'This shop already has a hosting subscription. Use Manage hosting to update or cancel it.',code:'hosting_subscription_exists'})
     }
-    const origin = `${req.protocol}://${req.get('host')}`
-    const { url } = await createSubscriptionCheckout({
-      plan: b.plan, interval: b.interval === 'year' ? 'year' : 'month',
-      email: req.tenant.owner_email, customerId: req.tenant.stripe_customer_id, tenantId: req.tenant.id, slug: req.tenant.slug, origin,
-    })
-    res.json({ url })
-  } catch {
-    console.error('hosting checkout: request failed')
-    res.status(503).json({error:'Could not open hosting checkout. Try again shortly or contact the server operator.'})
-  }
+    hostingActionResult(res,await hostingCheckouts.start({tenantId:req.tenant.id,plan:b.plan,interval:b.interval || 'month',origin:trustedOrigin(req)}))
+  } catch(error) { hostingActionError(res,error) }
+})
+
+app.post('/api/billing/checkout/reconcile', requireRole('owner'), async (req,res) => {
+  try {
+    if(!req.tenant) return res.status(401).json({error:'Not signed in'})
+    const sessionId=req.body?.session_id
+    if(sessionId != null && (typeof sessionId !== 'string' || /\s/.test(sessionId) || !/^cs_[A-Za-z0-9_]{1,200}$/.test(sessionId))) return res.status(400).json({error:'Enter the Checkout Session ID from Stripe.',code:'hosting_session_invalid'})
+    hostingActionResult(res,await hostingCheckouts.reconcile({tenantId:req.tenant.id,...(sessionId?{sessionId}:{})}))
+  } catch(error) { hostingActionError(res,error) }
+})
+
+app.post('/api/billing/checkout/expire', requireRole('owner'), async (req,res) => {
+  try {
+    if(!req.tenant) return res.status(401).json({error:'Not signed in'})
+    hostingActionResult(res,await hostingCheckouts.expire({tenantId:req.tenant.id}))
+  } catch(error) { hostingActionError(res,error) }
 })
 
 /**
@@ -1967,9 +1998,10 @@ app.post('/api/billing/free', requireRole('owner'), wrap((req, res) => {
 /** Stripe billing portal so a subscribed shop can manage or cancel. Owner-only. */
 app.post('/api/billing/portal', requireRole('owner'), async (req, res) => {
   try {
+    if(!billingLive()) return res.status(503).json({error:'Hosting billing is not connected.'})
     const st = req.tenant ? billingState(req.tenant) : null
     if (!st?.stripe_customer_id) return res.status(400).json({ error: 'No subscription on file yet' })
-    const origin = `${req.protocol}://${req.get('host')}`
+    const origin = trustedOrigin(req)
     const { url } = await createBillingPortal({ customerId: st.stripe_customer_id, origin })
     res.json({ url })
   } catch {
@@ -1989,7 +2021,7 @@ const requireAdmin = (req, res) => {
 
 app.get('/api/admin/billing', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
-  res.json({ is_admin: true, live: billingLive(), webhook_set: !!webhookSecret() })
+  res.json({ is_admin: true, live: billingLive(), webhook_set: !!webhookSecret(), hosting_checkouts:hostingCheckouts.health() })
 }))
 
 app.post('/api/admin/billing', wrap((req, res) => {
@@ -2009,6 +2041,23 @@ app.get('/api/admin/shops', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
   res.json({ shops: listTenantsAdmin(), admin_email: (process.env.PSC_ADMIN_EMAIL || '').toLowerCase() })
 }))
+
+app.get('/api/admin/shops/:id/hosting', wrap((req,res) => {
+  if(!requireAdmin(req,res)) return
+  const tenant=getTenantById(Number(req.params.id))
+  if(!tenant) return res.status(404).json({error:'Shop not found.'})
+  res.json({state:billingState(tenant),...hostingCheckouts.status(tenant.id)})
+}))
+
+app.post('/api/admin/hosting-checkout/resolve', async (req,res) => {
+  if(!requireAdmin(req,res)) return
+  try {
+    const b=req.body || {}
+    if(!Number.isSafeInteger(b.tenant_id) || b.tenant_id < 1 || typeof b.anomaly_id !== 'string' || b.anomaly_id.length !== 64 || !/^[a-f0-9]{64}$/.test(b.anomaly_id)
+        || typeof b.note !== 'string' || !b.note.trim() || b.note.length > 1000) return res.status(400).json({error:'Choose a payment review and enter what you checked (up to 1,000 characters).',code:'hosting_review_invalid'})
+    hostingActionResult(res,await hostingCheckouts.resolveAnomaly({tenantId:b.tenant_id,anomalyId:b.anomaly_id,note:b.note.trim()}))
+  } catch(error) { hostingActionError(res,error) }
+})
 
 // Create a client's shop for them (the hands-on onboarding Stan does) — returns the temp password
 // once so it can be handed off. Never emails it from here; the admin shares it directly.
@@ -2093,7 +2142,7 @@ app.post('/api/admin/shops/:id/signin', wrap((req, res) => {
  * signature-verified. Handles the events that move a shop between trial, active, past-due, canceled.
  */
 const processPlatformSubscriptionEvent = createPlatformSubscriptionEventProcessor({
-  getTenantById, getTenantByStripeCustomer, setSubscription, retrieveSubscription: retrievePlatformSubscription,
+  getTenantById, getTenantByStripeCustomer, setSubscription, retrieveSubscription: retrievePlatformSubscription, hostingCheckouts,
 })
 async function stripeWebhook(req, res) {
   try {
@@ -2103,7 +2152,7 @@ async function stripeWebhook(req, res) {
     await processPlatformSubscriptionEvent(event)
     res.json({ received: true })
   } catch (e) {
-    console.error('webhook:', e)
+    console.error('hosting webhook: verification failed')
     if (e?.retryable) { res.setHeader('Retry-After','10'); return res.status(503).json({error:'Hosting status could not be verified. Retry this event.'}) }
     res.status(400).send('error')
   }
@@ -9053,8 +9102,8 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
     } catch { /* the customer's page must not depend on the note landing */ }
     const reach = [s.shop_phone, s.shop_email].filter(Boolean).join(' · ')
     res.status(502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1>
-      <p>We could not reach the card processor just now. Nothing has been charged.</p>
-      <p>Try again in a minute${reach ? `, or contact ${esc(s.shop_name || 'the shop')} to pay another way — ${esc(reach)}` : ''}.</p>
+      <p>We could not confirm that checkout opened. If you already submitted a payment, do not pay again until its status is verified.</p>
+      <p>Contact ${esc(s.shop_name || 'the shop')} to check the payment${reach ? ` — ${esc(reach)}` : ''}.</p>
       <p><a href="${back}">Go back</a></p></div></div>`))
   }
 }))

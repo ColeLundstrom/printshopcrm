@@ -4933,9 +4933,14 @@ await t('an HTML error page from Stripe becomes a sentence, on every call', asyn
         assert.match(msg, /Stripe/, `${name} on HTTP ${status}: the message has to say who is not answering — ${msg}`)
       }
     }
-    // A real Stripe error body still reaches the caller verbatim; that message is the whole point.
-    answer(402, JSON.stringify({ error: { message: 'Your card was declined.' } }), 'application/json')
-    assert.match(await failed(calls[0][1]), /Your card was declined\./, 'a real Stripe message must survive')
+    // Provider text can echo credentials or customer data. Only our local safe error survives.
+    answer(402, JSON.stringify({ error: { message: 'SECRET_SENTINEL card was declined.' } }), 'application/json')
+    await assert.rejects(calls[0][1], error => {
+      assert.equal(error.code,'stripe_request_rejected')
+      assert.equal(error.stripeSafe,true)
+      assert.doesNotMatch(error.message + JSON.stringify(error),/SECRET_SENTINEL|card was declined/)
+      return true
+    })
     // …and a good response still parses.
     answer(200, JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_1', id: 'cs_1' }), 'application/json')
     assert.equal((await stripe.createCheckout({ settings, lineItems: [{ name: 'x', amountCents: 100, qty: 1 }], successUrl: 'https://a/', cancelUrl: 'https://a/' })).id, 'cs_1')
@@ -4968,7 +4973,8 @@ await t('…and the shop is told a customer could not pay', async () => {
   assert.match(handler, /could not start card checkout/, '…and the note has to say what happened')
   assert.doesNotMatch(handler.slice(0, handler.indexOf('res.status(502)') + 600), /esc\(e\.message\)/,
     'the page still prints the raw exception to the shop\'s customer')
-  assert.match(handler, /Nothing has been charged/, 'the first thing a customer needs to know')
+  assert.doesNotMatch(handler, /Nothing has been charged/, 'an uncertain provider result cannot establish that no charge exists')
+  assert.match(handler, /do not pay again until its status is verified/, 'an uncertain result must direct the customer to payment verification')
 })
 
 section('the documented way out of a lockout finds the shops')
