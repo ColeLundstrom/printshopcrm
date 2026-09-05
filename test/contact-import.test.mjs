@@ -10,7 +10,7 @@ function database({ deferred = false } = {}) {
     CREATE TABLE companies (name TEXT PRIMARY KEY); INSERT INTO companies VALUES ('');
     CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, phone TEXT,
       company TEXT ${deferred ? 'REFERENCES companies(name) DEFERRABLE INITIALLY DEFERRED' : ''},
-      notes TEXT, tags TEXT, created_at TEXT, updated_at TEXT);
+      notes TEXT, tags TEXT, created_at TEXT, updated_at TEXT, billing_address TEXT, shipping_address TEXT);
     CREATE INDEX contact_email ON contacts(lower(email));
     CREATE TABLE row_effects (name TEXT);`)
   return db

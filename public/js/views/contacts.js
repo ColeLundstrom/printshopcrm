@@ -217,6 +217,11 @@ export function contactForm(c, after) {
         <div class="field"><label>Phone</label><input class="input" name="phone" value="${esc(c?.phone || '')}" placeholder="(714) 555-0142"></div>
       </div>
       <div class="field"><label>Tags (comma separated)</label><input class="input" name="tags" value="${esc((c?.tags || []).join(', '))}" placeholder="school, repeat, net-30"></div>
+      <div class="grid2">
+        <div class="field"><label for="customer-billing-address">Billing address</label><textarea class="input" id="customer-billing-address" name="billing_address" rows="4" maxlength="600" placeholder="Street address\nCity, state, postal code\nCountry">${esc(c?.billing_address || '')}</textarea></div>
+        <div class="field"><label for="customer-shipping-address">Shipping address</label><textarea class="input" id="customer-shipping-address" name="shipping_address" rows="4" maxlength="600" placeholder="Leave blank to use the billing address">${esc(c?.shipping_address || '')}</textarea></div>
+      </div>
+      <p class="dim" style="font-size:12px">Up to 8 lines per address. These defaults apply to new documents; existing orders keep their saved addresses.</p>
       <div class="field">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" name="tax_exempt" id="tax-exempt" ${c?.tax_exempt ? 'checked' : ''} style="width:auto;margin:0">
@@ -280,6 +285,7 @@ export async function contactDetailView(id) {
           <div><div class="lbl dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px">Phone</div>
             <div>${c.phone ? `<a href="tel:${esc(c.phone)}" style="color:var(--accent)">${esc(c.phone)}</a>` : '<span class="dim">—</span>'}</div></div>
         </div>
+        ${c.billing_address || c.shipping_address ? `<div class="grid2" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)"><div><strong>Billing address</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(c.billing_address || 'Not set')}</div></div><div><strong>Shipping address</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(c.shipping_address || c.billing_address || 'Not set')}</div>${!c.shipping_address && c.billing_address ? '<small class="dim">Same as billing</small>' : ''}</div></div>` : ''}
         ${c.notes ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
           <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px">Notes</div>
           <div class="muted" style="font-size:13px;white-space:pre-wrap">${esc(c.notes)}</div></div>` : ''}

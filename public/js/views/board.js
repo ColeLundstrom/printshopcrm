@@ -237,10 +237,16 @@ export async function jobForm(job, after) {
         <div class="field"><label>Due date</label><input class="input" name="due_date" type="date" value="${esc(job?.due_date || '')}"></div>
         <div class="field"><label>Assigned to</label><input class="input" name="assigned_to" value="${esc(job?.assigned_to || '')}" placeholder="Press 1 / Marco"></div>
       </div>
+      <div class="field"><label for="job-shipping-address">Shipping address</label><textarea class="input" id="job-shipping-address" name="shipping_address" rows="4" maxlength="600">${esc(job?.shipping_address || '')}</textarea>
+        <div class="dim" style="font-size:12px;margin-top:4px">Up to 8 lines. Prints on the packing slip. Saved for this job; invoice addresses are edited separately.</div></div>
       <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Ink colors, placement, packing…">${esc(job?.notes || '')}</textarea></div>
       <label class="row" style="gap:7px;cursor:pointer"><input type="checkbox" name="rush" ${job?.rush ? 'checked' : ''}> <span style="font-size:13px">Rush job</span></label>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${job ? 'Save' : 'Create Job'}</button>`,
     onMount: (bg) => {
+      if (!job) $('[name="contact_id"]', bg)?.addEventListener('change', event => {
+        const contact = contacts.find(c => c.id === +event.target.value)
+        $('#job-shipping-address', bg).value = contact?.shipping_address || contact?.billing_address || ''
+      })
       // Opening the customer form closes this modal, so reopen the job form once it saves —
       // it refetches contacts, which now includes the one just created.
       $('#add-contact', bg)?.addEventListener('click', () => contactForm(null, () => jobForm(job, after)))
@@ -467,7 +473,7 @@ export async function jobDetailView(id) {
       <div class="card"><div class="card-h"><h3>Blank garments</h3></div>
         <div class="card-b">
           <div class="stack" style="gap:8px">
-            <button class="btn ghost sm" id="po-order" style="width:100%">Order blanks from supplier</button>
+            <button class="btn ghost sm" id="po-order" style="width:100%">Review purchase order</button>
             <a class="btn ghost sm" href="/api/jobs/${id}/po?download=1" style="width:100%">↓ Download PO (JSON)</a>
           </div>
         </div></div>
@@ -564,8 +570,8 @@ export async function jobDetailView(id) {
 }
 
 /**
- * Order blanks from the connected distributor. Shows the CONSOLIDATED PO (one line per
- * style/color/size — never split-ships), then submits it. Real spend, so it confirms clearly.
+ * Review a PO and record an order already confirmed by the supplier. The current catalog
+ * does not provide exact orderable size/color identifiers, so this screen never orders goods.
  */
 async function openPO(id, jobNumber) {
   let po
@@ -573,43 +579,37 @@ async function openPO(id, jobNumber) {
   const rows = (po.lines || []).map((l) => `<tr>
     <td>${esc(l.sku || l.style || '—')}</td><td>${esc(l.color || '—')}</td><td>${esc(l.size)}</td>
     <td class="num">${l.qty}</td><td class="num muted">${l.unit_cost != null ? money(l.unit_cost) : '—'}</td></tr>`).join('')
-  const connected = po.status === 'ready-to-submit' && po.supplier
+  const recorded = ['confirmed_manual','confirmed_supplier'].includes(po.placement_state)
+  const confirmation = po.purchase_order?.manual_confirmation
+  const uncertain = ['unknown','unverified_legacy','submitting'].includes(po.placement_state)
   const warn = (po.warnings || []).length
     ? `<div class="card-b" style="border:1px solid rgba(247,185,85,.4);border-radius:8px;background:rgba(247,185,85,.08);font-size:12px;margin-bottom:12px">⚠ ${po.warnings.map(esc).join('<br>⚠ ')}</div>` : ''
   modal({
-    title: `Order blanks — ${esc(jobNumber || po.job || '')}`,
+    title: `Purchase order — ${esc(jobNumber || po.job || '')}`,
     wide: true,
     body: `${warn}
-      <p class="dim" style="font-size:12.5px;margin-bottom:10px">${connected
-        ? `Submitting to <strong style="color:var(--txt-2)">${esc(po.supplier)}</strong>. Lines are consolidated to one row per style/color/size, so nothing split-ships.`
-        : 'No distributor connected. Add S&S / SanMar / AlphaBroder credentials in Settings, or download this PO to place it manually.'}</p>
+      <p class="dim" style="font-size:12.5px;margin-bottom:10px">${recorded
+        ? `Supplier confirmation recorded${confirmation ? ` by ${esc(confirmation.recorded_by)} — ${esc(confirmation.supplier)}, reference ${esc(confirmation.reference)}` : ` — ${esc(po.purchase_order.order_id)}`}. Nothing new will be ordered.`
+        : uncertain ? 'Placement has not been verified in this software. Check the supplier order history first so you do not order the same garments twice. Record the existing supplier confirmation below.'
+        : esc(po.submission_note)}</p>
+      ${po.purchase_order ? '<p class="dim" style="font-size:12px">These are the quantities on the saved PO. Later edits to the job do not change this record.</p>' : ''}
       <table class="tbl"><thead><tr><th>SKU / Style</th><th>Color</th><th>Size</th><th class="num">Qty</th><th class="num">Cost</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5" class="dim">No sized lines on this job.</td></tr>'}</tbody></table>
       <div class="row" style="justify-content:space-between;margin-top:12px;font-size:13px">
         <span class="dim">${po.total_units} units${po.color ? ` · ${esc(po.color)}` : ''}</span>
         <strong>${po.est_cost ? money(po.est_cost) + ' est.' : ''}</strong></div>
-      <div id="po-note" class="dim" style="font-size:12px;margin-top:10px"></div>`,
-    footer: connected
-      ? `<button class="btn ghost" data-close>Cancel</button><a class="btn ghost" href="/api/jobs/${id}/po?download=1">Download</a><button class="btn" id="po-submit">Submit order to ${esc(po.supplier)}</button>`
-      : `<button class="btn ghost" data-close>Close</button><a class="btn" href="/api/jobs/${id}/po?download=1">Download PO</a>`,
+      ${recorded ? '' : `<div class="grid2" style="margin-top:16px"><div class="field"><label for="po-supplier">Supplier</label><input class="input" id="po-supplier" maxlength="100" value="${esc(po.supplier || '')}" placeholder="Supplier name"></div><div class="field"><label for="po-reference">Supplier order / confirmation reference</label><input class="input" id="po-reference" maxlength="120" placeholder="From the supplier confirmation"></div></div><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="po-confirmed" style="width:auto"><span>I checked the supplier confirmation and it matches these garments, colors, sizes and quantities.</span></label><p class="dim" style="font-size:12px;margin-top:8px">Recording this acknowledgement does not place an order or receive any garments.</p>`}
+      <div id="po-note" class="dim" role="status" style="font-size:12px;margin-top:10px"></div>`,
+    footer: `<button class="btn ghost" data-close>Close</button><a class="btn ghost" href="/api/jobs/${id}/po?download=1">Download PO</a>${recorded || !po.lines?.length ? '' : '<button class="btn" id="po-confirm">Record supplier confirmation</button>'}`,
     onMount: (bg) => {
-      const btn = $('#po-submit', bg); if (!btn) return
+      const btn = $('#po-confirm', bg); if (!btn) return
       btn.onclick = async () => {
-        btn.disabled = true; btn.textContent = 'Submitting…'
+        if (!$('#po-confirmed',bg).checked) { $('#po-note',bg).textContent='Check the supplier confirmation and acknowledge the quantities first.'; return }
+        btn.disabled = true; btn.textContent = 'Recording…'
         try {
-          const r = await api.post(`/api/jobs/${id}/po/submit`, {})
-          if (r.ok) { toast(`Order placed with ${r.supplier}${r.order_id ? ` — #${r.order_id}` : ''}`); closeModal(); jobDetailView(id) }
-          // The error branch used to be unreachable: a failed submit came back with pending:true
-          // and no note, so this rendered esc(undefined) — an empty line — and the shop saw the
-          // button quietly reset. Check for a real error FIRST, and show the distributor's own
-          // words, because "Could not place order" does not tell anyone which key expired.
-          else if (r.error) {
-            $('#po-note', bg).innerHTML = `<strong>Not ordered.</strong> ${esc(r.error)}`
-            toast(`Order NOT placed: ${r.error}`, true)
-            btn.disabled = false; btn.textContent = 'Retry'
-          } else if (r.pending) { $('#po-note', bg).innerHTML = esc(r.note || 'Submit this one by hand in the distributor’s portal, then mark it received here.'); btn.textContent = 'Submit order to ' + esc(r.supplier); btn.disabled = false }
-          else { toast('Could not place order', true); btn.disabled = false; btn.textContent = 'Retry' }
-        } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Retry' }
+          await api.post(`/api/jobs/${id}/po/manual`, {confirmed:true,supplier:$('#po-supplier',bg).value,reference:$('#po-reference',bg).value,review_key:po.review_key})
+          toast('Supplier confirmation recorded'); closeModal(); jobDetailView(id)
+        } catch (e) { $('#po-note',bg).textContent=e.message; toast(e.message,true); btn.disabled=false; btn.textContent='Record supplier confirmation' }
       }
     },
   })
@@ -629,6 +629,9 @@ async function loadReceiving(jobId) {
 }
 
 function poStatusPill(po) {
+  if (po.placement_state === 'unverified_legacy') return '<span class="pill amber">Placement unverified</span>'
+  if (po.placement_state === 'unknown' || po.placement_state === 'submitting') return '<span class="pill amber">Check supplier outcome</span>'
+  if (po.status === 'manual_required' || po.status === 'draft') return '<span class="pill amber">Awaiting supplier confirmation</span>'
   const map = { received: 'green', partial: 'amber', submitted: '', placed_manually: '', draft: '' }
   const label = po.status === 'placed_manually' ? 'placed by hand' : po.status
   return `<span class="pill ${map[po.status] || ''}">${esc(label)}</span>`

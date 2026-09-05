@@ -1,4 +1,5 @@
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
+import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
 import * as artProduction from './lib/art-production.mjs'
 import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
 import { saveMockupComposition } from './lib/mockup-compositions.mjs'
@@ -56,12 +57,13 @@ import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
+import { estimateTermsIn, commercialEstimateChanged, invalidateEstimateApproval, recordEstimateApproval, estimateApprovalHistory, latestAcceptedEstimate, assertEstimateRevision } from './lib/estimate-approvals.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
 import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
 import { ask } from './lib/assistant.mjs'
-import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
+import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent, purchaseOrderReview, confirmManualPurchaseOrder } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
 import * as qbo from './lib/quickbooks.mjs'
 import * as gdrive from './lib/gdrive.mjs'
@@ -2473,14 +2475,14 @@ app.get('/api/contacts', wrap((req, res) => {
 
 /**
  * "Same as last time" — the reorder every shop hears weekly, as one click. Clones the
- * customer's most recent estimate (imported history included) into a fresh draft at today's
+ * customer's most recent accepted order (imported history included) into a fresh draft at today's
  * date. This is the payoff of importing order history: it works on day one of a trial.
  */
 app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', +req.params.id)
   if (!c) return res.status(404).json({ error: 'Contact not found' })
-  const last = get("SELECT * FROM estimates WHERE contact_id = ? AND items != '[]' ORDER BY id DESC", c.id)
-  if (!last) return res.status(400).json({ error: 'No previous order on file for this customer yet.' })
+  const last = latestAcceptedEstimate(c.id)
+  if (!last) return res.status(400).json({ error: 'No approved or completed order on file for this customer yet.', code: 'no_accepted_order' })
   const items = freezeUpcharges(parse(last.items, []))
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
@@ -2532,14 +2534,15 @@ const contactAddressError = (b) => (
 
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
+  const postal = postalPatch(b)
   const name = str(b.name).trim()
   if (!name) return res.status(400).json({ error: 'Name is required' })
   const bad = contactAddressError(b)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
-  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, billing_address, shipping_address, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
     name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
-    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), now(), now())
+    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), postal.billing_address, postal.shipping_address, now(), now())
   const id = Number(r.lastInsertRowid)
   logActivity('contact', `Contact created — ${name}`, { contact_id: id })
   fireAuto('contact.created', { contact: get('SELECT * FROM contacts WHERE id = ?', id) })
@@ -2565,6 +2568,7 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const id = +req.params.id
   const cur = get('SELECT * FROM contacts WHERE id = ?', id)
   if (!cur) return res.status(404).json({ error: 'Contact not found' })
+  const postal = postalPatch(b, cur)
   const sent = (k) => Object.prototype.hasOwnProperty.call(b, k)
   const text = (k) => (sent(k) ? str(b[k]) : (cur[k] ?? ''))
   const tags = sent('tags') ? (Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)) : (cur.tags ?? '')
@@ -2574,10 +2578,10 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const merged = { ...cur, ...(sent('email') ? { email: str(b.email) } : {}), ...(sent('phone') ? { phone: str(b.phone) } : {}) }
   const bad = contactAddressError(merged)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
-  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, updated_at=? WHERE id=?',
+  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, billing_address=?, shipping_address=?, updated_at=? WHERE id=?',
     name, text('email'), text('phone'), text('company'), text('notes'), tags,
     sent('tax_exempt') ? (b.tax_exempt ? 1 : 0) : (cur.tax_exempt ? 1 : 0),
-    text('tax_exempt_id'), now(), id)
+    text('tax_exempt_id'), postal.billing_address, postal.shipping_address, now(), id)
   logActivity('contact', 'Contact updated', { contact_id: id })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
@@ -2753,7 +2757,7 @@ app.get('/api/estimates/:id', wrap((req, res) => {
   // missing WHERE clause on the read side, on the exact path the feature exists for (an invoice
   // raised against the wrong customer). The voided ones are still returned, so the history is
   // visible rather than hidden.
-  res.json({ ...estimateView(e), share_url: shareUrl('estimate', e.id),
+  res.json({ ...estimateView(e), share_url: shareUrl('estimate', e.id), approval_history: estimateApprovalHistory(e.id),
     invoice: get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void' ORDER BY id DESC", e.id),
     voided_invoices: all("SELECT id, invoice_number, voided_at, void_reason FROM invoices WHERE estimate_id = ? AND status = 'void' ORDER BY id", e.id) })
 }))
@@ -2903,6 +2907,7 @@ app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'quote')
   if (contactId == null) return
+  const addresses = postalPatch(b, postalDefaults(get('SELECT * FROM contacts WHERE id=?', contactId)))
   const s = getSettings()
   // A non-array here (a bare object, a string, or a duplicated JSON key collapsing to one value)
   // reached computeTotals and threw a 500 on the app's main create path.
@@ -2935,8 +2940,9 @@ app.post('/api/estimates', wrap((req, res) => {
    * any junk string were equally writable. POST /api/v1/estimates has hardcoded 'draft' all along,
    * docs/API.md promises "writes reject bad input rather than coercing it", and the estimate
    * editor has never sent the field — so refusing it costs the product nothing. */
-  const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now())
+  const terms = estimateTermsIn(b.terms_snapshot, s.estimate_terms)
+  const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at, billing_address, shipping_address, terms_snapshot, terms_snapshot_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now(), addresses.billing_address, addresses.shipping_address, terms, b.terms_snapshot === undefined ? 'created' : 'edited')
   const id = Number(r.lastInsertRowid)
   logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
@@ -2981,8 +2987,13 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     contactId = resolveContactId(b.contact_id, res, 'quote')
     if (contactId == null) return
   }
+  if (contactId !== e.contact_id) {
+    const linked = get('SELECT job_number FROM jobs WHERE estimate_id=? AND contact_id IS NOT ? ORDER BY id LIMIT 1', id, contactId)
+    if (linked) return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `This quote already has ${linked.job_number} for another customer. Keep its customer or create a separate quote for the new customer.` })
+  }
   const rate = taxRateFor(contactId, b.tax_rate ?? e.tax_rate ?? s.tax_rate,
     { allowExemptOverride: b.tax_exempt_override === true })
+  const addresses = postalPatch(b, contactId === e.contact_id ? e : postalDefaults(get('SELECT * FROM contacts WHERE id=?', contactId)))
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
@@ -2992,10 +3003,20 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // they have their own line_sizes. Changing that fallback must revoke the same technical
   // release as editing the job. Ignore prices, notes and size-key ordering in this comparison.
   const linesChanged = JSON.stringify(artProduction.productionGarmentLines(parse(e.items,[]))) !== JSON.stringify(artProduction.productionGarmentLines(items))
+  const next = { ...e, ...addresses, ...t, contact_id: contactId, items, tax_rate: rate,
+    notes: b.notes ?? e.notes, rush_days: rushDaysIn(b.rush_days ?? e.rush_days),
+    terms_snapshot: estimateTermsIn(b.terms_snapshot, e.terms_snapshot) }
+  const revised = commercialEstimateChanged(e, next)
+  const termsChanged = commercialEstimateChanged(e, { ...e, terms_snapshot: next.terms_snapshot })
+  const approvalInvalidated = revised && (!!e.approved_at || ['approved','invoiced'].includes(e.status))
   const artChangedJobs = tx(() => {
-    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
+    invalidateEstimateApproval(e, next, { actor: req.member?.name })
+    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=? WHERE id=?',
       contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
-      rushDaysIn(b.rush_days ?? e.rush_days), id)
+      next.rush_days, addresses.billing_address, addresses.shipping_address, next.terms_snapshot,
+      termsChanged ? 'edited' : e.terms_snapshot_source, id)
+    // Repricing and reopening the linked sale belong to this same revision transaction.
+    pipeline.syncFromEstimate(get('SELECT * FROM estimates WHERE id=?',id), revised ? 'revised' : 'updated')
     if (!linesChanged) return []
     const affected = all('SELECT id,line_sizes FROM jobs WHERE estimate_id=?',id).filter(job => {
       const stored = parse(job.line_sizes,[])
@@ -3005,14 +3026,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     return affected.map(job => job.id)
   })
   for (const jobId of artChangedJobs) artProductionChanged(jobId)
-  // The three sibling routes (create, send, approve) all sync; this one never did, so a quote
-  // edited from $8,000 down to $4,000 left the deal in Open Pipeline at $8,000. One /api/dashboard
-  // response then carried both numbers — open_estimates 4,670 beside pipeline.open_value 8,670 —
-  // rendered side by side on the first screen after login. syncFromEstimate re-values
-  // unconditionally and only moves the stage on named events, so 'updated' re-prices without
-  // advancing anything.
-  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'updated')
-  res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
+  res.json({ ...estimateView(get('SELECT * FROM estimates WHERE id = ?', id)), quote_revised: revised, approval_invalidated: approvalInvalidated })
 }))
 
 app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
@@ -3103,6 +3117,8 @@ app.post('/api/estimates/:id/approve', wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  try { assertEstimateRevision(e, req.body) }
+  catch (error) { if (error.code === 'estimate_changed') return res.status(409).json({ error: error.message, code: error.code }); throw error }
   // Approve once, same as the customer-facing /p/estimate/:id/approve. A second press of the
   // shop's own Approve button means "yes, it is approved" rather than "do it again", so this
   // answers 200 with `already` instead of refusing — but it must not re-stamp approved_at, write
@@ -3111,7 +3127,10 @@ app.post('/api/estimates/:id/approve', wrap((req, res) => {
   if (e.status === 'approved' || e.status === 'invoiced') {
     return res.json({ ok: true, already: true, estimate: estimateView(e) })
   }
-  run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+  tx(() => {
+    run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: 'staff', actor: req.member?.name })
+  })
   logActivity('estimate', `Estimate ${e.estimate_number} approved`, { contact_id: e.contact_id })
   fireAuto('estimate.approved', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'approved')
@@ -3381,7 +3400,7 @@ app.delete('/api/mockups/:id', requireRole('manager'), wrap((req, res) => {
  */
 function jobScheduleFromEstimate(e, body) {
   const rushDays = Math.max(0, Number(e?.rush_days) || 0)
-  const picked = String(body?.due_date || '').trim()
+  const picked = String(body?.production_due_date ?? body?.due_date ?? '').trim()
   const hasPicked = /^\d{4}-\d{2}-\d{2}$/.test(picked)
   const today = todayIso()
   const days = rushDays || 10
@@ -3398,12 +3417,20 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  try { assertEstimateRevision(e, req.body) }
+  catch (error) { if (error.code === 'estimate_changed') return res.status(409).json({ error: error.message, code: error.code }); throw error }
   const existing = get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (existing) return res.status(409).json({ error: `Already invoiced as ${existing.invoice_number}` })
 
-  // Honor the date the shop actually picked. The convert dialog has asked for a due date all along
-  // and this ignored it, so every invoice silently came out Net 15 no matter what was entered.
-  const picked = String(req.body?.due_date || '').trim()
+  // Payment terms and the promised production date are independent. Keep the older due_date
+  // API's combined meaning for existing callers; the UI now sends two explicit fields.
+  for (const field of ['payment_due_date', 'production_due_date']) {
+    if (req.body?.[field] === undefined || req.body[field] === '') continue
+    const value = req.body[field]
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value+'T00:00:00Z')) || new Date(value+'T00:00:00Z').toISOString().slice(0,10) !== value)
+      return res.status(400).json({ error: `${field === 'payment_due_date' ? 'Payment' : 'Production'} due date must be a real date in YYYY-MM-DD format.`, code: 'invalid_date' })
+  }
+  const picked = String(req.body?.payment_due_date ?? req.body?.due_date ?? '').trim()
   const due = /^\d{4}-\d{2}-\d{2}$/.test(picked) ? picked : new Date(Date.now() + 15 * 864e5).toISOString().slice(0, 10)
   const items = parse(e.items, [])
   const title = req.body?.title || items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
@@ -3438,12 +3465,17 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   // automation engine and the webhook dispatcher both, and /approve guards it the same way.
   const wasApproved = e.status === 'approved' || e.status === 'invoiced'
   const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL AND status = 'active' ORDER BY id LIMIT 1", id)
+  if (prior && prior.contact_id !== e.contact_id)
+    return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `${prior.job_number} belongs to a different customer from this quote. Correct the quote/customer association before creating an invoice; no invoice was created.` })
+  if (prior && postalAddress(prior.shipping_address ?? '') !== postalAddress(e.shipping_address ?? ''))
+    return res.status(409).json({ code: 'quote_job_shipping_mismatch', error: `${prior.job_number} has a different shipping address from this quote. Review the agreed destination and edit the job shipping address to match, or revise and reapprove the quote, then convert again. No invoice was created.` })
   const { invId, jobId, invNum, jobNum } = tx(() => {
     const invNum = nextInvoiceNumber()
     const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, created_at) VALUES (?,?,?,?,?,?,?,?)',
       id, e.contact_id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
     const sched = jobScheduleFromEstimate(e, req.body)
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: wasApproved ? 'legacy_record' : 'staff_conversion', actor: req.member?.name })
     if (prior) {
       run('UPDATE jobs SET invoice_id=?, due_date=?, turnaround_days=?, rush=?, updated_at=? WHERE id=?',
         invId, sched.due_date, sched.turnaround_days, sched.rush, now(), prior.id)
@@ -3558,9 +3590,14 @@ app.put('/api/invoices/:id', requireRole('manager'), wrap((req, res) => {
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const b = req.body || {}
   const due = String(b.due_date || '').trim()
+  const addresses = postalPatch(b, inv)
   if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return res.status(400).json({ error: 'Due date must be YYYY-MM-DD' })
-  if (due) run('UPDATE invoices SET due_date = ? WHERE id = ?', due, id)
-  if (b.po_number !== undefined) run('UPDATE invoices SET po_number = ? WHERE id = ?', String(b.po_number || '').slice(0, 60), id)
+  tx(() => {
+    run('UPDATE invoices SET due_date=?, po_number=?, billing_address=?, shipping_address=? WHERE id=?',
+      due || inv.due_date, b.po_number === undefined ? inv.po_number : String(b.po_number || '').slice(0, 60), addresses.billing_address, addresses.shipping_address, id)
+    if (addresses.billing_address !== inv.billing_address || addresses.shipping_address !== inv.shipping_address)
+      logActivity('invoice', `${inv.invoice_number} postal addresses updated by ${req.member?.name || 'staff'}`, { contact_id: inv.contact_id })
+  })
   // Recompute overdue/partial/paid against the new date rather than leaving a stale status behind.
   syncInvoiceStatus(id)
   if (due && due !== inv.due_date) logActivity('invoice', `${inv.invoice_number} due date changed ${inv.due_date} → ${due}`, { contact_id: inv.contact_id })
@@ -3855,6 +3892,7 @@ app.post('/api/jobs', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'book a job')
   if (contactId == null) return
+  const addresses = postalPatch(b, {}, ['shipping_address'])
   if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
   const num = nextJobNumber()
   const grid = gridFromQuantities(b.quantities)
@@ -3862,10 +3900,10 @@ app.post('/api/jobs', wrap((req, res) => {
   // typed onto the board never had a way to carry one — the column existed and no route bound it —
   // so its PO came back sku:null, est_cost 0, and submitting it said "set the exact style first"
   // with no field anywhere in the product to do that in. 17 columns, 17 placeholders, 17 values.
-  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at, shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     contactId, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
     STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', str(b.garment).trim() || null, b.quantities || '',
-    grid || '{}', String(b.due_date || '').trim() || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
+    grid || '{}', String(b.due_date || '').trim() || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now(), Object.hasOwn(b,'shipping_address') ? addresses.shipping_address : null).lastInsertRowid)
   logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: contactId, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
@@ -3875,6 +3913,7 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const b = req.body || {}
+  const addresses = postalPatch(b, j, ['shipping_address'])
   if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
   // The one door out of a closed ring. A two-garment job that has been invoiced and part-paid had
   // NO way to have its sizes corrected — the customer adds four hoodies and the shop is stuck:
@@ -4020,13 +4059,15 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   // field out of seven. An omitted field still means "leave it alone"; a malformed one now falls
   // back to what was already stored rather than taking the route down.
   tx(() => {
-  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
+  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=?, shipping_address=? WHERE id=?',
     str(b.title, j.title), str(b.decoration, j.decoration), nextGarment, nextQuantities, nextSizes, nextLines, b.due_date === undefined ? j.due_date : (String(b.due_date ?? '').trim() || null),
     // `??` on every other field, and `b.rush ? 1 : 0` on this one — so any partial update cleared
     // it. PUT /api/jobs/:id {notes:"..."} took a job off RUSH: it dropped down the board's sort,
     // lost its badge on the work ticket and on Today, and stopped being counted by the Rush filter.
     // Nothing said so, and nothing on the job records that it ever was one.
-    str(b.notes, j.notes), str(b.assigned_to, j.assigned_to), b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), id)
+    str(b.notes, j.notes), str(b.assigned_to, j.assigned_to), b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), addresses.shipping_address, id)
+  if (addresses.shipping_address !== j.shipping_address)
+    logActivity('job', `${j.job_number} shipping address updated by ${req.member?.name || 'staff'}`, { contact_id: j.contact_id, job_id: id })
   if (artChanged) {
     touchProofWorkflow(id,req.member?.name,'Production garment, decoration or quantities changed; technical review required again')
   }
@@ -4162,7 +4203,7 @@ app.post('/api/scan', wrap((req, res) => {
  * through, so this is a step to take rather than a wall to hit. A draft or failed PO never went
  * anywhere and never blocks: that is the case deleting is the right answer to.
  */
-const PO_STILL_OUT = ['submitting', 'submitted', 'placed_manually', 'partial']
+const PO_STILL_OUT = ['submitting', 'submission_uncertain', 'submitted', 'placed_manually', 'partial']
 app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
   const id = +req.params.id
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
@@ -5970,7 +6011,7 @@ const jobLines = (j) => {
 app.get('/api/jobs/:id/po', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
-  const po = buildJobPurchaseOrder(j, jobLines(j), getSettings())
+  const po = purchaseOrderReview(j, jobLines(j), getSettings())
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="PO-${j.job_number}.json"`)
   res.json(po)
 }))
@@ -5986,7 +6027,7 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // Every garment on the job, each costed against its own style. jobLines() already falls back to
   // the estimate's items and then to the flat grid, which is what the old single-garment fallback
   // here was reaching for — one style at a time.
-  const po = buildJobPurchaseOrder(j, jobLines(j), s)
+  const po = purchaseOrderReview(j, jobLines(j), s)
   po.po_number = `PSC-${j.job_number}`
   if (req.body?.dry_run) return res.json({ ok: true, dry_run: true, po })
   if (!po.lines.length) return res.status(400).json({ error: 'This job has no sized quantities to order.', po })
@@ -6001,7 +6042,11 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // The row is then claimed synchronously before anything is awaited: node:sqlite is synchronous
   // and there is no await between the read and the claim, so a concurrent request cannot slip past.
   if (prior && poAlreadySent(prior)) {
-    return res.json({ ok: true, already: true, supplier: prior.supplier, order_id: prior.order_id, po, purchase_order: getPurchaseOrder(prior.id) })
+    const stored=getPurchaseOrder(prior.id)
+    const confirmed=['confirmed_manual','confirmed_supplier'].includes(stored.placement_state)
+    return res.json({ok:confirmed,already:true,pending:!confirmed,code:confirmed?'po_already_recorded':'po_placement_unverified',
+      note:confirmed?'This order already has a recorded supplier confirmation. Nothing new was submitted.':'This PO has no recorded supplier confirmation. Check the supplier order history, then record the existing order here. Nothing new was submitted.',
+      supplier:stored.manual_confirmation?.supplier||stored.supplier,order_id:stored.order_id,po,purchase_order:stored})
   }
 
   // Persist FIRST — the local PO record is what receiving works against, and the shop needs it even
@@ -6009,31 +6054,43 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // matched yet). Auto-submission to the distributor is a best-effort layer on top. Reuse the
   // existing row on a retry rather than stacking duplicate draft/failed POs for the one job.
   const stored = prior || createPurchaseOrder(j, po, { status: 'draft' })
+  // The current builder knows catalog style codes, not exact supplier size/color identifiers.
+  // Persist a useful manual handoff without claiming placement or attempting an unsafe order.
+  if (po.submission_ready !== true) {
+    if (!prior || ['draft','manual_required'].includes(prior.status))
+      run("UPDATE purchase_orders SET status='manual_required',updated_at=? WHERE id=?",now(),stored.id)
+    return res.json({ok:false,pending:true,code:'po_manual_required',note:po.submission_note,
+      supplier:po.supplier,po,purchase_order:getPurchaseOrder(stored.id)})
+  }
   // Claim it before the await — see the note on ALREADY_SENT above.
   run("UPDATE purchase_orders SET status = 'submitting', updated_at = ? WHERE id = ?", now(), stored.id)
   let result = { ok: false, supplier: po.supplier, pending: true }
   try {
     result = await submitPurchaseOrder(po, s, { dryRun: false, poNumber: po.po_number })
-  } catch (e) { result = { ok: false, supplier: po.supplier, error: e.message, pending: true } }
-  // 'placed_manually' means a human typed this order into the distributor's portal. It is NOT
-  // what an API failure means, and calling it that told the shop their blanks were on the way.
-  // With an expired S&S key the submit failed, the PO said "placed manually", the timeline said
-  // "recorded", and 240 shirts were never ordered — discovered on the due date.
-  //
-  // Only the genuinely-not-wired path (pending, with a note explaining it and no error) may claim
-  // placed_manually. A real error is 'failed', and says so everywhere a human might look.
-  // …and 'submitted' requires the distributor's own order number, not just an ok. Belt and braces
-  // over the guard in submitPurchaseOrder: 'submitted' is in poAlreadySent(), so writing it for an
-  // order that was never placed shuts the only door back onto the wire. A supplier branch that
-  // legitimately cannot return an id says so with `pending` and no error, which is the
-  // placed_manually path and is unaffected.
+  } catch (e) { result = { ok: false, supplier: po.supplier, code: e.code || 'po_not_submitted', error: e.code==='po_submission_uncertain' ? e.message : 'The order was not submitted. Review its size and color identifiers.', pending: true } }
+  // Only a supplier receipt confirms API submission. A missing or lost response is unknown;
+  // manual placement is recorded separately by an explicit manager acknowledgement.
   const claimed = result.ok && !result.order_id
-  if (claimed) result = { ...result, ok: false, error: `${result.supplier || 'The distributor'} answered without an order number, so the order was NOT placed. Check the portal before sending it again.` }
-  const status = result.ok ? 'submitted' : (result.pending && !result.error ? 'placed_manually' : 'failed')
+  if (claimed) result = { ...result, ok: false, code:'po_submission_uncertain',error: 'The supplier did not confirm an order number. Check the supplier order history before placing anything again.' }
+  const status = result.ok ? 'submitted' : result.code==='po_submission_uncertain' ? 'submission_uncertain' : (result.pending && !result.error ? 'manual_required' : 'failed')
   run('UPDATE purchase_orders SET status = ?, order_id = ?, submitted_at = ?, updated_at = ? WHERE id = ?',
     status, result.order_id || null, result.ok ? now() : null, now(), stored.id)
-  logActivity('note', `Blanks PO ${po.po_number} ${status === 'failed' ? 'NOT PLACED' : 'recorded'}${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs${result.error ? ` — submit failed: ${String(result.error).slice(0, 160)}` : ''}`, { job_id: j.id, contact_id: j.contact_id })
+  logActivity('note', `Blanks PO ${po.po_number}: ${status}${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs`, { job_id: j.id, contact_id: j.contact_id })
   res.json({ ...result, po, purchase_order: getPurchaseOrder(stored.id) })
+}))
+
+app.post('/api/jobs/:id/po/manual', requireRole('manager'), wrap((req,res)=>{
+  const j=get('SELECT * FROM jobs WHERE id=?',+req.params.id)
+  if(!j)return res.status(404).json({error:'Job not found',code:'not_found'})
+  const po=purchaseOrderReview(j,jobLines(j),getSettings())
+  try {
+    const result=confirmManualPurchaseOrder(j,po,req.body,req.member?.name||'Manager')
+    if(!result.already)logActivity('note',`Manual PO ${result.purchase_order.po_number} confirmed with ${result.purchase_order.manual_confirmation.supplier} — reference ${result.purchase_order.manual_confirmation.reference}`,{job_id:j.id,contact_id:j.contact_id})
+    res.json(result)
+  } catch(error) {
+    if(error.expose && error.status<500)return res.status(error.status).json({error:error.message,code:error.code})
+    throw error
+  }
 }))
 
 /** All purchase orders recorded for a job, each with per-cell receiving state. */
@@ -6575,8 +6632,8 @@ const v1Limit = (q, cap = 100) => v1int(q.limit, 25, 1, cap)
 const v1Offset = (q) => v1int(q.offset, 0, 0, 1_000_000_000)
 const v1List = (res, rows, limit) => res.json({ data: rows.slice(0, limit), has_more: rows.length > limit })
 
-const v1Customer = (c) => c && ({ id: c.id, name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', tags: c.tags || '', created_at: c.created_at })
-const v1Estimate = (e) => e && ({ id: e.id, number: e.estimate_number, customer_id: e.contact_id, status: e.status, items: parse(e.items, []), subtotal: e.subtotal, tax: e.tax, total: e.total, notes: e.notes || '', sent_at: e.sent_at, approved_at: e.approved_at, created_at: e.created_at })
+const v1Customer = (c) => c && ({ id: c.id, name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', billing_address: c.billing_address || '', shipping_address: c.shipping_address || '', tags: c.tags || '', created_at: c.created_at })
+const v1Estimate = (e) => e && ({ id: e.id, number: e.estimate_number, customer_id: e.contact_id, status: e.status, items: parse(e.items, []), subtotal: e.subtotal, tax: e.tax, total: e.total, notes: e.notes || '', billing_address: e.billing_address || '', shipping_address: e.shipping_address || '', sent_at: e.sent_at, approved_at: e.approved_at, created_at: e.created_at })
 const v1Invoice = (i) => i && ({ id: i.id, number: i.invoice_number, customer_id: i.contact_id, estimate_id: i.estimate_id, status: i.status, amount_due: i.amount_due, amount_paid: i.amount_paid, balance: Math.round(((i.amount_due || 0) - (i.amount_paid || 0)) * 100) / 100, due_date: i.due_date, paid_at: i.paid_at, created_at: i.created_at, payment_review: i.payment_review || '', ...invoiceCreditSummary(i) })
 const v1Job = (j) => j && ({ id: j.id, number: j.job_number, customer_id: j.contact_id, estimate_id: j.estimate_id, invoice_id: j.invoice_id, title: j.title, status: j.status, stage: j.stage, decoration: j.decoration || '', sizes: parse(j.sizes, {}), due_date: j.due_date, rush: !!j.rush, created_at: j.created_at })
 const v1Payment = (p) => p && ({ id: p.id, invoice_id: p.invoice_id, amount: p.amount, method: p.method, created_at: p.created_at })
@@ -6656,6 +6713,8 @@ const v1Create = (operation, create) => wrap((req, res) => {
 
 app.post('/api/v1/customers', v1Create('customers', (req, afterCommit) => {
   const b = req.body || {}
+  let postal
+  try { postal = postalPatch(b) } catch (error) { return createResult(400, { error: error.message, code: error.code }) }
   const bad = v1TextProblem(b, ['name', 'email', 'phone', 'company'])
   if (bad) return createResult(400, bad)
   const name = String(b.name || '').trim()
@@ -6665,8 +6724,8 @@ app.post('/api/v1/customers', v1Create('customers', (req, afterCommit) => {
   const email = String(b.email || '').trim().toLowerCase()
   const dupe = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
   if (dupe) return createResult(409, { error: 'A customer with that email already exists', id: dupe.id })
-  const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-    name.slice(0, 120), email.slice(0, 160), String(b.phone || '').slice(0, 40), String(b.company || '').slice(0, 120), 'api', now(), now()).lastInsertRowid)
+  const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, billing_address, shipping_address, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    name.slice(0, 120), email.slice(0, 160), String(b.phone || '').slice(0, 40), String(b.company || '').slice(0, 120), 'api', postal.billing_address, postal.shipping_address, now(), now()).lastInsertRowid)
   const c = get('SELECT * FROM contacts WHERE id = ?', id)
   afterCommit(() => fireAuto('contact.created', { contact: c }))
   return createResult(201, v1Customer(c))
@@ -6687,6 +6746,9 @@ app.get('/api/v1/estimates/:id', wrap((req, res) => {
 }))
 app.post('/api/v1/estimates', v1Create('estimates', (req, afterCommit) => {
   const b = req.body || {}
+  let customerAddresses
+  try { postalPatch(b); customerAddresses = postalPatch(b.customer) }
+  catch (error) { return createResult(400, { error: error.message, code: error.code }) }
   if(req.agentKey && b.customer && !b.customer_id && !req.agentKey.scopes.includes('customers:write'))return createResult(403, {error:'Use an existing customer_id or grant customers:write to this key.',code:'agent_scope_denied',required_scope:'customers:write'})
   // A customer_id that names nobody used to fall through to the customer{} block and CREATE
   // someone: `{"customer_id": 9999, "customer": {"name":"Ghost"}}` returned 201 with the estimate
@@ -6708,8 +6770,8 @@ app.post('/api/v1/estimates', v1Create('estimates', (req, afterCommit) => {
     const email = String(b.customer.email || '').trim().toLowerCase()
     contact = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
     if (!contact) {
-      const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-        String(b.customer.name).slice(0, 120), email.slice(0, 160), String(b.customer.phone || '').slice(0, 40), String(b.customer.company || '').slice(0, 120), 'api', now(), now()).lastInsertRowid)
+      const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at, billing_address, shipping_address) VALUES (?,?,?,?,?,?,?,?,?)',
+        String(b.customer.name).slice(0, 120), email.slice(0, 160), String(b.customer.phone || '').slice(0, 40), String(b.customer.company || '').slice(0, 120), 'api', now(), now(), customerAddresses.billing_address, customerAddresses.shipping_address).lastInsertRowid)
       contact = get('SELECT * FROM contacts WHERE id = ?', id)
     }
   }
@@ -6814,8 +6876,9 @@ app.post('/api/v1/estimates', v1Create('estimates', (req, afterCommit) => {
   if (![t.subtotal, t.tax, t.total].every(Number.isFinite)) {
     return createResult(400, { error: 'those line items do not add up to a representable total', code: 'invalid_total' })
   }
-  const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now()).lastInsertRowid)
+  const addresses = postalPatch(b, postalDefaults(contact))
+  const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at, billing_address, shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now(), addresses.billing_address, addresses.shipping_address).lastInsertRowid)
   logActivity('estimate', `Estimate created via API for ${contact.name}`, { contact_id: contact.id })
   // The ninth estimate writer, and the only one that never did this. A quote written through the
   // API existed as a document and as nothing else: no card on the pipeline board, no contribution
@@ -8620,8 +8683,10 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
  * department needs its PO quoted back before it will pay, and the due date belongs on the document
  * rather than only in the shop's own screen.
  */
+const documentAddresses = doc => ['billing_address', 'shipping_address'].filter(key => doc[key]).map(key =>
+  `<div class="to"><strong>${key === 'billing_address' ? 'Billing address' : 'Ship to'}</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(doc[key])}</div></div>`).join('')
 const billedTo = (inv, c) => `<div class="to">Billed to <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}`
-  + `${inv.po_number ? ` · PO ${esc(inv.po_number)}` : ''}${inv.due_date ? ` · due ${esc(inv.due_date)}` : ''}</div>`
+  + `${inv.po_number ? ` · PO ${esc(inv.po_number)}` : ''}${inv.due_date ? ` · due ${esc(inv.due_date)}` : ''}</div>` + documentAddresses(inv)
 
 /**
  * The invoice's line items. Invoices carry no items of their own — they inherit the estimate they
@@ -8730,12 +8795,13 @@ app.get('/p/estimate/:id', pPage((req, res) => {
     return `<tr><td><strong>${esc(i.description || '')}</strong>${i.detail ? `<div class="detail">${esc(i.detail)}</div>` : ''}${i.sizes && sizeTotal(i.sizes) > 0 ? `<div class="detail">${esc(sizeSummary(i.sizes))}</div>` : ''}</td>
     <td class="num">${esc(lineQty(i) || '')}</td><td class="num">${money(i.unit_price)}${extra ? `<div class="detail">+${money(extra)} sizes</div>` : ''}</td><td class="num">${money(lineAmount(i, up))}</td></tr>`
   }).join('')
-  const done = e.status === 'approved'
+  const done = e.status === 'approved' || e.status === 'invoiced'
   res.send(page(`Estimate ${esc(e.estimate_number)}`, `<div class="wrap">
     <div class="card">
       <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">${esc(s.shop_tagline)}</div></div>
         <div class="right"><div class="doc">ESTIMATE</div><div class="num2">${esc(e.estimate_number)}</div></div></div>
       <div class="to">Prepared for <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
+      ${documentAddresses(e)}
       <table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="totals"><div><span>Subtotal</span><span>${money(e.subtotal)}</span></div>
         ${Math.abs(Number(e.tax) || 0) > 0.005
@@ -8743,7 +8809,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
           : `<div><span>Tax</span><span>${c?.tax_exempt ? 'Exempt (resale)' : money(0)}</span></div>`}
         <div class="grand"><span>Total</span><span>${money(e.total)}</span></div></div>
       ${e.notes ? `<div class="notes"><strong>Notes</strong><p>${esc(e.notes)}</p></div>` : ''}
-      <div class="terms">${esc(s.estimate_terms)}</div>
+      <div class="terms">${esc(e.terms_snapshot)}</div>
       ${done ? '<div class="ok">✓ Approved — thank you! The shop has been notified.</div>'
         : `<form method="POST" action="/p/estimate/${id}/approve?k=${req.query.k}${sQ(req)}">
              <button class="btn">Approve this estimate</button>
@@ -8765,7 +8831,10 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
   // the shop's own SMTP and 50 webhook deliveries. Event-triggered automations have no dedupe of
   // their own — only the timed path does — so this was the whole brake.
   if (e.status === 'approved' || e.status === 'invoiced') return res.redirect(`/p/estimate/${id}?k=${req.query.k}${sQ(req)}`)
-  run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+  tx(() => {
+    run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: 'customer_link', actor: get('SELECT name FROM contacts WHERE id=?',e.contact_id)?.name })
+  })
   const c = get('SELECT name FROM contacts WHERE id = ?', e.contact_id)
   logActivity('estimate', `Estimate ${e.estimate_number} APPROVED by ${c?.name || 'customer'} online`, { contact_id: e.contact_id })
   fireAuto('estimate.approved', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })

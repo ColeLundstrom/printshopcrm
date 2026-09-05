@@ -78,6 +78,9 @@ export async function estimateEditor(id) {
     ? { contact_id: +params.get('contact') || 0, items: [blankItem()], notes: '' } // never preselect, avoids quoting the wrong customer
     : await api.get(`/api/estimates/${id}`)
   let items = est.items.length ? est.items : [blankItem()]
+  const selectedCustomer = contacts.find(c => c.id === est.contact_id)
+  const initialBilling = isNew ? selectedCustomer?.billing_address || '' : est.billing_address || ''
+  const initialShipping = isNew ? selectedCustomer?.shipping_address || initialBilling : est.shipping_address || ''
   const upcharges = () => { try { return JSON.parse(settings.size_upcharges) } catch { return {} } }
 
   setPage(isNew ? 'New Estimate' : `Edit ${est.estimate_number}`, `<button class="btn ghost" id="cancel">Cancel</button><button class="btn" id="save">${isNew ? 'Create Estimate' : 'Save'}</button>`,
@@ -85,6 +88,7 @@ export async function estimateEditor(id) {
 
   $('#view').innerHTML = `<div class="card" style="max-width:1000px">
     <div class="card-b">
+      ${!isNew && ['approved','sent','invoiced'].includes(est.status) ? '<p class="dim">Changing the customer, quoted work, price, tax, notes, turnaround, addresses or terms saves a new draft and expires the previous approval link. Send the new link for approval; earlier approval evidence stays in the history.</p>' : ''}
       <div class="grid2">
         <div class="field"><label>Customer *</label>
           <select class="input" id="contact">
@@ -121,8 +125,19 @@ export async function estimateEditor(id) {
         <div class="margin-guard" id="margin-guard" hidden></div>
       </div>
 
+      <details style="margin-bottom:18px" ${initialBilling || initialShipping ? 'open' : ''}><summary>Billing and shipping addresses</summary>
+        <div class="grid2" style="margin-top:12px">
+          <div class="field"><label for="estimate-billing-address">Billing address</label><textarea class="input" id="estimate-billing-address" rows="4" maxlength="600">${esc(initialBilling)}</textarea></div>
+          <div class="field"><label for="estimate-shipping-address">Shipping address</label><textarea class="input" id="estimate-shipping-address" rows="4" maxlength="600">${esc(initialShipping)}</textarea></div>
+        </div>
+        <button class="btn ghost sm" type="button" id="load-customer-addresses">Use customer addresses</button>
+        <div class="dim" style="font-size:12px;margin-top:6px">Up to 8 lines each. Saved with this order; changing the customer loads their addresses.</div>
+      </details>
+      <div class="field"><label for="estimate-terms">Terms (customer sees these)</label>
+        <textarea class="input" id="estimate-terms" maxlength="12000">${esc(isNew ? settings.estimate_terms : est.terms_snapshot)}</textarea>
+        <p class="dim">Saved with this quote. Changing shop defaults applies to new quotes only.${est.terms_snapshot_source === 'legacy_migration' ? ' This older quote uses the terms configured when snapshot storage was introduced; its original historical terms are unknown.' : ''}</p></div>
       <div class="field"><label>Notes (customer sees these)</label>
-        <textarea class="input" id="notes" placeholder="Turnaround, art notes, ship-to…">${esc(est.notes || '')}</textarea></div>
+        <textarea class="input" id="notes" placeholder="Turnaround, art notes…">${esc(est.notes || '')}</textarea></div>
     </div>
   </div>`
 
@@ -174,6 +189,13 @@ export async function estimateEditor(id) {
    */
   const marginGuard = (revenue) => {
     const g = $('#margin-guard'); if (!g) return
+    const unsupported = [...new Set(items.filter(it => it.sizes && sizeTotal(it.sizes) > 0)
+      .map(it => it.decoration || it.matrix?.name || 'Unspecified decoration').filter(method => !/^screen[\s-]*print(?:ing)?$/i.test(String(method).trim())))]
+    if (unsupported.length) {
+      g.hidden = false; g.className = 'margin-guard'
+      g.innerHTML = `<div class="mg-sub">Use Job costing for ${esc(unsupported.join(', '))} labor and machine costs. This quick preview supports screen printing only.</div>`
+      return
+    }
     let cost = 0, priced = false
     for (const it of items) {
       /* A production line has a size grid. A fee, a flat charge and a DISCOUNT do not.
@@ -194,7 +216,7 @@ export async function estimateEditor(id) {
        * did not. Two screens must not disagree about the same estimate. */
       if (!it.sizes) continue
       const qty = sizeTotal(it.sizes)
-      if (qty <= 0 || it.taxable === false) continue // skip setup/fee lines
+      if (qty <= 0) continue // Sales-tax treatment does not remove production costs.
       priced = true
       const colors = guessColors(`${it.description} ${it.detail || ''}`)
       // The line usually KNOWS what its blank costs, and guessing from the description throws that
@@ -221,8 +243,8 @@ export async function estimateEditor(id) {
     g.className = `margin-guard ${v.level}${below ? ' below' : ''}`
     g.innerHTML = `<div class="mg-row"><span class="mg-label">Est. margin</span>
         <span class="mg-pct">${m.margin}%</span>
-        <span class="mg-verdict">${below ? '⚠ ' : ''}${v.label}</span></div>
-      <div class="mg-sub">~${money(m.profit)} profit on ~${money(cost)} cost${below ? ` · under your ${floor}% floor` : ''}. Confirm real blank cost on the job for exact numbers.</div>`
+        <span class="mg-verdict">${below && m.margin >= 0 ? 'Below target' : v.label}</span></div>
+      <div class="mg-sub">~${money(m.profit)} profit on ~${money(cost)} cost${below ? ` · under your ${floor}% floor` : ''}. Review actual costs in Job costing.</div>`
   }
 
   const draw = () => {
@@ -246,6 +268,13 @@ export async function estimateEditor(id) {
   }
   /** Is the buyer on screen tax exempt right now? Used to mark a deliberate override on save. */
   const buyerIsExempt = () => !!contacts.find((x) => x.id === +$('#contact').value)?.tax_exempt
+  const loadCustomerAddresses = () => {
+    const c = contacts.find(x => x.id === +$('#contact').value)
+    $('#estimate-billing-address').value = c?.billing_address || ''
+    $('#estimate-shipping-address').value = c?.shipping_address || c?.billing_address || ''
+    markEditorDirty()
+  }
+  $('#load-customer-addresses').onclick = loadCustomerAddresses
   // Quote-first onboarding: a brand-new shop's first move is often a quote, before any customer
   // exists. Rather than bounce them to Customers and lose the estimate, add one inline right here.
   const addCustomerInline = () => {
@@ -280,13 +309,13 @@ export async function estimateEditor(id) {
             const sel = $('#contact'); sel.insertBefore(opt, sel.querySelector('option[value="__new"]'))
             sel.value = String(c.id); est.contact_id = c.id
             markEditorDirty() // the new customer is saved; choosing them on this quote is not
-            closeModal(); syncTaxExempt(true); toast(`Added ${c.name}`)
+            closeModal(); syncTaxExempt(true); loadCustomerAddresses(); toast(`Added ${c.name}`)
           } catch (e) { err(e.message || 'Could not create the customer. Try again.') }
         })
       },
     })
   }
-  $('#contact').addEventListener('change', () => { if ($('#contact').value === '__new') addCustomerInline(); else syncTaxExempt(true) })
+  $('#contact').addEventListener('change', () => { if ($('#contact').value === '__new') addCustomerInline(); else { syncTaxExempt(true); loadCustomerAddresses() } })
   syncTaxExempt(false)
 
   // Text/price edits patch in place, since redrawing would blur the field mid-type.
@@ -410,6 +439,9 @@ export async function estimateEditor(id) {
       contact_id: +$('#contact').value,
       items: items.filter((i) => i.description.trim() || i.unit_price),
       notes: $('#notes').value,
+      terms_snapshot: $('#estimate-terms').value,
+      billing_address: $('#estimate-billing-address').value,
+      shipping_address: $('#estimate-shipping-address').value,
       tax_rate: +$('#tax').value,
       // The server refuses to tax an exempt buyer unless told the shop meant it. Typing a rate
       // ON an exempt customer is the shop saying so; carrying the default is not.
@@ -424,7 +456,7 @@ export async function estimateEditor(id) {
     try {
       const saved = isNew ? await api.post('/api/estimates', payload) : await api.put(`/api/estimates/${id}`, payload)
       editorDirty = false // it is on the server now; leaving must not ask
-      toast(isNew ? `Estimate ${saved.estimate_number} created` : 'Estimate saved')
+      toast(isNew ? `Estimate ${saved.estimate_number} created` : saved.quote_revised ? 'Saved as draft. Send the new link for approval.' : 'Estimate saved')
       go(`/estimates/${saved.id}`)
     } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = isNew ? 'Create Estimate' : 'Save' }
   }
@@ -560,6 +592,7 @@ export async function estimateDetailView(id) {
           <div><span>Tax</span><span>${money(e.tax)}</span></div>
           <div class="g"><span>Total</span><span>${money(e.total)}</span></div>
         </div>
+        ${e.billing_address || e.shipping_address ? `<details style="margin-top:16px"><summary>Order addresses</summary><div class="grid2" style="margin-top:10px">${[['Billing address',e.billing_address],['Ship to',e.shipping_address]].map(([label,value]) => `<div><strong>${label}</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(value || 'Not set')}</div></div>`).join('')}</div></details>` : ''}
         ${e.notes ? `<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
           <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px">Notes</div>
           <div class="muted" style="font-size:13px;white-space:pre-wrap">${esc(e.notes)}</div></div>` : ''}
@@ -576,6 +609,7 @@ export async function estimateDetailView(id) {
         </div>
       </div></div>
 
+      ${e.approval_history?.length ? `<details class="card"><summary class="card-h">Approval history</summary><div class="card-b">${e.approval_history.map(h => `<div style="margin-bottom:12px"><strong>Revision ${h.commercial_revision + 1} · ${money(h.snapshot.total)}</strong><p class="dim">${esc(({staff:'Marked approved by staff',staff_conversion:'Recorded during conversion',customer_link:'Approved using customer link',legacy_record:'Historical approval record'})[h.source] || 'Approval record')}${h.approved_at ? ` · ${fmtDate(h.approved_at)}` : ' · original date unknown'}${h.actor ? ` · ${esc(h.actor)}` : ''}${h.revoked_at ? ` · superseded ${fmtDate(h.revoked_at)}` : ' · current acceptance'}</p><details><summary>Accepted quote details</summary><p>${esc(h.snapshot.contact_name || '')}</p>${h.snapshot.items.map(i => `<p><strong>${esc(i?.description || '')}</strong><br>${esc(i?.detail || '')}<br>${lineQty(i || {})} × ${money(i?.unit_price || 0)}${i?.sizes ? `<br>${esc(sizeSummary(i.sizes))}` : ''}</p>`).join('')}<p>Tax: ${money(h.snapshot.tax)} · Total: ${money(h.snapshot.total)}</p>${h.snapshot.billing_address ? `<p style="white-space:pre-wrap">Bill to:<br>${esc(h.snapshot.billing_address)}</p>` : ''}${h.snapshot.shipping_address ? `<p style="white-space:pre-wrap">Ship to:<br>${esc(h.snapshot.shipping_address)}</p>` : ''}${h.snapshot.notes ? `<p style="white-space:pre-wrap">${esc(h.snapshot.notes)}</p>` : ''}<p style="white-space:pre-wrap">${esc(h.snapshot.terms_snapshot)}</p>${h.snapshot.terms_snapshot_source === 'legacy_migration' ? '<p class="dim">Original historical terms are unknown. These terms were frozen from shop settings when snapshot storage was introduced.</p>' : ''}</details></div>`).join('')}</div></details>` : ''}
       ${mockups ? mockupCard(mockups) : ''}
 
       <div class="card"><div class="card-h"><h3>Customer Link</h3></div><div class="card-b">
@@ -632,9 +666,11 @@ export async function estimateDetailView(id) {
     estimateDetailView(id)
   })
   $('#approve')?.addEventListener('click', async () => {
-    await api.post(`/api/estimates/${id}/approve`)
-    toast('Marked approved')
-    estimateDetailView(id)
+    try {
+      await api.post(`/api/estimates/${id}/approve`, { commercial_revision: e.commercial_revision })
+      toast('Marked approved')
+      estimateDetailView(id)
+    } catch (error) { toast(error.message, true) }
   })
   $('#convert')?.addEventListener('click', () => convertModal(e))
   // Re-quote a repeat job: same lines, same size grid, fresh draft number.
@@ -659,8 +695,7 @@ export async function estimateDetailView(id) {
 }
 
 function convertModal(e) {
-  // localDay, not toISOString: this date is POSTed and stored verbatim on invoices.due_date and
-  // jobs.due_date, so a UTC roll after 5pm Pacific dated every invoice a day early.
+  // Invoice payment terms are separate from the production promise.
   const d14 = new Date(); d14.setDate(d14.getDate() + 14)
   const due = localDay(d14)
   // Lite has no production floor. The server still opens a job row (it links the records together),
@@ -673,13 +708,15 @@ function convertModal(e) {
         ? `This creates an invoice for <strong>${money(e.total)}</strong> linked to this estimate, ready to send and take payment on.`
         : `This creates invoice for <strong>${money(e.total)}</strong>, opens a production job on the board, and links all three together.`}</p>
       <div class="field"><label>${lite ? 'Order name' : 'Job title'}</label><input class="input" name="title" value="${esc(e.items[0]?.description || 'Custom order')}"></div>
-      <div class="field"><label>${lite ? 'Payment due' : 'Due date'}</label><input class="input" name="due_date" type="date" value="${due}"></div>`,
+      <div class="field"><label for="convert-payment-due">Payment due</label><input class="input" id="convert-payment-due" name="payment_due_date" type="date" value="${due}"></div>
+      ${lite ? '' : `<div class="field"><label for="convert-production-due">Production due</label><input class="input" id="convert-production-due" name="production_due_date" type="date">
+        <div class="dim" style="font-size:12px;margin-top:4px">Leave blank to use this quote’s turnaround${e.rush_days ? ` (${esc(e.rush_days)} business days)` : ' (10 business days)'}. Payment terms do not change when the job must be ready.</div></div>`}`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">${lite ? 'Create Invoice' : 'Create Invoice + Job'}</button>`,
     onMount: (bg) => {
       $('#go', bg).onclick = async () => {
         const btn = $('#go', bg); btn.disabled = true; btn.textContent = 'Creating…'
         try {
-          const r = await api.post(`/api/estimates/${e.id}/convert`, formData(bg))
+          const r = await api.post(`/api/estimates/${e.id}/convert`, { ...formData(bg), commercial_revision: e.commercial_revision })
           closeModal()
           // Autopilot and the Slack quick-quote open the job when they write the quote, so convert
           // adopts it rather than opening a second card for one order. Say which happened.

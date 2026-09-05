@@ -26,7 +26,7 @@ const { writeContactImport } = await import(${JSON.stringify(modules['contact-im
 const contact = n => ({ name: 'Imported ' + n, email: 'import' + n + '@example.test', phone: '', company: '', notes: '', tags: '' })
 const schema = \`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
   CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, phone TEXT,
-    company TEXT, notes TEXT, tags TEXT, created_at TEXT, updated_at TEXT);
+    company TEXT, notes TEXT, tags TEXT, created_at TEXT, updated_at TEXT, billing_address TEXT, shipping_address TEXT);
   CREATE INDEX IF NOT EXISTS contact_email ON contacts(lower(email));
   CREATE TABLE IF NOT EXISTS ordinary_writes (id INTEGER PRIMARY KEY, note TEXT);\`
 `

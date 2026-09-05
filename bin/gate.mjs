@@ -4827,8 +4827,8 @@ section('the distributor has to hand back an order number before we say the orde
       answer(200, '<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>', 'text/html')
       const r = await submit()
       assert.ok(r.threw, `it resolved as a success: ${JSON.stringify(r.resolved)}`)
-      assert.match(r.threw, /NOT placed/, 'the shop has to be told the order did not go')
-      assert.match(r.threw, /portal/, '…and where to check before sending it again')
+      assert.match(r.threw, /not confirmed the outcome/, 'a missing receipt leaves an unknown outcome, not a claim that nothing was ordered')
+      assert.match(r.threw, /supplier order history/, '…and where to check before placing anything again')
     })
     await t('…nor is a 200 whose JSON carries no order number', async () => {
       answer(200, JSON.stringify({ status: 'accepted' }), 'application/json')
@@ -5918,15 +5918,15 @@ await t('a PO that has gone out is never sent again, whatever receiving did to i
     assert.equal(poAlreadySent({ status }), true, `${status} must not re-order`)
   }
 })
-await t('the in-flight claim blocks the second click but does not wedge the shop forever', async () => {
+await t('a lost in-flight claim never becomes permission for a duplicate supplier order', async () => {
   const { poAlreadySent } = await import('../lib/suppliers.mjs')
   const at = (msAgo) => new Date(Date.now() - msAgo).toISOString().slice(0, 19).replace('T', ' ')
   // The claim taken synchronously before the await — this is the double-click case.
   assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(1000) }), true)
-  // A row stuck here means the process died mid-send. A PO the shop can neither place nor clear
-  // is exactly the dead end this codebase refuses to ship.
-  assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(6 * 60 * 1000) }), false)
-  assert.equal(poAlreadySent({ status: 'submitting', updated_at: null }), false)
+  // The supplier may have accepted it before the process died. Time cannot prove otherwise.
+  // Recovery is explicit acknowledgement of the supplier confirmation, not another API send.
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(6 * 60 * 1000) }), true)
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: null }), true)
 })
 
 const { deliveryVerdict: deliveryVerdictSync } = await import('../lib/webhook.mjs')
@@ -9847,9 +9847,11 @@ section('three screens that threw away the shop’s work')
     // correct change in this file. Assert the property; do not measure the formatting.
     const next = src.slice(i + 1).search(/\n(?:export )?(?:async )?function /)
     const fn = next > 0 ? src.slice(i, i + 1 + next) : src.slice(i)
-    assert.ok(fn.includes("$('#ct-text')"), 'the window must actually cover the draft handling it asserts about')
-    assert.match(fn, /const draft = \$\('#ct-text'\)\?\.value/, 'the draft is not captured before the repaint')
-    assert.match(fn, /if \(draft\) \$\('#ct-text'\)\.value = draft/, 'the draft is captured and then never put back')
+    assert.match(fn, /captureDraft\(s\)/, 'typing during the read must be captured before repaint')
+    assert.match(fn, /const \{ text: draft, channel: channelWas \} = draftFor\(s, id\)/, 'restore only the requested customer’s own draft')
+    assert.match(fn, /input\.value = draft/, 'the customer-scoped draft is restored')
+    assert.ok(fn.indexOf('captureDraft(s)') > fn.indexOf('await api.get'), 'typing while the read is in flight must survive too')
+    assert.match(fn, /activeId !== id \|\| request !== s\.threadRequest/, 'stale reads must not replace another conversation')
   })
 
   /* …and the path it was written for does not enter at drawThread at all.
@@ -9872,15 +9874,14 @@ section('three screens that threw away the shop’s work')
       'the guard has to be in FRONT of the innerHTML, not after it')
   })
 
-  await t('…and the channel picker survives the repaint, so an SMS reply is not sent as an email', async () => {
+  await t('…and the channel picker belongs to the customer whose reply will be sent', async () => {
     const src = await readView('public/js/views/conversations.js')
-    const i = src.indexOf('async function drawThread')
-    const fn = src.slice(i, i + 4000)
-    assert.match(fn, /channelWas = \$\('#ct-channel \.on'\)\?\.dataset\.ch/,
-      'the chosen channel is read back before the markup holding it is replaced')
-    assert.doesNotMatch(fn, /let channel = 'email'/,
-      "the repaint re-initialises the channel to email, so a reply the shop had set to SMS goes out as an email with nothing on screen saying so")
-    assert.match(fn, /let channel = channelWas/, 'and the handler has to start from the restored value')
+    assert.match(src, /draftFor\(s, id\)/, 'drafts and channels must be keyed by customer')
+    assert.match(src, /let channel = channelWas/, 'the handler starts from the restored customer channel')
+    assert.match(src, /saveDraft\(s, id, input\.value, channel\)/, 'channel changes are saved to the same customer')
+    assert.match(src, /s\.sending\.has\(id\)/, 'realtime repaint must retain the per-customer send lock')
+    // Behavioral switch, delayed-read, send and AI races are exercised against the actual view
+    // by test/conversations-view.test.mjs; the old global-DOM capture was unsafe across customers.
   })
 
   await t('…and the receptionist screen it was modelled on is still guarded', async () => {

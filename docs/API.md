@@ -75,6 +75,12 @@ unknown size, a fractional quantity, or a missing `unit_price` is a `400`, every
 
 ## Endpoints
 
+### Browser quote approval and conversion
+
+The signed-in browser routes `POST /api/estimates/:id/approve` and `POST /api/estimates/:id/convert` require the current `commercial_revision` after a quote has been revised. Read it from the estimate detail and include it in the request body. A missing or stale revision returns `409 estimate_changed`; reload and review the current quote before trying again. For older clients, omission remains supported only for a quote still at revision zero. These internal routes do not expand the permissions of an external agent key.
+
+Conversion accepts separate `payment_due_date` and `production_due_date` values in real `YYYY-MM-DD` calendar-date format. An empty production date uses the quote's rush turnaround or the standard production turnaround. The older `due_date` field retains its combined payment/production meaning for compatibility. An explicit production date does not change the payment due date. Changing accepted commercial content supersedes its approval and rotates its public link; it does not silently authorize the revised quote. Customer reorders use accepted history rather than an unsent draft.
+
 ### `GET /api/v1/me`
 
 Confirms the key and identifies the shop. Good for a connection test.
@@ -100,6 +106,10 @@ product and every shop has all of it.
 ```
 
 ### Estimates
+
+Customers accept `billing_address` and `shipping_address` as multiline text (up to 8 nonempty lines and 600 characters). Customer reads return both fields. A blank customer shipping address defaults to billing on new documents. Existing documents retain their own addresses when customer defaults change.
+
+Estimate creation accepts optional `billing_address` and `shipping_address` overrides, including an explicit blank. Omitted fields use customer defaults; `customer{…}` also accepts these fields when creating a new customer. Quote, invoice and job screens let staff maintain the saved addresses for that document. These are postal text, not carrier validation or a tax-jurisdiction lookup.
 
 | | |
 |---|---|

@@ -96,11 +96,13 @@ Longer write-ups of the things people ask about most, on the project site:
 
 ## Features
 
+Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before evaluating a migration. Available screens, tested local behavior and verified provider integrations are different levels of readiness.
+
 **Sales**
-- Customers with tags, notes, lifetime value, and a timeline fed by every other module
-- Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link
+- Customers with billing/shipping addresses, tags, notes, lifetime value, and a timeline fed by other modules
+- Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link. Commercial revisions expire the old approval link, preserve approval history, and require another review
 - Sales pipeline with weighted value and win rate, auto-synced from estimate events
-- Two-way conversation inbox (email + SMS, both directions)
+- Conversation history for outbound email/SMS and connected inbound messages; SMTP alone does not synchronize a mailbox. Unsent drafts stay with their customer while navigating
 - Follow-ups: quotes that went quiet and invoices nobody chased, ranked by value
 - Reorder Radar: customers due for their next run, based on their own history
 
@@ -108,7 +110,7 @@ Longer write-ups of the things people ask about most, on the project site:
 - Drag-to-move job board (pointer-based, works on touch) with rush/late/unpaid/assignee filters
 - Art & prepress: versioned proofs, customer approve/reject with notes, approval advances the job *and* moves the due date
 - Printable work tickets with a hard "NO APPROVED ART — do not print" block when the proof isn't signed off
-- Capacity planner: schedules a prospective job against the committed board and returns a real ship date
+- Screenprinting capacity estimates; review decoration and machine assumptions before promising delivery
 - Floor Mode: Code 128 barcode scanning that feeds measured labor back into costing
 - DTF resize and a gang-sheet builder (embeddable on your own site, checking out through your Stripe or Authorize.net account)
 
@@ -116,23 +118,23 @@ Longer write-ups of the things people ask about most, on the project site:
 - Quoting calculator: garment × markup + imprint charge scaled by run length and colors-per-location + one-time screens; tiered rush; dark garments automatically add an underbase
 - Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
 - Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins
-- Invoices with partial payments, running balance, and status always derived from the payments table
+- Invoices with partial payments, running balance, saved postal addresses, and separate payment/production deadlines
 - Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation, refund/void reconciliation and explicit invoice credits ([setup and limits](docs/PAYMENTS.md))
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
 - QuickBooks IIF export (Online sync is API-only for now — it has no setup screen yet)
 
 **Purchasing**
-- Garment catalog with real costs feeding the ROI engine
+- Garment catalog with editable baseline costs feeding the ROI estimates
 - S&S Activewear, SanMar and AlphaBroder lookups when you connect an account, catalog fallback when you don't
-- Purchase orders consolidated per style/size to avoid split shipments
+- Purchase orders grouped by style/color/size, with partial receiving and explicit supplier-confirmation records. The current catalog does not provide verified orderable size/color SKUs: place orders in the supplier portal and record their reference here
 
 **Automation & integration**
 - Event and time-based rules with multi-step drip sequences (email → wait → text)
 - Autopilot: paste a customer email and it becomes a structured draft order — review-first by default
 - AI receptionist for inbound quote requests (bring your own Anthropic or OpenAI key; a deterministic parser runs with no key at all)
 - Public REST API (`/api/v1`) with Bearer keys, plus signed outbound webhooks — see [docs/API.md](docs/API.md)
-- CSV import for customers and full order history, so reorder features work on day one
+- CSV mapping for customers and supported order-history fields, with preview; check unsupported attachments and payment history separately before migrating
 
 **The app itself**
 - Light and dark themes, tuned separately rather than inverted

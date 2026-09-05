@@ -1346,7 +1346,7 @@ try {
 
     r = await req('POST', `/api/jobs/${poJob}/po/submit`, { body: {} })
     const firstStatus = r.json?.purchase_order?.status ?? ''
-    chk('a purchase order can be submitted', `${r.status}`, '^200$')
+    chk('a purchase order can be prepared without claiming submission', `${r.status}|${r.json?.ok}|${firstStatus}`, '^200\\|false\\|manual_required$')
 
     // The gate shop has no distributor connected, so this settles at 'failed' — which is
     // legitimately retryable, nothing was ordered. What must NOT happen either way is a second
@@ -2701,13 +2701,15 @@ try {
     chk('a customer with no money attached still deletes', String(r.status), '^200$')
 
     // --- and the same rule for a job with an order already at the distributor ---
-    // A SanMar account, which is the ordinary shape: PromoStandards submit is provisioned per
-    // account, so the PO lands as 'placed_manually' — a human typed it into the portal and the
-    // blanks are just as much on their way. No network call is made on that path.
+    // SanMar submission is not wired. Only an explicit supplier confirmation means a human
+    // placed the order; preparing the PO cannot fabricate that evidence.
     await req('PUT', '/api/settings', { body: { sanmar_user: 'gate-user', sanmar_pass: 'gate-pass', sanmar_cust: '12345' } })
     r = await req('POST', `/api/jobs/${payerJob}/po/submit`, { body: {} })
+    chk('preparing a manual PO does not claim the blanks were ordered', String(r.json?.ok), '^false$')
+    const manualPreview=(await req('GET',`/api/jobs/${payerJob}/po`)).json
+    r = await req('POST', `/api/jobs/${payerJob}/po/manual`, {body:{confirmed:true,supplier:'SanMar',reference:'GATE-SANMAR-CONFIRMED',review_key:manualPreview?.review_key}})
     const placed = r.json?.purchase_order
-    chk('a purchase order is placed against the job', `${placed?.status ?? '?'} ${r.text.slice(0, 200)}`, 'submitted|placed_manually|partial')
+    chk('a supplier confirmation is recorded against the job', `${placed?.status ?? '?'}|${placed?.placement_state}`, '^placed_manually\\|confirmed_manual$')
     r = await req('DELETE', `/api/jobs/${payerJob}`)
     chk('deleting a job whose blanks are already ordered is refused', String(r.status), '^409$')
     chk('…and the refusal names the purchase order, so purchasing knows what to chase', r.text, String(placed?.po_number || 'PSC-'))
@@ -3855,8 +3857,11 @@ try {
     const fc = (await req('POST', '/api/contacts', { body: { name: 'Freeze Co', email: 'freeze@e2e.test' } })).json
     const LINE = { description: 'Tees', unit_price: 8.75, sizes: { M: 100, '2XL': 10, '3XL': 2 } }
 
-    // Seed one estimate the ordinary way, so reorder and duplicate have something to work from.
+    // A reorder must come from accepted work, never an unsent draft.
     const seed = (await req('POST', '/api/estimates', { body: { contact_id: fc.id, items: [LINE] } })).json
+    chk('a draft is not accepted reorder history', String((await req('POST', `/api/contacts/${fc.id}/reorder`)).status), '^400$')
+    const seedApproval = await req('POST', `/api/estimates/${seed.id}/approve`, { body: { commercial_revision: seed.commercial_revision } })
+    chk('the reorder source is accepted at its current revision', String(seedApproval.status), '^200$')
 
     // Reuse the suite's live key — rotating here would invalidate it for every later case.
     const apiKey = key
@@ -4952,7 +4957,11 @@ try {
     const edited = await req('PUT', `/api/estimates/${re2.json.id}`, { body: { notes: 'Customer confirmed by phone' } })
     chk('…and a note-only edit leaves it alone', String(edited.json?.rush_days), '^3$')
 
-    const rconv = (await req('POST', `/api/estimates/${re2.json.id}/convert`)).json
+    chk('a revised rush quote requires the displayed revision before conversion',
+      String((await req('POST', `/api/estimates/${re2.json.id}/convert`)).status), '^409$')
+    const rconv = (await req('POST', `/api/estimates/${re2.json.id}/convert`, {
+      body: { commercial_revision: edited.json.commercial_revision },
+    })).json
     const rjob = (await req('GET', `/api/jobs/${rconv.job_id}`)).json
     chk('…the job it converts to is a rush job', String(rjob?.rush), '^1$')
     chk('…scheduled on the turnaround the customer paid for', String(rjob?.turnaround_days), '^3$')

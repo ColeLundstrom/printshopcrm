@@ -116,7 +116,8 @@ export async function invoiceDetailView(id) {
           <span class="dim">Due ${fmtDate(i.due_date)}${i.po_number ? ` · PO ${esc(i.po_number)}` : ''}</span>
           ${bal > 0 && daysOut(i.due_date) < 0 ? `<span style="color:var(--red);font-weight:600">${Math.abs(daysOut(i.due_date))} days late</span>` : ''}
         </div>
-        ${bal > 0 ? '<div class="row" style="margin-top:10px"><button class="btn ghost sm" id="terms">Change due date / PO</button></div>' : ''}
+        ${manager ? '<div class="row" style="margin-top:10px"><button class="btn ghost sm" id="terms">Edit terms &amp; addresses</button></div>' : ''}
+        ${i.billing_address || i.shipping_address ? `<details style="margin-top:12px"><summary>Invoice addresses</summary>${[['Billing address',i.billing_address],['Ship to',i.shipping_address]].map(([label,value]) => `<p><strong>${label}</strong></p><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(value || 'Not set')}</div>`).join('')}</details>` : ''}
       </div></div>
 
       <div class="card" id="pay-list">
@@ -206,13 +207,18 @@ export async function invoiceDetailView(id) {
   $('#pay')?.addEventListener('click', openPay)
   $('#pay2')?.addEventListener('click', openPay)
 
-  // Amend terms. Only the due date and the customer's PO. The amount is owned by the estimate's
+  // Amend terms and postal addresses. The amount is owned by the estimate's
   // line items, so it stays read-only here rather than letting the two documents disagree.
   $('#terms')?.addEventListener('click', () => modal({
     title: `Terms for ${i.invoice_number}`,
     body: `<div class="field"><label>Payment due</label><input class="input" name="due_date" type="date" value="${esc(i.due_date || '')}"></div>
       <div class="field" style="margin-top:10px"><label>Customer PO number (optional)</label>
         <input class="input" name="po_number" value="${esc(i.po_number || '')}" placeholder="e.g. 4501-22"></div>
+      <div class="grid2">
+        <div class="field"><label for="invoice-billing-address">Billing address</label><textarea class="input" id="invoice-billing-address" name="billing_address" rows="4" maxlength="600">${esc(i.billing_address || '')}</textarea></div>
+        <div class="field"><label for="invoice-shipping-address">Shipping address</label><textarea class="input" id="invoice-shipping-address" name="shipping_address" rows="4" maxlength="600">${esc(i.shipping_address || '')}</textarea></div>
+      </div>
+      <div class="dim" style="font-size:12px">Up to 8 lines each. These addresses belong to this invoice. Update the job separately if its shipping destination changes.</div>
       <div class="dim" style="font-size:11.5px;margin-top:8px;line-height:1.6">The PO shows on the invoice your customer sees. Changing the due date also re-checks whether this invoice counts as overdue.</div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="tgo">Save terms</button>`,
     onMount: (bg) => {
