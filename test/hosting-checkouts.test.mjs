@@ -343,7 +343,7 @@ test('captured provider client preserves account identity and exact keyed bytes 
     return Response.json({ object: 'checkout.session', id: 'cs_test_fixture', status: 'open' })
   })
   const client = createPlatformBillingClient()
-  setPlatformCredentials({ secret: 'sk_live_replacement' })
+  setPlatformCredentials({ secret: 'sk_live_rotated_fixture' })
   assert.deepEqual(await client.account(), { accountId: 'acct_host', livemode: false })
   const body = buildHostingCheckoutRequest({ ...options, email: 'owner@example.test', intentId: crypto.randomUUID() })
   await client.createCheckout({ requestBody: body, idempotencyKey: 'psc_fixture_stable_key' })
