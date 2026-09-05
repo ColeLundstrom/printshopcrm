@@ -1,6 +1,37 @@
 import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick } from '../core.js'
+import { billingFields, bindBillingFields } from '../shared/billing-recipients.js'
 
 let filterTag = ''
+
+// A single mapping editor shared by both import dialogs. No data leaves this shop.
+function mappingEditor(bg, prefix, kind) {
+  let mapping = null
+  const box = document.createElement('div')
+  $('#' + prefix + '-out', bg).before(box)
+  return {
+    reset() { mapping = null; box.replaceChildren() },
+    append(fd) { if (mapping) fd.append('mapping', JSON.stringify(mapping)) },
+    async prepare(fd) {
+      if (mapping) return
+      const probe = new FormData()
+      for (const [key, value] of fd) probe.append(key, value)
+      probe.set('mapping_only', 'true')
+      const info = await api.req('POST', '/api/import/' + kind, probe)
+      mapping = info.mapping
+      box.innerHTML = `<details open style="margin-top:12px"><summary>Match your columns</summary><p class="dim">Choose where each field comes from. Changes require another preview. Size columns on orders are detected automatically.</p><div class="grid2">${info.fields.map((field, i) => `<div class="field"><label for="${prefix}-map-${i}">${esc(({first:'first name',last:'last name'})[field] || field.replaceAll('_', ' '))}</label><select class="input" id="${prefix}-map-${i}"><option value="">Do not import</option>${info.headers.map((h, n) => `<option value="${n + 1}" ${mapping[field] === h ? 'selected' : ''}>${esc(h)}${info.examples[h] ? ' — ' + esc(info.examples[h]) : ''}</option>`).join('')}</select></div>`).join('')}</div></details>`
+      info.fields.forEach((field, i) => {
+        $('#' + prefix + '-map-' + i, bg).onchange = e => {
+          mapping[field] = e.target.value ? info.headers[Number(e.target.value) - 1] : null
+          $('#' + prefix + '-go', bg).disabled = true
+          $('#' + prefix + '-out', bg).textContent = 'Preview the updated column mapping before importing.'
+        }
+      })
+    },
+    reviewed() { const details = box.querySelector('details'); if (details) details.open = false },
+    lock(value) { box.querySelectorAll('select').forEach(el => { el.disabled = value }) }
+  }
+}
+
 
 export async function contactsView() {
   setPage('Customers', `<button class="btn ghost" id="import-c">Import CSV</button><button class="btn ghost" id="import-o">Import order history</button><button class="btn" id="new-c">+ New Customer</button>`)
@@ -57,7 +88,7 @@ export function importContacts(after) {
   modal({
     title: 'Import customers from CSV',
     wide: true,
-    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Export your customers from Printavo, shopVOX, DecoNetwork, QuickBooks, or a spreadsheet, then drop the CSV here. We match columns automatically (Name / Company / Email / Phone / Tags), skip anyone you already have, and never touch your existing records.</p>
+    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Export your customers from Printavo, shopVOX, DecoNetwork, QuickBooks, or a spreadsheet, then drop the CSV here. Review the suggested column matches or choose your own. Existing email addresses are skipped; rows without email cannot be matched to existing customers.</p>
       <label class="csv-drop" id="csv-drop"><input type="file" id="csv-file" accept=".csv,text/csv,text/plain" hidden>
         <div id="csv-drop-txt">Choose a CSV file — or paste rows below</div></label>
       <div class="field" style="margin-top:10px"><label>…or paste CSV rows</label>
@@ -66,8 +97,13 @@ export function importContacts(after) {
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn ghost" id="csv-preview">Preview</button><button class="btn" id="csv-go" disabled>Import</button>`,
     onMount: (bg) => {
       const fileInput = $('#csv-file', bg)
+      const mapper = mappingEditor(bg, 'csv', 'contacts')
+      let busy = false
+      $('#csv-text', bg).oninput = () => { mapper.reset(); fileInput.value = ''; $('#csv-go', bg).disabled = true; $('#csv-out', bg).textContent = 'Preview the updated rows before importing.' }
       const send = async (preview) => {
         const out = $('#csv-out', bg)
+        if (busy) return
+        $('#csv-go', bg).disabled = true
         const fd = new FormData()
         fd.append('preview', preview ? 'true' : 'false')
         if (fileInput.files[0]) fd.append('file', fileInput.files[0])
@@ -75,8 +111,11 @@ export function importContacts(after) {
         else { out.innerHTML = '<span class="dim" style="color:var(--amber)">Choose a file or paste some rows first.</span>'; return }
         out.innerHTML = '<span class="dim">Reading…</span>'
         try {
+          busy = true; fileInput.disabled = true; $('#csv-text', bg).disabled = true
+          await mapper.prepare(fd); mapper.lock(true); mapper.append(fd)
           const r = await api.req('POST', '/api/import/contacts', fd)
           if (r.preview) {
+            mapper.reviewed()
             const cols = Object.entries(r.columns).filter(([, v]) => v).map(([k]) => k)
             out.innerHTML = `<div class="card-b" style="border:1px solid var(--line);border-radius:8px">
               <div style="font-size:13px"><strong style="color:var(--accent)">${r.to_import}</strong> new customer${r.to_import === 1 ? '' : 's'} ready to import
@@ -86,13 +125,16 @@ export function importContacts(after) {
             $('#csv-go', bg).disabled = r.to_import === 0
           } else {
             out.innerHTML = `<div style="color:var(--accent);font-size:13px">✓ Imported ${r.created} customer${r.created === 1 ? '' : 's'}.${r.duplicates ? ` ${r.duplicates} were already on file.` : ''}</div>`
-            toast(`Imported ${r.created} customers`)
-            setTimeout(() => { closeModal(); after?.() }, 900)
+            toast(`Imported ${r.created} customers${r.skipped ? ` · ${r.skipped} rows skipped` : ''}`)
+            if (r.skipped) {
+              out.innerHTML += `<p class="dim">${r.skipped} row${r.skipped === 1 ? ' was' : 's were'} skipped. Review the source file for missing names or rejected values.</p><button class="btn ghost" id="csv-done">Done</button>`
+              $('#csv-done', bg).onclick = () => { closeModal(); after?.() }
+            } else setTimeout(() => { closeModal(); after?.() }, 900)
           }
-        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` } finally { busy = false; mapper.lock(false); fileInput.disabled = false; $('#csv-text', bg).disabled = false }
       }
       $('#csv-drop', bg).onclick = () => fileInput.click()
-      fileInput.onchange = () => { if (fileInput.files[0]) { $('#csv-drop-txt', bg).textContent = `${fileInput.files[0].name}`; send(true) } }
+      fileInput.onchange = () => { mapper.reset(); if (fileInput.files[0]) { $('#csv-drop-txt', bg).textContent = `${fileInput.files[0].name}`; send(true) } }
       $('#csv-preview', bg).onclick = () => send(true)
       $('#csv-go', bg).onclick = () => send(false)
     },
@@ -109,7 +151,7 @@ export function importOrders(after) {
   modal({
     title: 'Import order history from CSV',
     wide: true,
-    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Drop your old system's <strong>orders / invoices export</strong> (Printavo: Reports → Export → Quotes/Invoices; also works with YoPrint, InkSoft and DecoNetwork order summaries). Each row becomes real history on the right customer — completed jobs, paid invoices, open quotes stay open — dated when it actually happened. Reorder Radar and "same as last time" light up immediately. Re-running the same export is safe — orders already on file are skipped, whether or not your export has an order-number column.</p>
+    body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Drop your old system's <strong>orders / invoices export</strong> (Printavo: Reports → Export → Quotes/Invoices; also works with YoPrint, InkSoft and DecoNetwork order summaries). Review explicit payment states before importing: paid, unpaid, or quote. Unknown, completed-only, and partial-payment statuses pause the import for review. Historical jobs are treated as completed; migrate active production separately. Reorder Radar and "same as last time" light up immediately. Re-running the same export is safe — orders already on file are skipped, whether or not your export has an order-number column.</p>
       <label class="csv-drop" id="ocsv-drop"><input type="file" id="ocsv-file" accept=".csv,text/csv,text/plain" hidden>
         <div id="ocsv-drop-txt">Choose the orders CSV — or paste rows below</div></label>
       <div class="field" style="margin-top:10px"><label>…or paste CSV rows</label>
@@ -118,22 +160,33 @@ export function importOrders(after) {
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn ghost" id="ocsv-preview">Preview</button><button class="btn" id="ocsv-go" disabled>Import history</button>`,
     onMount: (bg) => {
       const fileInput = $('#ocsv-file', bg)
+      const mapper = mappingEditor(bg, 'ocsv', 'orders')
+      let busy = false
+      $('#ocsv-text', bg).oninput = () => { mapper.reset(); fileInput.value = ''; $('#ocsv-go', bg).disabled = true; $('#ocsv-out', bg).textContent = 'Preview the updated rows before importing.' }
       const send = async (preview) => {
         const out = $('#ocsv-out', bg)
+        if (busy) return
+        $('#ocsv-go', bg).disabled = true
         const fd = new FormData()
         fd.append('preview', preview ? 'true' : 'false')
+        fd.append('status_policy', 'strict')
         if (fileInput.files[0]) fd.append('file', fileInput.files[0])
         else if ($('#ocsv-text', bg).value.trim()) fd.append('text', $('#ocsv-text', bg).value)
         else { out.innerHTML = '<span class="dim" style="color:var(--amber)">Choose a file or paste some rows first.</span>'; return }
         out.innerHTML = '<span class="dim">Reading…</span>'
         try {
+          busy = true; fileInput.disabled = true; $('#ocsv-text', bg).disabled = true
+          await mapper.prepare(fd); mapper.lock(true); mapper.append(fd)
           const r = await api.req('POST', '/api/import/orders', fd)
           if (r.preview) {
+            if (r.orders > 0 && !r.blocked) mapper.reviewed()
             out.innerHTML = `<div class="card-b" style="border:1px solid var(--line);border-radius:8px">
               <div style="font-size:13px"><strong style="color:var(--accent)">${r.orders}</strong> order${r.orders === 1 ? '' : 's'} across <strong>${r.customers}</strong> customer${r.customers === 1 ? '' : 's'} — ${money0(r.totalValue)} of history</div>
+              ${r.payment_states ? `<p class="dim">${r.payment_states.paid || 0} paid · ${r.payment_states.unpaid || 0} unpaid · ${r.payment_states.quote || 0} quotes · ${r.payment_states.needs_review || 0} need review</p>` : ''}
+              ${r.blocked ? '<p style="color:var(--amber)">Import paused: use an explicit paid, unpaid, or quote status. Completed production does not prove payment. Partial payments need balance reconciliation before importing.</p>' : ''}
               ${r.warnings?.length ? `<div class="dim" style="font-size:11.5px;margin-top:5px">${r.warnings.length} row(s) need attention: ${esc(r.warnings[0].message)}${r.warnings.length > 1 ? ` (+${r.warnings.length - 1} more)` : ''}</div>` : ''}
               ${r.sample?.length ? `<table class="tbl" style="margin-top:8px"><tbody>${r.sample.map((o) => `<tr><td style="font-weight:600">${esc(o.customer_name || o.customer_email || '?')}</td><td class="dim" style="font-size:12px">${esc(o.order_number || '')}</td><td class="dim" style="font-size:12px">${esc(o.date || '')}</td><td class="num">${money0(o.total || 0)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`
-            $('#ocsv-go', bg).disabled = r.orders === 0
+            $('#ocsv-go', bg).disabled = r.orders === 0 || r.blocked
           } else {
             // Say when a total did not match its own lines. The difference is written as a named
             // line on the document rather than left as a gap between subtotal and total, and the
@@ -143,10 +196,10 @@ export function importOrders(after) {
             toast(`Imported ${r.imported} orders with history`)
             setTimeout(() => { closeModal(); after?.() }, 1200)
           }
-        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+        } catch (e) { out.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` } finally { busy = false; mapper.lock(false); fileInput.disabled = false; $('#ocsv-text', bg).disabled = false }
       }
       $('#ocsv-drop', bg).onclick = () => fileInput.click()
-      fileInput.onchange = () => { if (fileInput.files[0]) { $('#ocsv-drop-txt', bg).textContent = `${fileInput.files[0].name}`; send(true) } }
+      fileInput.onchange = () => { mapper.reset(); if (fileInput.files[0]) { $('#ocsv-drop-txt', bg).textContent = `${fileInput.files[0].name}`; send(true) } }
       $('#ocsv-preview', bg).onclick = () => send(true)
       $('#ocsv-go', bg).onclick = () => send(false)
     },
@@ -165,6 +218,11 @@ export function contactForm(c, after) {
         <div class="field"><label>Phone</label><input class="input" name="phone" value="${esc(c?.phone || '')}" placeholder="(714) 555-0142"></div>
       </div>
       <div class="field"><label>Tags (comma separated)</label><input class="input" name="tags" value="${esc((c?.tags || []).join(', '))}" placeholder="school, repeat, net-30"></div>
+      <div class="grid2">
+        <div class="field"><label for="customer-billing-address">Billing address</label><textarea class="input" id="customer-billing-address" name="billing_address" rows="4" maxlength="600" placeholder="Street address\nCity, state, postal code\nCountry">${esc(c?.billing_address || '')}</textarea></div>
+        <div class="field"><label for="customer-shipping-address">Shipping address</label><textarea class="input" id="customer-shipping-address" name="shipping_address" rows="4" maxlength="600" placeholder="Leave blank to use the billing address">${esc(c?.shipping_address || '')}</textarea></div>
+      </div>
+      <p class="dim" style="font-size:12px">Up to 8 lines per address. These defaults apply to new documents; existing orders keep their saved addresses.</p>
       <div class="field">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" name="tax_exempt" id="tax-exempt" ${c?.tax_exempt ? 'checked' : ''} style="width:auto;margin:0">
@@ -176,10 +234,12 @@ export function contactForm(c, after) {
         <label>Resale / exemption certificate #</label>
         <input class="input" name="tax_exempt_id" value="${esc(c?.tax_exempt_id || '')}" placeholder="Optional — kept on file for your records">
       </div>
+      ${billingFields(c || {})}<p class="dim">Billing defaults apply to new quotes and invoices. Existing documents keep their saved delivery contacts.</p>
       <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Sizing preferences, PO requirements, who signs off…">${esc(c?.notes || '')}</textarea></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${c ? 'Save' : 'Create Customer'}</button>`,
     onMount: (bg) => {
       // Only ask for the certificate number once the box is ticked.
+      bindBillingFields(bg)
       const box = $('#tax-exempt', bg)
       box.onchange = () => { $('#exempt-id-wrap', bg).style.display = box.checked ? '' : 'none' }
       onceClick($('#save', bg), c ? 'Saving…' : 'Creating…', async () => {
@@ -228,6 +288,7 @@ export async function contactDetailView(id) {
           <div><div class="lbl dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px">Phone</div>
             <div>${c.phone ? `<a href="tel:${esc(c.phone)}" style="color:var(--accent)">${esc(c.phone)}</a>` : '<span class="dim">—</span>'}</div></div>
         </div>
+        ${c.billing_address || c.shipping_address ? `<div class="grid2" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)"><div><strong>Billing address</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(c.billing_address || 'Not set')}</div></div><div><strong>Shipping address</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(c.shipping_address || c.billing_address || 'Not set')}</div>${!c.shipping_address && c.billing_address ? '<small class="dim">Same as billing</small>' : ''}</div></div>` : ''}
         ${c.notes ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
           <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px">Notes</div>
           <div class="muted" style="font-size:13px;white-space:pre-wrap">${esc(c.notes)}</div></div>` : ''}

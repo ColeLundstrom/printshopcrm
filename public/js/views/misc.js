@@ -40,7 +40,7 @@ export async function artView() {
       <div class="card-h"><h3>${title}</h3><span class="pill ${color}">${list.length}</span></div>
       <div class="card-b"><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">
         ${list.map((a) => `<div class="card" style="background:var(--panel-2);cursor:pointer" data-job="${a.job_id}">
-          ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" loading="lazy" decoding="async" alt="" src="/uploads/${esc(a.filename)}">`
+          ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" loading="lazy" decoding="async" alt="" src="${esc(a.url || `/uploads/${a.filename}`)}">`
             : '<div class="art-thumb" style="display:grid;place-items:center;font-size:26px">▤</div>'}
           <div style="padding:11px">
             <div class="row"><strong style="font-size:12.5px">${esc(a.job_title || '')}</strong><div class="sp"></div><span class="tag">v${a.version}</span></div>
@@ -106,7 +106,7 @@ export async function outboxView(showNeeds = false) {
   // messages; the dozen estimates already sitting here never did, because only the button's
   // condition was left behind when the route was added. POST /api/outbox/:id/send delivers a
   // 'logged' row perfectly well, and answers 502 with the reason when mail is still not wired.
-  const sendable = (m) => !m.delivered && (m.via === 'draft' || m.via === 'error' || m.via === 'logged')
+  const sendable = (m) => !m.delivered && !m.recipient_stale && (m.via === 'draft' || m.via === 'error' || m.via === 'logged')
   $('#view').innerHTML = `
     <div class="card" style="margin-bottom:14px;border-color:var(--line-2)"><div class="card-b">
       <strong style="font-size:13px">${live ? '✉ Delivery is live' : '▤ Logging only'}</strong>
@@ -144,6 +144,7 @@ export async function outboxView(showNeeds = false) {
     const m = rows.find((r) => r.id === +t.dataset.id)
     if (!m) return
     modal({ title: m.subject, body: `<div class="dim" style="font-size:12px;margin-bottom:12px">To: ${esc(m.to_email || '—')} · ${fmtDate(m.created_at)}</div>
+      ${m.recipient_stale?'<p role="status">Delivery contacts changed. Open the document, review its recipients, and create a fresh message. This draft cannot be sent.</p>':''}
       ${m.via === 'draft' ? '<div class="dim" style="font-size:12px;margin-bottom:12px;color:var(--amber)">Follow-ups are on “Ask me first”, so this was drafted and is waiting for you.</div>' : ''}
       ${m.via === 'error' && m.delivery_error ? `<div class="dim" style="font-size:12px;margin-bottom:12px;color:var(--red)">It did not go out: ${esc(m.delivery_error)}</div>` : ''}
       <div style="white-space:pre-wrap;font-size:13.5px;line-height:1.65;background:var(--bg);padding:15px;border-radius:8px;border:1px solid var(--line)">${esc(m.body)}</div>`,
@@ -289,7 +290,7 @@ function slackCard(esc) {
   return `<div class="card">
     <div class="card-h"><h3>Slack</h3><span class="pill" id="slack-pill">checking…</span>
       <div class="spacer"></div><span class="dim" style="font-size:11px">your workspace, your bot</span></div>
-    <div class="card-b" id="slack">
+    <div class="card-b" id="slack"><p><a class="btn ghost" href="#/slack-assistant">Shop assistant · modes & employees</a></p>
       <p class="dim" style="font-size:12.5px;margin-bottom:16px;line-height:1.6">Paste a customer's message in Slack — get a priced draft estimate back in the thread. Type <code>/quote</code> and paste what the customer sent, or @-mention the bot in any channel. Runs on <strong style="color:var(--txt-2)">your</strong> Slack app in <strong style="color:var(--txt-2)">your</strong> workspace; nothing is ever sent to the customer.</p>
 
       <ol class="steps">
@@ -375,7 +376,8 @@ export async function settingsView() {
     catch { return DEFAULT_UPCHARGES }
   })()
 
-  $('#view').innerHTML = `<div style="max-width:820px" class="stack">
+  $('#view').innerHTML = `<div class="settings-workspace stack"><nav class="settings-jumps" aria-label="Settings sections">
+      <a href="#/setup">Setup guide</a><a href="#/branding">Logo & colors</a><button type="button" data-settings-jump="shop">Shop</button><button type="button" data-settings-jump="costing">Costing</button><button type="button" data-settings-jump="delivery">Email &amp; SMS</button><button type="button" data-settings-jump="ai">AI</button><button type="button" data-settings-jump="slack">Slack</button><button type="button" data-settings-jump="modes">Advanced controls</button></nav>
     <div class="card"><div class="card-h"><h3>Shop</h3></div><div class="card-b" id="shop">
       <div class="field">
         <label>Your logo</label>
@@ -522,16 +524,16 @@ export async function settingsView() {
       </div>
     </div>` : `
     <div class="card">
-      <div class="card-h"><h3>Online Gang-Sheet Ordering</h3><span class="pill ${s.stripe_secret_set ? 'green' : ''}">${s.stripe_secret_set ? 'Stripe connected' : 'add your Stripe key'}</span></div>
+      <div class="card-h"><h3>Online ordering & payments</h3><span class="pill ${s.stripe_secret_set ? 'green' : ''}">${s.payment_provider==='authorize_net' ? 'Authorize.net selected' : s.payment_provider==='off' ? 'Manual payments' : s.stripe_secret_set ? 'Stripe key saved' : 'Configure payments'}</span></div>
       <div class="card-b" id="online">
-        <p class="dim" style="font-size:12.5px;margin-bottom:14px;line-height:1.6">Let your customers build their own DTF gang sheets on <strong style="color:var(--txt-2)">your</strong> website and pay through <strong style="color:var(--txt-2)">your</strong> Stripe — the money lands in your account, we never touch it. No Stripe key? Orders still come in as quotes you follow up on.</p>
+        <p class="dim" style="font-size:12.5px;margin-bottom:14px;line-height:1.6">Let your customers build their own DTF gang sheets on <strong style="color:var(--txt-2)">your</strong> website and pay through <strong style="color:var(--txt-2)">your</strong> payment provider — the money lands in your account, we never touch it. Without online payments, orders still come in as quotes you follow up on.</p>
         <div class="grid2">
           ${f('dtf_price_per_inch', 'DTF price per linear inch ($)', 'What you charge per inch of roll used', 'number')}
           ${f('dtf_min_charge', 'Minimum charge ($)', 'Floor price for any sheet', 'number')}
         </div>
         ${f('dtf_sheet_width', 'Roll width (in)', 'Your DTF printer roll width — usually 22"', 'number')}
 
-        <details class="disc"><summary>Stripe keys — ${s.stripe_secret_set ? 'connected, replace the key' : 'take card payment on the builder'}</summary>
+        <p><a class="btn ghost" href="#/payments">Payment connections — Stripe or Authorize.net</a></p><details class="disc"><summary>Stripe keys — ${s.stripe_secret_set ? 'connected, replace the key' : 'take card payment on the builder'}</summary>
           <div class="disc-b">
             <div class="grid2">
               ${sf('stripe_secret', 'Your Stripe secret key', 'In Stripe: Developers → API keys → Secret key → Reveal. Starts <code>sk_live_</code> or <code>sk_test_</code> — not the publishable <code>pk_</code> one. Stays on your server.')}
@@ -618,7 +620,7 @@ export async function settingsView() {
           : `<a class="btn ghost sm" href="/api/export/all.json" download>Download everything (JSON)</a>
         <details class="disc"><summary>One table at a time (CSV)</summary>
           <div class="disc-b"><div class="wrap-row">
-            ${['contacts', 'estimates', 'line_items', 'invoices', 'payments', 'jobs', 'activities']
+            ${['contacts', 'estimates', 'line_items', 'invoices', 'payments', 'jobs', 'shipments', 'shipment_events', 'activities']
               .map((t) => `<a class="btn ghost sm" href="/api/export/${t}.csv" download>${t.replace('_', ' ')}.csv</a>`).join('')}
           </div></div></details>`}
       </div>
@@ -646,6 +648,16 @@ export async function settingsView() {
   // again, on the screen holding the SMTP password and the Stripe keys. Every other screen with
   // this pattern (matrices, estimates, agent, pricing, onboarding) already keeps it at module
   // level; this was the one copy that did not.
+  const jumpTo = (id) => {
+    const section = document.getElementById(id)
+    if (!section) return
+    section.closest('details')?.setAttribute('open', '')
+    section.scrollIntoView({ block: 'start' })
+    section.setAttribute('tabindex', '-1'); section.focus({ preventScroll: true })
+  }
+  for (const b of $$('[data-settings-jump]')) b.onclick = () => jumpTo(b.dataset.settingsJump)
+  const requestedSection = new URLSearchParams(location.hash.split('?')[1] || '').get('section')
+  if (['shop','costing','delivery','ai','slack','modes'].includes(requestedSection)) jumpTo(requestedSection)
   settingsDirty = false
   // Element-based, not '#view [name]'. Two sets of real settings carry no name attribute at all:
   // the extended-size upcharge grid (id/data-up only) and the whole lite-edition "Sending Email"

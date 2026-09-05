@@ -22,6 +22,7 @@ async function drawList() {
   const { matrices: list, templates } = cache
 
   $('#mx-list').innerHTML = `
+    <div class="card card-b" id="mx-drop"><strong>Bring your existing price sheet</strong><p class="dim">Drop one CSV or TSV here, or choose a file. The first row supplies column headings; the first column supplies row headings. Creates a new editable matrix.</p><label class="btn ghost">Choose price sheet<input id="mx-import-new" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden></label></div>
     <div class="card"><div class="card-b">
       <p class="dim" style="font-size:12.5px;line-height:1.6;margin:0">A price matrix is your own price sheet. Name it anything, label the rows and columns in your own words, and type your prices in. Screen printing by ink colour, mugs by size, engraving by area, banners by the square foot — same grid, your labels. Quotes let you pick which matrix a line is priced from, so one estimate can use several.</p>
     </div></div>
@@ -82,6 +83,10 @@ function wireList() {
    * #mx-list is rebuilt by matricesView() on each entry, so onOnce still binds exactly once per
    * screen, and drawList()'s repaints (which only replace its innerHTML) do not re-bind. */
   const root = $('#mx-list')
+  const importNew=async file=>{if(!file)return;try{if(!/\.(csv|tsv)$/i.test(file.name))throw new Error('Choose a CSV or TSV price sheet');if(file.size>2e6)throw new Error('Price sheets must be under 2 MB');const body=new FormData();body.append('file',file);body.append('name',file.name.replace(/\.(csv|tsv)$/i,''));const r=await api.req('POST','/api/matrices/import',body);toast(`Imported ${r.filled} prices`);go(`/matrices/${r.matrix.id}`)}catch(e){toast(e.message,true)}}
+  $('#mx-import-new').onchange=e=>importNew(e.target.files?.[0])
+  const drop=$('#mx-drop');drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();if(e.dataTransfer.files.length!==1)return toast('Drop one price sheet at a time',true);importNew(e.dataTransfer.files[0])}
+
   onOnce(root, '[data-edit]', (_e, el) => go(`/matrices/${el.dataset.edit}`))
   onOnce(root, '[data-tpl]', async (_e, el) => {
     try {
@@ -184,6 +189,7 @@ function drawEditor() {
           <option value="flat" ${m.unit === 'flat' ? 'selected' : ''}>A flat charge</option>
         </select></div>
       </div>
+      <div class="grid2"><label class="field">Decoration / project type<input class="input" id="mx-method" value="${esc(m.decoration||'')}" maxlength="60" placeholder="Screen Print, DTF, Embroidery, Laser…"></label><label class="field"><input id="mx-contract" type="checkbox" ${m.customerSupplied?'checked':''}> Customer-supplied garments (zero blank cost)</label></div>
       <p class="dim" style="font-size:12px;margin:0">${m.unit === 'flat'
         ? 'A flat charge is the whole line total, whatever the quantity — right for setup fees, art charges and rush tiers.'
         : 'A per-piece price is multiplied by the line quantity on the quote.'}</p>
@@ -296,8 +302,9 @@ function wireEditor() {
     return Number.isFinite(high) ? `${high + 1}+` : `${m.rowLabel} ${m.rows.length + 1}`
   }
 
-  for (const id of ['mx-name', 'mx-desc', 'mx-rl', 'mx-cl']) $(`#${id}`).oninput = markDirty
+  for (const id of ['mx-name', 'mx-desc', 'mx-rl', 'mx-cl', 'mx-method']) $(`#${id}`).oninput = markDirty
   $('#mx-unit').onchange = markDirty
+  $('#mx-contract').onchange = markDirty
 
   $('#mx-save').onclick = save
 
@@ -398,6 +405,7 @@ async function save() {
   try {
     const payload = {
       name: $('#mx-name').value.trim(),
+      decoration:$('#mx-method').value.trim(),customerSupplied:$('#mx-contract').checked,
       description: $('#mx-desc').value.trim(),
       rowLabel: $('#mx-rl').value.trim(),
       colLabel: $('#mx-cl').value.trim(),
@@ -502,7 +510,7 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
           qty: Number($('#mp-qty', bg).value) || 0,
           description: $('#mp-desc', bg).value.trim() || loaded.name,
           detail: `${loaded.rows[ri]} · ${loaded.cols[ci]}`,
-          matrix: { id: loaded.id, name: loaded.name, row: loaded.rows[ri], col: loaded.cols[ci] },
+          matrix: { id: loaded.id, name: loaded.name, customerSupplied:loaded.customerSupplied,decoration:loaded.decoration,row: loaded.rows[ri], col: loaded.cols[ci] },
         })
       }
       load(start.id)

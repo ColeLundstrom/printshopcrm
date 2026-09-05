@@ -1,3 +1,6 @@
+> Community direction: the complete software is free and open source. Optional paid service is
+> server hosting and basic setup. [Roadmap](docs/ROADMAP.md) · [Evaluation demo](docs/DEMO.md)
+
 # PrintShopCRM
 
 **Open-source shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
@@ -93,11 +96,14 @@ Longer write-ups of the things people ask about most, on the project site:
 
 ## Features
 
+Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before evaluating a migration. Available screens, tested local behavior and verified provider integrations are different levels of readiness.
+
 **Sales**
-- Customers with tags, notes, lifetime value, and a timeline fed by every other module
-- Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link
+- Customers with billing/shipping addresses, tags, notes, lifetime value, and a timeline fed by other modules
+- Separate buyer and accounts-payable contacts saved on each document. Recipient changes hold older unsent messages for review ([details](docs/BILLING-RECIPIENTS.md))
+- Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link. Commercial revisions expire the old approval link, preserve approval history, and require another review
 - Sales pipeline with weighted value and win rate, auto-synced from estimate events
-- Two-way conversation inbox (email + SMS, both directions)
+- Conversation history for outbound email/SMS and connected inbound messages; SMTP alone does not synchronize a mailbox. Unsent drafts stay with their customer while navigating
 - Follow-ups: quotes that went quiet and invoices nobody chased, ranked by value
 - Reorder Radar: customers due for their next run, based on their own history
 
@@ -105,30 +111,32 @@ Longer write-ups of the things people ask about most, on the project site:
 - Drag-to-move job board (pointer-based, works on touch) with rush/late/unpaid/assignee filters
 - Art & prepress: versioned proofs, customer approve/reject with notes, approval advances the job *and* moves the due date
 - Printable work tickets with a hard "NO APPROVED ART — do not print" block when the proof isn't signed off
-- Capacity planner: schedules a prospective job against the committed board and returns a real ship date
+- Screenprinting capacity estimates exclude completed presswork and flag unsupported/mixed work for review. A partial queue does not produce a positive print-date verdict
+- Shared shipment history across Sales and department views, with multiple parcels, pickup/local delivery and auditable corrections. Tracking does not silently move a job or send a message ([details](docs/SHIPPING.md))
 - Floor Mode: Code 128 barcode scanning that feeds measured labor back into costing
-- DTF resize and a gang-sheet builder (embeddable on your own site, checking out through *your* Stripe key)
+- DTF resize and a gang-sheet builder (embeddable on your own site, checking out through your Stripe or Authorize.net account)
 
 **Money**
 - Quoting calculator: garment × markup + imprint charge scaled by run length and colors-per-location + one-time screens; tiered rush; dark garments automatically add an underbase
 - Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
 - Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins
-- Invoices with partial payments, running balance, and status always derived from the payments table
+- Invoices with partial payments, running balance, saved postal addresses, and separate payment/production deadlines
+- Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation, refund/void reconciliation and explicit invoice credits ([setup and limits](docs/PAYMENTS.md))
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
 - QuickBooks IIF export (Online sync is API-only for now — it has no setup screen yet)
 
 **Purchasing**
-- Garment catalog with real costs feeding the ROI engine
+- Garment catalog with editable baseline costs feeding the ROI estimates
 - S&S Activewear, SanMar and AlphaBroder lookups when you connect an account, catalog fallback when you don't
-- Purchase orders consolidated per style/size to avoid split shipments
+- Purchase orders grouped by style/color/size, with partial receiving and explicit supplier-confirmation records. The current catalog does not provide verified orderable size/color SKUs: place orders in the supplier portal and record their reference here
 
 **Automation & integration**
 - Event and time-based rules with multi-step drip sequences (email → wait → text)
 - Autopilot: paste a customer email and it becomes a structured draft order — review-first by default
 - AI receptionist for inbound quote requests (bring your own Anthropic or OpenAI key; a deterministic parser runs with no key at all)
 - Public REST API (`/api/v1`) with Bearer keys, plus signed outbound webhooks — see [docs/API.md](docs/API.md)
-- CSV import for customers and full order history, so reorder features work on day one
+- CSV mapping for customers and supported order-history fields, with preview; check unsupported attachments and payment history separately before migrating
 
 **The app itself**
 - Light and dark themes, tuned separately rather than inverted
@@ -239,7 +247,7 @@ Set `PSC_SECRET` in production either way — customer share links derive from i
 
 Everything is environment variables plus per-shop settings stored in the database. Nothing is
 hardcoded. See **[.env.example](.env.example)** for every variable with comments, and Settings
-inside the app for per-shop values (tax rate, hourly rate, mail, supplier accounts, Stripe keys).
+inside the app for per-shop values (tax rate, hourly rate, mail, supplier accounts, payment providers).
 
 **Currency and number format are per-shop settings too** (Settings → Shop). Pick an ISO currency
 code and a locale, and every screen, PDF, email, customer page and the assistant write money and
@@ -361,29 +369,43 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before a code PR — it covers the setup
 the one hard rule: **a bug fix needs a failing test first.** Planning something large? Open a
 [discussion](https://github.com/ColeLundstrom/printshopcrm/discussions) first so it doesn't sit.
 
-**[GOVERNANCE.md](GOVERNANCE.md) is the public contract**: who decides, how long you should wait for
-a first response (5 working days on an issue, 7 on a PR, 3 on anything security-related), exactly
-what gets merged, what gets declined and why, and what protects you if this project ever goes
-quiet.
+**[GOVERNANCE.md](GOVERNANCE.md) explains how the project is maintained**: who reviews changes,
+response targets, merge requirements, funding and continuity. Response targets depend on
+maintainer availability; voluntary support does not buy a response deadline or review priority.
 
 By contributing you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Security issues: please report privately, see [SECURITY.md](SECURITY.md).
 
+### Support the project
+
+Voluntary contributions help fund maintenance, documentation, release testing and outside
+contributors as more shops join. The software stays fully available for free. Contributions
+do not buy features, merge priority or a support contract; paid hosting and basic setup are
+separate services.
+
+Open **More tools → Support the project** for configured one-time or recurring options.
+Payment links stay hidden until the operator sets up and verifies a destination. You can also
+help by testing releases, improving documentation, reporting bugs and contributing code.
+See [project support setup](docs/PROJECT-SUPPORT.md).
+
 ## License
 
-**GNU AGPL v3** — see [LICENSE](LICENSE). Real, OSI-approved open source, the same deal WordPress
-made: the software is free, and the services around it are the business.
+**GNU AGPL v3 or later** — see [LICENSE](LICENSE). You can run, modify and share PrintShopCRM,
+including commercially, under the license's terms. [Hosting and basic setup](HOSTING.md) are
+optional paid services; voluntary project support does not unlock software features.
 
-- ✅ **Run it for your print shop, free, forever** — commercially, modified however you like. Your
-  shop's data and your private changes are yours; nothing obliges you to publish anything.
-- ✅ **Fork it, sell services around it, build on it.**
-- ⚖️ **If you run a modified version as a service for other people, publish your changes.** That's
-  the copyleft bargain — improvements to a shared tool come back to the shops using it, instead of
-  disappearing into someone's proprietary fork.
-- 💼 **Don't want that obligation?** Commercial licenses that release you from AGPL terms are
-  available — [get in touch](https://github.com/ColeLundstrom/printshopcrm/discussions).
+If you modify the software and users interact with it remotely over a computer network,
+[AGPL §13](https://www.gnu.org/licenses/agpl-3.0.en.html#section13) requires a prominent offer of
+your version's **Corresponding Source**, available from a network server at no charge. This
+includes the program source and required build, installation and modification scripts, not your
+customer records or credentials. Sharing copies also carries the applicable license obligations.
+Contributing changes upstream is welcome; §13 does not require submission to this project.
 
-If you deploy this for others, set `PSC_SOURCE_URL` to your own repository. The app shows a source
-link to every user, which is how AGPL §13 is satisfied — pointing it at upstream while running
-patched code is not compliance.
+For a modified deployment, set `PSC_SOURCE_URL` to an accessible source archive or repository
+identifying the exact version running, including your changes. Keep that source offer current.
+The app's source link helps provide the offer; setting the URL alone does not establish compliance.
+
+### A guided workspace, with AI optional
+
+Open **Setup & connections** for shop basics, CSV migration, email on your domain, Twilio SMS, and optional Slack/agent connections. Daily work remains manual unless you choose assistance. Specialist tools remain under **More tools** and all settings remain editable. See [connection setup](docs/CONNECTIONS.md) and [migration limits and checks](docs/MIGRATION.md).

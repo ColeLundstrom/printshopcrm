@@ -1,16 +1,29 @@
-import { api, $, $$, el, esc, relTime, initials, setPage, empty, toast, on, go, announce } from '../core.js'
+import { api, $, $$, esc, relTime, initials, setPage, empty, toast, on, onOnce, go, announce } from '../core.js'
 
 /**
- * Conversations — GHL's unified inbox, built in.
- *
- * One thread per customer, both directions, email and SMS together. Every automated touch
- * and every nudge already lands here, so the shop sees the whole relationship in one place
- * instead of paying for a separate CRM to remember it.
+ * Connected conversation history, with an in-memory draft and pending-operation state per
+ * customer. SMTP alone does not synchronize a mailbox. Never reuse a draft for another contact.
  */
 let activeId = null
+let screen = null
+
+const isCurrent = s => screen === s && s.owner === window.__me && s.list.isConnected && s.thread.isConnected && /^#\/conversations(?:\/\d+)?(?:\?|$)/.test(location.hash)
+const draftFor = (s, id) => s.drafts.get(id) || { text: '', channel: 'email', revision: 0 }
+function saveDraft(s, id, text, channel) {
+  const old = draftFor(s, id)
+  const next = text === old.text && channel === old.channel ? old : { text, channel, revision: old.revision + 1 }
+  s.drafts.set(id, next)
+  return next
+}
+function captureDraft(s) {
+  if (!isCurrent(s) || s.renderedId === null) return
+  const input = $('#ct-text', s.thread)
+  if (input) saveDraft(s, s.renderedId, input.value, $('#ct-channel .on', s.thread)?.dataset.ch === 'sms' ? 'sms' : 'email')
+}
 
 export async function conversationsView(contactId) {
   setPage('Conversations')
+  if (screen) captureDraft(screen)
   activeId = contactId ? +contactId : activeId
   /**
    * Do not rebuild the shell when it is already on screen.
@@ -35,16 +48,32 @@ export async function conversationsView(contactId) {
       <div class="convo-thread card" id="convo-thread"></div>
     </div>`
   }
-  await drawList()
-  if (activeId) await drawThread(activeId)
-  else $('#convo-thread').innerHTML = empty('▭', 'Pick a conversation', 'Every email and text with a customer lives here, both directions.')
+  if (!screen || screen.owner !== window.__me) screen = {
+    owner: window.__me, list: null, thread: null, renderedId: null,
+    drafts: new Map(), sending: new Map(), drafting: new Set(), errors: new Map(), viewRequest: 0, listRequest: 0, threadRequest: 0,
+  }
+  if (screen.list !== $('#convo-list')) {
+    screen.list = $('#convo-list'); screen.thread = $('#convo-thread'); screen.renderedId = null
+    ++screen.threadRequest
+  }
+  const s = screen, request = ++s.viewRequest
+  if (s.renderedId !== null && s.renderedId !== activeId) {
+    s.renderedId = null
+    s.thread.innerHTML = '<div class="card-b dim" role="status">Loading conversation…</div>'
+  }
+  await drawList(s)
+  if (!isCurrent(s) || request !== s.viewRequest) return
+  if (activeId) await drawThread(activeId, s)
+  else s.thread.innerHTML = empty('▭', 'Pick a conversation', 'Sent emails and connected inbound messages appear here.')
 }
 
-async function drawList() {
+async function drawList(s) {
+  const request = ++s.listRequest
   const d = await api.get('/api/conversations')
+  if (!isCurrent(s) || request !== s.listRequest) return
   if (!activeId && d.threads.length) activeId = d.threads[0].id
   $('#convo-list').innerHTML = d.threads.length ? d.threads.map((t) => `
-    <div class="convo-item ${t.id === activeId ? 'on' : ''} ${t.unread ? 'unread' : ''}" data-c="${t.id}"${t.id === activeId ? ' aria-current="true"' : ''}>
+    <div class="convo-item ${t.id === activeId ? 'on' : ''} ${t.unread ? 'unread' : ''}" role="button" tabindex="0" aria-label="Conversation with ${esc(t.name)}" data-c="${t.id}"${t.id === activeId ? ' aria-current="true"' : ''}>
       <div class="avatar">${esc(initials(t.name))}</div>
       <div class="ci-main">
         <div class="ci-top"><span class="ci-name">${esc(t.name)}</span><span class="ci-time">${relTime(t.last_at)}</span></div>
@@ -52,30 +81,19 @@ async function drawList() {
       </div>
       ${t.unread ? `<span class="ci-badge" aria-label="${t.unread} unread">${t.unread}</span>` : `<span class="ci-ch" aria-hidden="true">${t.last_channel === 'sms' ? '✉' : '@'}</span>`}
     </div>`).join('') : empty('▭', 'No conversations', 'Send an estimate or a proof to start one.', '<a class="btn" href="#/autopilot">Create an estimate</a>')
-  on($('#convo-list'), '[data-c]', (_e, t) => { activeId = +t.dataset.c; go(`/conversations/${activeId}`) })
+  onOnce(s.list, '[data-c]', (_e, t) => go(`/conversations/${+t.dataset.c}`))
 }
 
-async function drawThread(id) {
-  // What the shop has typed but not sent, captured before the repaint that would destroy it.
-  //
-  // app.js repaints this whole screen on every `conversation` and `chat` realtime event. The line
-  // immediately above that one already guards the receptionist screen, for exactly this reason and
-  // in almost these words — and this screen, where the unsaved thing is a customer reply, was left
-  // unconditional. An inbound email or SMS landing mid-sentence wiped the reply, including an AI
-  // draft that had just been generated and billed.
-  //
-  // Preserved rather than skipped: skipping the repaint would keep the draft but hide the message
-  // that just arrived, which is the other half of the same job. The customer's new message appears
-  // AND the half-written answer survives. After a successful send the caller has already cleared
-  // the box, so what is restored is the empty string, which is correct.
-  const draft = $('#ct-text')?.value ?? ''
-  // The chosen channel is part of the reply being written. It lived only in the `let channel`
-  // below, which the repaint re-initialised to 'email' — so a shop that had picked SMS and was
-  // typing sent the customer an email instead, with nothing on screen to say it had changed.
-  const channelWas = $('#ct-channel .on')?.dataset.ch === 'sms' ? 'sms' : 'email'
+async function drawThread(id, s) {
+  const request = ++s.threadRequest
   const d = await api.get(`/api/conversations/${id}`)
+  if (!isCurrent(s) || activeId !== id || request !== s.threadRequest) return
+  // Capture after the read: staff may keep typing while a realtime refresh is in flight.
+  // Drafts belong to a contact, never to whichever composer happens to be visible next.
+  captureDraft(s)
+  const { text: draft, channel: channelWas } = draftFor(s, id)
   const c = d.contact
-  $('#convo-thread').innerHTML = `
+  s.thread.innerHTML = `
     <div class="ct-head">
       <div class="avatar">${esc(initials(c.name))}</div>
       <div style="flex:1;min-width:0">
@@ -87,60 +105,85 @@ async function drawThread(id) {
     <div class="ct-body" id="ct-body">
       ${d.messages.map((m) => `<div class="bubble ${m.direction === 'out' ? 'out' : 'in'}">
         <div class="bub-txt">${esc(m.body).replace(/\n/g, '<br>')}</div>
-        <div class="bub-meta">${m.channel === 'sms' ? 'SMS' : 'Email'} · ${relTime(m.created_at)}${m.kind === 'automation' ? ' · auto' : ''}</div>
+        <div class="bub-meta">${m.channel === 'sms' ? 'SMS' : 'Email'} · ${relTime(m.created_at)}${m.kind === 'automation' ? ' · auto' : ''}${m.direction==='out' && m.recipient_email?` · To: ${esc(m.recipient_name || '')} ${esc(m.recipient_email)}`:''}</div>
       </div>`).join('')}
     </div>
     <div class="ct-compose">
+      <p class="dim">Replies here go to the buyer: ${esc(c.email || 'no email saved')}. To contact accounts payable, open the invoice and use its saved billing recipient.</p>
       <div class="row" style="margin-bottom:7px">
         <div class="tabs" id="ct-channel" role="group" aria-label="Send this reply as">
           <button type="button" data-ch="email" class="${channelWas === 'email' ? 'on' : ''}" aria-pressed="${channelWas === 'email'}">Email</button><button type="button" data-ch="sms" class="${channelWas === 'sms' ? 'on' : ''}" aria-pressed="${channelWas === 'sms'}">SMS</button>
         </div>
         <div class="sp"></div>
-        <button class="btn ghost sm" id="ct-ai">Draft with AI</button>
+        <button class="btn ghost sm" id="ct-ai" ${s.drafting.has(id) ? 'disabled' : ''}>${s.drafting.has(id) ? 'Drafting…' : 'Draft with AI'}</button>
         ${window.__me?.single_tenant ? '<button class="btn ghost sm" id="ct-sim" title="Dev preview only — fakes a customer reply">Simulate reply</button>' : ''}
       </div>
-      <textarea class="input" id="ct-text" placeholder="Write a reply…" style="min-height:70px"></textarea>
-      <div class="row" style="margin-top:7px"><div class="sp"></div><button class="btn" id="ct-send">Send</button></div>
+      <textarea class="input" id="ct-text" aria-label="Reply to ${esc(c.name)}" placeholder="Write a reply…" style="min-height:70px"></textarea>
+      ${s.errors.has(id) ? `<p role="alert" class="dim">${esc(s.errors.get(id))}</p>` : ''}
+      <div class="row" style="margin-top:7px"><div class="sp"></div><button class="btn" id="ct-send" ${s.sending.has(id) ? 'disabled' : ''}>${s.sending.has(id) ? 'Sending…' : 'Send'}</button></div>
     </div>`
 
-  if (draft) $('#ct-text').value = draft
-  const body = $('#ct-body'); body.scrollTop = body.scrollHeight
+  s.renderedId = id
+  const input = $('#ct-text', s.thread), send = $('#ct-send', s.thread), ai = $('#ct-ai', s.thread)
+  input.value = draft
   let channel = channelWas
-  // Of the sixteen segmented controls in this app, this is the one where being unable to tell
-  // which option is armed costs the shop money and reaches the customer on the wrong channel. The
-  // class is the state store — line 75 reads `$('#ct-channel .on')?.dataset.ch` to survive the
-  // realtime repaint — so aria-pressed is added beside it, and the change is also said out loud.
-  on($('#ct-channel'), '[data-ch]', (_e, t) => {
+  input.addEventListener('input', () => saveDraft(s, id, input.value, channel))
+  const body = $('#ct-body', s.thread); body.scrollTop = body.scrollHeight
+  on($('#ct-channel', s.thread), '[data-ch]', (_e, t) => {
     channel = t.dataset.ch
-    $$('#ct-channel button').forEach((b) => { const on = b.dataset.ch === channel; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
+    $$('#ct-channel button', s.thread).forEach((b) => { const selected = b.dataset.ch === channel; b.classList.toggle('on', selected); b.setAttribute('aria-pressed', String(selected)) })
+    saveDraft(s, id, input.value, channel)
     announce(`Replying by ${channel === 'sms' ? 'text message' : 'email'}`)
   })
 
-  $('#ct-send').onclick = async () => {
-    const text = $('#ct-text').value.trim()
+  send.onclick = async () => {
+    if (!isCurrent(s) || !input.isConnected || activeId !== id || s.sending.has(id)) return
+    const saved = saveDraft(s, id, input.value, channel), text = saved.text.trim()
     if (!text) return toast('Write a reply first', true)
-    $('#ct-send').disabled = true
+    s.sending.set(id, saved)
+    s.errors.delete(id)
+    send.disabled = true; send.textContent = 'Sending…'
     try {
       await api.post(`/api/conversations/${id}/reply`, { body: text, channel })
-      $('#ct-text').value = ''
-      await drawThread(id); await drawList()
-      toast('Sent')
-    } catch (e) { toast(e.message, true); $('#ct-send').disabled = false }
+      captureDraft(s)
+      if (draftFor(s, id).revision === saved.revision) {
+        saveDraft(s, id, '', channel)
+        if (isCurrent(s) && s.renderedId === id) $('#ct-text', s.thread).value = ''
+      }
+      if (isCurrent(s)) toast(`Sent to ${c.name}`)
+    } catch (e) { s.errors.set(id, e.message); if (isCurrent(s) && activeId === id) toast(e.message, true) }
+    finally {
+      s.sending.delete(id)
+      if (isCurrent(s) && activeId === id) {
+        if (send.isConnected) { send.disabled = false; send.textContent = 'Send' }
+        try { await drawThread(id, s); await drawList(s) } catch (e) { if (isCurrent(s)) toast(e.message, true) }
+      }
+    }
   }
 
-  $('#ct-ai').onclick = async () => {
-    const btn = $('#ct-ai'); btn.disabled = true; btn.textContent = 'Drafting…'
+  ai.onclick = async () => {
+    if (!isCurrent(s) || !input.isConnected || activeId !== id || s.drafting.has(id)) return
+    const saved = saveDraft(s, id, input.value, channel)
+    s.drafting.add(id); ai.disabled = true; ai.textContent = 'Drafting…'
     try {
       const last = d.messages.filter((m) => m.direction === 'in').slice(-1)[0]
       const r = await api.post('/api/ai/draft', { contact_id: id, intent: 'reply helpfully to the customer', context: last?.body || 'follow up on their order' })
-      if (r.text) { $('#ct-text').value = r.text; toast('Draft ready — edit before sending') }
-      else toast(r.ai_note || 'Model offline — type your reply', true)
-    } catch (e) { toast(e.message, true) } finally { btn.disabled = false; btn.textContent = 'Draft with AI' }
+      captureDraft(s)
+      if (r.text && draftFor(s, id).revision === saved.revision) {
+        saveDraft(s, id, r.text, saved.channel)
+        if (isCurrent(s) && s.renderedId === id) { $('#ct-text', s.thread).value = r.text; toast('Draft ready — edit before sending') }
+      } else if (isCurrent(s) && activeId === id) toast(r.text ? 'Your reply changed while drafting. Your edits were kept.' : r.ai_note || 'Model offline — type your reply', true)
+    } catch (e) { if (isCurrent(s) && activeId === id) toast(e.message, true) }
+    finally {
+      s.drafting.delete(id)
+      if (isCurrent(s) && s.renderedId === id) { const btn = $('#ct-ai', s.thread); btn.disabled = false; btn.textContent = 'Draft with AI' }
+    }
   }
 
-  const sim = $('#ct-sim')
+  const sim = $('#ct-sim', s.thread)
   if (sim) sim.onclick = async () => {
+    if (!isCurrent(s) || !sim.isConnected || activeId !== id) return
     await api.post(`/api/conversations/${id}/simulate`, { channel, body: 'Sounds good — go ahead!' })
-    await drawThread(id); await drawList()
+    if (isCurrent(s) && activeId === id) { await drawThread(id, s); await drawList(s) }
   }
 }

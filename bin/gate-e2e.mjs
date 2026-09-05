@@ -17,12 +17,20 @@ import { DatabaseSync } from 'node:sqlite'
 import { WebSocket } from 'ws'
 import { request as rawHttp } from 'node:http'
 import { gunzipSync } from 'node:zlib'
+import { createServer as createPortProbe } from 'node:net'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // Env as well as argv: a CI matrix that runs two jobs on one runner needs to move this, and
 // `PSC_GATE_PORT=4391 npm run test:e2e` is reachable where an npm-script argv is not.
 const PORT = Number(process.argv[2] || process.env.PSC_GATE_PORT) || 4390
 const BASE = `http://127.0.0.1:${PORT}`
+// Never run signup/payment tests against an app that already owns this port. A health response
+// is not ownership: database migration may delay our child's eventual EADDRINUSE beyond 300ms.
+await new Promise((resolve,reject)=>{
+  const probe=createPortProbe()
+  probe.once('error',()=>reject(new Error(`Port ${PORT} is occupied. Choose an unused PSC_GATE_PORT; no test requests were sent.`)))
+  probe.listen(PORT,'127.0.0.1',()=>probe.close(resolve))
+})
 const TMP = mkdtempSync(join(tmpdir(), 'psc-e2e-'))
 
 let fails = 0, skips = 0
@@ -100,7 +108,7 @@ const shopDb = (slug, fn) => {
 /* ---------- boot a server against a throwaway db ---------- */
 const server = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
+  env: { ...process.env, PSC_IMPORT_DIAGNOSTICS: '1', PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
   stdio: ['ignore', 'pipe', 'pipe'], detached: true,
 })
 let serverLog = ''
@@ -154,6 +162,7 @@ async function waitForBoot() {
     let healthy = false
     try { healthy = (await fetch(`${BASE}/health`)).ok } catch { /* not up yet */ }
     if (healthy) {
+      if(!serverLog.includes('(ws /ws live')) {await sleep(100);continue}
       // Something is answering — but is it OURS? A server left behind by a run that was killed
       // holds the port, our server dies with EADDRINUSE, and the whole suite then runs against
       // the STALE database: "An account with that email already exists" followed by a cascade of
@@ -231,7 +240,7 @@ async function waitForAux(child, { optional = false } = {}) {
   }
   while (Date.now() - t0 < LIMIT_MS) {
     if (child.exitCode !== null) return fail(`exited (${child.exitCode}) before it ever answered /health`)
-    try { if ((await fetch(`http://127.0.0.1:${child.__port}/health`)).ok) return true } catch { /* not up yet */ }
+    try { if (child.__log.includes('(ws /ws live') && (await fetch(`http://127.0.0.1:${child.__port}/health`)).ok) return true } catch { /* not up yet */ }
     await sleep(500)
   }
   return fail(`never answered /health after ${Math.round((Date.now() - t0) / 1000)}s`)
@@ -1337,7 +1346,7 @@ try {
 
     r = await req('POST', `/api/jobs/${poJob}/po/submit`, { body: {} })
     const firstStatus = r.json?.purchase_order?.status ?? ''
-    chk('a purchase order can be submitted', `${r.status}`, '^200$')
+    chk('a purchase order can be prepared without claiming submission', `${r.status}|${r.json?.ok}|${firstStatus}`, '^200\\|false\\|manual_required$')
 
     // The gate shop has no distributor connected, so this settles at 'failed' — which is
     // legitimately retryable, nothing was ordered. What must NOT happen either way is a second
@@ -2692,13 +2701,15 @@ try {
     chk('a customer with no money attached still deletes', String(r.status), '^200$')
 
     // --- and the same rule for a job with an order already at the distributor ---
-    // A SanMar account, which is the ordinary shape: PromoStandards submit is provisioned per
-    // account, so the PO lands as 'placed_manually' — a human typed it into the portal and the
-    // blanks are just as much on their way. No network call is made on that path.
+    // SanMar submission is not wired. Only an explicit supplier confirmation means a human
+    // placed the order; preparing the PO cannot fabricate that evidence.
     await req('PUT', '/api/settings', { body: { sanmar_user: 'gate-user', sanmar_pass: 'gate-pass', sanmar_cust: '12345' } })
     r = await req('POST', `/api/jobs/${payerJob}/po/submit`, { body: {} })
+    chk('preparing a manual PO does not claim the blanks were ordered', String(r.json?.ok), '^false$')
+    const manualPreview=(await req('GET',`/api/jobs/${payerJob}/po`)).json
+    r = await req('POST', `/api/jobs/${payerJob}/po/manual`, {body:{confirmed:true,supplier:'SanMar',reference:'GATE-SANMAR-CONFIRMED',review_key:manualPreview?.review_key}})
     const placed = r.json?.purchase_order
-    chk('a purchase order is placed against the job', `${placed?.status ?? '?'} ${r.text.slice(0, 200)}`, 'submitted|placed_manually|partial')
+    chk('a supplier confirmation is recorded against the job', `${placed?.status ?? '?'}|${placed?.placement_state}`, '^placed_manually\\|confirmed_manual$')
     r = await req('DELETE', `/api/jobs/${payerJob}`)
     chk('deleting a job whose blanks are already ordered is refused', String(r.status), '^409$')
     chk('…and the refusal names the purchase order, so purchasing knows what to chase', r.text, String(placed?.po_number || 'PSC-'))
@@ -2964,9 +2975,14 @@ try {
     }
     chk('…and nothing was written to the Outbox claiming otherwise', String(await outboxLen()), `^${before}$`)
 
-    // Give them an address and every one of those works, which is the other half of the promise.
+    // A customer default does not silently reroute an existing invoice. Review its recipients.
     await req('PUT', `/api/contacts/${noMailC}`, { body: { name: 'Phone Only Signs', email: 'phoneonly@e2e.test' } })
-    r = await req('POST', `/api/invoices/${nmInv}/send`)
+    chk('a new customer email does not override a saved blank document recipient',
+      String((await req('POST', `/api/invoices/${nmInv}/send`)).json?.code), '^no_email$')
+    const nmCurrent=(await req('GET', `/api/invoices/${nmInv}`)).json
+    const nmRecipients=await req('PUT', `/api/invoices/${nmInv}/recipients`, {body:{recipient_revision:nmCurrent.recipient_revision,use_customer_defaults:true}})
+    chk('the invoice recipient can be explicitly updated from the customer',String(nmRecipients.status),'^200$')
+    r = await req('POST', `/api/invoices/${nmInv}/send`, {body:{recipient_revision:nmRecipients.json.recipient_revision}})
     chk('once they have an address the invoice really does go', String(r.status), '^200$')
     chk('…and the app says who it went to', String(r.json?.emailed_to), '^phoneonly@e2e\\.test$')
 
@@ -3300,11 +3316,11 @@ try {
     // Poll /health as fast as it will answer for as long as the import runs. This counts what a
     // second shop — or a load balancer — actually gets served while the first one imports.
     const lat = []
-    let polling = true
+    let polling = true, healthFailures = 0
     const probe = (async () => {
       while (polling) {
         const t = Date.now()
-        try { await fetch(`${BASE}/health`) } catch { /* a refused connect is still a data point */ }
+        try { const r=await fetch(`${BASE}/health`); const body=await r.json(); if(r.status!==200 || !body.ok)healthFailures++ } catch { healthFailures++ }
         lat.push(Date.now() - t)
       }
     })()
@@ -3318,8 +3334,10 @@ try {
     await probe
     const body = await up.json().catch(() => ({}))
     const worst = Math.max(...lat)
+    for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
 
     chk('a 9,000-order export imports', String(body.imported), '^9000$')
+    chk('…and every concurrent health probe succeeds', String(healthFailures), '^0$')
 
   /* An upload that does not arrive intact is not a server fault, and the shop must not be told it
    * is. multer throws a MulterError for its OWN limits (size, count), and that is mapped. But
@@ -3385,11 +3403,11 @@ try {
     const cbig = crows.join('\n')
 
     const clat = []
-    let cpolling = true
+    let cpolling = true, customerHealthFailures = 0
     const cprobe = (async () => {
       while (cpolling) {
         const t = Date.now()
-        try { await fetch(`${BASE}/health`) } catch { /* still a data point */ }
+        try { const r=await fetch(`${BASE}/health`); const body=await r.json(); if(r.status!==200 || !body.ok)customerHealthFailures++ } catch { customerHealthFailures++ }
         clat.push(Date.now() - t)
       }
     })()
@@ -3405,6 +3423,7 @@ try {
     const cworst = Math.max(...clat)
 
     chk("a 30,000-row customer book imports", String(cbody.created), "^30000$")
+    chk("…and every concurrent customer-import health probe succeeds", String(customerHealthFailures), "^0$")
     chk(`…while the app keeps answering other requests (${clat.length} health probes served in ${cwall}ms, was 3)`,
       String(clat.length >= 10), '^true$')
     chk(`…and nobody waits the length of the import for a page (worst ${cworst}ms, was ${cwall}ms)`,
@@ -3565,13 +3584,9 @@ try {
     chk('…with no "match the exact style first" warning left', JSON.stringify(vpo.warnings || []), '^(?![\\s\\S]*exact style)')
   }
 
-  /* ---------- a print package with approved art says so ----------
-   * ready/note gated on jobs.separation — a column NOTHING in the running product writes (only
-   * seed.mjs does, so the demo shop is the one install where this looks fine). Every real job
-   * therefore downloaded a "print-ready package" reading "Not print-ready: needs approved art"
-   * with the approved art's filename one key above the sentence. Prepress goes back to chase an
-   * approval that already happened, on DTF and embroidery jobs that cannot have a separation by
-   * definition, and no screen anywhere can record one — a permanent false negative. */
+  /* ---------- appearance approval does not certify a production file ----------
+   * Keep the approved proof available, while distinguishing the staff technical release from
+   * customer appearance approval. DTF/embroidery need their own prepared machine files too. */
   {
     r = await req('POST', '/api/contacts', { body: { name: 'RIP Ready Rita', email: 'rip@e2e.test' } })
     const ripC = r.json?.id
@@ -3583,7 +3598,7 @@ try {
 
     let pkg = (await req('GET', `/api/jobs/${ripJ}/print-package`)).json || {}
     chk('a job with no approved art is not print-ready', String(pkg.ready), '^false$')
-    chk('…and is told exactly what it is waiting for', String(pkg.note || ''), 'no approved art')
+    chk('…and is told exactly what it is waiting for', String(pkg.note || ''), 'No current approved artwork')
 
     const form = new FormData()
     form.append('file', new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'], { type: 'image/svg+xml' }), 'proof.svg')
@@ -3593,8 +3608,9 @@ try {
     await req('POST', `/api/art/${art?.art?.id ?? art?.id}/decide`, { body: { decision: 'approved', by: 'Rita' } })
 
     pkg = (await req('GET', `/api/jobs/${ripJ}/print-package`)).json || {}
-    chk('a DTF job whose art IS approved is print-ready', String(pkg.ready), '^true$')
-    chk('…and its package does not claim the art is missing', String(pkg.note || ''), '^Ready for the RIP')
+    chk('a DTF job with an approved proof has appearance approval', String(pkg.appearance_approved), '^true$')
+    chk('…and still needs a staff technical release', String(pkg.ready), '^false$')
+    chk('…and its package does not claim the art is missing', String(pkg.note || ''), '^Customer appearance approval is recorded')
     chk('…and it still carries the approved art it is talking about', String(pkg.approved_art?.version ?? ''), '^1$')
 
     /* ---------- approving a proof on a FINISHED job does not take it off every board ----------
@@ -3703,12 +3719,13 @@ try {
     chk('…and not from a local path the upload already deleted', String(/src="\/uploads\//.test(proof)), '^false$')
 
     // The press's copy of the same picture. /p/ticket is token-gated, so ask the app for its link.
-    shopDb('gate-shop', (db) => db.prepare("UPDATE art_versions SET status='approved' WHERE id = ?").run(dart.id))
+    const driveApproval = await req('POST', `/api/art/${dart.id}/decide`, { body: { decision: 'approved', by: 'Drive proof fixture' } })
+    chk('…and the current Drive proof is approved through the complete workflow', String(driveApproval.status), '^200$')
     const tlink = String((await req('GET', `/api/jobs/${oj.id}`)).json?.ticket_url || '')
     chk('…and the shop has a ticket link to print', String(tlink.startsWith('/p/ticket/')), '^true$')
     const ticket = await (await fetch(`${BASE}${tlink}`)).text()
     chk('…and the pick ticket the press prints shows it too', ticket, 'drive\\.google\\.com')
-    chk('…rather than the "do not print" empty state', String(/NO APPROVED ART/.test(ticket)), '^false$')
+    chk('…rather than the no-current-proof empty state', String(/No current approved proof/.test(ticket)), '^false$')
   }
 
   /* ---------- a 6XL is quoted, printed and picked, not deleted on the way through ----------
@@ -3845,8 +3862,11 @@ try {
     const fc = (await req('POST', '/api/contacts', { body: { name: 'Freeze Co', email: 'freeze@e2e.test' } })).json
     const LINE = { description: 'Tees', unit_price: 8.75, sizes: { M: 100, '2XL': 10, '3XL': 2 } }
 
-    // Seed one estimate the ordinary way, so reorder and duplicate have something to work from.
+    // A reorder must come from accepted work, never an unsent draft.
     const seed = (await req('POST', '/api/estimates', { body: { contact_id: fc.id, items: [LINE] } })).json
+    chk('a draft is not accepted reorder history', String((await req('POST', `/api/contacts/${fc.id}/reorder`)).status), '^400$')
+    const seedApproval = await req('POST', `/api/estimates/${seed.id}/approve`, { body: { commercial_revision: seed.commercial_revision } })
+    chk('the reorder source is accepted at its current revision', String(seedApproval.status), '^200$')
 
     // Reuse the suite's live key — rotating here would invalidate it for every later case.
     const apiKey = key
@@ -4942,7 +4962,11 @@ try {
     const edited = await req('PUT', `/api/estimates/${re2.json.id}`, { body: { notes: 'Customer confirmed by phone' } })
     chk('…and a note-only edit leaves it alone', String(edited.json?.rush_days), '^3$')
 
-    const rconv = (await req('POST', `/api/estimates/${re2.json.id}/convert`)).json
+    chk('a revised rush quote requires the displayed revision before conversion',
+      String((await req('POST', `/api/estimates/${re2.json.id}/convert`)).status), '^409$')
+    const rconv = (await req('POST', `/api/estimates/${re2.json.id}/convert`, {
+      body: { commercial_revision: edited.json.commercial_revision },
+    })).json
     const rjob = (await req('GET', `/api/jobs/${rconv.job_id}`)).json
     chk('…the job it converts to is a rush job', String(rjob?.rush), '^1$')
     chk('…scheduled on the turnaround the customer paid for', String(rjob?.turnaround_days), '^3$')
@@ -6166,7 +6190,10 @@ try {
       chk('…and adding the email address the message asked for makes it send', String(retry.status), '^200$')
       const jobSent = (await J('GET', `/api/jobs/${job.id}`)).json
       chk('…and only THEN does the job move to art approval', String(jobSent?.stage), '^art_approval$')
-      const estRetry = await J('POST', `/api/estimates/${est.id}/send`, {})
+      const savedQuote=(await J('GET', `/api/estimates/${est.id}`)).json
+      const reviewedRecipient=await J('PUT', `/api/estimates/${est.id}/recipients`, {recipient_revision:savedQuote.recipient_revision,use_customer_defaults:true})
+      chk('the quote buyer explicitly adopts the new customer email',String(reviewedRecipient.status),'^200$')
+      const estRetry = await J('POST', `/api/estimates/${est.id}/send`, {recipient_revision:reviewedRecipient.json.recipient_revision})
       chk('…the same for the estimate', String(estRetry.status), '^200$')
     } finally {
       try { s12.kill('SIGKILL') } catch { /* already gone */ }

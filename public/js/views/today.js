@@ -70,7 +70,7 @@ const startCard = (lite) => `<div class="card">
 </div>`
 
 export async function todayView() {
-  setPage('Today')
+  setPage('Today', '<a class="btn" href="#/estimates/new">New estimate</a>')
   $('#view').innerHTML = '<div class="dim">Loading your day…</div>'
   const me = window.__me || {}
   const lite = window.__EDITION === 'lite'
@@ -85,7 +85,7 @@ export async function todayView() {
   const p = d.pulse
 
   const row = (a, i) => `<a class="tdy-item ${i === 0 ? 'lead' : ''}" href="${a.href}">
-    <span class="tdy-ic" style="background:${KIND_TINT[a.kind] || 'var(--panel-2)'}22;color:${KIND_TINT[a.kind] || 'var(--txt-2)'}">${a.icon}</span>
+    <span class="tdy-ic" style="background:var(--panel-2);color:${KIND_TINT[a.kind] || 'var(--txt-2)'}"><svg viewBox="0 0 16 16" aria-hidden="true"><use href="#i-${({ collect: 'invoices', risk: 'capacity', approval: 'art', floor: 'board', reply: 'conversations', followup: 'followups' })[a.kind] || 'today'}"></use></svg></span>
     <span class="tdy-txt"><span class="tdy-t">${esc(a.title)}</span><span class="tdy-s">${esc(a.sub)}</span></span>
     <span class="tdy-go">→</span></a>`
 

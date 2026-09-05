@@ -1,4 +1,25 @@
+import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
+import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
+import * as artProduction from './lib/art-production.mjs'
+import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
+import { saveMockupComposition } from './lib/mockup-compositions.mjs'
+import { projectSupportConfig } from './lib/project-support.mjs'
+import { createPlatformSubscriptionEventProcessor } from './lib/platform-subscription-events.mjs'
+import { retrievePlatformSubscription } from './lib/billing.mjs'
+import { readRasterHeader, MOCKUP_LIMITS } from './public/js/shared/raster-header.js'
+import { createCatalogMedia } from './lib/catalog-media.mjs'
+import { open as openFile } from 'node:fs/promises'
+import { createWithRetry, createResult } from './lib/api-retries.mjs'
+import { AGENT_SCOPES, requiredAgentScope } from './lib/agent-access.mjs'
+import * as agentProduction from './lib/production.mjs'
+import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack-operator.mjs'
+import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
+import { registerCostingRoutes } from './lib/costing-routes.mjs'
+import { registerProductionRoutes } from './lib/production-routes.mjs'
+import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
+import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
+import { verifyTwilio, ingestSms, phoneKey } from './lib/inbound-sms.mjs'
 import multer from 'multer'
 import crypto from 'node:crypto'
 import { mkdirSync, existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
@@ -14,7 +35,7 @@ import {
   stampShipDate,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
-import { db, tenantStore } from './lib/db.mjs'
+import { db, tenantStore, getDb } from './lib/db.mjs'
 import {
   createTenant, authMember, createSession, getSession, getSessionTenant, deleteSession,
   openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, tenantOpen, saveOnboarding, tenantPublic,
@@ -22,14 +43,14 @@ import {
   getPlatformConfig, setPlatformConfig, isAdminEmail,
   listMembers, addMember, updateMember, deleteMember, getMemberById, ROLES, ROLE_RANK,
   activeTenantSlugs, automationTenantSlugs, purgeExpiredSessions, enrollNurture, stopNurtureByToken,
-  listTenantsAdmin, setTenantStatus, deleteTenantFully,
+  listTenantsAdmin, setTenantStatus, deleteTenantWithHostingCheck,
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
-  getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants,
-  firstOwnerId,
+  getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants, agentAccess,
+  firstOwnerId, hostingCheckouts,
 } from './lib/tenants.mjs'
 import {
-  PLANS, createSubscriptionCheckout, createBillingPortal, verifyWebhook, webhookSecret,
+  PLANS, createBillingPortal, verifyWebhook, webhookSecret,
   billingLive, setPlatformCredentials, LITE_PLAN_ORDER, PLAN_ORDER, litePlanAllows, isFreePlan,
 } from './lib/billing.mjs'
 import { initAutomations, seedAutomations, listAutomations, needsSetup, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
@@ -37,11 +58,13 @@ import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
-import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport } from './lib/csv.mjs'
+import { estimateTermsIn, commercialEstimateChanged, invalidateEstimateApproval, recordEstimateApproval, estimateApprovalHistory, latestAcceptedEstimate, assertEstimateRevision } from './lib/estimate-approvals.mjs'
+import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
+import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
 import { ask } from './lib/assistant.mjs'
-import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent } from './lib/suppliers.mjs'
+import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent, purchaseOrderReview, confirmManualPurchaseOrder } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
 import * as qbo from './lib/quickbooks.mjs'
 import * as gdrive from './lib/gdrive.mjs'
@@ -49,8 +72,15 @@ import { liveInventory } from './lib/suppliers.mjs'
 import { jobRoi, shopRoi, laborActualMinutes } from './lib/roi.mjs'
 import { code128Svg } from './lib/barcode.mjs'
 import { nest, priceSheet } from './public/js/shared/gangnest.js'
-import { createCheckout, stripeConfigured, retrieveSession } from './lib/stripe.mjs'
-import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
+import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund, createStripeCollectionClient } from './lib/stripe.mjs'
+import { recordReversal, recentReversals } from './lib/payment-reversals.mjs'
+import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary } from './lib/invoice-credits.mjs'
+import { currencyCode } from './lib/payment-currency.mjs'
+import { billingDefaults, recipientSnapshot, documentRecipient, documentForRecipient, recipientMessageIssue, updateDocumentRecipients } from './lib/billing-recipients.mjs'
+import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize, createAuthorizeCollectionClient } from './lib/authorizenet.mjs'
+import { newPaymentAttempt, paymentAttempt, attemptBySession, readyAttempt, failAttempt, completeAttempt, recentAttempts } from './lib/payment-attempts.mjs'
+import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT, createConnectedCollectionClient } from './lib/connect.mjs'
+import { initPaymentCollections, collectionSnapshot, collectionSnapshotHash, collectionError, reserveCollection, resumeCollection, checkCollection, paymentCollection, finishCollection, verifyCollectionPayment, receiveCollectionPayment, markCollectionReceipt, holdCollectionReceipt, publicCollection, collectionStatus, invoiceCollectionHold } from './lib/payment-collections.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
 import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable, oneRecipient, oneDestination } from './lib/notify.mjs'
@@ -76,10 +106,10 @@ try { const pc = getPlatformConfig(); setPlatformCredentials({ secret: pc.platfo
 db.exec('CREATE INDEX IF NOT EXISTS idx_msg_contact ON messages(contact_id)')
 
 /** Record a message on the thread. Every outbound touch (email, SMS, nudge) also lands here. */
-function recordMessage({ contact_id, direction, channel = 'email', subject = '', body = '', kind = '', read }) {
+function recordMessage({ contact_id, direction, channel = 'email', subject = '', body = '', kind = '', read, recipient_name='', recipient_email='' }) {
   if (!contact_id) return
-  run('INSERT INTO messages (contact_id, direction, channel, subject, body, kind, read, created_at) VALUES (?,?,?,?,?,?,?,?)',
-    contact_id, direction, channel, subject, body, kind, read ?? (direction === 'in' ? 0 : 1), now())
+  run('INSERT INTO messages (contact_id, direction, channel, subject, body, kind, read, created_at,recipient_name,recipient_email) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    contact_id, direction, channel, subject, body, kind, read ?? (direction === 'in' ? 0 : 1), now(),recipient_name,recipient_email)
   if (direction === 'in') { try { broadcast(curSlug(), 'conversation', { contact_id, channel, preview: String(body).slice(0, 80) }) } catch {} }
 }
 
@@ -97,6 +127,7 @@ const PORT = process.env.PORT || 3333
  */
 const HOST = String(process.env.PSC_HOST || '').trim()
 const SECRET = process.env.PSC_SECRET || 'preview-secret-change-in-prod'
+const catalogMedia = createCatalogMedia({ secret: crypto.createHmac('sha256',SECRET).update('catalog-media-v1').digest('hex') })
 // In production (multi-tenant), the share-link HMAC secret MUST be set. Booting with the in-repo
 // default would make every estimate/pay/proof/ticket token forgeable — refuse to start.
 if (process.env.PSC_AUTH === '1' && SECRET === 'preview-secret-change-in-prod') {
@@ -125,6 +156,9 @@ app.set('trust proxy', /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_P
 // and still reach the handler — a full auth + paywall bypass. Make routing case-sensitive so a
 // mangled-case path can never match a route, and (belt + suspenders) the gate normalises too.
 app.set('case sensitive routing', true)
+// Hosting responses contain private payment state, including validation and auth failures.
+app.use('/api/billing', (_req,res,next) => { res.setHeader('Cache-Control','private, no-store'); next() })
+app.use('/api/admin', (_req,res,next) => { res.setHeader('Cache-Control','private, no-store'); next() })
 
 // Express advertises itself by default; the version is a free hint for anyone matching CVEs.
 app.disable('x-powered-by')
@@ -527,6 +561,19 @@ async function slackQuoteAndReply({ slug, token, channel, thread_ts, text, origi
   })
 }
 
+async function slackOperatorReply({tenant,settings,team_id,user_id,channel,thread,request_id,message,origin}) {
+  await withTenant(tenant.slug, async () => {
+    const result=await operatorMessage({team_id,user_id,channel,thread,request_id,message:slackToPlain(message)}, {tenantKey:tenant.slug,members:()=>listMembers(tenant.id)})
+    const text=result.reply.slice(0,2900)
+    const links=(result.links || []).slice(0,5)
+    const blocks=[{type:'section',text:{type:'plain_text',text}}]
+    if(links.length)blocks.push({type:'actions',elements:links.map((l,i)=>({type:'button',action_id:'open_'+i,text:{type:'plain_text',text:l.label.slice(0,70)},url:origin+'/#'+l.path}))})
+    const posted=await slackPost({token:settings.slack_bot_token,channel,thread_ts:/^(command|dm):/.test(thread)?undefined:thread,text,blocks,plain:true})
+    if(thread.startsWith('command:') && posted.ts)run('UPDATE slack_operator_threads SET thread_key=? WHERE thread_key=?',JSON.stringify([team_id,channel,posted.ts,user_id]),JSON.stringify([team_id,channel,thread,user_id]))
+    rtBroadcast('production',{})
+  })
+}
+
 app.post('/api/slack/:key/events', slackLimit, slackRaw, (req, res) => slackRun(req, res, async ({ tenant, settings, raw }) => {
   let body = null
   try { body = JSON.parse(raw) } catch { /* handled below */ }
@@ -543,6 +590,10 @@ app.post('/api/slack/:key/events', slackLimit, slackRaw, (req, res) => slackRun(
   const token = String(settings.slack_bot_token || '').trim()
   if (!token) return
   const origin = publicOrigin(req)
+  if (operatorConfig().enabled) {
+    slackOperatorReply({tenant,settings,team_id:body.team_id,user_id:ev.user,channel:ev.channel,thread:ev.channel_type==='im'?'dm:'+ev.channel:ev.thread_ts || ev.ts,request_id:body.event_id,message:ev.text,origin}).catch(e=>console.error('slack operator delivery:',e.message))
+    return
+  }
   // Reply in the thread when there is one, so a busy channel doesn't get a wall of loose quotes.
   slackQuoteAndReply({ slug: tenant.slug, token, channel: ev.channel, thread_ts: ev.thread_ts || ev.ts, text: ev.text, origin })
     .catch((e) => console.error('slack async:', e.message))
@@ -562,6 +613,10 @@ app.post('/api/slack/:key/command', slackLimit, slackRaw, (req, res) => slackRun
   res.json({ response_type: 'ephemeral', text: text.trim() ? 'Working on that quote…' : 'Paste the customer request after the command and I will draft an estimate.' })
   if (!text.trim() || !token || replay) return
   const origin = publicOrigin(req)
+  if (operatorConfig().enabled) {
+    slackOperatorReply({tenant,settings,team_id:form.get('team_id'),user_id:form.get('user_id'),channel,thread:'command:'+trigger,request_id:trigger,message:'quote '+text,origin}).catch(e=>console.error('slack operator command:',e.message))
+    return
+  }
   slackQuoteAndReply({ slug: tenant.slug, token, channel, text, origin })
     .catch((e) => console.error('slack cmd:', e.message))
 }))
@@ -576,6 +631,62 @@ app.post('/api/slack/:key/command', slackLimit, slackRaw, (req, res) => slackRun
 // multer, not here; the largest JSON body the app sends is a pasted price matrix, far under 1 MB.
 // Express answers an oversize body with 413 as soon as the declared length exceeds the cap, so the
 // giant payload is refused, not buffered. PSC_JSON_LIMIT can raise it for an unusual integration.
+app.post('/api/sms/:key/incoming', slackLimit, express.urlencoded({extended:false,limit:'64kb',parameterLimit:100}), (req,res,next) => {
+  const tenant=getTenantByEmbedKey(String(req.params.key || ''))
+  if (!tenantOpen(tenant)) return res.status(404).send('Unknown shop')
+  try {
+    return withTenant(tenant.slug, () => {
+      const s=getSettings(), p=req.body || {}
+      // No Host-header fallback: use exactly the trusted URL shown in this shop's setup.
+      const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(tenant.slug)
+      const url=origin+`/api/sms/${tenant.embed_key}/incoming`
+      if (!origin || req.originalUrl.includes('?') || !verifyTwilio({token:s.twilio_token,url,params:p,signature:req.get('x-twilio-signature')})) return res.status(401).send('Invalid signature')
+      if (!s.twilio_sid || p.AccountSid !== s.twilio_sid) return res.status(403).send('Wrong account')
+      const sender=String(s.twilio_from || '')
+      if (!sender || (sender.startsWith('MG') ? p.MessagingServiceSid !== sender : phoneKey(p.To)!==phoneKey(sender))) return res.status(403).send('Wrong receiving number')
+      const result=ingestSms(p)
+      if(!result.duplicate) broadcast(tenant.slug,'conversation',{contact_id:result.contact_id,channel:'sms'})
+      return res.type('text/xml').send('<Response></Response>')
+    })
+  } catch(e) { if(e.status===400) return res.status(400).send(e.message); next(e) }
+})
+
+app.post('/webhooks/payments/:key/:provider', slackLimit, express.raw({type:'application/json',limit:'256kb'}), async (req,res) => {
+  const tenant=AUTH_ENABLED ? getTenantByEmbedKey(String(req.params.key || '')) : null
+  if(AUTH_ENABLED ? !tenantOpen(tenant) : !getSettings().payment_callback_key || req.params.key!==getSettings().payment_callback_key) return res.status(404).send('Unknown shop')
+  if(!Buffer.isBuffer(req.body)) return res.status(415).send('Expected JSON')
+  try {
+    const receive=async () => {
+      const s=getSettings(), provider=req.params.provider, raw=req.body
+      const valid=provider==='stripe' ? verifyWebhook(raw.toString('utf8'),req.get('stripe-signature'),s.stripe_webhook_secret)
+        : provider==='authorize_net' ? verifyAuthorizeWebhook(raw,req.get('x-anet-signature'),s.anet_signature_key) : false
+      if(!valid) return res.status(401).send('Invalid signature')
+      const event=JSON.parse(raw.toString('utf8'))
+      if(provider==='stripe') {
+        if(['refund.created','refund.updated','refund.failed'].includes(event.type)) {
+          const result=await reconcileReversal('stripe',String(event.data?.object?.id || ''))
+          return res.json({received:true,...result})
+        }
+        if(!['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type)) return res.json({received:true,ignored:true})
+        const sessionId=String(event.data?.object?.id || '')
+        const gateway=isLite?'stripe_connect':'stripe'
+        const {session,account}=await paymentEvidence(gateway,sessionId)
+        acceptPaymentEvidence(gateway,session,account,sessionId)
+      } else {
+        if(['net.authorize.payment.refund.created','net.authorize.payment.void.created'].includes(event.eventType)) {
+          const result=await reconcileReversal('authorize_net',String(event.payload?.id || ''))
+          return res.json({received:true,...result})
+        }
+        if(!['net.authorize.payment.authcapture.created','net.authorize.payment.capture.created','net.authorize.payment.priorAuthCapture.created','net.authorize.payment.fraud.approved'].includes(event.eventType)) return res.json({received:true,ignored:true})
+        const {session,account}=await paymentEvidence('authorize_net',event.payload?.id)
+        acceptPaymentEvidence('authorize_net',session,account,session.transactionId)
+      }
+      return res.json({received:true})
+    }
+    await (tenant ? withTenant(tenant.slug,receive) : receive())
+  } catch(e) { console.error('payment webhook:',e.message); if(!res.headersSent) res.status(503).json({error:'Payment confirmation needs a retry or manual reconciliation.'}) }
+})
+
 app.use(express.json({ limit: process.env.PSC_JSON_LIMIT || '1mb' }))
 
 const upload = multer({
@@ -594,6 +705,35 @@ const upload = multer({
 })
 // CSV imports stay in memory (they're text, and we never keep the file) — a separate, smaller cap.
 const uploadMem = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } })
+
+// Originals and the composed PNG stream to disk. Two saves at a time bound subsequent raster
+// metadata inspection; nothing decodes pixels or renders artwork in the server process.
+const mockupUpload = multer({
+  limits: { fileSize: 16 * 1024 * 1024, files: 3, fields: 4, parts: 8, fieldSize: 8192, fieldNameSize: 40, fieldNestingDepth: 0, fieldArrayIndexLimit: 0 },
+  storage: multer.diskStorage({ destination: UPLOADS, filename: (_req,file,cb) => {
+    const ext = extname(file.originalname || '').toLowerCase()
+    cb(null,`${Date.now()}-${crypto.randomBytes(16).toString('hex')}${/^\.[a-z0-9]{1,8}$/.test(ext) ? ext : ''}`)
+  } }),
+})
+let activeMockupSaves = 0
+const mockupSaveLimit = (req,res,next) => {
+  if (activeMockupSaves >= 2) { res.setHeader('Retry-After','3'); return res.status(429).json({error:'Mockup saving is busy. Keep this draft and try again shortly.'}) }
+  activeMockupSaves++
+  let released = false
+  const timer = setTimeout(() => { if (!res.headersSent) res.status(408).json({error:'The mockup upload timed out. Keep this draft and retry with a stable connection.'}); req.destroy() },60000)
+  timer.unref?.()
+  req.mockupWork = { processing: false, release() { if (released) return; released = true; clearTimeout(timer); activeMockupSaves-- } }
+  const abandoned = () => {
+    if (req.mockupWork.processing) return
+    // For example, the shop database may become unavailable after multipart parsing. The save
+    // route has not started, so none of these staged files can have acquired a database owner.
+    for (const file of Object.values(req.files || {}).flat()) { try { unlinkSync(file.path) } catch { /* multer may already have removed it */ } }
+    req.mockupWork.release()
+  }
+  res.once('finish',abandoned)
+  res.once('close',abandoned)
+  next()
+}
 
 /* ---------- helpers ---------- */
 
@@ -630,6 +770,7 @@ const str = (v, fallback = '') =>
 // drop, because a date the shop typed and the app quietly discarded is worse than an error.
 const badDate = (v) => v !== undefined && v !== null && String(v).trim() !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(String(v).trim())
 const BAD_DATE = { error: 'Due date must be a calendar date, as YYYY-MM-DD', code: 'bad_due_date' }
+const realCalendarDate = value => typeof value==='string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value+'T00:00:00Z')) && new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value
 /**
  * Resolve the customer a document is being raised for, or answer why not.
  *
@@ -751,7 +892,7 @@ function markDelivery(slug, rowId, result) {
   // enough to trigger it, so swallow everything.
   try {
     withSlugDb(slug, () => {
-      run('UPDATE email_log SET delivered = ?, via = ?, delivery_error = ? WHERE id = ?',
+      run('UPDATE email_log SET delivered = ?, via = ?, delivery_error = ?, sending_at=NULL WHERE id = ?',
         result.delivered ? 1 : 0, result.via || 'logged', result.error || null, rowId)
     })
   } catch (e) { console.error('markDelivery:', e && e.message) }
@@ -762,25 +903,35 @@ function markDelivery(slug, rowId, result) {
  * has wired SMTP. With no credentials the message still records (tagged "logged"), so nothing
  * silently vanishes — the honesty rule, now with real delivery on top.
  */
-function queueEmail({ contact, subject, template, vars, kind, deliver = true }) {
+function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, estimate_id=null, recipient_revision, deliver = true }) {
   const s = getSettings()
   const slug = curSlug()
-  const merged = { first_name: String(contact?.name || '').split(' ')[0], ...vars }
+  const {to,body,rowId}=tx(()=>{
+  const type=invoice_id?'invoice':estimate_id?'estimate':null
+  const doc=type?documentForRecipient(type,invoice_id || estimate_id):null
+  if(doc && doc.contact_id!==contact?.id) throw Object.assign(new Error('Document customer changed. Reload before sending.'),{status:409,expose:true})
+  const recipient=doc?documentRecipient(doc,type):{name:contact?.name || '',email:contact?.email || ''}
+  if(doc && (recipient.blocked || (recipient_revision!==undefined && recipient_revision!==recipient.revision)))
+    throw Object.assign(new Error(recipient.blocked || 'Document recipients changed. Create a fresh message.'),{status:409,expose:true,code:'recipient_review'})
+  const merged = { ...vars, first_name: String(recipient.name).split(' ')[0], recipient_name:recipient.name, recipient_first_name:String(recipient.name).split(' ')[0] }
   const body = String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => templateValue(k, merged, s))
-  const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    contact?.id ?? null, contact?.email ?? '', subject, body, kind, deliver ? 'logged' : 'draft', now()).lastInsertRowid)
-  recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'email', subject, body, kind })
-  const to = contact?.email
+  const to = recipient.email
+  const rowId = Number(run('INSERT INTO email_log (contact_id,to_email,subject,body,kind,via,created_at,invoice_id,estimate_id,recipient_name,recipient_revision,sending_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    contact?.id ?? null,to,subject,body,kind,deliver?'logged':'draft',now(),invoice_id,estimate_id,recipient.name,doc?recipient.revision:null,deliver&&to?now():null).lastInsertRowid)
+  recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'email', subject, body, kind,recipient_name:recipient.name,recipient_email:to })
+  return {to,body,rowId}
+  })
   if (deliver && to) sendEmail({ to, subject, body, settings: s }).then((r) => markDelivery(slug, rowId, r)).catch((e) => markDelivery(slug, rowId, { delivered: false, via: 'error', error: String(e.message) })).catch(() => {})
   return body
 }
 
 /** SMS: same path as email, delivered over Twilio when the shop has wired it. */
-function queueSms({ contact, body, deliver = true }) {
+function queueSms({ contact, body, invoice_id=null, deliver = true }) {
   const s = getSettings()
   const slug = curSlug()
   const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     contact?.id ?? null, contact?.phone ?? '', 'SMS', body, 'sms', deliver ? 'logged' : 'draft', now()).lastInsertRowid)
+  if(invoice_id)run('UPDATE email_log SET invoice_id=? WHERE id=?',invoice_id,rowId)
   recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'sms', subject: 'SMS', body, kind: 'sms' })
   const to = contact?.phone
   if (deliver && to) sendSms({ to, body, settings: s }).then((r) => markDelivery(slug, rowId, r)).catch((e) => markDelivery(slug, rowId, { delivered: false, via: 'error', error: String(e.message) })).catch(() => {})
@@ -903,6 +1054,7 @@ function subscriptionData(ctx) {
 }
 
 const fireAuto = (trigger, ctx) => {
+  if(ctx.invoice?.id && get('SELECT payment_review FROM invoices WHERE id=?',ctx.invoice.id)?.payment_review) return
   try { fire(trigger, ctx, autoDeps) } catch (e) { console.error('automation:', e.message) }
   try { dispatchSubscriptions(trigger, subscriptionData(ctx)) } catch (e) { console.error('webhook dispatch:', e.message) }
 }
@@ -931,7 +1083,7 @@ onOpportunityStage(({ opportunity, stage }) => {
  * the books are queued without anyone clicking. */
 onPaymentRecorded(({ invoice_id, before_status }) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', invoice_id)
-  if (!inv) return
+  if (!inv || inv.payment_review) return
   advanceOrder(inv.estimate_id, 'paid')   // money in — never backward; see advanceOrder
   if (inv.status === 'paid' && before_status !== 'paid') {
     fireAuto('invoice.paid', { invoice: inv, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: inv.amount_due })
@@ -994,6 +1146,7 @@ app.use((req, res, next) => {
   // limiter never ran. Every integration built or debugged in a browser holds both.
   // Only a Bearer psc_… on /api/v1 suppresses the cookie; a plain cookie request to /api/v1 still
   // authenticates as the session with its real role, which is what requireRole() there depends on.
+  if(/^Bearer\s+psc_agent_/i.test(req.headers.authorization || '') && !lp.startsWith('/api/v1/'))return res.status(403).json({error:'Agent keys can only use the public API.',code:'agent_scope_denied'})
   const bearer = lp.startsWith('/api/v1/') ? /^Bearer\s+(psc_\S+)$/i.exec(req.headers.authorization || '') : null
   const session = bearer ? null : getSession(parseCookies(req).psc_session)
   if (session) {
@@ -1016,7 +1169,8 @@ app.use((req, res, next) => {
   // does — same store shape, same billing paywall — so every /api/v1 handler runs in the right
   // tenant database. Available on EVERY plan; the incumbents gate this behind their top tier.
   if (lp.startsWith('/api/v1/')) {
-    const tenant = bearer ? getTenantByApiKey(bearer[1]) : null
+    const agent = bearer?.[1].startsWith('psc_agent_') ? agentAccess.resolve(bearer[1]) : null
+    const tenant = agent?.tenant || (bearer && !bearer[1].startsWith('psc_agent_') ? getTenantByApiKey(bearer[1]) : null)
     if (!tenant) return res.status(401).json({ error: 'Provide your API key: Authorization: Bearer psc_live_…  (Settings → Developers)', code: 'invalid_api_key' })
     // Mirror the session rule: a lapsed shop can still READ (so an integration can export its own
     // data — the Data Freedom promise is worth nothing if a lapsed shop is locked out of it) but
@@ -1031,9 +1185,19 @@ app.use((req, res, next) => {
       return res.status(429).json({ error: `Rate limit exceeded (120 requests/min). Retry in ${lim}s.`, code: 'rate_limited' })
     }
     req.tenant = tenant
-    req.role = 'manager'
+    req.role = agent?.member.role || 'manager'
+    if(agent){
+      req.member=agent.member; req.agentKey=agent.key
+      const scope=requiredAgentScope(req.method,lp)
+      const auditPath=scope?lp:'/api/v1/(unrecognized)'
+      res.once('finish',()=>{try{agentAccess.record(agent.key.id,req.method,auditPath,res.statusCode)}catch{console.error('Could not record agent API request audit')}})
+      if(!scope || (scope!=='identity' && !agent.key.scopes.includes(scope)))return res.status(403).json({error:'This agent key does not have permission for this operation.',code:'agent_scope_denied',required_scope:scope})
+    }
     req.apiKeyAuth = true
-    return tenantStore.run({ db: openTenantDb(tenant.slug), slug: tenant.slug, tenant }, () => next())
+    return tenantStore.run({ db: openTenantDb(tenant.slug), slug: tenant.slug, tenant }, () => {
+      if (!agent && getSettings().api_access === 'read' && !['GET','HEAD','OPTIONS'].includes(req.method)) return res.status(403).json({error:'This API key is read-only. An owner or manager can change access in Setup & connections.',code:'read_only_key'})
+      return next()
+    })
   }
   if (isApiPath(lp)) {
     if (isPublicApi(lp)) return next()
@@ -1756,25 +1920,66 @@ app.post('/api/onboarding/configure', requireRole('manager'), wrap((req, res) =>
 
 /* ---- subscription billing (shops pay PrintShopCRM) ---- */
 
+// Public checkout destinations only; no shop data, payment calls or billing state changes.
+app.get('/api/project-support', (_req,res) => {
+  res.setHeader('Cache-Control','private, no-store')
+  res.json(projectSupportConfig())
+})
+
 app.get('/api/billing', wrap((req, res) => {
   // `order` drives what the billing page renders: one plan, everything included. PLANS still
   // carries the retired tier ids so an existing tenant row's plan_tier resolves to a name.
-  res.json({ live: billingLive(), plans: PLANS, order: PLAN_ORDER, state: req.tenant ? billingState(req.tenant) : null })
+  res.setHeader('Cache-Control','private, no-store')
+  res.json({ live: billingLive(), plans: PLANS, order: PLAN_ORDER, can_manage: hasRole(req,'owner'),
+    has_subscription: !!req.tenant?.stripe_subscription_id, state: req.tenant ? billingState(req.tenant) : null,
+    hosting_checkout: req.tenant && hasRole(req,'owner') ? hostingCheckouts.status(req.tenant.id) : null })
 }))
 
-/** Start a subscription — returns a Stripe Checkout URL on the platform account. Owner-only. */
+// Only locally defined errors reach the browser. A raw provider or database error must never
+// expose credentials, payment URLs or another shop's data through either logs or this response.
+const hostingActionError = (res,error) => {
+  if(error?.hostingSafe === true && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599) {
+    if(error.status === 503) res.setHeader('Retry-After','10')
+    return res.status(error.status).json({error:error.message,code:error.code})
+  }
+  console.error('hosting checkout: request failed')
+  res.setHeader('Retry-After','10')
+  return res.status(503).json({error:'Could not verify hosting checkout. Check its status before starting another payment.',code:'hosting_checkout_unavailable'})
+}
+const hostingActionResult = (res,result) => {
+  res.setHeader('Cache-Control','private, no-store')
+  return res.json({...result,url:result.intent?.url || null})
+}
+
+/** Start or resume the shop's one recorded hosting checkout. Owner-only. */
 app.post('/api/billing/checkout', requireRole('owner'), async (req, res) => {
   try {
     if (!req.tenant) return res.status(401).json({ error: 'Not signed in' })
     if (!billingLive()) return res.status(503).json({ error: 'Billing is not live yet — the owner needs to connect the platform Stripe.' })
     const b = req.body || {}
-    const origin = `${req.protocol}://${req.get('host')}`
-    const { url } = await createSubscriptionCheckout({
-      plan: b.plan, interval: b.interval === 'year' ? 'year' : 'month',
-      email: req.tenant.owner_email, tenantId: req.tenant.id, slug: req.tenant.slug, origin,
-    })
-    res.json({ url })
-  } catch (e) { console.error('checkout:', e); res.status(500).json({ error: e.message }) }
+    if (!PLAN_ORDER.includes(b.plan)) return res.status(400).json({error:'Choose the current managed hosting plan.',code:'hosting_plan_unavailable'})
+    if (b.interval != null && !['month','year'].includes(b.interval)) return res.status(400).json({error:'Choose monthly or annual hosting.',code:'hosting_interval_invalid'})
+    if (req.tenant.stripe_subscription_id && !['canceled','incomplete_expired'].includes(req.tenant.subscription_status)) {
+      return res.status(409).json({error:'This shop already has a hosting subscription. Use Manage hosting to update or cancel it.',code:'hosting_subscription_exists'})
+    }
+    hostingActionResult(res,await hostingCheckouts.start({tenantId:req.tenant.id,plan:b.plan,interval:b.interval || 'month',origin:trustedOrigin(req)}))
+  } catch(error) { hostingActionError(res,error) }
+})
+
+app.post('/api/billing/checkout/reconcile', requireRole('owner'), async (req,res) => {
+  try {
+    if(!req.tenant) return res.status(401).json({error:'Not signed in'})
+    const sessionId=req.body?.session_id
+    if(sessionId != null && (typeof sessionId !== 'string' || /\s/.test(sessionId) || !/^cs_[A-Za-z0-9_]{1,200}$/.test(sessionId))) return res.status(400).json({error:'Enter the Checkout Session ID from Stripe.',code:'hosting_session_invalid'})
+    hostingActionResult(res,await hostingCheckouts.reconcile({tenantId:req.tenant.id,...(sessionId?{sessionId}:{})}))
+  } catch(error) { hostingActionError(res,error) }
+})
+
+app.post('/api/billing/checkout/expire', requireRole('owner'), async (req,res) => {
+  try {
+    if(!req.tenant) return res.status(401).json({error:'Not signed in'})
+    hostingActionResult(res,await hostingCheckouts.expire({tenantId:req.tenant.id}))
+  } catch(error) { hostingActionError(res,error) }
 })
 
 /**
@@ -1801,12 +2006,16 @@ app.post('/api/billing/free', requireRole('owner'), wrap((req, res) => {
 /** Stripe billing portal so a subscribed shop can manage or cancel. Owner-only. */
 app.post('/api/billing/portal', requireRole('owner'), async (req, res) => {
   try {
+    if(!billingLive()) return res.status(503).json({error:'Hosting billing is not connected.'})
     const st = req.tenant ? billingState(req.tenant) : null
     if (!st?.stripe_customer_id) return res.status(400).json({ error: 'No subscription on file yet' })
-    const origin = `${req.protocol}://${req.get('host')}`
+    const origin = trustedOrigin(req)
     const { url } = await createBillingPortal({ customerId: st.stripe_customer_id, origin })
     res.json({ url })
-  } catch (e) { console.error('portal:', e); res.status(500).json({ error: e.message }) }
+  } catch {
+    console.error('hosting portal: request failed')
+    res.status(503).json({error:'Could not open hosting management. Try again shortly or contact the server operator.'})
+  }
 })
 
 /* ---- platform admin: connect the owner's Stripe (owner-only, key never sent back) ---- */
@@ -1820,7 +2029,7 @@ const requireAdmin = (req, res) => {
 
 app.get('/api/admin/billing', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
-  res.json({ is_admin: true, live: billingLive(), webhook_set: !!webhookSecret() })
+  res.json({ is_admin: true, live: billingLive(), webhook_set: !!webhookSecret(), hosting_checkouts:hostingCheckouts.health() })
 }))
 
 app.post('/api/admin/billing', wrap((req, res) => {
@@ -1840,6 +2049,34 @@ app.get('/api/admin/shops', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
   res.json({ shops: listTenantsAdmin(), admin_email: (process.env.PSC_ADMIN_EMAIL || '').toLowerCase() })
 }))
+
+app.get('/api/admin/shops/:id/hosting', wrap((req,res) => {
+  if(!requireAdmin(req,res)) return
+  const tenant=getTenantById(Number(req.params.id))
+  if(!tenant) return res.status(404).json({error:'Shop not found.'})
+  res.json({state:billingState(tenant),...hostingCheckouts.status(tenant.id)})
+}))
+
+app.post('/api/admin/hosting-checkout/resolve', async (req,res) => {
+  if(!requireAdmin(req,res)) return
+  try {
+    const b=req.body || {}
+    if(!Number.isSafeInteger(b.tenant_id) || b.tenant_id < 1 || typeof b.anomaly_id !== 'string' || b.anomaly_id.length !== 64 || !/^[a-f0-9]{64}$/.test(b.anomaly_id)
+        || typeof b.note !== 'string' || !b.note.trim() || b.note.length > 1000) return res.status(400).json({error:'Choose a payment review and enter what you checked (up to 1,000 characters).',code:'hosting_review_invalid'})
+    hostingActionResult(res,await hostingCheckouts.resolveAnomaly({tenantId:b.tenant_id,anomalyId:b.anomaly_id,note:b.note.trim()}))
+  } catch(error) { hostingActionError(res,error) }
+})
+
+app.post('/api/admin/hosting-verification/reconcile', async (req,res) => {
+  if(!requireAdmin(req,res)) return
+  try {
+    const b=req.body || {}
+    if(!Number.isSafeInteger(b.tenant_id) || b.tenant_id < 1 || typeof b.verification_id !== 'string' || !/^[a-f0-9]{64}$/.test(b.verification_id)) {
+      return res.status(400).json({error:'Choose a saved hosting payment to check.',code:'hosting_verification_invalid'})
+    }
+    hostingActionResult(res,await hostingCheckouts.reconcileVerification({tenantId:b.tenant_id,verificationId:b.verification_id},processPlatformSubscriptionEvent))
+  } catch(error) { hostingActionError(res,error) }
+})
 
 // Create a client's shop for them (the hands-on onboarding Stan does) — returns the temp password
 // once so it can be handed off. Never emails it from here; the admin shares it directly.
@@ -1869,10 +2106,32 @@ app.post('/api/admin/shops/:id/status', wrap((req, res) => {
   res.json({ ok: true, tenant: tenantPublic(setTenantStatus(+req.params.id, req.body?.status)) })
 }))
 
-app.delete('/api/admin/shops/:id', wrap((req, res) => {
+// Fixed public messages keep provider diagnostics out of an irreversible account operation.
+const hostingDeletionErrors = Object.freeze({
+  hosting_deletion_active: [409, 'Hosting is still active. End the recorded subscriptions in Stripe, then retry deleting this shop.'],
+  hosting_deletion_review: [409, 'Hosting payment history needs review before this shop can be deleted. Open Hosting to review its saved payments.'],
+  hosting_deletion_busy: [503, 'A hosting operation is already in progress. Wait for it to finish, then retry deleting this shop.'],
+  hosting_deletion_unavailable: [503, 'Could not verify that hosting has ended. The shop has been kept. Check the billing connection and retry.'],
+  hosting_deletion_changed: [409, 'Hosting changed during verification. The shop has been kept. Review its current hosting status, then retry.'],
+  hosting_deletion_verification_required: [409, 'Verify that hosting has ended before deleting this shop.'],
+  import_in_progress: [409, 'This shop has an import in progress. Try deleting it after the import finishes.'],
+})
+
+app.delete('/api/admin/shops/:id', wrap(async (req, res) => {
   if (!requireAdmin(req, res)) return
-  if (+req.params.id === req.tenant?.id) return res.status(400).json({ error: "You can't delete your own admin account here." })
-  const r = deleteTenantFully(+req.params.id)
+  const tenantId = Number(req.params.id)
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return res.status(400).json({ error: 'Choose a valid shop.' })
+  if (tenantId === req.tenant?.id) return res.status(400).json({ error: "You can't delete your own admin account here." })
+  let r
+  try { r = await deleteTenantWithHostingCheck(tenantId) }
+  catch (error) {
+    const known = Object.hasOwn(hostingDeletionErrors, error?.code)
+    const code = known ? error.code : 'hosting_deletion_unavailable'
+    const [status, safeMessage] = hostingDeletionErrors[code]
+    const message = known ? safeMessage : 'Could not confirm the deletion result. Refresh the shop list and review hosting before retrying.'
+    if (status === 503) res.setHeader('Retry-After', '10')
+    return res.status(status).json({ error: message, code })
+  }
   if (!r) return res.status(404).json({ error: 'No such shop.' })
   // The removal of the DATA is reported separately from the removal of the shop, because they can
   // and do come apart — and when they do, the next shop to take that slug used to inherit the old
@@ -1923,36 +2182,21 @@ app.post('/api/admin/shops/:id/signin', wrap((req, res) => {
  * Stripe webhook — keeps each shop's subscription status in sync. Raw body (registered above),
  * signature-verified. Handles the events that move a shop between trial, active, past-due, canceled.
  */
-function stripeWebhook(req, res) {
+const processPlatformSubscriptionEvent = createPlatformSubscriptionEventProcessor({
+  getTenantById, getTenantByStripeCustomer, setSubscription, retrieveSubscription: retrievePlatformSubscription, hostingCheckouts,
+})
+async function stripeWebhook(req, res) {
   try {
     const raw = req.body instanceof Buffer ? req.body.toString('utf8') : JSON.stringify(req.body || {})
     if (!verifyWebhook(raw, req.headers['stripe-signature'], webhookSecret())) return res.status(400).send('bad signature')
     const event = JSON.parse(raw)
-    const obj = event?.data?.object || {}
-    const tenantId = Number(obj.metadata?.tenant_id || obj.client_reference_id || 0) || null
-    switch (event.type) {
-      case 'checkout.session.completed':
-        if (tenantId) setSubscription(tenantId, { plan: obj.metadata?.plan, status: 'active', customerId: obj.customer, subscriptionId: obj.subscription })
-        break
-      case 'customer.subscription.updated': {
-        const t = tenantId ? getTenantById(tenantId) : getTenantByStripeCustomer(obj.customer)
-        if (t) setSubscription(t.id, { plan: obj.metadata?.plan, status: obj.status === 'active' || obj.status === 'trialing' ? 'active' : (obj.status === 'past_due' ? 'past_due' : obj.status), customerId: obj.customer, subscriptionId: obj.id })
-        break
-      }
-      case 'customer.subscription.deleted': {
-        const t = getTenantByStripeCustomer(obj.customer)
-        if (t) setSubscription(t.id, { status: 'canceled' })
-        break
-      }
-      case 'invoice.payment_failed': {
-        const t = getTenantByStripeCustomer(obj.customer)
-        if (t) setSubscription(t.id, { status: 'past_due' })
-        break
-      }
-      default: break
-    }
+    await processPlatformSubscriptionEvent(event)
     res.json({ received: true })
-  } catch (e) { console.error('webhook:', e); res.status(400).send('error') }
+  } catch (e) {
+    console.error('hosting webhook: verification failed')
+    if (e?.retryable) { res.setHeader('Retry-After','10'); return res.status(503).json({error:'Hosting status could not be verified. Retry this event.'}) }
+    res.status(400).send('error')
+  }
 }
 
 /* ================= DASHBOARD ================= */
@@ -1985,7 +2229,7 @@ app.get('/api/chrome/badges', wrap((_req, res) => {
     active_jobs: n(`SELECT COUNT(*) AS c FROM jobs WHERE status = 'active'`),
     open_invoices: n(`SELECT COUNT(*) AS c FROM invoices WHERE status NOT IN ('paid','void')`),
     art_pending: n(`SELECT COUNT(*) AS c FROM art_versions a JOIN jobs j ON j.id = a.job_id
-      WHERE a.status IN ('sent','rejected')`),
+      WHERE a.status IN ('sent','rejected') AND a.id=(SELECT newest.id FROM art_versions newest WHERE newest.job_id=a.job_id ORDER BY newest.version DESC,newest.id DESC LIMIT 1)`),
     followups: n(`SELECT COUNT(*) AS c FROM estimates WHERE status = 'sent'`)
       + n(`SELECT COUNT(*) AS c FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today),
     automations: n(`SELECT COUNT(*) AS c FROM automations WHERE enabled = 1`),
@@ -2031,7 +2275,7 @@ app.get('/api/dashboard', wrap((_req, res) => {
     // Jobs whose promised date is already unreachable because the proof is still out.
     // Surfaced before the deadline, not after — this is the whole point of gating.
     at_risk: all(`SELECT j.*, c.name AS contact_name,
-        (SELECT sent_at FROM art_versions a WHERE a.job_id=j.id AND a.status='sent' ORDER BY version DESC LIMIT 1) AS proof_sent_at
+        (SELECT CASE WHEN a.status='sent' THEN a.sent_at END FROM art_versions a WHERE a.job_id=j.id ORDER BY version DESC,id DESC LIMIT 1) AS proof_sent_at
       FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.approval_gated=1 AND j.art_approved_at IS NULL AND j.due_date IS NOT NULL
         AND j.stage IN ('new','art_approval')
@@ -2061,37 +2305,54 @@ app.get('/api/dashboard', wrap((_req, res) => {
   })
 }))
 
-/* ================= CAPACITY & PROMISE DATES =================
- * "Can we physically hit this date given everything already on the press?" No MIS answers it.
- * Reuses the costing engine's press-time tables, so the schedule and the quote never disagree. */
+/* ================= SCREEN PRINT CAPACITY =================
+ * Estimate press completion from supported work. Packing, carrier transit and unsupported
+ * decoration methods are outside this model; unresolved work prevents a positive date verdict. */
 
 /** The committed board, each job tagged with its honest due date (proof-gated projection). */
-const activeJobsForCapacity = () =>
+const activeJobsForCapacity = () => {
+  const tasks = new Map()
+  for (const task of all("SELECT t.* FROM production_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.status='active' ORDER BY t.job_id,t.position,t.id")) {
+    if (!tasks.has(task.job_id)) tasks.set(task.job_id,[])
+    tasks.get(task.job_id).push(task)
+  }
   // The estimate rides along so a job that was never separated still schedules against the colour
   // count the shop actually quoted, rather than the flat capacity_default_colors guess.
-  all(`SELECT j.*, c.name AS contact_name, e.items AS est_items
+  return all(`SELECT j.*, c.name AS contact_name, e.items AS est_items,p.job_id AS workflow_id
        FROM jobs j
        LEFT JOIN contacts c ON c.id = j.contact_id
        LEFT JOIN estimates e ON e.id = j.estimate_id
+       LEFT JOIN production_jobs p ON p.job_id=j.id
        WHERE j.status = 'active'`)
     .map((j) => ({
       id: j.id, title: j.title, job_number: j.job_number, contact_name: j.contact_name,
       stage: j.stage, rush: !!j.rush, due: scheduleFor(j).due || j.due_date, separation: j.separation,
       colors: colorsFromItems(parse(j.est_items, [])),
       sizes: j.sizes, quantities: j.quantities,
+      status:j.status,decoration:j.decoration,est_items:j.est_items,line_sizes:j.line_sizes,
+      workflow_enrolled:j.workflow_id != null,workflow_tasks:tasks.get(j.id) || [],
     }))
+}
 
-app.get('/api/capacity', wrap((_req, res) => {
-  res.json(capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }))
+app.get('/api/capacity', wrap((req, res) => {
+  res.json({...capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }),can_manage:hasRole(req,'manager')})
 }))
 
 /** Live "can we promise this date?" check — schedules the board, then drops the prospective job in. */
 app.post('/api/capacity/promise', wrap((req, res) => {
   const b = req.body || {}
+  if (b.due_date != null && b.due_date!=='' && !realCalendarDate(b.due_date))
+    return res.status(400).json({error:'Print-by date must be a real YYYY-MM-DD date.',code:'invalid_date'})
+  const numeric=value=>(typeof value==='number'||typeof value==='string'&&value.trim()!=='')&&Number.isFinite(Number(value))
+  if (!numeric(b.pieces) || !Number.isSafeInteger(Number(b.pieces)) || Number(b.pieces)<1 || Number(b.pieces)>MAX_PIECES ||
+      b.colors!==undefined && (!numeric(b.colors)||!Number.isSafeInteger(Number(b.colors))||Number(b.colors)<1||Number(b.colors)>12))
+    return res.status(400).json({error:`Use whole pieces from 1 to ${MAX_PIECES} and 1–12 colors.`,code:'invalid_capacity_input'})
   res.json(capacityPromise(activeJobsForCapacity(), getSettings(), {
     pieces: Math.min(MAX_PIECES, Math.max(0, Number(b.pieces) || 0)),
     colors: Math.max(1, Number(b.colors) || 1),
     dueDate: b.due_date || null,
+    ...(Object.hasOwn(b,'decoration') ? {decoration:b.decoration} : {}),
+    ...(Object.hasOwn(b,'method') ? {method:b.method} : {}),
   }))
 }))
 
@@ -2100,10 +2361,20 @@ app.post('/api/capacity/promise', wrap((req, res) => {
  *  same manager gate as PUT /api/settings rather than being a back door around it. */
 app.put('/api/capacity/settings', requireRole('manager'), wrap((req, res) => {
   const b = req.body || {}
-  for (const k of ['capacity_stations', 'capacity_hours_per_day', 'utilization_pct', 'capacity_default_colors', 'press_type']) {
-    if (b[k] !== undefined && b[k] !== null && b[k] !== '') setSetting(k, String(b[k]))
+  const limits={capacity_stations:[1,20,true],capacity_hours_per_day:[0.5,24,false],utilization_pct:[5,100,false],capacity_default_colors:[1,12,true]},patch={}
+  for (const [k,[min,max,integer]] of Object.entries(limits)) {
+    if (!Object.hasOwn(b,k)) continue
+    const value=b[k],n=Number(value)
+    if (!['number','string'].includes(typeof value)||typeof value==='string'&&!value.trim()||!Number.isFinite(n)||n<min||n>max||integer&&!Number.isInteger(n))
+      return res.status(400).json({error:`${k.replaceAll('_',' ')} must be ${integer?'a whole number':'a number'} from ${min} to ${max}.`,code:'invalid_capacity_setting'})
+    patch[k]=String(n)
   }
-  res.json(capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }))
+  if (Object.hasOwn(b,'press_type')) {
+    if (!['manual','auto'].includes(b.press_type)) return res.status(400).json({error:'Choose a manual or automatic press.',code:'invalid_capacity_setting'})
+    patch.press_type=b.press_type
+  }
+  tx(()=>{for(const [k,value] of Object.entries(patch))setSetting(k,value)})
+  res.json({...capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }),can_manage:hasRole(req,'manager')})
 }))
 
 /* ================= TODAY — role-aware action center =================
@@ -2127,7 +2398,7 @@ app.get('/api/today', wrap((req, res) => {
   }
   // Proofs waiting on the customer — these block production and silently eat the schedule.
   for (const j of all(`SELECT j.*, c.name AS cn,
-        (SELECT sent_at FROM art_versions a WHERE a.job_id=j.id AND a.status='sent' ORDER BY version DESC LIMIT 1) AS proof_sent
+        (SELECT CASE WHEN a.status='sent' THEN a.sent_at END FROM art_versions a WHERE a.job_id=j.id ORDER BY version DESC,id DESC LIMIT 1) AS proof_sent
       FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.stage='art_approval' ORDER BY j.due_date LIMIT 6`)) {
     const waited = ageInDays(j.proof_sent)
@@ -2237,14 +2508,14 @@ app.get('/api/contacts', wrap((req, res) => {
 
 /**
  * "Same as last time" — the reorder every shop hears weekly, as one click. Clones the
- * customer's most recent estimate (imported history included) into a fresh draft at today's
+ * customer's most recent accepted order (imported history included) into a fresh draft at today's
  * date. This is the payoff of importing order history: it works on day one of a trial.
  */
 app.post('/api/contacts/:id/reorder', wrap((req, res) => {
   const c = get('SELECT * FROM contacts WHERE id = ?', +req.params.id)
   if (!c) return res.status(404).json({ error: 'Contact not found' })
-  const last = get("SELECT * FROM estimates WHERE contact_id = ? AND items != '[]' ORDER BY id DESC", c.id)
-  if (!last) return res.status(400).json({ error: 'No previous order on file for this customer yet.' })
+  const last = latestAcceptedEstimate(c.id)
+  if (!last) return res.status(400).json({ error: 'No approved or completed order on file for this customer yet.', code: 'no_accepted_order' })
   const items = freezeUpcharges(parse(last.items, []))
   const rate = taxRateFor(c.id)
   const t = computeTotals(items, rate, getUpcharges())
@@ -2296,14 +2567,16 @@ const contactAddressError = (b) => (
 
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
+  const postal = postalPatch(b)
+  const billing = billingDefaults(b)
   const name = str(b.name).trim()
   if (!name) return res.status(400).json({ error: 'Name is required' })
   const bad = contactAddressError(b)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
-  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, billing_address, shipping_address, billing_mode,billing_name,billing_email,created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
-    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), now(), now())
+    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email,now(), now())
   const id = Number(r.lastInsertRowid)
   logActivity('contact', `Contact created — ${name}`, { contact_id: id })
   fireAuto('contact.created', { contact: get('SELECT * FROM contacts WHERE id = ?', id) })
@@ -2329,6 +2602,8 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const id = +req.params.id
   const cur = get('SELECT * FROM contacts WHERE id = ?', id)
   if (!cur) return res.status(404).json({ error: 'Contact not found' })
+  const postal = postalPatch(b, cur)
+  const billing = billingDefaults(b,cur)
   const sent = (k) => Object.prototype.hasOwnProperty.call(b, k)
   const text = (k) => (sent(k) ? str(b[k]) : (cur[k] ?? ''))
   const tags = sent('tags') ? (Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)) : (cur.tags ?? '')
@@ -2338,10 +2613,10 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const merged = { ...cur, ...(sent('email') ? { email: str(b.email) } : {}), ...(sent('phone') ? { phone: str(b.phone) } : {}) }
   const bad = contactAddressError(merged)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
-  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, updated_at=? WHERE id=?',
+  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, billing_address=?, shipping_address=?,billing_mode=?,billing_name=?,billing_email=?, updated_at=? WHERE id=?',
     name, text('email'), text('phone'), text('company'), text('notes'), tags,
     sent('tax_exempt') ? (b.tax_exempt ? 1 : 0) : (cur.tax_exempt ? 1 : 0),
-    text('tax_exempt_id'), now(), id)
+    text('tax_exempt_id'), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email, now(), id)
   logActivity('contact', 'Contact updated', { contact_id: id })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
@@ -2368,8 +2643,14 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
   const id = +req.params.id
   const c = get('SELECT id, name FROM contacts WHERE id = ?', id)
   if (!c) return res.status(404).json({ error: 'Customer not found', code: 'not_found' })
+  if (get('SELECT 1 FROM shipping_records r LEFT JOIN estimates e ON e.id=r.estimate_id LEFT JOIN jobs j ON j.id=r.job_id WHERE e.contact_id=? OR j.contact_id=? LIMIT 1',id,id))
+    return res.status(409).json({code:'shipping_history_retained',error:'This customer has shipment history. Keep the customer so their dispatch and correction records remain available.'})
   const live = get("SELECT COUNT(*) AS n FROM invoices WHERE contact_id = ? AND status != 'void'", id).n
   const paid = round2(get('SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.contact_id = ?', id).v)
+  const history=get(`SELECT i.id FROM invoices i WHERE i.contact_id=? AND (
+    EXISTS(SELECT 1 FROM payments p WHERE p.invoice_id=i.id)
+    OR EXISTS(SELECT 1 FROM invoice_credits c WHERE c.invoice_id=i.id)
+    OR EXISTS(SELECT 1 FROM payment_reversals r WHERE r.invoice_id=i.id)) LIMIT 1`,id)
 
   // The same guard DELETE /api/jobs/:id has, applied to the customer the jobs hang off.
   //
@@ -2392,12 +2673,13 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
     })
   }
 
-  if (live > 0 || paid > 0) {
+  if (live > 0 || paid > 0 || history) {
     const bits = []
     if (live > 0) bits.push(`${live} invoice${live === 1 ? '' : 's'}`)
     if (paid > 0) bits.push(`${money(paid)} in recorded payments`)
+    else if(history) bits.push('payment or credit history, even though no net payment remains')
     return res.status(409).json({
-      error: `${c.name} has ${bits.join(' and ')} — deleting the customer would delete ${bits.length > 1 ? 'them' : 'that'} too. Void an invoice raised in error and try again; a customer who has actually paid you stays on the books.`,
+      error: `${c.name} has ${bits.join(' and ')} — deleting the customer would delete ${bits.length > 1 ? 'them' : 'that'} too. ${history ? 'Keep this customer for your financial records. Refunds and canceled credits preserve their history.' : 'Void an invoice raised in error and try again.'}`,
       code: 'has_financials',
       invoices: live,
       amount_paid: paid,
@@ -2428,8 +2710,14 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
 app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
-  const rows = parseCsv(text)
+  let rows = parseCsv(text)
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
+  try {
+    const info = importMapping(rows, 'contacts', req.body?.mapping)
+    if (req.body?.mapping_only === true || req.body?.mapping_only === 'true') return res.json(info)
+    rows = applyImportMapping(rows, 'contacts', req.body?.mapping)
+  } catch (e) { return res.status(400).json({ error: e.message }) }
+
   const columns = detectColumns(Object.keys(rows[0]))
   if (!columns.name) return res.status(400).json({ error: "Couldn't find a name column. Expected one of: Name, Customer, Company, or First + Last." })
 
@@ -2450,40 +2738,22 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
     return res.json({ preview: true, columns, total_rows: rows.length, to_import: toAdd.length, duplicates: dupes, skipped: skippedNoName, sample: toAdd.slice(0, 8) })
   }
 
-  // Batched, and handing the event loop back between batches, for the same reason the order
-  // importer is — see the comment there. A 2.94MB customer book (well inside the 8MB upload cap)
-  // was 4.65 SECONDS of unbroken blocking, with /health answering three times in the window and
-  // every other shop on the box waiting behind it. The per-row try/catch stays exactly where it
-  // was: a constraint violation is caught inside the transaction, so one bad row still skips
-  // itself rather than sinking its batch.
-  let created = 0
-  const BATCH = 500
-  // Same shape as the orders importer: batches commit as they go, so a failure part-way through
-  // has to report the count rather than let the generic handler claim nothing was saved.
-  let stopped = null
-  for (let i = 0; i < toAdd.length; i += BATCH) {
-    const batch = toAdd.slice(i, i + BATCH)
-    try {
-      tx(() => {
-        for (const c of batch) {
-          try {
-            run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-              c.name, c.email, c.phone, c.company, c.notes, c.tags, now(), now())
-            created++
-          } catch (e) { /* one bad row shouldn't sink the import */ }
-        }
-      })
-    } catch (e) { stopped = e; break }
-    if (i + BATCH < toAdd.length) await new Promise((r) => setImmediate(r))
+  // Only committed batches count. Storage failures stop the import; constraint failures may
+  // skip a row. Email dedupe is checked again inside each transaction because preview can be stale.
+  const importDb = getDb()
+  const { created, duplicates: newDupes, skipped: rejected, stopped } = await withImportCheckpoints(importDb, checkpoint => writeContactImport(importDb, toAdd, { checkpoint }))
+  if (created) {
+    // The contacts are durable even if a full disk prevents writing this final timeline row.
+    try { logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {}) }
+    catch (error) { console.error('customer import activity:', error.message) }
   }
-  if (created) logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {})
   if (stopped) {
     return res.status(503).json(interruptedImportReport({
       written: created, total: toAdd.length, noun: 'customer', err: stopped,
       resume: 'Fix that, then upload the SAME file again — anyone whose email address is already in your customer list is skipped. Rows with no email address cannot be matched, so check those for duplicates afterwards.',
     }))
   }
-  res.json({ preview: false, created, duplicates: dupes, skipped: skippedNoName, total_rows: rows.length })
+  res.json({ preview: false, created, duplicates: dupes + newDupes, skipped: skippedNoName + rejected, total_rows: rows.length })
 }))
 
 app.post('/api/contacts/:id/note', wrap((req, res) => {
@@ -2524,7 +2794,7 @@ app.get('/api/estimates/:id', wrap((req, res) => {
   // missing WHERE clause on the read side, on the exact path the feature exists for (an invoice
   // raised against the wrong customer). The voided ones are still returned, so the history is
   // visible rather than hidden.
-  res.json({ ...estimateView(e), share_url: shareUrl('estimate', e.id),
+  res.json({ ...estimateView(e), share_url: shareUrl('estimate', e.id), approval_history: estimateApprovalHistory(e.id),
     invoice: get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void' ORDER BY id DESC", e.id),
     voided_invoices: all("SELECT id, invoice_number, voided_at, void_reason FROM invoices WHERE estimate_id = ? AND status = 'void' ORDER BY id", e.id) })
 }))
@@ -2674,6 +2944,7 @@ app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'quote')
   if (contactId == null) return
+  const addresses = postalPatch(b, postalDefaults(get('SELECT * FROM contacts WHERE id=?', contactId)))
   const s = getSettings()
   // A non-array here (a bare object, a string, or a duplicated JSON key collapsing to one value)
   // reached computeTotals and threw a 500 on the app's main create path.
@@ -2706,8 +2977,9 @@ app.post('/api/estimates', wrap((req, res) => {
    * any junk string were equally writable. POST /api/v1/estimates has hardcoded 'draft' all along,
    * docs/API.md promises "writes reject bad input rather than coercing it", and the estimate
    * editor has never sent the field — so refusing it costs the product nothing. */
-  const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now())
+  const terms = estimateTermsIn(b.terms_snapshot, s.estimate_terms)
+  const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at, billing_address, shipping_address, terms_snapshot, terms_snapshot_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now(), addresses.billing_address, addresses.shipping_address, terms, b.terms_snapshot === undefined ? 'created' : 'edited')
   const id = Number(r.lastInsertRowid)
   logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
@@ -2752,27 +3024,53 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     contactId = resolveContactId(b.contact_id, res, 'quote')
     if (contactId == null) return
   }
+  if (contactId !== e.contact_id) {
+    if (get('SELECT 1 FROM shipping_records WHERE estimate_id=?',id))
+      return res.status(409).json({code:'shipping_customer_retained',error:'This order has shipment history for its customer. Create a separate quote for a different customer.'})
+    const linked = get('SELECT job_number FROM jobs WHERE estimate_id=? AND contact_id IS NOT ? ORDER BY id LIMIT 1', id, contactId)
+    if (linked) return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `This quote already has ${linked.job_number} for another customer. Keep its customer or create a separate quote for the new customer.` })
+  }
   const rate = taxRateFor(contactId, b.tax_rate ?? e.tax_rate ?? s.tax_rate,
     { allowExemptOverride: b.tax_exempt_override === true })
+  const addresses = postalPatch(b, contactId === e.contact_id ? e : postalDefaults(get('SELECT * FROM contacts WHERE id=?', contactId)))
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
   // `?? e.rush_days`, so an edit that does not mention the rush cannot silently clear one — the
   // same rule every other column on this route already follows.
-  run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=? WHERE id=?',
-    contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
-    rushDaysIn(b.rush_days ?? e.rush_days), id)
-  // The three sibling routes (create, send, approve) all sync; this one never did, so a quote
-  // edited from $8,000 down to $4,000 left the deal in Open Pipeline at $8,000. One /api/dashboard
-  // response then carried both numbers — open_estimates 4,670 beside pipeline.open_value 8,670 —
-  // rendered side by side on the first screen after login. syncFromEstimate re-values
-  // unconditionally and only moves the stage on named events, so 'updated' re-prices without
-  // advancing anything.
-  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'updated')
-  res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
+  // Older and directly linked jobs resolve their production lines from this estimate until
+  // they have their own line_sizes. Changing that fallback must revoke the same technical
+  // release as editing the job. Ignore prices, notes and size-key ordering in this comparison.
+  const linesChanged = JSON.stringify(artProduction.productionGarmentLines(parse(e.items,[]))) !== JSON.stringify(artProduction.productionGarmentLines(items))
+  const next = { ...e, ...addresses, ...t, contact_id: contactId, items, tax_rate: rate,
+    notes: b.notes ?? e.notes, rush_days: rushDaysIn(b.rush_days ?? e.rush_days),
+    terms_snapshot: estimateTermsIn(b.terms_snapshot, e.terms_snapshot) }
+  const revised = commercialEstimateChanged(e, next)
+  const termsChanged = commercialEstimateChanged(e, { ...e, terms_snapshot: next.terms_snapshot })
+  const approvalInvalidated = revised && (!!e.approved_at || ['approved','invoiced'].includes(e.status))
+  const artChangedJobs = tx(() => {
+    invalidateEstimateApproval(e, next, { actor: req.member?.name })
+    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=? WHERE id=?',
+      contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
+      next.rush_days, addresses.billing_address, addresses.shipping_address, next.terms_snapshot,
+      termsChanged ? 'edited' : e.terms_snapshot_source, id)
+    // Repricing and reopening the linked sale belong to this same revision transaction.
+    pipeline.syncFromEstimate(get('SELECT * FROM estimates WHERE id=?',id), revised ? 'revised' : 'updated')
+    if (!linesChanged) return []
+    const affected = all('SELECT id,line_sizes FROM jobs WHERE estimate_id=?',id).filter(job => {
+      const stored = parse(job.line_sizes,[])
+      return !Array.isArray(stored) || !stored.length
+    })
+    for (const job of affected) touchProofWorkflow(job.id,req.member?.name,'Estimate garment or quantities changed; technical review required again')
+    return affected.map(job => job.id)
+  })
+  for (const jobId of artChangedJobs) artProductionChanged(jobId)
+  res.json({ ...estimateView(get('SELECT * FROM estimates WHERE id = ?', id)), quote_revised: revised, approval_invalidated: approvalInvalidated })
 }))
 
 app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
+  if (get('SELECT 1 FROM shipping_records WHERE estimate_id=?',+req.params.id))
+    return res.status(409).json({ code:'shipping_history_retained', error:'This order has shipment history. Keep the order so its dispatch and correction records remain available.' })
   const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", +req.params.id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — can't delete a converted estimate.` })
   /* …and the same refusal for a job that is on the floor against this quote but has not been
@@ -2836,7 +3134,7 @@ app.post('/api/estimates/:id/send', outboundLimit, wrap((req, res) => {
   // No address, no send — and therefore no `sent` status and no "emailed to customer" on the
   // timeline. The four other customer-mail routes have refused this all along; this one flipped
   // the quote to `sent` for a contact it could not reach.
-  if (requireCustomerEmail(c, res, 'estimate')) return
+  if (requireDocumentEmail(e,'estimate',res,req.body)) return
   const s = getSettings()
   // Re-sending emails a copy. It must not REVERSE the customer's decision. This UPDATE was
   // unconditional, so "resend the estimate" on an already-approved, already-invoiced, part-paid
@@ -2847,19 +3145,22 @@ app.post('/api/estimates/:id/send', outboundLimit, wrap((req, res) => {
   const settled = ['approved', 'declined', 'invoiced'].includes(e.status)
   if (settled) run('UPDATE estimates SET sent_at=? WHERE id=?', now(), id)
   else run(`UPDATE estimates SET status='sent', sent_at=? WHERE id=?`, now(), id)
-  queueEmail({ contact: c, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`,
+  queueEmail({ contact: c, estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`,
     template: s.email_template_estimate,
     vars: { contact_name: c?.name || '', estimate_number: e.estimate_number, total: money(e.total) } })
-  logActivity('estimate', `Estimate ${e.estimate_number} emailed to ${c?.email || 'customer'}`, { contact_id: e.contact_id })
+  const sentTo=documentRecipient(e,'estimate').email
+  logActivity('estimate', `Estimate ${e.estimate_number} queued to ${sentTo}`, { contact_id: e.contact_id })
   fireAuto('estimate.sent', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: c, total: e.total })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'sent')
-  res.json({ ok: true, share_url: shareUrl('estimate', id), emailed_to: c?.email || null, email_live: notifyStatus(s).shop_email, estimate: estimateView(get('SELECT * FROM estimates WHERE id = ?', id)) })
+  res.json({ ok: true, share_url: shareUrl('estimate', id), emailed_to: sentTo, email_live: notifyStatus(s).shop_email, estimate: estimateView(get('SELECT * FROM estimates WHERE id = ?', id)) })
 }))
 
 app.post('/api/estimates/:id/approve', wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  try { assertEstimateRevision(e, req.body) }
+  catch (error) { if (error.code === 'estimate_changed') return res.status(409).json({ error: error.message, code: error.code }); throw error }
   // Approve once, same as the customer-facing /p/estimate/:id/approve. A second press of the
   // shop's own Approve button means "yes, it is approved" rather than "do it again", so this
   // answers 200 with `already` instead of refusing — but it must not re-stamp approved_at, write
@@ -2868,7 +3169,10 @@ app.post('/api/estimates/:id/approve', wrap((req, res) => {
   if (e.status === 'approved' || e.status === 'invoiced') {
     return res.json({ ok: true, already: true, estimate: estimateView(e) })
   }
-  run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+  tx(() => {
+    run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: 'staff', actor: req.member?.name })
+  })
   logActivity('estimate', `Estimate ${e.estimate_number} approved`, { contact_id: e.contact_id })
   fireAuto('estimate.approved', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'approved')
@@ -2909,6 +3213,7 @@ function advanceOrder(estimateId, toStage) {
 app.get('/api/orders', wrap((_req, res) => {
   const rows = all(`
     SELECT e.id, e.estimate_number, e.total, e.board_stage, e.tracking_number, e.carrier, e.stage_moved_at,
+           (SELECT COUNT(*) FROM shipping_records sr WHERE sr.estimate_id=e.id AND sr.status!='void') AS shipment_count,
            e.status AS estimate_status, c.name AS contact_name, c.company,
            i.id AS invoice_id, i.invoice_number, i.status AS invoice_status, i.due_date,
            i.amount_due, i.amount_paid,
@@ -2956,20 +3261,33 @@ app.put('/api/orders/:id/stage', wrap((req, res) => {
   res.json({ ok: true, stage })
 }))
 
-/** Tracking number + carrier. Shown on the card and on the invoice the customer sees. */
+const shippingActor = req => ({ id:req.member?.id ?? null, name:req.member?.name || 'Shop operator', manager:hasRole(req,'manager') })
+const shippingJobId = value => {
+  if (value == null) return null
+  if (!Number.isSafeInteger(value) || value < 1) throw Object.assign(new Error('Choose a valid production job.'),{status:400,expose:true})
+  return value
+}
+app.get('/api/orders/:id/shipments', wrap((req,res) => {
+  res.json(shippingView({estimate_id:+req.params.id},shippingActor(req)))
+}))
+app.post('/api/orders/:id/shipments', wrap((req,res) => {
+  const ref = { estimate_id:+req.params.id,job_id:shippingJobId(req.body?.job_id) },who=shippingActor(req)
+  const mutation = mutateShipment(ref,req.body,who)
+  if (mutation.changed && !mutation.replayed) rtBroadcast('production', {job_id:ref.job_id})
+  res.json({...shippingView({estimate_id:ref.estimate_id},who),mutation})
+}))
+for (const action of ['correct','void']) app.post(`/api/shipping/:id/${action}`,requireRole('manager'),wrap((req,res) => {
+  const record=get('SELECT * FROM shipping_records WHERE id=?',+req.params.id)
+  if (!record) return res.status(404).json({error:'Shipment not found.'})
+  const ref={estimate_id:record.estimate_id,job_id:record.job_id},who=shippingActor(req)
+  const mutation=mutateShipment(ref,req.body,who,{action,shipment_id:record.id})
+  if (mutation.changed && !mutation.replayed) rtBroadcast('production',{job_id:record.job_id})
+  res.json({mutation})
+}))
+
+/** Compatibility adapter for one legacy tracking field; never changes a board stage. */
 app.put('/api/orders/:id/tracking', wrap((req, res) => {
-  const id = +req.params.id
-  const e = get('SELECT * FROM estimates WHERE id = ?', id)
-  if (!e) return res.status(404).json({ error: 'Order not found' })
-  const tracking = String(req.body?.tracking_number || '').trim().slice(0, 80)
-  const carrier = String(req.body?.carrier || '').trim().slice(0, 40)
-  run('UPDATE estimates SET tracking_number = ?, carrier = ? WHERE id = ?', tracking, carrier, id)
-  // Adding a tracking number means it went out — move the card unless staff are already past Shipped.
-  if (tracking) advanceOrder(id, 'shipped')
-  if (tracking && tracking !== e.tracking_number) {
-    logActivity('stage', `${e.estimate_number} shipped — ${carrier ? carrier + ' ' : ''}${tracking}`, { contact_id: e.contact_id })
-  }
-  res.json({ ok: true, tracking_number: tracking, carrier })
+  res.json(legacyOrderTracking(+req.params.id,req.body || {},shippingActor(req)))
 }))
 
 /**
@@ -3044,10 +3362,22 @@ const artUrl = (a) => a.drive_link || `/uploads/${a.filename}`
  * "so the proof page can show it", which is exactly the page that did not.
  */
 const proofSrc = (a) => a.drive_link || uploadUrl(a.filename)
+const latestProof = a => a.job_id
+  ? get('SELECT * FROM art_versions WHERE job_id=? ORDER BY version DESC,id DESC LIMIT 1',a.job_id)
+  : a.estimate_id ? get('SELECT * FROM art_versions WHERE estimate_id=? ORDER BY version DESC,id DESC LIMIT 1',a.estimate_id) : null
+const proofIsCurrent = a => latestProof(a)?.id===a.id
+const requireCurrentProof = (a,res) => {
+  if(proofIsCurrent(a))return false
+  res.status(409).json({error:'This proof was replaced by a newer version. Open the current proof before sending or deciding.',code:'proof_superseded'})
+  return true
+}
+const touchProofWorkflow = (jobId, actor, detail) => {
+  artProduction.recordArtChange(jobId,actor,detail)
+}
 const mockupRow = (a) => ({
   id: a.id, version: a.version, filename: a.filename, original_name: a.original_name, mime: a.mime,
   status: a.status, notes: a.notes, sent_at: a.sent_at, decided_at: a.decided_at, decided_by: a.decided_by,
-  created_at: a.created_at, url: artUrl(a), drive: !!a.drive_file_id, share_url: shareUrl('art', a.id),
+  created_at: a.created_at, url: artUrl(a), drive: !!a.drive_file_id, share_url: shareUrl('art', a.id), purpose: a.purpose,
 })
 
 app.get('/api/estimates/:id/mockups', wrap((req, res) => {
@@ -3078,6 +3408,8 @@ app.post('/api/mockups/:id/send', outboundLimit, wrap((req, res) => {
   if (!mockupGate(req, res)) return
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a || !a.estimate_id) return res.status(404).json({ error: 'Mockup not found' })
+  if(requireCurrentProof(a,res))return
+  if(a.status==='approved')return res.status(409).json({error:'This proof is already approved. Upload a new version to request a different approval.',code:'already_decided'})
   const e = get('SELECT * FROM estimates WHERE id = ?', a.estimate_id)
   const c = get('SELECT * FROM contacts WHERE id = ?', e?.contact_id)
   const s = getSettings()
@@ -3124,7 +3456,7 @@ app.delete('/api/mockups/:id', requireRole('manager'), wrap((req, res) => {
  */
 function jobScheduleFromEstimate(e, body) {
   const rushDays = Math.max(0, Number(e?.rush_days) || 0)
-  const picked = String(body?.due_date || '').trim()
+  const picked = String(body?.production_due_date ?? body?.due_date ?? '').trim()
   const hasPicked = /^\d{4}-\d{2}-\d{2}$/.test(picked)
   const today = todayIso()
   const days = rushDays || 10
@@ -3141,12 +3473,20 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   const id = +req.params.id
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
+  try { assertEstimateRevision(e, req.body) }
+  catch (error) { if (error.code === 'estimate_changed') return res.status(409).json({ error: error.message, code: error.code }); throw error }
   const existing = get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (existing) return res.status(409).json({ error: `Already invoiced as ${existing.invoice_number}` })
 
-  // Honor the date the shop actually picked. The convert dialog has asked for a due date all along
-  // and this ignored it, so every invoice silently came out Net 15 no matter what was entered.
-  const picked = String(req.body?.due_date || '').trim()
+  // Payment terms and the promised production date are independent. Keep the older due_date
+  // API's combined meaning for existing callers; the UI now sends two explicit fields.
+  for (const field of ['payment_due_date', 'production_due_date']) {
+    if (req.body?.[field] === undefined || req.body[field] === '') continue
+    const value = req.body[field]
+    if (!realCalendarDate(value))
+      return res.status(400).json({ error: `${field === 'payment_due_date' ? 'Payment' : 'Production'} due date must be a real date in YYYY-MM-DD format.`, code: 'invalid_date' })
+  }
+  const picked = String(req.body?.payment_due_date ?? req.body?.due_date ?? '').trim()
   const due = /^\d{4}-\d{2}-\d{2}$/.test(picked) ? picked : new Date(Date.now() + 15 * 864e5).toISOString().slice(0, 10)
   const items = parse(e.items, [])
   const title = req.body?.title || items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
@@ -3181,12 +3521,17 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   // automation engine and the webhook dispatcher both, and /approve guards it the same way.
   const wasApproved = e.status === 'approved' || e.status === 'invoiced'
   const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL AND status = 'active' ORDER BY id LIMIT 1", id)
+  if (prior && prior.contact_id !== e.contact_id)
+    return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `${prior.job_number} belongs to a different customer from this quote. Correct the quote/customer association before creating an invoice; no invoice was created.` })
+  if (prior && postalAddress(prior.shipping_address ?? '') !== postalAddress(e.shipping_address ?? ''))
+    return res.status(409).json({ code: 'quote_job_shipping_mismatch', error: `${prior.job_number} has a different shipping address from this quote. Review the agreed destination and edit the job shipping address to match, or revise and reapprove the quote, then convert again. No invoice was created.` })
   const { invId, jobId, invNum, jobNum } = tx(() => {
     const invNum = nextInvoiceNumber()
     const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, created_at) VALUES (?,?,?,?,?,?,?,?)',
       id, e.contact_id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
     const sched = jobScheduleFromEstimate(e, req.body)
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: wasApproved ? 'legacy_record' : 'staff_conversion', actor: req.member?.name })
     if (prior) {
       run('UPDATE jobs SET invoice_id=?, due_date=?, turnaround_days=?, rush=?, updated_at=? WHERE id=?',
         invId, sched.due_date, sched.turnaround_days, sched.rush, now(), prior.id)
@@ -3242,7 +3587,7 @@ app.get('/api/estimates/:id/pdf', wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!e) return res.status(404).send('Not found')
   const pdf = renderDocument('ESTIMATE', {
-    doc: e, contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id),
+    doc: e, contact: savedDocumentContact(e,get('SELECT * FROM contacts WHERE id = ?', e.contact_id),'estimate'),
     settings: getSettings(), items: parse(e.items, []), upcharges: getUpcharges(),
   })
   res.type('application/pdf')
@@ -3276,13 +3621,13 @@ app.get('/api/invoices/:id', wrap((req, res) => {
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const est = i.estimate_id ? get('SELECT * FROM estimates WHERE id = ?', i.estimate_id) : null
   res.json({
-    ...i, items: est ? parse(est.items, []) : [], payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id),
+    ...i, ...invoiceCreditSummary(i), reversals:all('SELECT provider,provider_id,kind,status,applied_cents,amount_cents,is_test FROM payment_reversals WHERE invoice_id=? ORDER BY updated_at DESC',i.id), items: est ? parse(est.items, []) : [], payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id),
     // The invoice's own totals block prints these line items and then asks for amount_due, which is
     // subtotal + tax — so without the breakdown the screen shows a table that does not add up to the
     // number beside it. The invoice carries no subtotal/tax of its own; they live on the estimate it
     // was converted from, and this is the only route that can reach them.
     subtotal: est ? est.subtotal : null, tax: est ? est.tax : null, tax_rate: est ? est.tax_rate : null,
-    pay_link: shareUrl('pay', i.id), stripe_ready: paymentsReady(getSettings()),
+    pay_link: shareUrl('pay', i.id), payment_provider_label:providerName(getSettings()), stripe_ready: paymentsReady(getSettings()),
   })
 }))
 
@@ -3301,9 +3646,14 @@ app.put('/api/invoices/:id', requireRole('manager'), wrap((req, res) => {
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const b = req.body || {}
   const due = String(b.due_date || '').trim()
+  const addresses = postalPatch(b, inv)
   if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return res.status(400).json({ error: 'Due date must be YYYY-MM-DD' })
-  if (due) run('UPDATE invoices SET due_date = ? WHERE id = ?', due, id)
-  if (b.po_number !== undefined) run('UPDATE invoices SET po_number = ? WHERE id = ?', String(b.po_number || '').slice(0, 60), id)
+  tx(() => {
+    run('UPDATE invoices SET due_date=?, po_number=?, billing_address=?, shipping_address=? WHERE id=?',
+      due || inv.due_date, b.po_number === undefined ? inv.po_number : String(b.po_number || '').slice(0, 60), addresses.billing_address, addresses.shipping_address, id)
+    if (addresses.billing_address !== inv.billing_address || addresses.shipping_address !== inv.shipping_address)
+      logActivity('invoice', `${inv.invoice_number} postal addresses updated by ${req.member?.name || 'staff'}`, { contact_id: inv.contact_id })
+  })
   // Recompute overdue/partial/paid against the new date rather than leaving a stale status behind.
   syncInvoiceStatus(id)
   if (due && due !== inv.due_date) logActivity('invoice', `${inv.invoice_number} due date changed ${inv.due_date} → ${due}`, { contact_id: inv.contact_id })
@@ -3331,7 +3681,7 @@ app.post('/api/invoices/:id/void', requireRole('manager'), wrap((req, res) => {
   // payment attached to nothing. Say which payments and let the human decide.
   if (Number(inv.amount_paid) > 0) {
     return res.status(409).json({
-      error: `${inv.invoice_number} has ${money(inv.amount_paid)} in payments recorded against it. Remove those payments first, then void it.`,
+      error: `${inv.invoice_number} has ${money(inv.amount_paid)} in payments recorded against it. Refund processor payments in your merchant account, or correct mistaken manual entries, before voiding. For a partial cancellation, issue an invoice credit.`,
       code: 'invoice_has_payments',
     })
   }
@@ -3354,17 +3704,17 @@ app.post('/api/invoices/:id/request-payment', outboundLimit, wrap((req, res) => 
   // A voided invoice is a cancelled demand. POST /payments and both public pay routes were taught
   // that in v1.11.0; this one was missed, so the app would build a live pay link for a cancelled
   // document and email a real customer a real demand for money the shop had already withdrawn.
-  if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'payment link')) return
+  if (refuseVoided(inv, res) || requireDocumentEmail(inv,'invoice',res,req.body)) return
   const s = getSettings()
   const balance = round2(inv.amount_due - inv.amount_paid)
   const origin = publicOrigin(req)
   const link = origin + shareUrl('pay', id)
   const deliver = s.mode_followups !== 'manual'
-  queueEmail({ contact: c, kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
+  queueEmail({ contact: c, invoice_id:id,recipient_revision:inv.recipient_revision,kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
     template: `Hi {{first_name}},\n\nYou can pay invoice ${inv.invoice_number} (balance ${money(balance)}) securely online here:\n\n${link}\n\nThank you,\n{{shop_name}}`,
     vars: { shop_name: s.shop_name }, deliver })
   logActivity('note', `Payment link ${deliver ? 'sent' : 'drafted'} for ${inv.invoice_number}`, { contact_id: inv.contact_id })
-  res.json({ ok: true, delivered: deliver, link, stripe_ready: paymentsReady(s) })
+  res.json({ ok: true, delivered: deliver, link, emailed_to:documentRecipient(inv).email,stripe_ready: paymentsReady(s) })
 }))
 
 app.post('/api/invoices/:id/payments', wrap((req, res) => {
@@ -3435,9 +3785,9 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
     id, recorded, method, note, now())
   const updated = syncInvoiceStatus(id)
   // Money in — walk the order card forward (never backward; see advanceOrder).
-  advanceOrder(inv.estimate_id, 'paid')
+  if(!inv.payment_review && updated.status==='paid') advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Payment ${money(recorded)} on ${inv.invoice_number} (${method})`, { contact_id: inv.contact_id })
-  if (updated.status === 'paid' && inv.status !== 'paid') {
+  if (updated.status === 'paid' && inv.status !== 'paid' && !inv.payment_review) {
     fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
   }
   enqueueQbo(id) // money moved — the books should hear about it without anyone clicking
@@ -3458,6 +3808,7 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
 app.delete('/api/payments/:id', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM payments WHERE id = ?', +req.params.id)
   if (!p) return res.status(404).json({ error: 'Payment not found', code: 'not_found' })
+  if(p.stripe_session) return res.status(409).json({error:'Verified processor entries cannot be deleted. Reconcile refunds through Payment connections.',code:'processor_payment'})
   const inv = get('SELECT invoice_number, contact_id FROM invoices WHERE id = ?', p.invoice_id)
   run('DELETE FROM payments WHERE id = ?', p.id)
   const out = syncInvoiceStatus(p.invoice_id)
@@ -3484,8 +3835,24 @@ const requireCustomerEmail = (c, res, what) => {
   })
   return true
 }
+const requireDocumentEmail = (doc,type,res,body) => {
+  if((body?.recipient_revision!==undefined || doc.recipient_revision>0) && body?.recipient_revision!==doc.recipient_revision) {
+    res.status(409).json({error:'Document recipients changed. Reload and review the saved recipient before sending.',code:'recipient_changed'});return true
+  }
+  const recipient=documentRecipient(doc,type)
+  if(!recipient.blocked)return false
+  res.status(400).json({error:recipient.blocked+' Open Delivery contacts on this document to update it.',code:'no_email'})
+  return true
+}
+for(const [path,type] of [['estimates','estimate'],['invoices','invoice']]) {
+  app.put(`/api/${path}/:id/recipients`,requireRole('manager'),wrap((req,res)=>{
+    const doc=updateDocumentRecipients(type,+req.params.id,req.body,req.member?.name || 'staff')
+    res.json({...doc,recipient:documentRecipient(doc,type)})
+  }))
+}
 /** A voided invoice is a cancelled demand. Nothing may chase money on it. */
 const refuseVoided = (inv, res) => {
+  if(inv.payment_review) { res.status(409).json({error:'Payment changes need review before requesting more money.',code:'payment_review'});return true }
   if (inv.status !== 'void') return false
   res.status(409).json({
     error: `${inv.invoice_number} was voided — raise a new invoice before asking the customer to pay it.`,
@@ -3498,13 +3865,14 @@ app.post('/api/invoices/:id/send', outboundLimit, wrap((req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
-  if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'invoice')) return
+  if (refuseVoided(inv, res) || requireDocumentEmail(inv,'invoice',res,req.body)) return
   const s = getSettings()
-  queueEmail({ contact: c, kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
+  queueEmail({ contact: c, invoice_id:inv.id,recipient_revision:inv.recipient_revision,kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
     template: s.email_template_invoice,
     vars: { contact_name: c?.name || '', invoice_number: inv.invoice_number, total: money(inv.amount_due), due_date: inv.due_date } })
-  logActivity('invoice', `Invoice ${inv.invoice_number} emailed to ${c.email}`, { contact_id: inv.contact_id })
-  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+  const sentTo=documentRecipient(inv).email
+  logActivity('invoice', `Invoice ${inv.invoice_number} queued to ${sentTo}`, { contact_id: inv.contact_id })
+  res.json({ ok: true, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
 }))
 
 app.get('/api/invoices/:id/pdf', wrap((req, res) => {
@@ -3514,14 +3882,17 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
   // Carry the real subtotal/tax onto the invoice doc so the PDF shows a proper Subtotal → Tax →
   // Total breakdown that reconciles to amount_due, instead of labeling the tax-inclusive total "Subtotal".
   const pdf = renderDocument('INVOICE', {
-    doc: { ...i, subtotal: est ? est.subtotal : round2(i.amount_due), tax: est ? est.tax : 0, total: i.amount_due, tax_rate: est?.tax_rate },
-    contact: get('SELECT * FROM contacts WHERE id = ?', i.contact_id),
+    doc: { ...i, ...invoiceCreditSummary(i), notes: i.payment_review ? 'PAYMENT UNDER REVIEW — Do not pay again. '+i.payment_review : i.notes, subtotal: i.credit_base ? JSON.parse(i.credit_base).subtotal : est ? est.subtotal : round2(i.amount_due), tax: i.credit_base ? JSON.parse(i.credit_base).tax : est ? est.tax : 0, total: i.amount_due, tax_rate: est?.tax_rate },
+    contact: savedDocumentContact(i,get('SELECT * FROM contacts WHERE id = ?', i.contact_id),'invoice'),
     settings: getSettings(), items: est ? parse(est.items, []) : [{ description: 'Custom apparel order', qty: 1, unit_price: i.amount_due }],
     payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id), upcharges: getUpcharges(),
   })
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${i.invoice_number}.pdf"`)
   res.send(pdf)
 }))
+
+registerCostingRoutes(app,{requireRole,listMembers})
+registerProductionRoutes(app,{requireRole,hasRole,listMembers,broadcast:rtBroadcast,origin:publicOrigin,artUrl})
 
 /* ================= JOBS / BOARD ================= */
 
@@ -3568,6 +3939,8 @@ app.get('/api/jobs/:id', wrap((req, res) => {
     FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id LEFT JOIN invoices i ON i.id=j.invoice_id
     LEFT JOIN estimates e ON e.id=j.estimate_id WHERE j.id=?`, +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
+  const currentProof=latestProof({job_id:j.id})
+  if(j.art_approved_at && currentProof && currentProof.status!=='approved')j.art_approved_at=null
   res.json({
     ...j,
     schedule: scheduleFor(j),
@@ -3591,6 +3964,7 @@ app.post('/api/jobs', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'book a job')
   if (contactId == null) return
+  const addresses = postalPatch(b, {}, ['shipping_address'])
   if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
   const num = nextJobNumber()
   const grid = gridFromQuantities(b.quantities)
@@ -3598,10 +3972,10 @@ app.post('/api/jobs', wrap((req, res) => {
   // typed onto the board never had a way to carry one — the column existed and no route bound it —
   // so its PO came back sku:null, est_cost 0, and submitting it said "set the exact style first"
   // with no field anywhere in the product to do that in. 17 columns, 17 placeholders, 17 values.
-  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at, shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     contactId, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
     STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', str(b.garment).trim() || null, b.quantities || '',
-    grid || '{}', String(b.due_date || '').trim() || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now()).lastInsertRowid)
+    grid || '{}', String(b.due_date || '').trim() || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now(), Object.hasOwn(b,'shipping_address') ? addresses.shipping_address : null).lastInsertRowid)
   logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: contactId, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
@@ -3611,6 +3985,7 @@ app.put('/api/jobs/:id', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const b = req.body || {}
+  const addresses = postalPatch(b, j, ['shipping_address'])
   if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
   // The one door out of a closed ring. A two-garment job that has been invoiced and part-paid had
   // NO way to have its sizes corrected — the customer adds four hoodies and the shop is stuck:
@@ -3688,7 +4063,7 @@ app.put('/api/jobs/:id', wrap((req, res) => {
     }
   }
   const reparsed = !explicitLines && b.quantities !== undefined ? gridFromQuantities(b.quantities) : null
-  const nextSizes = explicitLines ? JSON.stringify(rollupSizes(explicitLines)) : (reparsed || j.sizes || '{}')
+  let nextSizes = explicitLines ? JSON.stringify(rollupSizes(explicitLines)) : (reparsed || j.sizes || '{}')
   // jobs.line_sizes is the per-garment grid the PO, the pick ticket, the work ticket and the print
   // package all read. It is written once at conversion, and PUT never touched it — so a shop that
   // bumped a job from 100 pieces to 150 (the ordinary case: the customer added shirts) got a board,
@@ -3736,24 +4111,45 @@ app.put('/api/jobs/:id', wrap((req, res) => {
       nextLines = JSON.stringify([{ ...cur[0], description: nextGarment, garment: nextGarment }])
     }
   }
+  // The ordinary form sends unchanged quantities when editing a title or date. Re-parsing
+  // those may reorder size keys or materialize an equivalent legacy/estimate fallback into
+  // line_sizes. Preserve the original storage when production inputs have not changed, so
+  // this harmless normalization cannot revoke a staff release or detach inherited lines.
+  const normalizedGrid = grid => Object.fromEntries(Object.entries(grid || {})
+    .map(([size,count]) => [size,Number(count)]).filter(([,count]) => Number.isFinite(count) && count > 0)
+    .sort(([a],[b]) => a.localeCompare(b)))
+  const normalizedLines = lines => lines.map(line => Object.fromEntries(Object.entries({ ...line, sizes: normalizedGrid(line.sizes) })
+    .sort(([a],[b]) => a.localeCompare(b))))
+  if (JSON.stringify(normalizedGrid(parse(nextSizes,{}))) === JSON.stringify(normalizedGrid(parse(j.sizes,{})))) nextSizes = j.sizes
+  const effectiveNext = jobLines({ ...j, garment: nextGarment, sizes: nextSizes, line_sizes: nextLines })
+  if (JSON.stringify(normalizedLines(effectiveNext)) === JSON.stringify(normalizedLines(jobLines(j)))) nextLines = j.line_sizes
+  const artChanged = str(b.decoration,j.decoration) !== j.decoration || nextGarment !== j.garment || nextQuantities !== j.quantities || nextSizes !== j.sizes || nextLines !== j.line_sizes
   // str() on every free-text field, not just `garment`. node:sqlite refuses to bind an object or
   // an array and — worse — reads a bare object as a NAMED-parameter bag, so `{"title":{"a":1}}`
   // came back "Unknown named parameter" and the route answered a bare 500 with no field named and
   // nothing the caller could act on. str() was written for exactly this and was applied to one
   // field out of seven. An omitted field still means "leave it alone"; a malformed one now falls
   // back to what was already stored rather than taking the route down.
-  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=? WHERE id=?',
+  tx(() => {
+  run('UPDATE jobs SET title=?, decoration=?, garment=?, quantities=?, sizes=?, line_sizes=?, due_date=?, notes=?, assigned_to=?, rush=?, updated_at=?, shipping_address=? WHERE id=?',
     str(b.title, j.title), str(b.decoration, j.decoration), nextGarment, nextQuantities, nextSizes, nextLines, b.due_date === undefined ? j.due_date : (String(b.due_date ?? '').trim() || null),
     // `??` on every other field, and `b.rush ? 1 : 0` on this one — so any partial update cleared
     // it. PUT /api/jobs/:id {notes:"..."} took a job off RUSH: it dropped down the board's sort,
     // lost its badge on the work ticket and on Today, and stopped being counted by the Rush filter.
     // Nothing said so, and nothing on the job records that it ever was one.
-    str(b.notes, j.notes), str(b.assigned_to, j.assigned_to), b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), id)
+    str(b.notes, j.notes), str(b.assigned_to, j.assigned_to), b.rush === undefined ? (j.rush ? 1 : 0) : (b.rush ? 1 : 0), now(), addresses.shipping_address, id)
+  if (addresses.shipping_address !== j.shipping_address)
+    logActivity('job', `${j.job_number} shipping address updated by ${req.member?.name || 'staff'}`, { contact_id: j.contact_id, job_id: id })
+  if (artChanged) {
+    touchProofWorkflow(id,req.member?.name,'Production garment, decoration or quantities changed; technical review required again')
+  }
   // A split change moves what the shop BUYS, on a job that may already have blanks on order, so
   // it goes on the timeline rather than happening silently between two screens.
   if (explicitLines && nextLines !== j.line_sizes) {
     logActivity('job', `${j.job_number} size split changed — ${nextQuantities || 'no sizes'}`, { contact_id: j.contact_id, job_id: id })
   }
+  })
+  if (artChanged) artProductionChanged(id)
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
 
@@ -3773,6 +4169,7 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
     order = Number(req.body.sort_order)
     if (!Number.isFinite(order)) return res.status(400).json({ error: 'sort_order must be a number', code: 'invalid_sort_order' })
   }
+  try { guardWorkflowStage(id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   const status = stage === 'complete' ? 'complete' : 'active'
   run('UPDATE jobs SET stage=?, sort_order=?, status=?, updated_at=? WHERE id=?', stage, order, status, now(), id)
   stampShipDate(j, stage)
@@ -3802,6 +4199,7 @@ const scanJobPayload = (j) => {
     id: j.id, job_number: j.job_number, title: j.title, stage: j.stage,
     stage_label: STAGES.find((s) => s.key === j.stage)?.label || j.stage,
     next_stage: next ? { key: next.key, label: next.label } : null,
+    workflow: productionWorkflow(j.id),
     stages: STAGES, due_date: j.due_date, rush: !!j.rush, decoration: j.decoration || '',
     contact_name: get('SELECT name FROM contacts WHERE id = ?', j.contact_id)?.name || '',
     pieces: sizeTotal(parse(j.sizes, {})),
@@ -3822,7 +4220,9 @@ const scanJobPayload = (j) => {
 app.get('/api/scan/:code', wrap((req, res) => {
   const raw = String(req.params.code || '').trim()
   const candidates = []
-  const ticket = raw.match(/\/p\/ticket\/(\d+)/)
+  const qr = raw.match(/\/#\/production\/jobs\/(\d+)\?shop=([a-zA-Z0-9_-]+)$/)
+  if(qr && qr[2]!==(req.tenant?.slug||'local'))return res.status(403).json({error:'This label belongs to another shop.'})
+  const ticket = raw.match(/\/p\/ticket\/(\d+)/) || qr
   const digits = raw.match(/^(?:job[-\s_]?)?(\d{1,10})$/i)
   if (digits) candidates.push(`JOB-${digits[1]}`)
   candidates.push(raw.toUpperCase().replace(/\s+/g, ''))
@@ -3844,6 +4244,7 @@ app.post('/api/scan', wrap((req, res) => {
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const stage = String(b.to_stage || '')
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `Unknown stage: ${stage}` })
+  try { guardWorkflowStage(j.id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   if (stage !== j.stage) {
     run('UPDATE jobs SET stage=?, status=?, updated_at=? WHERE id=?', stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
     stampShipDate(j, stage)
@@ -3874,11 +4275,13 @@ app.post('/api/scan', wrap((req, res) => {
  * through, so this is a step to take rather than a wall to hit. A draft or failed PO never went
  * anywhere and never blocks: that is the case deleting is the right answer to.
  */
-const PO_STILL_OUT = ['submitting', 'submitted', 'placed_manually', 'partial']
+const PO_STILL_OUT = ['submitting', 'submission_uncertain', 'submitted', 'placed_manually', 'partial']
 app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
   const id = +req.params.id
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found', code: 'not_found' })
+  if (get('SELECT 1 FROM shipping_records WHERE job_id=?',id))
+    return res.status(409).json({code:'shipping_history_retained',error:'This job has shipment history. Keep the job so its dispatch and correction records remain available.'})
   const pos = purchaseOrdersForJob(id)
   const out = pos.filter((p) => PO_STILL_OUT.includes(String(p.status)) && poAlreadySent(p))
   if (out.length) {
@@ -3905,7 +4308,8 @@ app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
 app.get('/api/art', wrap((_req, res) => {
   res.json(all(`SELECT a.*, j.job_number, j.title AS job_title, j.due_date, c.name AS contact_name
     FROM art_versions a JOIN jobs j ON j.id = a.job_id LEFT JOIN contacts c ON c.id = j.contact_id
-    ORDER BY a.created_at DESC, a.id DESC`).map((a) => ({ ...a, share_url: shareUrl('art', a.id, a.share_key) })))
+    WHERE a.id=(SELECT newest.id FROM art_versions newest WHERE newest.job_id=a.job_id ORDER BY newest.version DESC,newest.id DESC LIMIT 1)
+    ORDER BY a.created_at DESC, a.id DESC`).map((a) => ({ ...a, url: artUrl(a), share_url: shareUrl('art', a.id, a.share_key) })))
 }))
 
 // Art must actually be art: allowed types only, and the magic bytes must match — a text file or
@@ -3931,6 +4335,215 @@ function validArtFile(file) {
   } catch { return 'Could not read the uploaded file' }
   return null
 }
+
+const artActor = req => ({ name: req.member?.name || 'Staff', id: req.member?.id || null })
+const productionArtResponse = (jobId, state = artProduction.getArtProduction(jobId)) => {
+  const file = asset => ({ ...asset, url: `/api/jobs/${jobId}/art-assets/${asset.id}/download` })
+  const proof = state.appearance && get('SELECT * FROM art_versions WHERE job_id=? AND id=?',jobId,state.appearance.id)
+  return {
+    ...state,
+    appearance: state.appearance ? { ...state.appearance, url: proof ? artUrl(proof) : null } : null,
+    source_files: state.source_files.map(file), production_files: state.production_files.map(file),
+    allowed_upload_types: ART_ASSET_EXTENSIONS, max_file_bytes: ART_ASSET_LIMIT,
+    validation: 'Files are stored unchanged. Technical release records a staff review, not automatic machine or stitch validation.',
+  }
+}
+const artProductionChanged = jobId => { rtBroadcast('production',{}); rtBroadcast('board',{job_id:jobId}) }
+
+const catalogTenant = req => String(req.tenant?.id ?? 'single-tenant')
+const catalogResponses = new Map()
+let activeCatalogResponses = 0
+const catalogResponseLimit = (req,res,next) => {
+  const tenant = catalogTenant(req), active = catalogResponses.get(tenant) || 0
+  if (activeCatalogResponses >= 4 || active >= 2) { res.setHeader('Retry-After','3'); return res.status(429).json({error:'Photo downloads are busy. Try again shortly.',code:'catalog_response_busy'}) }
+  activeCatalogResponses++; catalogResponses.set(tenant,active+1)
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true; clearTimeout(timer); activeCatalogResponses--
+    const remaining = (catalogResponses.get(tenant) || 1)-1
+    if (remaining) catalogResponses.set(tenant,remaining); else catalogResponses.delete(tenant)
+  }
+  // Keep the lease through outgoing socket flush, not only the supplier fetch. Slow clients
+  // cannot accumulate an unbounded number of retained 10 MiB response buffers.
+  const timer = setTimeout(() => { res.destroy(); release() },30000)
+  timer.unref?.(); res.once('finish',release); res.once('close',release)
+  next()
+}
+app.get('/api/catalog/ss/products/:sku/media', wrap(async (req,res) => {
+  res.setHeader('Cache-Control','private, no-store')
+  try { res.json(await catalogMedia.resolveProduct({tenant:catalogTenant(req),sku:req.params.sku,settings:getSettings()})) }
+  catch (error) {
+    if (error.catalogSafe) return res.status(error.status).json({error:error.message,code:error.code})
+    throw error
+  }
+}))
+app.get('/api/catalog/ss/media/:mediaId', catalogResponseLimit, wrap(async (req,res) => {
+  let media
+  try { media = await catalogMedia.fetchMedia({tenant:catalogTenant(req),media_id:req.params.mediaId}) }
+  catch (error) {
+    if (req.aborted || res.destroyed) return
+    if (error.catalogSafe) return res.status(error.status).json({error:error.message,code:error.code})
+    throw error
+  }
+  if (req.aborted || res.destroyed) return
+  res.setHeader('Cache-Control','private, no-store')
+  res.setHeader('Content-Type',media.mime)
+  res.setHeader('X-Content-Type-Options','nosniff')
+  res.setHeader('Content-Security-Policy',"sandbox; default-src 'none'")
+  res.setHeader('X-PSC-Media-Ticket',media.ticket)
+  res.send(media.bytes)
+}))
+
+async function inspectMockupFile(file,limit) {
+  const bad = message => Object.assign(new Error(message),{status:400,expose:true,code:'invalid_mockup_file'})
+  if (!file) throw bad('Choose a product photo and artwork, then save the preview again.')
+  const handle = await openFile(file.path,'r')
+  try {
+    const stat = await handle.stat()
+    if (!stat.isFile() || stat.size < 1 || stat.size > limit) throw bad(`Choose an image up to ${limit / 1024 / 1024} MiB.`)
+    // Read a fixed-size buffer, not an unbounded read of a file that could grow. Pixel payloads
+    // remain compressed; the shared parser skips them to inspect container metadata only.
+    const bytes = Buffer.alloc(stat.size)
+    let position = 0
+    while (position < bytes.length) {
+      const {bytesRead} = await handle.read(bytes,position,Math.min(65536,bytes.length-position),position)
+      if (!bytesRead) throw bad('An upload changed while saving. Keep the draft and retry.')
+      position += bytesRead
+    }
+    if ((await handle.stat()).size !== stat.size) throw bad('An upload changed while saving. Keep the draft and retry.')
+    const header = readRasterHeader(bytes)
+    if (header.animated) throw bad('Use a still PNG, JPEG or WebP image for this mockup.')
+    const extensions = {png:['.png'],jpeg:['.jpg','.jpeg'],webp:['.webp']}
+    if (!extensions[header.format]?.includes(extname(file.originalname || '').toLowerCase())) throw bad('The image format does not match its filename. Export a still PNG, JPEG or WebP and retry.')
+    return {filename:file.filename,original_name:file.originalname,mime:header.mime,size:stat.size,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),header}
+  } finally { await handle.close() }
+}
+
+app.post('/api/jobs/:id/mockup-compositions', mockupSaveLimit,
+  mockupUpload.fields([{name:'photo',maxCount:1},{name:'artwork',maxCount:1},{name:'proof',maxCount:1}]), reTenant, wrap(async (req,res) => {
+  req.mockupWork.processing = true
+  const staged = Object.values(req.files || {}).flat()
+  let result, failure
+  try {
+    const jobId = +req.params.id
+    if (!get('SELECT id FROM jobs WHERE id=?',jobId)) throw Object.assign(new Error('Job not found.'),{status:404,expose:true,code:'job_not_found'})
+    if (req.aborted || res.destroyed) return
+    const body = req.body || {}
+    // This is a flat form. Never coerce multipart arrays/objects into numeric or string fields.
+    if (typeof body.revision !== 'string' || !/^(0|[1-9]\d{0,15})$/.test(body.revision) || !Number.isSafeInteger(Number(body.revision))) {
+      throw Object.assign(new Error('Refresh the job version before saving this draft.'),{status:400,expose:true,code:'invalid_mockup_revision'})
+    }
+    if (typeof body.request_id !== 'string' || (body.media_ticket !== undefined && typeof body.media_ticket !== 'string')) {
+      throw Object.assign(new Error('The mockup save fields are invalid. Keep the draft and retry.'),{status:400,expose:true,code:'invalid_mockup_fields'})
+    }
+    let recipe
+    try { if (typeof body.recipe !== 'string' || body.recipe.length > 8192) throw Error(); recipe = JSON.parse(body.recipe) }
+    catch { throw Object.assign(new Error('The mockup settings are incomplete. Keep the draft and save again.'),{status:400,expose:true,code:'invalid_mockup_recipe'}) }
+    const photo = await inspectMockupFile(req.files?.photo?.[0],MOCKUP_LIMITS.inputBytes)
+    const artwork = await inspectMockupFile(req.files?.artwork?.[0],MOCKUP_LIMITS.inputBytes)
+    const proof = await inspectMockupFile(req.files?.proof?.[0],MOCKUP_LIMITS.outputBytes)
+    if (req.aborted || res.destroyed) return
+    const replayOnly = !!get('SELECT 1 FROM mockup_composition_receipts WHERE job_id=? AND request_id=?',jobId,body.request_id)
+    // A lost response may be retried after its catalog ticket expires. Verify the signed
+    // identity/digest anyway, then require an exact existing receipt; never mint a new save.
+    const provenance = body.media_ticket ? catalogMedia.verifyTicket({tenant:catalogTenant(req),ticket:body.media_ticket,sha256:photo.sha256,allowExpired:replayOnly}) : null
+    result = saveMockupComposition(jobId,{
+      revision:Number(body.revision),
+      request_id:body.request_id,recipe,photo,artwork,proof,provenance,replay_only:replayOnly,
+    },artActor(req))
+    artProductionChanged(jobId)
+  } catch (error) {
+    failure = error
+  } finally {
+    // A successful retry has fresh temporary filenames but refers to the original saved files.
+    // Keep any committed ownership; failures and exact retries discard only unowned uploads.
+    for (const file of staged) {
+      try {
+        const owned = get('SELECT 1 FROM art_assets WHERE filename=? UNION ALL SELECT 1 FROM art_versions WHERE filename=? LIMIT 1',file.filename,file.filename)
+        if (!owned) { try { unlinkSync(file.path) } catch { /* already removed */ } }
+      } catch { /* uncertain database state: preserve the uploaded bytes */ }
+    }
+    req.mockupWork.release()
+  }
+  if (failure) {
+    if (failure.expose && Number.isInteger(failure.status) && failure.status >= 400 && failure.status < 500) return res.status(failure.status).json({error:failure.message,code:failure.code})
+    throw failure
+  }
+  res.json(result)
+}))
+
+app.get('/api/jobs/:id/art-production', wrap((req,res) => {
+  res.json(productionArtResponse(+req.params.id))
+}))
+
+app.post('/api/jobs/:id/art-assets', upload.single('file'), reTenant, wrap(async (req,res) => {
+  const jobId = +req.params.id
+  if (!get('SELECT id FROM jobs WHERE id=?',jobId)) { dropUpload(req); return res.status(404).json({error:'Job not found'}) }
+  if (!req.file) return res.status(400).json({error:'Choose an original artwork or prepared production file.'})
+  try {
+    const metadata = await inspectArtAsset(req.file)
+    const state = artProduction.addArtAsset(jobId, {
+      revision: req.body?.revision === '' || req.body?.revision === undefined ? null : Number(req.body.revision),
+      role: req.body?.role, filename: req.file.filename, original_name: req.file.originalname, ...metadata,
+    }, artActor(req))
+    artProductionChanged(jobId)
+    res.json(productionArtResponse(jobId,state))
+  } catch (error) {
+    // Keep a file once any committed row owns it, even if preparing the response later failed.
+    try { if (!get('SELECT id FROM art_assets WHERE filename=?',req.file.filename)) dropUpload(req) } catch { /* uncertain database state: preserve original bytes */ }
+    throw error
+  }
+}))
+
+app.get('/api/jobs/:jobId/art-assets/:assetId/download', wrap((req,res) => {
+  const asset = get('SELECT * FROM art_assets WHERE job_id=? AND id=?',+req.params.jobId,+req.params.assetId)
+  if (!asset || !SAFE_UPLOAD_NAME.test(asset.filename) || asset.filename.includes('..')) return res.status(404).end()
+  const path = join(UPLOADS,asset.filename)
+  if (!existsSync(path)) return res.status(404).json({error:'The stored file is missing. Restore it from a backup or upload a new version for review.'})
+  res.setHeader('Cache-Control','private, no-store')
+  // Source, separation and stitch files are authenticated attachments, never public proof URLs.
+  // Anchor the validated basename at UPLOADS. An absolute pathname makes Express treat an
+  // operator's hidden parent directory (for example ~/.local) as a forbidden dotfile.
+  res.download(asset.filename,asset.original_name,{root:UPLOADS,dotfiles:'deny',headers:{'Content-Type':'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'"}})
+}))
+
+app.post('/api/jobs/:id/art-release', requireRole('manager'), wrap(async (req,res) => {
+  const jobId = +req.params.id, body = req.body || {}
+  const job = get('SELECT art_revision FROM jobs WHERE id=?',jobId)
+  if (!job) return res.status(404).json({error:'Job not found'})
+  if (!Number.isSafeInteger(body.revision) || job.art_revision !== body.revision) return res.status(409).json({error:'Artwork changed. Refresh the files and review the current version before releasing.'})
+  if (body.reviewed_confirmed !== true) return res.status(400).json({error:'Confirm that you reviewed the selected files in your production software.'})
+  if (!Array.isArray(body.production_asset_ids) || body.production_asset_ids.length < 1 || body.production_asset_ids.length > 20 || (body.source_asset_ids !== undefined && (!Array.isArray(body.source_asset_ids) || body.source_asset_ids.length > 20))) return res.status(400).json({error:'Choose 1–20 prepared production files and at most 20 originals.'})
+  const ids = [...(Array.isArray(body.production_asset_ids) ? body.production_asset_ids : []), ...(Array.isArray(body.source_asset_ids) ? body.source_asset_ids : [])]
+  if (ids.length > 40) return res.status(400).json({error:'Review at most 20 original files and 20 production files at a time.'})
+  // Stream the selected originals once before review. This hashes bytes; no server image decoding,
+  // rendering, separation or machine execution occurs. The module rechecks the revision after I/O.
+  for (const id of new Set(ids)) {
+    if (!Number.isSafeInteger(id)) return res.status(400).json({error:'Choose files from this job.'})
+    const asset = get('SELECT * FROM art_assets WHERE job_id=? AND id=?',jobId,id)
+    if (!asset || !SAFE_UPLOAD_NAME.test(asset.filename) || asset.filename.includes('..')) return res.status(400).json({error:'Choose files from this job.'})
+    let inspected
+    try { inspected = await inspectArtAsset({path:join(UPLOADS,asset.filename),originalname:asset.original_name}) }
+    catch { return res.status(409).json({error:'A selected file is missing or changed. Restore it or upload a new version before releasing this job.',code:'art_asset_changed'}) }
+    if (inspected.sha256 !== asset.sha256 || inspected.size !== asset.size) return res.status(409).json({error:'A selected file changed outside the CRM. Upload it as a new file and review it again.',code:'art_asset_changed'})
+  }
+  const state = artProduction.releaseArt(jobId,body,artActor(req))
+  artProductionChanged(jobId)
+  res.json(productionArtResponse(jobId,state))
+}))
+
+app.post('/api/jobs/:id/art-production/require', requireRole('manager'), wrap((req,res) => {
+  const state = artProduction.requireArtRelease(+req.params.id,req.body || {},artActor(req))
+  artProductionChanged(+req.params.id)
+  res.json(productionArtResponse(+req.params.id,state))
+}))
+
+app.post('/api/jobs/:id/art-release/revoke', requireRole('manager'), wrap((req,res) => {
+  const state = artProduction.revokeArtRelease(+req.params.id,req.body || {},artActor(req))
+  artProductionChanged(+req.params.id)
+  res.json(productionArtResponse(+req.params.id,state))
+}))
 
 app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, res) => {
   const jobId = +req.params.id
@@ -3974,9 +4587,14 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
     } catch (e) { console.error('gdrive upload threw:', e && e.message) }
   }
 
-  const version = (get('SELECT COALESCE(MAX(version), 0) AS v FROM art_versions WHERE job_id = ?', jobId).v) + 1
-  const id = Number(run('INSERT INTO art_versions (job_id, version, filename, original_name, mime, size, status, notes, drive_file_id, drive_link, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+  const {id,version}=tx(()=>{
+    const version = (get('SELECT COALESCE(MAX(version), 0) AS v FROM art_versions WHERE job_id = ?', jobId).v) + 1
+    const id = Number(run('INSERT INTO art_versions (job_id, version, filename, original_name, mime, size, status, notes, drive_file_id, drive_link, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     jobId, version, req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, 'draft', req.body?.notes || '', driveFileId, driveLink, now()).lastInsertRowid)
+    run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),jobId)
+    touchProofWorkflow(jobId,req.member?.name,`Proof v${version} uploaded; new approval required`)
+    return {id,version}
+  })
   // Only NOW is the local copy safe to drop, and only if Drive really holds the file. Deleting it
   // beside the upload — before this INSERT — meant any throw between the two (a dangling job row,
   // a disk hiccup, a locked database) destroyed the only copy of the customer's artwork with no
@@ -3985,12 +4603,15 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
   if (driveFileId) { try { unlinkSync(req.file.path) } catch { /* best effort */ } }
   logActivity('art', `Art v${version} uploaded${driveFileId ? ' to Google Drive' : ''} — ${req.file.originalname}`, { contact_id: j.contact_id, job_id: jobId })
   const row = get('SELECT * FROM art_versions WHERE id = ?', id)
+  rtBroadcast('production',{});rtBroadcast('board',{job_id:jobId})
   res.json({ ...row, url: artUrl(row), drive: !!driveFileId })
 }))
 
 app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Art version not found' })
+  if(requireCurrentProof(a,res))return
+  if(a.status==='approved')return res.status(409).json({error:'This proof is already approved. Upload a new version to request a different approval.',code:'already_decided'})
   // Everything below assumes a job row. An estimate-attached mockup (lite, and the mockup route
   // on the quote screen in pro) has job_id NULL, so `j.contact_id` threw and this answered a bare
   // 500 — on the button that sends the proof.
@@ -4005,8 +4626,12 @@ app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   // the button the screen offers. Its four siblings have called this guard all along.
   if (requireCustomerEmail(c, res, 'proof')) return
   const s = getSettings()
-  run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
-  run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress')`, now(), j.id)
+  tx(()=>{
+    run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
+    run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),j.id)
+    touchProofWorkflow(j.id,req.member?.name,`Proof v${a.version} sent for approval`)
+  })
+  run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress') AND NOT EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id)`, now(), j.id)
   queueEmail({ contact: c, kind: 'art', subject: `Proof v${a.version} for ${j.title} — approval needed`,
     template: s.email_template_art, vars: { contact_name: c?.name || '', version: a.version, job_title: j.title } })
   logActivity('art', `Proof v${a.version} sent to ${c?.email || 'customer'}`, { contact_id: j.contact_id, job_id: j.id })
@@ -4038,11 +4663,18 @@ app.delete('/api/jobs/:jobId/art/:id', requireRole('manager'), wrap((req, res) =
   const a = get('SELECT * FROM art_versions WHERE id = ? AND job_id = ?', +req.params.id, +req.params.jobId)
   if (!a) return res.status(404).json({ error: 'Art version not found', code: 'not_found' })
   const j = get('SELECT * FROM jobs WHERE id = ?', a.job_id)
-  run('DELETE FROM art_versions WHERE id = ?', a.id)
+  tx(()=>{
+    if(proofIsCurrent(a)){
+      run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),a.job_id)
+      touchProofWorkflow(a.job_id,req.member?.name,`Current proof v${a.version} deleted; approval cleared`)
+    }
+    run('DELETE FROM art_versions WHERE id = ?', a.id)
+  })
   if (a.filename) { try { unlinkSync(join(UPLOADS, a.filename)) } catch { /* Drive-stored, or already gone */ } }
   logActivity('art', a.status === 'approved'
     ? `Proof v${a.version} DELETED — it had been approved by ${a.decided_by || 'the customer'}${a.decided_at ? ` on ${String(a.decided_at).slice(0, 10)}` : ''}`
     : `Proof v${a.version} deleted (${a.status})`, { contact_id: j?.contact_id, job_id: a.job_id })
+  rtBroadcast('production',{});rtBroadcast('board',{job_id:a.job_id})
   res.json({ ok: true, deleted: a.id, link_revoked: true, drive_copy_left: !!a.drive_file_id })
 }))
 
@@ -4063,12 +4695,16 @@ app.post('/api/art/:id/decide', wrap((req, res) => {
       art: a,
     })
   }
+  if(requireCurrentProof(a,res))return
+  if(!['approved','rejected'].includes(req.body?.decision))return res.status(400).json({error:'Choose approved or rejected.',code:'invalid_decision'})
   const approved = req.body?.decision === 'approved'
   decideArt(a, approved, str(req.body?.notes, ''), str(req.body?.by, 'staff'))
   res.json({ ok: true })
 }))
 
 function decideArt(a, approved, notes, by) {
+  const dispatch=[]
+  tx(()=>{
   // An estimate-attached mockup (lite: no job board) records the decision and stops — there is no
   // job to release to prepress and no turnaround clock to move. Everything below this point assumes
   // a job row exists, so returning here is what keeps the shared proof page usable in both editions.
@@ -4084,11 +4720,13 @@ function decideArt(a, approved, notes, by) {
     return
   }
   const j = get('SELECT * FROM jobs WHERE id = ?', a.job_id)
+  touchProofWorkflow(j.id,by,`Proof v${a.version} ${approved?'approved':'changes requested'}`)
   run(`UPDATE art_versions SET status=?, decided_at=?, decided_by=?, notes=? WHERE id=?`,
     approved ? 'approved' : 'rejected', now(), by, notes || a.notes, a.id)
   if (!approved) {
+    run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),j.id)
     logActivity('art', `Proof v${a.version} changes requested by ${by}${notes ? ` — "${notes}"` : ''}`, { contact_id: j.contact_id, job_id: j.id })
-    fireAuto('art.rejected', { job: j, contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
+    dispatch.push(['art.rejected', { job: j, contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version }])
     return
   }
 
@@ -4099,9 +4737,9 @@ function decideArt(a, approved, notes, by) {
   // stage='prepress' with status='complete': GET /api/board is WHERE j.status = 'active', so the
   // job was on NO board, out of Capacity, off Today and booking zero press time, while its own
   // page said Prepress. Nothing could put it back — every screen that moves a job reads the board.
-  run(`UPDATE jobs SET stage='prepress', status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
+  run(`UPDATE jobs SET stage=CASE WHEN EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id) THEN stage ELSE 'prepress' END, status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
   logActivity('art', `Proof v${a.version} APPROVED by ${by} — released to prepress`, { contact_id: j.contact_id, job_id: j.id })
-  fireAuto('art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
+  dispatch.push(['art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version }])
 
   // The clock starts now, not at intake. Move the due date and say so out loud — a proof
   // that sat for four days silently ate four days of the production window.
@@ -4117,6 +4755,9 @@ function decideArt(a, approved, notes, by) {
         { contact_id: j.contact_id, job_id: j.id })
     }
   }
+  })
+  for(const [trigger,context] of dispatch)fireAuto(trigger,context)
+  rtBroadcast('production',{})
 }
 
 /* ================= FOLLOW-UPS ================= */
@@ -4143,7 +4784,7 @@ app.get('/api/followups', wrap((_req, res) => {
   // Proofs sitting with the customer — these block production, so they cost days.
   const proofs = all(`SELECT a.*, j.job_number, j.title AS job_title, j.due_date, c.name AS contact_name, c.email
     FROM art_versions a JOIN jobs j ON j.id = a.job_id LEFT JOIN contacts c ON c.id = j.contact_id
-    WHERE a.status = 'sent' ORDER BY a.sent_at`)
+    WHERE a.status = 'sent' AND a.id=(SELECT newest.id FROM art_versions newest WHERE newest.job_id=a.job_id ORDER BY newest.version DESC,newest.id DESC LIMIT 1) ORDER BY a.sent_at`)
     .map((a) => ({ ...a, age: days(a.sent_at) }))
 
   // Repeat customers who have gone quiet — the cheapest revenue in the building.
@@ -4155,7 +4796,7 @@ app.get('/api/followups', wrap((_req, res) => {
     .map((c) => ({ ...c, age: days(c.last_job) }))
 
   res.json({
-    stale, overdue, proofs, reorder,
+    stale:stale.map(e=>({...e,recipient:documentRecipient(e,'estimate')})), overdue:overdue.map(i=>({...i,recipient:documentRecipient(i)})), proofs, reorder,
     totals: {
       // dealValue, not SUM(total): total is subtotal + sales tax, and the tax is the state's money,
       // not revenue the shop is chasing. The dashboard KPI and the pipeline were corrected for
@@ -4171,7 +4812,7 @@ app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
-  if (requireCustomerEmail(c, res, 'follow-up')) return
+  if (requireDocumentEmail(e,'estimate',res,req.body)) return
   const s = getSettings()
   // The shop's own Manual follow-up switch. queueEmail's default is deliver:true, and these two
   // routes were the only customer-mail paths in the file that never passed it — the automation
@@ -4181,11 +4822,12 @@ app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   // shop that set it to Manual still had a live customer email leave the building from a 24px
   // button in a table row.
   const deliver = s.mode_followups !== 'manual'
-  queueEmail({ contact: c, kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
+  queueEmail({ contact: c,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
     template: s.email_template_nudge,
     vars: { estimate_number: e.estimate_number, total: money(e.total) }, deliver })
-  logActivity('estimate', `Follow-up ${deliver ? 'sent' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${c.email}`, { contact_id: e.contact_id })
-  res.json({ ok: true, delivered: deliver, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+  const sentTo=documentRecipient(e,'estimate').email
+  logActivity('estimate', `Follow-up ${deliver ? 'queued' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${sentTo}`, { contact_id: e.contact_id })
+  res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
 }))
 
 /** Nudge an overdue invoice. */
@@ -4193,14 +4835,15 @@ app.post('/api/invoices/:id/nudge', outboundLimit, wrap((req, res) => {
   const i = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', i.contact_id)
-  if (refuseVoided(i, res) || requireCustomerEmail(c, res, 'reminder')) return
+  if (refuseVoided(i, res) || requireDocumentEmail(i,'invoice',res,req.body)) return
   const s = getSettings()
   const deliver = s.mode_followups !== 'manual'   // the same switch, for the same reason as above
-  queueEmail({ contact: c, kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
+  queueEmail({ contact: c, invoice_id:i.id,recipient_revision:i.recipient_revision,kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
     vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver })
-  logActivity('invoice', `Payment reminder ${deliver ? 'sent' : 'drafted'} on ${i.invoice_number} to ${c.email}`, { contact_id: i.contact_id })
-  res.json({ ok: true, delivered: deliver, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+  const sentTo=documentRecipient(i).email
+  logActivity('invoice', `Payment reminder ${deliver ? 'queued' : 'drafted'} on ${i.invoice_number} to ${sentTo}`, { contact_id: i.contact_id })
+  res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
 }))
 
 /* ================= AUTOMATIONS ================= */
@@ -4241,7 +4884,9 @@ app.get('/api/automations', wrap((_req, res) => {
     // so the card said "3 parked" over a table containing none of them. Ascending puts the rows
     // the shop is being asked to act on where this query exists to put them.
     pending: all(`SELECT id, automation_id, automation_name, trigger, next_index, due_at, label,
-                         status, attempts, note, created_at
+                         status, attempts, note, created_at,
+                         CASE WHEN json_valid(ctx) THEN json_extract(ctx,'$.invoice.id') END AS invoice_id,
+                         CASE WHEN json_valid(ctx) THEN json_extract(ctx,'$.estimate.id') END AS estimate_id
                     FROM automation_pending ORDER BY status IS NULL, due_at LIMIT 100`),
   })
 }))
@@ -4254,6 +4899,7 @@ app.get('/api/automations', wrap((_req, res) => {
 app.post('/api/automations/pending/:id/resume', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM automation_pending WHERE id = ?', +req.params.id)
   if (!p) return res.status(404).json({ error: 'That queued sequence is no longer there.', code: 'not_found' })
+  if(p.status==='recipient_review')return res.status(409).json({error:'Delivery contacts changed. Review the document and create a fresh message, then cancel this old sequence.',code:'recipient_review'})
   const rule = get('SELECT enabled FROM automations WHERE id = ?', p.automation_id)
   if (!rule) return res.status(409).json({ error: 'The rule behind this sequence was deleted, so there is nothing left to run. Cancel it instead.', code: 'rule_deleted' })
   if (!rule.enabled) return res.status(409).json({ error: 'That rule is switched off. Turn it back on and the sequence picks up where it stopped.', code: 'rule_disabled' })
@@ -4754,7 +5400,7 @@ function commitAutopilot(estId, contact, { steps, jobId } = {}) {
   // conversion belongs. Autopilot's job ends at a sent estimate and a visible "waiting on them".
   run(`UPDATE estimates SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), estId)
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'sent')
-  queueEmail({ contact, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
+  queueEmail({ contact,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
     vars: { estimate_number: e.estimate_number, total: money(e.total) } })
   logActivity('estimate', `Estimate ${e.estimate_number} sent to ${contact.name} by autopilot`, { contact_id: contact.id })
   // The same event the manual Send fires. Without it the shop's own rules never saw an autopilot
@@ -5444,7 +6090,7 @@ const jobLines = (j) => {
 app.get('/api/jobs/:id/po', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
-  const po = buildJobPurchaseOrder(j, jobLines(j), getSettings())
+  const po = purchaseOrderReview(j, jobLines(j), getSettings())
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="PO-${j.job_number}.json"`)
   res.json(po)
 }))
@@ -5460,7 +6106,7 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // Every garment on the job, each costed against its own style. jobLines() already falls back to
   // the estimate's items and then to the flat grid, which is what the old single-garment fallback
   // here was reaching for — one style at a time.
-  const po = buildJobPurchaseOrder(j, jobLines(j), s)
+  const po = purchaseOrderReview(j, jobLines(j), s)
   po.po_number = `PSC-${j.job_number}`
   if (req.body?.dry_run) return res.json({ ok: true, dry_run: true, po })
   if (!po.lines.length) return res.status(400).json({ error: 'This job has no sized quantities to order.', po })
@@ -5475,7 +6121,11 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // The row is then claimed synchronously before anything is awaited: node:sqlite is synchronous
   // and there is no await between the read and the claim, so a concurrent request cannot slip past.
   if (prior && poAlreadySent(prior)) {
-    return res.json({ ok: true, already: true, supplier: prior.supplier, order_id: prior.order_id, po, purchase_order: getPurchaseOrder(prior.id) })
+    const stored=getPurchaseOrder(prior.id)
+    const confirmed=['confirmed_manual','confirmed_supplier'].includes(stored.placement_state)
+    return res.json({ok:confirmed,already:true,pending:!confirmed,code:confirmed?'po_already_recorded':'po_placement_unverified',
+      note:confirmed?'This order already has a recorded supplier confirmation. Nothing new was submitted.':'This PO has no recorded supplier confirmation. Check the supplier order history, then record the existing order here. Nothing new was submitted.',
+      supplier:stored.manual_confirmation?.supplier||stored.supplier,order_id:stored.order_id,po,purchase_order:stored})
   }
 
   // Persist FIRST — the local PO record is what receiving works against, and the shop needs it even
@@ -5483,31 +6133,43 @@ app.post('/api/jobs/:id/po/submit', requireRole('manager'), wrap(async (req, res
   // matched yet). Auto-submission to the distributor is a best-effort layer on top. Reuse the
   // existing row on a retry rather than stacking duplicate draft/failed POs for the one job.
   const stored = prior || createPurchaseOrder(j, po, { status: 'draft' })
+  // The current builder knows catalog style codes, not exact supplier size/color identifiers.
+  // Persist a useful manual handoff without claiming placement or attempting an unsafe order.
+  if (po.submission_ready !== true) {
+    if (!prior || ['draft','manual_required'].includes(prior.status))
+      run("UPDATE purchase_orders SET status='manual_required',updated_at=? WHERE id=?",now(),stored.id)
+    return res.json({ok:false,pending:true,code:'po_manual_required',note:po.submission_note,
+      supplier:po.supplier,po,purchase_order:getPurchaseOrder(stored.id)})
+  }
   // Claim it before the await — see the note on ALREADY_SENT above.
   run("UPDATE purchase_orders SET status = 'submitting', updated_at = ? WHERE id = ?", now(), stored.id)
   let result = { ok: false, supplier: po.supplier, pending: true }
   try {
     result = await submitPurchaseOrder(po, s, { dryRun: false, poNumber: po.po_number })
-  } catch (e) { result = { ok: false, supplier: po.supplier, error: e.message, pending: true } }
-  // 'placed_manually' means a human typed this order into the distributor's portal. It is NOT
-  // what an API failure means, and calling it that told the shop their blanks were on the way.
-  // With an expired S&S key the submit failed, the PO said "placed manually", the timeline said
-  // "recorded", and 240 shirts were never ordered — discovered on the due date.
-  //
-  // Only the genuinely-not-wired path (pending, with a note explaining it and no error) may claim
-  // placed_manually. A real error is 'failed', and says so everywhere a human might look.
-  // …and 'submitted' requires the distributor's own order number, not just an ok. Belt and braces
-  // over the guard in submitPurchaseOrder: 'submitted' is in poAlreadySent(), so writing it for an
-  // order that was never placed shuts the only door back onto the wire. A supplier branch that
-  // legitimately cannot return an id says so with `pending` and no error, which is the
-  // placed_manually path and is unaffected.
+  } catch (e) { result = { ok: false, supplier: po.supplier, code: e.code || 'po_not_submitted', error: e.code==='po_submission_uncertain' ? e.message : 'The order was not submitted. Review its size and color identifiers.', pending: true } }
+  // Only a supplier receipt confirms API submission. A missing or lost response is unknown;
+  // manual placement is recorded separately by an explicit manager acknowledgement.
   const claimed = result.ok && !result.order_id
-  if (claimed) result = { ...result, ok: false, error: `${result.supplier || 'The distributor'} answered without an order number, so the order was NOT placed. Check the portal before sending it again.` }
-  const status = result.ok ? 'submitted' : (result.pending && !result.error ? 'placed_manually' : 'failed')
+  if (claimed) result = { ...result, ok: false, code:'po_submission_uncertain',error: 'The supplier did not confirm an order number. Check the supplier order history before placing anything again.' }
+  const status = result.ok ? 'submitted' : result.code==='po_submission_uncertain' ? 'submission_uncertain' : (result.pending && !result.error ? 'manual_required' : 'failed')
   run('UPDATE purchase_orders SET status = ?, order_id = ?, submitted_at = ?, updated_at = ? WHERE id = ?',
     status, result.order_id || null, result.ok ? now() : null, now(), stored.id)
-  logActivity('note', `Blanks PO ${po.po_number} ${status === 'failed' ? 'NOT PLACED' : 'recorded'}${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs${result.error ? ` — submit failed: ${String(result.error).slice(0, 160)}` : ''}`, { job_id: j.id, contact_id: j.contact_id })
+  logActivity('note', `Blanks PO ${po.po_number}: ${status}${result.supplier ? ` for ${result.supplier}` : ''}${result.order_id ? ` (order ${result.order_id})` : ''} — ${po.total_units} pcs`, { job_id: j.id, contact_id: j.contact_id })
   res.json({ ...result, po, purchase_order: getPurchaseOrder(stored.id) })
+}))
+
+app.post('/api/jobs/:id/po/manual', requireRole('manager'), wrap((req,res)=>{
+  const j=get('SELECT * FROM jobs WHERE id=?',+req.params.id)
+  if(!j)return res.status(404).json({error:'Job not found',code:'not_found'})
+  const po=purchaseOrderReview(j,jobLines(j),getSettings())
+  try {
+    const result=confirmManualPurchaseOrder(j,po,req.body,req.member?.name||'Manager')
+    if(!result.already)logActivity('note',`Manual PO ${result.purchase_order.po_number} confirmed with ${result.purchase_order.manual_confirmation.supplier} — reference ${result.purchase_order.manual_confirmation.reference}`,{job_id:j.id,contact_id:j.contact_id})
+    res.json(result)
+  } catch(error) {
+    if(error.expose && error.status<500)return res.status(error.status).json({error:error.message,code:error.code})
+    throw error
+  }
 }))
 
 /** All purchase orders recorded for a job, each with per-cell receiving state. */
@@ -5635,14 +6297,16 @@ app.post('/api/purchase-orders/:id/reopen', requireRole('manager'), wrap((req, r
 /* ================= RIP / PRINT PACKAGE ================= */
 
 /**
- * Print-ready package for the RIP / hot folder: the approved art + any recorded screen spec (
- * inks, print order) + the size grid, as a manifest a RIP or DTF workflow can consume. The film
- * positives come from whatever prepress tool the shop already uses.
+ * Staff production manifest. Appearance approval and a technical release are separate records;
+ * a garment-photo proof must never be presented as input ready for a RIP or embroidery machine.
  */
 app.get('/api/jobs/:id/print-package', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
-  const approved = get(`SELECT * FROM art_versions WHERE job_id = ? AND status='approved' ORDER BY version DESC LIMIT 1`, j.id)
+  const current=latestProof({job_id:j.id})
+  const approved=j.art_approved_at && current?.status==='approved' ? current : null
+  const review = artProduction.getArtProduction(j.id)
+  const appearance = approved ? { file: artUrl(approved), version: approved.version, purpose: approved.purpose || 'legacy_proof' } : null
   const sep = parse(j.separation, null)
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="print-package-${j.job_number}.json"`)
   res.json({
@@ -5650,17 +6314,17 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
     // `sizes` is the rolled-up total; `lines` carries each garment with its own grid, so a RIP
     // package for a two-style order no longer describes it as one merged run.
     sizes: parse(j.sizes, {}), lines: jobLines(j), quantities: j.quantities,
-    approved_art: approved ? { file: `/uploads/${approved.filename}`, version: approved.version } : null,
+    approved_art: appearance, // compatibility alias: this is an appearance proof, not machine input
+    appearance_proof: appearance, appearance_approved: !!approved,
+    technical_ready: review.technical_ready, release_required: review.required,
+    production_files: review.technical_ready ? review.release.production_manifest.map(a => ({ id:a.id, name:a.original_name, sha256:a.sha256, size:a.size, mime:a.mime, file:`/api/jobs/${j.id}/art-assets/${a.id}/download` })) : [],
+    release: review.technical_ready ? { id:review.release.id, reviewed_by:review.release.reviewed_by, reviewed_at:review.release.reviewed_at, specs:review.release.specs, notes:review.release.notes } : null,
+    blocking_reasons: review.blocking_reasons,
     separation: sep ? { mode: sep.mode, screens: sep.screens, inks: sep.inks, dark: sep.dark } : null,
-    // Print-readiness is APPROVED ART. A screen separation is a screen-print-only extra that
-    // nothing in the running product records any more — jobs.separation is read everywhere and
-    // written only by seed.mjs, so the demo shop was the one install where this looked right.
-    // Gating on it told every DTF, embroidery and vinyl job, and every job on a real install,
-    // "needs approved art" with the approved art's filename one key above the sentence.
-    ready: !!approved,
-    note: !approved ? 'Not print-ready: no approved art on this job yet — send a proof and get it signed off.'
-      : sep ? 'Ready for the RIP — approved art, ink list and the full size grid.'
-        : 'Ready for the RIP — approved art and the full size grid. No screen separation is recorded (DTF, embroidery and vinyl do not use one).',
+    ready: review.technical_ready,
+    note: !approved ? 'No current approved artwork proof. Obtain customer approval, then review the separate production files.'
+      : review.technical_ready ? 'Staff released the selected production files. This manifest records that review; it does not generate or validate machine output.'
+        : 'Customer appearance approval is recorded. A current technical production release is still needed; the proof is not a prepared machine file.',
   })
 }))
 
@@ -5824,23 +6488,39 @@ function groupImportedOrders(orders) {
 }
 
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
+  const diagnostic = process.env.PSC_IMPORT_DIAGNOSTICS === '1'
+  const metrics = { parse_ms: 0, map_ms: 0, prepare_ms: 0, max_order_ms: 0, max_batch_ms: 0, max_commit_ms: 0, max_checkpoint_ms: 0 }
+  const preparedAt = performance.now()
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
-  const rows = parseCsv(text)
+  let rows = parseCsv(text)
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
+  try {
+    const info = importMapping(rows, 'orders', req.body?.mapping)
+    if (req.body?.mapping_only === true || req.body?.mapping_only === 'true') return res.json(info)
+    rows = applyImportMapping(rows, 'orders', req.body?.mapping)
+  } catch (e) { return res.status(400).json({ error: e.message }) }
+
+  metrics.parse_ms = performance.now() - preparedAt
   const mapped = mapOrderRows(rows)
+  metrics.map_ms = performance.now() - preparedAt - metrics.parse_ms
   // Preview what the import will WRITE, not what the file contains. Folded per line-item rows are
   // one order, not four, and the value shown has to be the value that lands: a three-line $1,900
   // order previewed as "3 orders — $1,900 of history" and then wrote one $1,000 invoice.
   // Fold ONCE. The commit path used to group the file a second time further down and throw this
   // copy away, which on a 60,000-row export is a second full pass for nothing.
   const grouped = groupImportedOrders(mapped.orders)
+  const strict = req.body?.status_policy === 'strict'
+  const unresolved = strict ? grouped.filter(o => !strictImportStatus(o.status)) : []
+  const payment_states = strict ? grouped.reduce((counts,o) => { const k=strictImportStatus(o.status) || 'needs_review'; counts[k]=(counts[k] || 0)+1; return counts },{}) : null
+
   const preview = req.body?.preview === 'true' || req.body?.preview === true
   if (preview) {
     const summary = summarizeImport({ orders: grouped, warnings: mapped.warnings })
-    return res.json({ preview: true, ...summary, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+    return res.json({ preview: true, ...summary, blocked:unresolved.length > 0, payment_states, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
   }
 
+  if (unresolved.length) return res.status(400).json({error:`${unresolved.length} order(s) need payment status review. Use paid, unpaid or quote. Completed jobs do not prove payment; partial payments need a separate balance reconciliation. No orders were imported.`,code:'import_status_review'})
   let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0
   const findContact = (name, email) => {
     let c = email ? get('SELECT * FROM contacts WHERE lower(email) = lower(?)', email) : null
@@ -5894,6 +6574,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
    * order number, so a re-import skips exactly what already arrived. The gate asserts both halves:
    * that the loop keeps breathing, and that a re-import writes nothing new.
    */
+  metrics.prepare_ms = performance.now() - preparedAt
   const BATCH = 200
   const writeOne = (o, rowIndex) => {
     // Idempotent on the source system's order number, matched EXACTLY against its own column.
@@ -5933,7 +6614,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     }
     const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
     const total = filed != null ? doc.total : t.total
-    const kind = classify(o.status)
+    const kind = strict ? strictImportStatus(o.status) : classify(o.status)
     // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
     const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
 
@@ -5965,14 +6646,36 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // is exactly false here: every batch before this one is committed and durable. See
   // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
   let stopped = null
-  for (let i = 0; i < grouped.length; i += BATCH) {
-    const batch = grouped.slice(i, i + BATCH)
-    try { tx(() => { batch.forEach((o, n) => writeOne(o, i + n)) }) }
-    catch (e) { stopped = e; break }
-    // Between transactions, never inside one: this is what lets /health answer, another shop
-    // load a page, and a websocket stay alive while a big export is landing.
-    if (i + BATCH < grouped.length) await new Promise((r) => setImmediate(r))
-  }
+  const importDb = getDb()
+  await withImportCheckpoints(importDb, async checkpoint => {
+    for (let i = 0; i < grouped.length;) {
+      const start = i, started = performance.now()
+      const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
+      let commitAt = started
+      try {
+        tx(() => {
+          // A fixed row count is not a latency budget: slower disks or large orders can make
+          // 200 records monopolize the process. Yield after 25 ms at an ORDER boundary.
+          do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
+          while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
+          commitAt = performance.now()
+        })
+        metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
+        metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
+      } catch (e) {
+        // SQLite rolled back this whole batch; the partial-import report must do the same.
+        ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
+        stopped = e; break
+      }
+      // Checkpoint maintenance yields the request thread after committed counts are durable.
+      // A pinned-WAL limit stops here without undoing the batch's successful accounting.
+      const checkpointAt = performance.now()
+      try { await checkpoint() } catch (error) { stopped = error; break }
+      metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
+      if (i < grouped.length) await new Promise((r) => setImmediate(r))
+    }
+  })
+  if (diagnostic) console.log('[import-diagnostics]', JSON.stringify({ orders: grouped.length, ...Object.fromEntries(Object.entries(metrics).map(([k,v])=>[k,Math.round(v)])) }))
   if (stopped) {
     const report = interruptedImportReport({
       written: created, total: grouped.length, noun: 'order', err: stopped,
@@ -5984,7 +6687,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
     return res.status(503).json(report)
   }
-  logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {})
+  // These orders have committed. A secondary timeline failure must not report that import failed.
+  try { logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {}) } catch { /* preserve the durable import result */ }
   res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
 }))
 
@@ -6007,9 +6711,9 @@ const v1Limit = (q, cap = 100) => v1int(q.limit, 25, 1, cap)
 const v1Offset = (q) => v1int(q.offset, 0, 0, 1_000_000_000)
 const v1List = (res, rows, limit) => res.json({ data: rows.slice(0, limit), has_more: rows.length > limit })
 
-const v1Customer = (c) => c && ({ id: c.id, name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', tags: c.tags || '', created_at: c.created_at })
-const v1Estimate = (e) => e && ({ id: e.id, number: e.estimate_number, customer_id: e.contact_id, status: e.status, items: parse(e.items, []), subtotal: e.subtotal, tax: e.tax, total: e.total, notes: e.notes || '', sent_at: e.sent_at, approved_at: e.approved_at, created_at: e.created_at })
-const v1Invoice = (i) => i && ({ id: i.id, number: i.invoice_number, customer_id: i.contact_id, estimate_id: i.estimate_id, status: i.status, amount_due: i.amount_due, amount_paid: i.amount_paid, balance: Math.round(((i.amount_due || 0) - (i.amount_paid || 0)) * 100) / 100, due_date: i.due_date, paid_at: i.paid_at, created_at: i.created_at })
+const v1Customer = (c) => c && ({ id: c.id, name: c.name, email: c.email || '', phone: c.phone || '', company: c.company || '', billing_address: c.billing_address || '', shipping_address: c.shipping_address || '', tags: c.tags || '', created_at: c.created_at })
+const v1Estimate = (e) => e && ({ id: e.id, number: e.estimate_number, customer_id: e.contact_id, status: e.status, items: parse(e.items, []), subtotal: e.subtotal, tax: e.tax, total: e.total, notes: e.notes || '', billing_address: e.billing_address || '', shipping_address: e.shipping_address || '', sent_at: e.sent_at, approved_at: e.approved_at, created_at: e.created_at })
+const v1Invoice = (i) => i && ({ id: i.id, number: i.invoice_number, customer_id: i.contact_id, estimate_id: i.estimate_id, status: i.status, amount_due: i.amount_due, amount_paid: i.amount_paid, balance: Math.round(((i.amount_due || 0) - (i.amount_paid || 0)) * 100) / 100, due_date: i.due_date, paid_at: i.paid_at, created_at: i.created_at, payment_review: i.payment_review || '', ...invoiceCreditSummary(i) })
 const v1Job = (j) => j && ({ id: j.id, number: j.job_number, customer_id: j.contact_id, estimate_id: j.estimate_id, invoice_id: j.invoice_id, title: j.title, status: j.status, stage: j.stage, decoration: j.decoration || '', sizes: parse(j.sizes, {}), due_date: j.due_date, rush: !!j.rush, created_at: j.created_at })
 const v1Payment = (p) => p && ({ id: p.id, invoice_id: p.invoice_id, amount: p.amount, method: p.method, created_at: p.created_at })
 
@@ -6054,7 +6758,7 @@ const v1EmailProblem = (raw, field = 'email') => {
 
 app.get('/api/v1/me', wrap((req, res) => {
   const s = getSettings()
-  res.json({ shop: s.shop_name || req.tenant?.shop_name || '', plan: req.tenant?.plan_tier || req.tenant?.plan || 'dev', rate_limit: '120/min', docs: '/docs-api.html' })
+  res.json({ shop: s.shop_name || req.tenant?.shop_name || '', plan: req.tenant?.plan_tier || req.tenant?.plan || 'dev', rate_limit: '120/min', docs: '/docs-api.html', ...(req.agentKey?{agent:{id:req.agentKey.id,name:req.agentKey.name,scopes:req.agentKey.scopes,expires_at:req.agentKey.expires_at}}:{}) })
 }))
 
 app.get('/api/v1/customers', wrap((req, res) => {
@@ -6074,22 +6778,36 @@ app.get('/api/v1/customers/:id', wrap((req, res) => {
   const invoices = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? ORDER BY i.created_at DESC LIMIT 20`, todayIso(), c.id).map(v1Invoice)
   res.json({ ...v1Customer(c), recent_jobs: orders, recent_invoices: invoices })
 }))
-app.post('/api/v1/customers', wrap((req, res) => {
+// Store creation and its retry receipt in the same shop transaction. Authorization and
+// tenant selection have already run; credential rotation intentionally starts a new namespace.
+const v1Create = (operation, create) => wrap((req, res) => {
+  const principal = req.agentKey ? `agent:${req.agentKey.id}` : req.apiKeyAuth
+    ? `legacy:${crypto.createHash('sha256').update((req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()).digest('hex')}`
+    : req.member ? `member:${req.member.id}` : 'local'
+  const result = createWithRetry(getDb(), { principal, operation, key: req.headers['idempotency-key'], body: req.body }, afterCommit => create(req, afterCommit))
+  for (const fn of result.afterCommit || []) { try { fn() } catch (error) { console.error('API post-commit hook failed:', error.message) } }
+  if (req.headers['idempotency-key'] !== undefined && result.status >= 200 && result.status < 300) res.setHeader('Idempotency-Replayed', result.replayed ? 'true' : 'false')
+  res.status(result.status).json(result.body)
+})
+
+app.post('/api/v1/customers', v1Create('customers', (req, afterCommit) => {
   const b = req.body || {}
+  let postal
+  try { postal = postalPatch(b) } catch (error) { return createResult(400, { error: error.message, code: error.code }) }
   const bad = v1TextProblem(b, ['name', 'email', 'phone', 'company'])
-  if (bad) return res.status(400).json(bad)
+  if (bad) return createResult(400, bad)
   const name = String(b.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'name is required' })
+  if (!name) return createResult(400, { error: 'name is required' })
   const badEmail = v1EmailProblem(b.email)
-  if (badEmail) return res.status(400).json(badEmail)
+  if (badEmail) return createResult(400, badEmail)
   const email = String(b.email || '').trim().toLowerCase()
   const dupe = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
-  if (dupe) return res.status(409).json({ error: 'A customer with that email already exists', id: dupe.id })
-  const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-    name.slice(0, 120), email.slice(0, 160), String(b.phone || '').slice(0, 40), String(b.company || '').slice(0, 120), 'api', now(), now()).lastInsertRowid)
+  if (dupe) return createResult(409, { error: 'A customer with that email already exists', id: dupe.id })
+  const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, billing_address, shipping_address, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    name.slice(0, 120), email.slice(0, 160), String(b.phone || '').slice(0, 40), String(b.company || '').slice(0, 120), 'api', postal.billing_address, postal.shipping_address, now(), now()).lastInsertRowid)
   const c = get('SELECT * FROM contacts WHERE id = ?', id)
-  fireAuto('contact.created', { contact: c })
-  res.status(201).json(v1Customer(c))
+  afterCommit(() => fireAuto('contact.created', { contact: c }))
+  return createResult(201, v1Customer(c))
 }))
 
 app.get('/api/v1/estimates', wrap((req, res) => {
@@ -6105,8 +6823,12 @@ app.get('/api/v1/estimates/:id', wrap((req, res) => {
   if (!e) return res.status(404).json({ error: 'not_found' })
   res.json(v1Estimate(e))
 }))
-app.post('/api/v1/estimates', wrap((req, res) => {
+app.post('/api/v1/estimates', v1Create('estimates', (req, afterCommit) => {
   const b = req.body || {}
+  let customerAddresses
+  try { postalPatch(b); customerAddresses = postalPatch(b.customer) }
+  catch (error) { return createResult(400, { error: error.message, code: error.code }) }
+  if(req.agentKey && b.customer && !b.customer_id && !req.agentKey.scopes.includes('customers:write'))return createResult(403, {error:'Use an existing customer_id or grant customers:write to this key.',code:'agent_scope_denied',required_scope:'customers:write'})
   // A customer_id that names nobody used to fall through to the customer{} block and CREATE
   // someone: `{"customer_id": 9999, "customer": {"name":"Ghost"}}` returned 201 with the estimate
   // attached to a brand-new contact 3. The caller asked to bill an existing account and got a
@@ -6115,28 +6837,28 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   let contact = null
   if (b.customer_id !== undefined && b.customer_id !== null && b.customer_id !== '') {
     const cid = Number(b.customer_id)
-    if (!Number.isInteger(cid) || cid <= 0) return res.status(400).json({ error: 'customer_id must be a positive whole number', code: 'invalid_customer_id' })
+    if (!Number.isInteger(cid) || cid <= 0) return createResult(400, { error: 'customer_id must be a positive whole number', code: 'invalid_customer_id' })
     contact = get('SELECT * FROM contacts WHERE id = ?', cid)
-    if (!contact) return res.status(404).json({ error: `customer_id ${cid} does not exist`, code: 'customer_not_found' })
+    if (!contact) return createResult(404, { error: `customer_id ${cid} does not exist`, code: 'customer_not_found' })
   }
   if (!contact && b.customer && typeof b.customer === 'object' && !Array.isArray(b.customer) && b.customer.name) {
     const badC = v1TextProblem(b.customer, ['name', 'email', 'phone', 'company'], 'customer.')
-    if (badC) return res.status(400).json(badC)
+    if (badC) return createResult(400, badC)
     const badCEmail = v1EmailProblem(b.customer.email, 'customer.email')
-    if (badCEmail) return res.status(400).json(badCEmail)
+    if (badCEmail) return createResult(400, badCEmail)
     const email = String(b.customer.email || '').trim().toLowerCase()
     contact = email ? get('SELECT * FROM contacts WHERE lower(email) = ?', email) : null
     if (!contact) {
-      const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-        String(b.customer.name).slice(0, 120), email.slice(0, 160), String(b.customer.phone || '').slice(0, 40), String(b.customer.company || '').slice(0, 120), 'api', now(), now()).lastInsertRowid)
+      const id = Number(run('INSERT INTO contacts (name, email, phone, company, tags, created_at, updated_at, billing_address, shipping_address) VALUES (?,?,?,?,?,?,?,?,?)',
+        String(b.customer.name).slice(0, 120), email.slice(0, 160), String(b.customer.phone || '').slice(0, 40), String(b.customer.company || '').slice(0, 120), 'api', now(), now(), customerAddresses.billing_address, customerAddresses.shipping_address).lastInsertRowid)
       contact = get('SELECT * FROM contacts WHERE id = ?', id)
     }
   }
-  if (!contact) return res.status(400).json({ error: 'customer_id or customer{name,…} is required' })
-  if (!Array.isArray(b.items) || !b.items.length) return res.status(400).json({ error: 'items[] is required' })
+  if (!contact) return createResult(400, { error: 'customer_id or customer{name,…} is required' })
+  if (!Array.isArray(b.items) || !b.items.length) return createResult(400, { error: 'items[] is required' })
   // Reject, never coerce. An integration cannot see a silently-defaulted quantity or a dropped
   // line — it just gets a 201 and a wrong dollar figure on a document a customer will sign.
-  if (b.items.length > 50) return res.status(400).json({ error: 'items[] is limited to 50 lines per estimate', code: 'too_many_items' })
+  if (b.items.length > 50) return createResult(400, { error: 'items[] is limited to 50 lines per estimate', code: 'too_many_items' })
   const items = []
   for (const [i, it] of b.items.entries()) {
     const where = `items[${i}]`
@@ -6144,29 +6866,29 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     // the one malformed shape that reached `it.sizes` and threw — a 500 where every other bad
     // element ("str", 123, [], true) already answered 400. The docs promise refusals, not crashes.
     if (!it || typeof it !== 'object' || Array.isArray(it)) {
-      return res.status(400).json({ error: `${where} must be an object like {"description":"…","quantity":24,"unit_price":9.5}`, code: 'invalid_item' })
+      return createResult(400, { error: `${where} must be an object like {"description":"…","quantity":24,"unit_price":9.5}`, code: 'invalid_item' })
     }
     let sizes
     if (it.sizes != null) {
-      if (typeof it.sizes !== 'object' || Array.isArray(it.sizes)) return res.status(400).json({ error: `${where}.sizes must be an object like {"M":24}` })
+      if (typeof it.sizes !== 'object' || Array.isArray(it.sizes)) return createResult(400, { error: `${where}.sizes must be an object like {"M":24}` })
       sizes = {}
       for (const [k, v] of Object.entries(it.sizes)) {
-        if (!SIZES.includes(k)) return res.status(400).json({ error: `${where}.sizes has unknown size "${k}" — allowed: ${SIZES.join(', ')}` })
+        if (!SIZES.includes(k)) return createResult(400, { error: `${where}.sizes has unknown size "${k}" — allowed: ${SIZES.join(', ')}` })
         // The same "reject, never coerce" rule unit_price gets below. Number(true) is 1 and
         // Number([24]) is 24, and both pass Number.isInteger — so {"M":true} booked one piece and
         // {"M":[24]} booked twenty-four, each with a 201 and no way for the caller to see it.
         if (typeof v !== 'number' && !(typeof v === 'string' && v.trim() !== '')) {
-          return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
+          return createResult(400, { error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
         }
         const n = Number(v)
-        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return res.status(400).json({ error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
+        if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return createResult(400, { error: `${where}.sizes["${k}"] must be a whole number >= 0`, code: 'invalid_quantity' })
         // Number.isInteger(1e300) is true. Uncapped, that reached the money arithmetic and came
         // back a stored subtotal of 1e302. The app's own screens clamp to MAX_PIECES; the public
         // API refuses instead, because an integration must never see a silently-changed quantity.
-        if (n > MAX_PIECES) return res.status(400).json({ error: `${where}.sizes["${k}"] must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
+        if (n > MAX_PIECES) return createResult(400, { error: `${where}.sizes["${k}"] must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
         sizes[k] = n
       }
-      if (!Object.values(sizes).some((n) => n > 0)) return res.status(400).json({ error: `${where}.sizes must contain at least one quantity greater than zero` })
+      if (!Object.values(sizes).some((n) => n > 0)) return createResult(400, { error: `${where}.sizes must contain at least one quantity greater than zero` })
     } else {
       // `qty` is the canonical name in public/js/shared/pricing.js; `quantity` is its documented alias.
       // Same rule as unit_price: a real number or a string that says one. Number(true) is 1 and
@@ -6174,17 +6896,17 @@ app.post('/api/v1/estimates', wrap((req, res) => {
       // twenty-four, both with a 201 — while `taxable: 1` one field over was already a 400.
       const rawQ = it.quantity ?? it.qty
       if (typeof rawQ !== 'number' && !(typeof rawQ === 'string' && rawQ.trim() !== '')) {
-        return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
+        return createResult(400, { error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
       }
       const q = Number(rawQ)
-      if (!Number.isFinite(q) || q <= 0) return res.status(400).json({ error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
+      if (!Number.isFinite(q) || q <= 0) return createResult(400, { error: `${where} needs sizes{} or quantity > 0`, code: 'invalid_quantity' })
       // Reject a fraction rather than rounding it. Math.round() was wrong in both directions:
       // 0.4 became 0 pieces and a $0 estimate, and 2.5 billed the caller for 3. Shirts do not
       // come in halves, so a fractional quantity is a caller bug worth reporting, not guessing at.
-      if (!Number.isInteger(q)) return res.status(400).json({ error: `${where}.quantity must be a whole number (got ${q})`, code: 'invalid_quantity' })
+      if (!Number.isInteger(q)) return createResult(400, { error: `${where}.quantity must be a whole number (got ${q})`, code: 'invalid_quantity' })
       // The operand PRICE_CAP's twin was missing. 1e300 pieces at $10,000,000 overflowed round2
       // and stored a $0 estimate, with a 201.
-      if (q > MAX_PIECES) return res.status(400).json({ error: `${where}.quantity must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
+      if (q > MAX_PIECES) return createResult(400, { error: `${where}.quantity must be at most ${MAX_PIECES}`, code: 'invalid_quantity' })
       sizes = { M: q }
     }
     // Reject, never coerce. An omitted unit_price used to default to 0, so a caller that forgot
@@ -6198,14 +6920,14 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     // pass unit_price: 0 explicitly, and that is what docs/API.md promises.
     const priceGiven = typeof it.unit_price === 'number' ||
       (typeof it.unit_price === 'string' && it.unit_price.trim() !== '')
-    if (!priceGiven) return res.status(400).json({ error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
+    if (!priceGiven) return createResult(400, { error: `${where}.unit_price is required — pass 0 explicitly for a no-charge line`, code: 'unit_price_required' })
     const price = Number(it.unit_price)
-    if (!Number.isFinite(price) || price < 0) return res.status(400).json({ error: `${where}.unit_price must be a number >= 0`, code: 'invalid_unit_price' })
+    if (!Number.isFinite(price) || price < 0) return createResult(400, { error: `${where}.unit_price must be a number >= 0`, code: 'invalid_unit_price' })
     // Number.isFinite(1e308) is true, but multiplying it by a quantity is not: computeTotals
     // overflowed to Infinity, SQLite stored NULL, and the caller got a 201 for an estimate whose
     // subtotal and total were both null. Refuse a price no shop will ever charge instead.
     const PRICE_CAP = 1e7
-    if (price > PRICE_CAP) return res.status(400).json({ error: `${where}.unit_price must be at most ${PRICE_CAP}`, code: 'invalid_unit_price' })
+    if (price > PRICE_CAP) return createResult(400, { error: `${where}.unit_price must be at most ${PRICE_CAP}`, code: 'invalid_unit_price' })
     // Same "reject, never coerce" rule as unit_price above, and it was broken the same way.
     // `it.taxable !== false` is a strict identity test against the boolean, so EVERY other way an
     // integration expresses no came out taxable: the string "false" (a form post, a spreadsheet
@@ -6215,7 +6937,7 @@ app.post('/api/v1/estimates', wrap((req, res) => {
     if (it.taxable !== undefined && it.taxable !== null) {
       if (typeof it.taxable === 'boolean') taxable = it.taxable
       else if (typeof it.taxable === 'string' && /^(true|false)$/i.test(it.taxable.trim())) taxable = it.taxable.trim().toLowerCase() === 'true'
-      else return res.status(400).json({ error: `${where}.taxable must be true or false`, code: 'invalid_taxable' })
+      else return createResult(400, { error: `${where}.taxable must be true or false`, code: 'invalid_taxable' })
     }
     items.push({
       description: String(it.description || 'Item').slice(0, 200),
@@ -6231,10 +6953,11 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   // Backstop: never store a total the arithmetic could not produce. A NULL subtotal on a document
   // a customer can approve is worse than a refusal.
   if (![t.subtotal, t.tax, t.total].every(Number.isFinite)) {
-    return res.status(400).json({ error: 'those line items do not add up to a representable total', code: 'invalid_total' })
+    return createResult(400, { error: 'those line items do not add up to a representable total', code: 'invalid_total' })
   }
-  const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now()).lastInsertRowid)
+  const addresses = postalPatch(b, postalDefaults(contact))
+  const id = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, created_at, billing_address, shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    contact.id, nextEstimateNumber(), 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, String(b.notes || '').slice(0, 2000), now(), addresses.billing_address, addresses.shipping_address).lastInsertRowid)
   logActivity('estimate', `Estimate created via API for ${contact.name}`, { contact_id: contact.id })
   // The ninth estimate writer, and the only one that never did this. A quote written through the
   // API existed as a document and as nothing else: no card on the pipeline board, no contribution
@@ -6249,7 +6972,7 @@ app.post('/api/v1/estimates', wrap((req, res) => {
   // estimate_id in its INSERT, so a card added by hand does not bind to the quote and approving it
   // later mints a second one on top.
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
-  res.status(201).json(v1Estimate(get('SELECT * FROM estimates WHERE id = ?', id)))
+  return createResult(201, v1Estimate(get('SELECT * FROM estimates WHERE id = ?', id)))
 }))
 
 app.get('/api/v1/invoices', wrap((req, res) => {
@@ -6293,6 +7016,7 @@ app.post('/api/v1/jobs/:id/stage', wrap((req, res) => {
   const stage = String(req.body?.stage || '')
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `stage must be one of: ${STAGE_KEYS.join(', ')}` })
   const from = j.stage
+  try { guardWorkflowStage(j.id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   run("UPDATE jobs SET stage = ?, status = ?, updated_at = ? WHERE id = ?", stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
   stampShipDate(j, stage)
   const fresh = get('SELECT * FROM jobs WHERE id = ?', j.id)
@@ -6400,12 +7124,45 @@ app.delete('/api/v1/webhooks/:id', requireRole('manager'), wrap((req, res) => {
   res.json({ ok: true })
 }))
 
+app.get('/api/v1/pricing',wrap((_req,res)=>{
+  const s=getSettings()
+  res.json({price_book:resolveBook(s.price_book),matrices:matrices.listMatrices().map(matrices.summary),defaults:{tax_rate:s.tax_rate,garment_cost:s.default_garment_cost,markup:s.default_markup,size_upcharges:getUpcharges()}})
+}))
+app.get('/api/v1/matrices/:id',wrap((req,res)=>{const m=matrices.getMatrix(Number(req.params.id));if(!m)return res.status(404).json({error:'Matrix not found'});res.json({matrix:m})}))
+app.get('/api/v1/matrices/:id/price',wrap((req,res)=>{const m=matrices.getMatrix(Number(req.params.id));if(!m)return res.status(404).json({error:'Matrix not found'});if(req.query.qty!==undefined && (!Number.isFinite(Number(req.query.qty)) || Number(req.query.qty)<0 || Number(req.query.qty)>1000000))return res.status(400).json({error:'Quantity must be a finite number between 0 and 1000000.'});res.json({matrix:{id:m.id,name:m.name,unit:m.unit},...(matrices.lookupPrice(m,req.query) || {price:null})})}))
+
+// Agent production tools use the same revision checks and workflow gates as the web UI.
+const agentRoute=fn=>async(req,res,next)=>{try{await fn(req,res)}catch(e){if(e.status)res.status(e.status).json({error:e.message});else next(e)}}
+const agentActor=req=>({id:req.member?.id || null,name:req.agentKey?'Agent: '+req.agentKey.name:req.member?.name || 'API operator',manager:hasRole(req,'manager')})
+const agentJob=req=>{const j=get('SELECT id FROM jobs WHERE id=?',Number(req.params.id));if(!j)throw Object.assign(new Error('Job not found'),{status:404});return j.id}
+app.get('/api/v1/production/team',agentRoute((req,res)=>res.json({data:req.tenant?listMembers(req.tenant.id).filter(m=>m.status==='active').map(m=>({id:m.id,name:m.name})):[]})))
+app.get('/api/v1/production/queue',agentRoute((req,res)=>res.json(agentProduction.productionQueue({department:String(req.query.department || ''),mine:req.query.mine==='1',memberId:req.member?.id || null,page:Number(req.query.page)||1,pageSize:50}))))
+app.get('/api/v1/jobs/:id/workflow',agentRoute((req,res)=>res.json(agentProduction.workflow(agentJob(req)))))
+app.post('/api/v1/jobs/:id/tasks/:taskId/action',agentRoute((req,res)=>{
+  if(req.body?.action!=='complete')return res.status(400).json({error:'Choose complete; corrections use the web UI.'})
+  const result=agentProduction.transitionTask(agentJob(req),Number(req.params.taskId),req.body,agentActor(req));rtBroadcast('production',{});res.json(result)
+}))
+app.put('/api/v1/jobs/:id/timing',requireRole('manager'),agentRoute((req,res)=>{const result=agentProduction.saveJobTiming(agentJob(req),req.body,agentActor(req).name);rtBroadcast('production',{});res.json(result)}))
+app.put('/api/v1/jobs/:id/tasks/:taskId/assignment',requireRole('manager'),agentRoute((req,res)=>{
+  const id=agentJob(req),task=agentProduction.workflow(id).tasks.find(t=>t.id===Number(req.params.taskId))
+  if(!task)return res.status(404).json({error:'Task not found'})
+  if(!Object.hasOwn(req.body || {},'assigned_id'))return res.status(400).json({error:'Provide assigned_id or null to unassign.'})
+  const result=agentProduction.editTask(id,task.id,{...task,revision:req.body.revision,assigned_id:req.body.assigned_id},agentActor(req).name,req.tenant?listMembers(req.tenant.id):[]);rtBroadcast('production',{});res.json(result)
+}))
+
 /* ---- Developers (cookie-auth UI side): key management + subscriptions + delivery log ---- */
+const managedAgentRoute=fn=>[requireRole('manager'),agentRoute((req,res)=>{if(!AUTH_ENABLED || !req.tenant || !req.member)return res.status(400).json({error:'Agent keys require a signed-in shop account.'});return fn(req,res)})]
+app.get('/api/developers/agents',...managedAgentRoute((req,res)=>res.json({keys:agentAccess.list(req.tenant.id),scopes:AGENT_SCOPES})))
+app.post('/api/developers/agents',...managedAgentRoute((req,res)=>{const result=agentAccess.create(req.tenant.id,req.member.id,req.body || {});logActivity('note','Agent key created: '+result.key.name,{});res.status(201).json(result)}))
+app.delete('/api/developers/agents/:id',...managedAgentRoute((req,res)=>{agentAccess.revoke(req.tenant.id,Number(req.params.id));logActivity('note','Agent key revoked: '+req.params.id,{});res.json({ok:true})}))
+app.get('/api/developers/agents/:id/audit',...managedAgentRoute((req,res)=>res.json({requests:agentAccess.audit(req.tenant.id,Number(req.params.id))})))
+
 
 app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
   const key = req.tenant?.api_key || ''
   res.json({
     api_key_set: !!key,
+    api_access: getSettings().api_access || 'full',
     api_key_preview: key ? `${key.slice(0, 13)}…${key.slice(-4)}` : '',
     webhooks: listWebhooks(),
     // Failures first, then the rest of the window. This is the rule GET /api/qbo/queue already
@@ -6423,6 +7180,15 @@ app.get('/api/developers', requireRole('manager'), wrap((req, res) => {
     events: ['contact.created', 'estimate.sent', 'estimate.approved', 'invoice.paid', 'job.stage', 'art.sent', 'art.approved', 'art.rejected', 'opportunity.won', 'opportunity.lost', 'conversation.received'],
     docs: '/docs-api.html',
   })
+}))
+app.post('/api/developers/key/create-readonly', requireRole('manager'), wrap((req,res) => {
+  if (!AUTH_ENABLED || !req.tenant) return res.status(400).json({error:'API keys need a signed-in shop.'})
+  // Re-read the registry so two tabs cannot rotate a newly created key behind one another.
+  if (getTenantById(req.tenant.id)?.api_key) return res.status(409).json({error:'This shop already has an API key. Manage it in Developers.'})
+  setSetting('api_access','read')
+  const api_key=rotateApiKey(req.tenant.id)
+  logActivity('note','Read-only agent API key created',{})
+  res.json({api_key})
 }))
 app.post('/api/developers/key/rotate', requireRole('manager'), wrap((req, res) => {
   if (!AUTH_ENABLED || !req.tenant) return res.status(400).json({ error: 'API keys need a signed-in shop (multi-tenant mode).' })
@@ -6680,6 +7446,8 @@ function syncInvoiceToQbo(invoiceId) {
 }
 
 async function syncInvoiceToQboInner(invoiceId) {
+  if(get('SELECT 1 FROM invoice_credits WHERE invoice_id=?',Number(invoiceId))) return {ok:false,error:'This invoice has credit adjustments. Reconcile the credit in QuickBooks; automatic credit documents are not supported yet.'}
+  if(get("SELECT 1 FROM payments WHERE invoice_id=? AND stripe_session LIKE 'reversal:%'",Number(invoiceId))) return {ok:false,error:'This invoice has processor reversals. Reconcile the refund/void in QuickBooks before syncing; automatic refund documents are not supported yet.'}
   const s = getSettings()
   if (!s.qbo_realm_id || !s.qbo_refresh_token) return { ok: false, error: 'QuickBooks is not connected' }
   const contactOf = (id) => get('SELECT * FROM contacts WHERE id = ?', id)
@@ -6898,6 +7666,8 @@ const EXPORTS = {
   invoices: () => iterate('SELECT * FROM invoices ORDER BY id'),
   payments: () => iterate('SELECT * FROM payments ORDER BY id'),
   jobs: () => iterate('SELECT * FROM jobs ORDER BY id'),
+  shipments: () => iterate('SELECT * FROM shipping_records ORDER BY id'),
+  shipment_events: () => iterate('SELECT * FROM shipping_events ORDER BY id'),
   activities: () => iterate('SELECT * FROM activities ORDER BY id'),
   art_versions: () => iterate('SELECT * FROM art_versions ORDER BY id'),
   // The one everyone else drops: every line of every document, flattened, with sizes.
@@ -7243,7 +8013,10 @@ app.get('/api/outbox', wrap((req, res) => {
 app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   const row = get('SELECT * FROM email_log WHERE id = ?', +req.params.id)
   if (!row) return res.status(404).json({ error: 'Message not found', code: 'not_found' })
+  if(row.payment_stale || (row.invoice_id && get('SELECT payment_review FROM invoices WHERE id=?',row.invoice_id)?.payment_review)) return res.status(409).json({error:'Invoice payment details changed. Create a fresh message after reviewing the invoice.',code:'payment_review'})
   if (row.delivered) return res.status(409).json({ error: 'That message has already gone out.', code: 'already_sent' })
+  const recipientIssue=recipientMessageIssue(row)
+  if(recipientIssue)return res.status(409).json({error:recipientIssue,code:'recipient_review'})
   const c = row.contact_id ? get('SELECT email, phone FROM contacts WHERE id = ?', row.contact_id) : null
   const to = String(row.to_email || '').trim() || String((row.kind === 'sms' ? c?.phone : c?.email) || '').trim()
   if (!to) return res.status(400).json({ error: 'No address on file for this message — add one to the customer first.', code: 'no_recipient' })
@@ -7259,9 +8032,14 @@ app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   // and nothing else in the product clears this column. sendEmail is bounded by smtpTimeoutMs()
   // (60s ceiling), so five minutes is well clear of a slow relay and still releases a lost claim
   // inside one automation tick.
-  const claim = run(
+  const claim = tx(()=>{
+    const fresh=get('SELECT * FROM email_log WHERE id=?',row.id)
+    const issue=recipientMessageIssue(fresh)
+    if(issue)throw Object.assign(new Error(issue),{status:409,expose:true,code:'recipient_review'})
+    return run(
     "UPDATE email_log SET sending_at = ? WHERE id = ? AND delivered = 0 AND (sending_at IS NULL OR sending_at < datetime('now', '-5 minutes'))",
     now(), row.id)
+  })
   if (!claim.changes) return res.status(409).json({ error: 'That message is going out right now — give it a moment.', code: 'already_sending' })
   const s = getSettings()
   const r = row.kind === 'sms'
@@ -7295,6 +8073,105 @@ app.get('/api/settings', wrap((req, res) => {
   res.json({ settings: publicSettings(), members, role: req.role || 'owner', single_tenant: !AUTH_ENABLED })
 }))
 
+app.get('/api/payments/setup', requireRole('manager'), wrap((req,res) => {
+  const s=getSettings(), origin=trustedOrigin(req)
+  let key=req.tenant?.embed_key || s.payment_callback_key
+  if(!key && !AUTH_ENABLED) { key=crypto.randomBytes(24).toString('hex');setSetting('payment_callback_key',key) }
+  res.json({provider:paymentProvider(s),ready:paymentsReady(s),currency:currencyCode(s.currency),
+    stripe_webhook_url:key ? `${origin}/webhooks/payments/${key}/stripe` : null,
+    authorize_webhook_url:key ? `${origin}/webhooks/payments/${key}/authorize_net` : null,
+    attempts:recentAttempts(),reversals:recentReversals()})
+}))
+app.post('/api/payments/test-authorize',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap(async (req,res) => {
+  try { res.json(await testAuthorize(getSettings())) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.get('/api/payments/collections',requireRole('manager'),wrap((req,res)=>{
+  res.set('Cache-Control','private, no-store')
+  const value=req.query.invoice_id
+  if(value!==undefined && (typeof value!=='string' || !/^[1-9][0-9]*$/.test(value) || /\s/.test(value) || !Number.isSafeInteger(Number(value)))) return res.status(400).json({error:'Invoice ID must be a positive integer.'})
+  res.json(collectionStatus(value===undefined?undefined:Number(value)))
+}))
+app.get('/api/payments/collections/:reference',requireRole('manager'),wrap((req,res)=>{
+  res.set('Cache-Control','private, no-store')
+  const collection=publicCollection(req.params.reference)
+  res.status(collection?200:404).json(collection?{collection}:{error:'Checkout not found.'})
+}))
+async function collectionManagerAction(req,res,action) {
+  res.set('Cache-Control','private, no-store')
+  const a=paymentAttempt(req.params.reference)
+  if(!a) return res.status(404).json({error:'Checkout not found.'})
+  try {
+    const c=paymentCollection(a.reference),revision=req.body?.revision
+    if(action!=='recheck' && (!Number.isSafeInteger(revision) || revision!==(c?.revision||0))) throw collectionError('collection_stale')
+    const client=collectionClient(getSettings(),a.provider)
+    let result
+    if(c) result=action==='resume'?await resumeCollection({reference:a.reference,revision,client}):await checkCollection({reference:a.reference,revision,client,transactionId:req.body?.transaction_id,sessionId:req.body?.session_id,expire:action==='expire'})
+    else {
+      if(action==='resume') throw collectionError('collection_review')
+      const id=a.provider==='authorize_net'?req.body?.transaction_id:a.session_id
+      if(!id) throw collectionError('collection_review')
+      const account=await client.account(),session=a.provider==='authorize_net'?await client.retrieveTransaction(id):await client.retrieve(id)
+      if(!client.matchesSettings(getSettings()) || !!session.test!==!!a.is_test || session.currency!==a.currency || session.amountCents!==a.amount_cents) throw collectionError('collection_account')
+      if(a.provider!=='authorize_net' && (session.metadata?.slug!==curSlug() || session.id!==a.session_id || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==a.reference))) throw collectionError('collection_account')
+      if(a.provider==='authorize_net' && session.reference!==a.reference) throw collectionError('collection_account')
+      let final=session
+      if(action==='expire') {
+        if(a.provider==='authorize_net') throw collectionError('collection_review')
+        if(!session.paid && session.status==='open') final=await client.expire({sessionId:a.session_id,idempotencyKey:a.reference+'_expire'})
+        if(!client.matchesSettings(getSettings())) throw collectionError('collection_account')
+        if(final.status==='expired' && !final.paid) run("UPDATE payment_attempts SET status='expired',error=NULL WHERE reference=? AND status='pending'",a.reference)
+      }
+      result={session:final,account}
+    }
+    let confirmed={}
+    if(result.session.paid) confirmed=reconcileCheckout(paymentAttempt(a.reference),result.session,a.provider==='authorize_net'?result.session.transactionId:result.session.id,result.account)
+    let url
+    if(action==='resume' && !result.session.paid && result.session.status!=='expired' && result.session.status!=='complete') url=a.provider==='authorize_net'?new URL(`/p/checkout/${a.reference}?s=${encodeURIComponent(curSlug())}`,a.return_url).href:result.url
+    res.json({ok:true,...confirmed,collection:publicCollection(a.reference),...(url?{url}:{})})
+  } catch(e) {
+    failAttempt(a.reference,e.collectionSafe?e.message:'Payment provider verification is unavailable. Recheck before paying again.')
+    res.status(e.collectionSafe?e.status:503).json({error:e.collectionSafe?e.message:'Payment provider verification is unavailable. Recheck before paying again.',code:e.collectionSafe?e.code:'collection_unavailable',collection:publicCollection(a.reference)})
+  }
+}
+app.post('/api/payments/reconcile/:reference',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap((req,res)=>collectionManagerAction(req,res,'recheck')))
+app.post('/api/payments/collections/:reference/resume',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap((req,res)=>collectionManagerAction(req,res,'resume')))
+app.post('/api/payments/collections/:reference/expire',requireRole('manager'),rateLimit({windowMs:60000,max:10}),wrap((req,res)=>collectionManagerAction(req,res,'expire')))
+
+app.post('/api/payments/reversals/:provider/:id/recheck',requireRole('manager'),rateLimit({windowMs:60000,max:20}),wrap(async(req,res)=>{
+  try { res.json(await reconcileReversal(req.params.provider,req.params.id)) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.get('/api/invoices/:id/credit-reference',requireRole('manager'),wrap((req,res)=>{
+  if(!get('SELECT 1 FROM invoices WHERE id=?',Number(req.params.id))) return res.status(404).json({error:'Invoice not found'})
+  res.setHeader('Cache-Control','no-store');res.json({reference:crypto.randomBytes(16).toString('hex')})
+}))
+app.post('/api/invoices/:id/credits',requireRole('manager'),wrap((req,res)=>{
+  try { res.json(addInvoiceCredit(Number(req.params.id),req.body || {})) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.post('/api/invoices/:id/credits/:reference/cancel',requireRole('manager'),wrap((req,res)=>{
+  try { res.json(cancelInvoiceCredit(Number(req.params.id),req.params.reference,req.body?.reason)) }
+  catch(e) { res.status(400).json({error:e.message}) }
+}))
+app.post('/api/invoices/:id/payment-review',requireRole('manager'),wrap((req,res)=>{
+  const id=Number(req.params.id),note=String(req.body?.note || '').trim()
+  if(!note || note.length>1000) return res.status(400).json({error:'Explain the reviewed balance before resuming collections (1–1,000 characters).'})
+  const inv=get('SELECT * FROM invoices WHERE id=?',id)
+  if(!inv) return res.status(404).json({error:'Invoice not found'})
+  if(get("SELECT 1 FROM payment_reversals WHERE invoice_id=? AND status IN ('pending','requires_action','refundPendingSettlement')",id)) return res.status(409).json({error:'A refund is still pending. Recheck it with the provider before resuming collections.'})
+  if(invoiceCollectionHold(id)) return res.status(409).json({error:'An existing checkout or verified payment still needs reconciliation. Verify or close it before clearing this review.',code:'collection_review'})
+  tx(()=>{run("UPDATE payment_collection_receipts SET state='reviewed',updated_at=? WHERE invoice_id=? AND state='applied_review'",now(),id);run("UPDATE invoices SET payment_review='' WHERE id=?",id);logActivity('payment',`Payment review completed on ${inv.invoice_number}: ${note}`,{contact_id:inv.contact_id})})
+  res.json({ok:true})
+}))
+
+app.get('/api/sms-setup', requireRole('manager'), wrap((req,res) => {
+  if (!req.tenant) return res.json({reason:'Incoming SMS needs a signed-in shop. Enable multi-tenant accounts on your self-hosted installation.'})
+  const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(req.tenant.slug)
+  if (!origin) return res.json({reason:'Set PSC_PUBLIC_URL to the public HTTPS address, then reload setup.'})
+  res.json({url:`${origin}/api/sms/${req.tenant.embed_key}/incoming`,public_https:origin.startsWith('https://')})
+}))
+
 /* ---- Slack self-setup (authed) ---- */
 
 /**
@@ -7305,6 +8182,12 @@ app.get('/api/settings', wrap((req, res) => {
  * them a blob that already contains their own URLs and the exact scopes required. Paste, install,
  * copy two values back. That is the whole setup.
  */
+app.get('/api/slack-operator', requireRole('manager'), wrap((req,res)=>res.json(operatorConfig(req.tenant?listMembers(req.tenant.id):[]))))
+app.put('/api/slack-operator', requireRole('manager'), wrap((req,res)=>{
+  try { res.json(saveOperatorConfig(req.body,req.tenant?listMembers(req.tenant.id):[])) }
+  catch(e) { if(e.status)res.status(e.status).json({error:e.message});else throw e }
+}))
+
 app.get('/api/slack-setup', requireRole('manager'), wrap((req, res) => {
   const s = getSettings()
   const key = req.tenant?.embed_key || getSettings().embed_key || ''
@@ -7407,7 +8290,7 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
     if (!reachable) why = r.status === 401 ? 'signature' : `http_${r.status}`
   } catch (e) { why = 'unreachable'; console.error('slack self-test:', e.message) }
 
-  if (reachable) return res.json({ ok: true, team: auth.team, bot: auth.bot })
+  if (reachable) { if(token!==String(getSettings().slack_bot_token || '').trim() || secret!==String(getSettings().slack_signing_secret || '').trim()) return res.json({ok:false,error:'Save the Slack credentials, then test the connection again.'}); setSetting('slack_team_id', auth.team_id || ''); return res.json({ ok: true, team: auth.team, bot: auth.bot }) }
   if (why === 'signature') {
     return res.json({ ok: false, half: 'secret', team: auth.team, bot: auth.bot,
       error: `Token works \u2014 connected to ${auth.team} \u2014 but the Signing Secret doesn't match, so Slack can't reach your shop. Re-copy it from Basic Information \u2192 App Credentials \u2192 Signing Secret \u2192 Show.` })
@@ -7418,6 +8301,12 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
 
 app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   const patch = { ...(req.body || {}) }
+  for(const key of ['brand_primary','brand_secondary'])if(key in patch){if(!validBrandColor(patch[key]))return res.status(400).json({error:'Choose a six-digit hex color, such as #2563eb, or leave it blank for the default.'});patch[key]=patch[key].toLowerCase()}
+  if('brand_theme' in patch && !BRAND_THEMES.includes(patch.brand_theme))return res.status(400).json({error:'Choose a light, dark or system appearance.'})
+  if ('payment_provider' in patch && !['stripe','authorize_net','off'].includes(patch.payment_provider)) return res.status(400).json({error:'Choose Stripe, Authorize.net or off.'})
+  if ('anet_environment' in patch && !['sandbox','live'].includes(patch.anet_environment)) return res.status(400).json({error:'Choose sandbox or live.'})
+  if ('anet_currency' in patch && !/^[A-Z]{3}$/.test(String(patch.anet_currency))) return res.status(400).json({error:'Use a three-letter merchant currency.'})
+  if ('api_access' in patch && !['read','full'].includes(patch.api_access)) return res.status(400).json({error:'API access must be read or full.'})
   // The two settings every document is formatted through are checked on the way IN, not folded to
   // a default on the way out. format.js does fall back to USD/en-US on a value it cannot use, so a
   // bad row can never break a PDF — but a 200 for `currency: "US$"` that then invoices in dollars
@@ -7436,7 +8325,11 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   }
   // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged),
   // and erases it for the one sentinel value that means erase — see CLEAR_SECRET.
+  const slackBefore=getSettings()
   applySettingsPatch(patch)
+  const slackAfter=getSettings()
+  if(['slack_bot_token','slack_signing_secret'].some(k=>slackBefore[k]!==slackAfter[k]))setSetting('slack_team_id','')
+  if(['brand_primary','brand_secondary','brand_theme','brand_name','brand_tagline'].some(k=>k in patch))rtBroadcast('branding',{})
   res.json(publicSettings())
 }))
 
@@ -7454,8 +8347,10 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
  * QuickBooks connection. setSetting, NOT applySettingsPatch — see the note at /api/gdrive/disconnect.
  */
 const DISCONNECT_GROUPS = {
-  slack: ['slack_bot_token', 'slack_signing_secret'],
-  stripe: ['stripe_secret', 'stripe_publishable', 'stripe_account_id', 'stripe_charges_enabled'],
+  payments: ['payment_callback_key','stripe_secret','stripe_webhook_secret','anet_login_id','anet_transaction_key','anet_signature_key'],
+  slack: ['slack_bot_token', 'slack_signing_secret', 'slack_team_id'],
+  authorize_net: ['anet_login_id','anet_transaction_key','anet_signature_key'],
+  stripe: ['stripe_secret', 'stripe_webhook_secret', 'stripe_publishable', 'stripe_account_id', 'stripe_charges_enabled'],
   twilio: ['twilio_sid', 'twilio_token', 'twilio_from'],
   smtp: ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_secure'],
   ai: ['ai_api_key'],
@@ -7487,13 +8382,18 @@ app.post('/api/settings/logo', requireRole('manager'), upload.single('file'), re
     try { unlinkSync(join(UPLOADS, req.file.filename)) } catch { /* best effort */ }
     return res.status(400).json({ error: 'That needs to be an image (PNG, JPG, WEBP, GIF or SVG).' })
   }
+  if(req.file.size>5*1024*1024){dropUpload(req);return res.status(400).json({error:'Use a logo smaller than 5 MB.'})}
+  const logoError=req.file.mimetype==='image/gif' ? !/^GIF8[79]a/.test(readFileSync(req.file.path).subarray(0,6).toString('ascii')) : validArtFile(req.file)
+  if(logoError){dropUpload(req);return res.status(400).json({error:'That logo is corrupt or mislabeled. Re-export the image and try again.'})}
   setSetting('shop_logo', req.file.filename)
+  rtBroadcast('branding',{})
   res.json({ ok: true, shop_logo: req.file.filename })
 }))
 
 /** Remove the logo (the file itself stays — other documents may already reference it). */
 app.delete('/api/settings/logo', requireRole('manager'), wrap((_req, res) => {
   setSetting('shop_logo', '')
+  rtBroadcast('branding',{})
   res.json({ ok: true })
 }))
 
@@ -7911,8 +8811,14 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
  * department needs its PO quoted back before it will pay, and the due date belongs on the document
  * rather than only in the shop's own screen.
  */
-const billedTo = (inv, c) => `<div class="to">Billed to <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}`
-  + `${inv.po_number ? ` · PO ${esc(inv.po_number)}` : ''}${inv.due_date ? ` · due ${esc(inv.due_date)}` : ''}</div>`
+const documentAddresses = doc => ['billing_address', 'shipping_address'].filter(key => doc[key]).map(key =>
+  `<div class="to"><strong>${key === 'billing_address' ? 'Billing address' : 'Ship to'}</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(doc[key])}</div></div>`).join('')
+const savedDocumentContact = (doc,c,type) => {
+  const saved=recipientSnapshot(doc),recipient=documentRecipient(doc,type)
+  return {...c,name:saved.buyer_name,email:recipient.email,attention:type==='invoice' && saved.billing_mode==='custom'?recipient.name:''}
+}
+const billedTo = (inv, c) => `<div class="to">Billed to <strong>${esc(recipientSnapshot(inv).buyer_name)}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}`
+  + `${inv.po_number ? ` · PO ${esc(inv.po_number)}` : ''}${inv.due_date ? ` · due ${esc(inv.due_date)}` : ''}</div>` + documentAddresses(inv)
 
 /**
  * The invoice's line items. Invoices carry no items of their own — they inherit the estimate they
@@ -7957,13 +8863,14 @@ function invoiceTotals(inv, balance, s, c) {
   const tax = Number(e?.tax) || 0
   const reconciles = !!e && Number.isFinite(sub)
     && Math.abs(round2(sub + tax) - (Number(inv.amount_due) || 0)) <= 0.005
+  const credit=invoiceCreditSummary(inv)
   const head = reconciles
     ? `<div><span>Subtotal</span><span>${money(sub)}</span></div>`
       + (Math.abs(tax) > 0.005
         ? `<div><span>Tax (${esc(e.tax_rate ?? s.tax_rate)}%)</span><span>${money(tax)}</span></div>`
         : `<div><span>Tax</span><span>${c?.tax_exempt ? 'Exempt (resale)' : money(0)}</span></div>`)
     : ''
-  return `<div class="totals">${head}<div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>`
+  return `<div class="totals">${head}${credit.credit_base ? `<div><span>Original invoice</span><span>${money(credit.credit_base.amount_due)}</span></div>${credit.credits.filter(c=>!c.cancelled_at).map(c=>`<div><span>Credit: ${esc(c.reason)}${c.tax_cents ? ` (includes ${money(c.tax_cents/100)} tax)` : ''}</span><span>-${money((c.subtotal_cents+c.tax_cents)/100)}</span></div>`).join('')}` : ''}<div><span>Invoice total</span><span>${money(inv.amount_due)}</span></div>`
     + `${inv.amount_paid > 0 ? `<div><span>Already paid</span><span>${money(inv.amount_paid)}</span></div>` : ''}`
     + `<div class="grand"><span>Balance due</span><span>${money(balance)}</span></div></div>`
 }
@@ -8020,12 +8927,13 @@ app.get('/p/estimate/:id', pPage((req, res) => {
     return `<tr><td><strong>${esc(i.description || '')}</strong>${i.detail ? `<div class="detail">${esc(i.detail)}</div>` : ''}${i.sizes && sizeTotal(i.sizes) > 0 ? `<div class="detail">${esc(sizeSummary(i.sizes))}</div>` : ''}</td>
     <td class="num">${esc(lineQty(i) || '')}</td><td class="num">${money(i.unit_price)}${extra ? `<div class="detail">+${money(extra)} sizes</div>` : ''}</td><td class="num">${money(lineAmount(i, up))}</td></tr>`
   }).join('')
-  const done = e.status === 'approved'
+  const done = e.status === 'approved' || e.status === 'invoiced'
   res.send(page(`Estimate ${esc(e.estimate_number)}`, `<div class="wrap">
     <div class="card">
       <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">${esc(s.shop_tagline)}</div></div>
         <div class="right"><div class="doc">ESTIMATE</div><div class="num2">${esc(e.estimate_number)}</div></div></div>
-      <div class="to">Prepared for <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
+      <div class="to">Prepared for <strong>${esc(recipientSnapshot(e).buyer_name)}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
+      ${documentAddresses(e)}
       <table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="totals"><div><span>Subtotal</span><span>${money(e.subtotal)}</span></div>
         ${Math.abs(Number(e.tax) || 0) > 0.005
@@ -8033,7 +8941,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
           : `<div><span>Tax</span><span>${c?.tax_exempt ? 'Exempt (resale)' : money(0)}</span></div>`}
         <div class="grand"><span>Total</span><span>${money(e.total)}</span></div></div>
       ${e.notes ? `<div class="notes"><strong>Notes</strong><p>${esc(e.notes)}</p></div>` : ''}
-      <div class="terms">${esc(s.estimate_terms)}</div>
+      <div class="terms">${esc(e.terms_snapshot)}</div>
       ${done ? '<div class="ok">✓ Approved — thank you! The shop has been notified.</div>'
         : `<form method="POST" action="/p/estimate/${id}/approve?k=${req.query.k}${sQ(req)}">
              <button class="btn">Approve this estimate</button>
@@ -8055,7 +8963,10 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
   // the shop's own SMTP and 50 webhook deliveries. Event-triggered automations have no dedupe of
   // their own — only the timed path does — so this was the whole brake.
   if (e.status === 'approved' || e.status === 'invoiced') return res.redirect(`/p/estimate/${id}?k=${req.query.k}${sQ(req)}`)
-  run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+  tx(() => {
+    run(`UPDATE estimates SET status='approved', approved_at=? WHERE id=?`, now(), id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: 'customer_link', actor: get('SELECT name FROM contacts WHERE id=?',e.contact_id)?.name })
+  })
   const c = get('SELECT name FROM contacts WHERE id = ?', e.contact_id)
   logActivity('estimate', `Estimate ${e.estimate_number} APPROVED by ${c?.name || 'customer'} online`, { contact_id: e.contact_id })
   fireAuto('estimate.approved', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })
@@ -8065,9 +8976,199 @@ app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPa
 
 /* ---- online payment: deposit or balance, on the SHOP's own Stripe ---- */
 
+const reversalInFlight=new Map()
+function reconcileReversal(provider,id) {
+  const key=`${curSlug()}:${provider}:${id}`,prior=reversalInFlight.get(key) || Promise.resolve()
+  const task=prior.catch(()=>{}).then(()=>reconcileReversalInner(provider,id))
+  reversalInFlight.set(key,task)
+  return task.finally(()=>{if(reversalInFlight.get(key)===task)reversalInFlight.delete(key)})
+}
+async function reconcileReversalInner(provider,id) {
+  const settings=getSettings()
+  let data,session,attempt,parentId
+  if(provider==='stripe') {
+    data=await retrieveStripeRefund({settings,id})
+    if(data.unrelated)return {ignored:true}
+    session=data.session;parentId=session.id
+    if(session.metadata?.slug!==curSlug())return {ignored:true}
+    if(!session.paid || data.currency!==session.currency)throw new Error('Refund cannot be matched to a paid checkout in the same currency')
+    attempt=session.metadata.checkout_ref?paymentAttempt(session.metadata.checkout_ref):attemptBySession('stripe',parentId)
+    if(!attempt) {
+      // Legacy shop payments predate persisted attempts. Verify the provider's original invoice
+      // metadata and create a local mapping; never match by a browser-supplied invoice number.
+      const inv=get('SELECT * FROM invoices WHERE id=?',Number(session.metadata.invoice)||0)
+      if(!inv)return {ignored:true}
+      if(session.metadata.checkout_ref)throw new Error('Original checkout record is missing')
+      const reference='legacy-'+crypto.createHash('sha256').update(parentId).digest('hex').slice(0,32)
+      run('INSERT OR IGNORE INTO payment_attempts(reference,provider,invoice_id,amount_cents,currency,kind,session_id,is_test,created_at) VALUES (?,?,?,?,?,?,?,?,?)',reference,'stripe',inv.id,session.amountCents,session.currency,session.metadata.kind||'balance',parentId,session.test?1:0,now())
+      attempt=paymentAttempt(reference)
+    }
+  } else if(provider==='authorize_net') {
+    const r=await retrieveAuthorizeTransaction({settings,transactionId:id})
+    const refund=r.transactionType==='refundTransaction'
+    if(!refund && !(r.status==='voided' && ['authCaptureTransaction','priorAuthCaptureTransaction','captureOnlyTransaction'].includes(r.transactionType))) throw new Error('Transaction is not a refund or captured-payment void')
+    const parent=refund?await retrieveAuthorizeTransaction({settings,transactionId:r.originalTransactionId}):r
+    parentId=parent.transactionId;session=parent
+    attempt=paymentAttempt(parent.reference)
+    if(!attempt)return {ignored:true}
+    const states=refund?['refundPendingSettlement','refundSettledSuccessfully','voided','declined','settlementError']:['voided']
+    if(!states.includes(r.status))throw new Error('Refund state needs manual reconciliation')
+    if(refund && !parent.paid)throw new Error('Original refund payment cannot be verified')
+    const applied=refund?['refundPendingSettlement','refundSettledSuccessfully'].includes(r.status):true
+    data={id,kind:refund?'refund':'void',amountCents:r.amountCents,status:r.status,appliedCents:applied?r.amountCents:0,currency:r.currency}
+  } else throw new Error('Unknown payment provider')
+  if(attempt.provider!==provider || session.currency!==attempt.currency || data.currency!==attempt.currency || currencyCode(settings.currency)!==attempt.currency || session.amountCents!==attempt.amount_cents || !!session.test!==!!attempt.is_test) throw new Error('Payment amount, currency, provider or test mode differs from the original checkout')
+  if(provider==='stripe' && (attempt.session_id!==parentId || (session.metadata.checkout_ref && session.metadata.checkout_ref!==attempt.reference)))throw new Error('Refund belongs to another checkout')
+  if(provider==='authorize_net' && (session.reference!==attempt.reference || (attempt.transaction_id && attempt.transaction_id!==parentId)))throw new Error('Refund belongs to another transaction')
+  return tx(()=>{
+    attempt=paymentAttempt(attempt.reference)
+    const previous=get('SELECT * FROM payment_reversals WHERE provider=? AND provider_id=?',provider,id)
+    if(previous && previous.attempt_ref===attempt.reference && previous.kind===data.kind && previous.amount_cents===data.amountCents && previous.status===data.status && previous.applied_cents===(attempt.is_test?0:data.appliedCents)) return {ok:true,duplicate:true,test:!!attempt.is_test,invoice_id:attempt.invoice_id}
+    if(!attempt.is_test) {
+      const inv=invoiceForAttempt(attempt)
+      attempt={...attempt,invoice_id:inv.id}
+      run('UPDATE invoices SET payment_review=? WHERE id=?','Payment reversal received; review required.',inv.id)
+      const ledgerId=provider==='stripe'?parentId:`anet_${parentId}`
+      recordStripePayment(inv,{...session,provider:provider==='stripe'?'Stripe':'Authorize.net'},ledgerId,attempt.kind,[])
+      completeAttempt(attempt.reference,parentId,inv.id)
+    }
+    const result=recordReversal({provider,id,kind:data.kind,attempt,amountCents:data.amountCents,status:data.status,appliedCents:data.appliedCents})
+    return {ok:true,...result}
+  })
+}
+
+function runPaymentEffects(effects) {
+  for (const effect of effects) { try { effect() } catch(e) { console.error('payment follow-up:',e.message) } }
+}
+function invoiceForAttempt(attempt) {
+  let inv=attempt.invoice_id ? get('SELECT * FROM invoices WHERE id=?',attempt.invoice_id) : null
+  if(!inv && attempt.estimate_id) {
+    const e=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
+    if(!e) throw new Error('Original estimate is unavailable; reconcile this payment manually')
+    inv=get("SELECT * FROM invoices WHERE estimate_id=? ORDER BY (status='void'),id DESC LIMIT 1",e.id)
+    if(!inv) {
+    const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,created_at) VALUES (?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,now()).lastInsertRowid)
+    inv=get('SELECT * FROM invoices WHERE id=?',id)
+    }
+  }
+  if(!inv) throw new Error('Invoice unavailable; reconcile this payment manually')
+  return inv
+}
+
+function reconcileCheckout(attempt,session,transactionId,account) {
+  if (!session.paid) return {pending:true}
+  const c=paymentCollection(attempt.reference)
+  // Account, tenant, reference and environment must belong here before storing any receipt.
+  if(c && (c.account_id!==account?.account_id || !!c.is_test!==!!account?.is_test || (c.destination||null)!==(account?.destination||null))) throw collectionError('collection_account')
+  if(attempt.provider!=='authorize_net' && (session.metadata?.slug!==curSlug() || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==attempt.reference))) throw collectionError('collection_account')
+  if(attempt.provider==='authorize_net' && session.reference!==attempt.reference) throw collectionError('collection_account')
+  if(!!session.test!==!!attempt.is_test) throw collectionError('collection_account')
+  const receipt=account?receiveCollectionPayment({attempt,provider:attempt.provider,account,session,transactionId}):null
+  const effects=[]
+  try {
+    const result=tx(() => {
+      attempt=paymentAttempt(attempt.reference)
+      if(!attempt) throw collectionError('collection_review')
+      verifyCollectionPayment(attempt,session,account)
+      if(attempt.provider!=='authorize_net' && !attempt.session_id) run('UPDATE payment_attempts SET session_id=? WHERE reference=?',transactionId,attempt.reference)
+      if(session.currency!==attempt.currency || currencyCode(getSettings().currency)!==attempt.currency || session.amountCents!==attempt.amount_cents) throw collectionError('collection_review')
+      if(attempt.provider!=='authorize_net' && attempt.session_id && attempt.session_id!==transactionId) throw collectionError('collection_account')
+      if(receipt && ['applied','applied_review','reviewed','test'].includes(get('SELECT state FROM payment_collection_receipts WHERE id=?',receipt.id)?.state)) return {duplicate:true,test:!!attempt.is_test}
+      const alreadyPaid=['paid','test_paid'].includes(attempt.status),extra=alreadyPaid && attempt.transaction_id!==transactionId
+      if(alreadyPaid && !extra) {
+        if(receipt) markCollectionReceipt(receipt.id,{invoiceId:attempt.invoice_id,state:attempt.is_test?'test':'applied'})
+        finishCollection(attempt.reference,attempt.is_test?'test_paid':'paid')
+        return {duplicate:true,test:!!attempt.is_test}
+      }
+      if(attempt.is_test) {
+        if(!extra) completeAttempt(attempt.reference,transactionId,attempt.invoice_id,true)
+        finishCollection(attempt.reference,'test_paid')
+        if(receipt) markCollectionReceipt(receipt.id,{invoiceId:attempt.invoice_id,state:'test'})
+        return {test:true}
+      }
+      let changed=false
+      if(c) {
+        const snapshot=JSON.parse(c.snapshot)
+        if(!attempt.invoice_id) {
+          const current=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
+          if(!current || current.commercial_revision!==snapshot.estimate?.commercial_revision || current.total!==snapshot.estimate?.total || current.contact_id!==snapshot.estimate?.contact_id) throw collectionError('collection_changed')
+        } else changed=c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:attempt.invoice_id,estimateId:attempt.estimate_id,currency:attempt.currency}))
+      }
+      const inv=invoiceForAttempt(attempt)
+      const review=extra || changed || inv.status==='void' || session.amountCents>Math.round((inv.amount_due-inv.amount_paid)*100)
+      if(review) {
+        run('UPDATE invoices SET payment_review=? WHERE id=?','Verified money arrived after the invoice or checkout changed. Review all receipts and the remaining balance before collecting again.',inv.id)
+        run('UPDATE email_log SET payment_stale=1 WHERE invoice_id=? AND delivered=0',inv.id)
+      }
+      // Close the reservation in the same transaction before amount_paid changes. A manual
+      // payment while it remains open instead triggers the durable collection-review hold.
+      if(!extra) completeAttempt(attempt.reference,transactionId,inv.id)
+      finishCollection(attempt.reference)
+      const id=attempt.provider==='authorize_net'?`anet_${transactionId}`:transactionId
+      const updated=recordStripePayment(get('SELECT * FROM invoices WHERE id=?',inv.id),{...session,provider:attempt.provider==='authorize_net'?'Authorize.net':'Stripe'},id,attempt.kind,effects)
+      if(receipt) markCollectionReceipt(receipt.id,{invoiceId:inv.id,state:review?'applied_review':'applied',reason:review?'Full verified amount was recorded. Review the additional or changed payment before resuming collections.':null})
+      return {invoice:updated,review}
+    })
+    runPaymentEffects(effects)
+    return result
+  } catch(error) {
+    if(receipt) holdCollectionReceipt(receipt)
+    throw error
+  }
+}
+
+function collectionClient(settings,provider) {
+  const p=provider || (isLite?'stripe_connect':paymentProvider(settings))
+  return p==='authorize_net'?createAuthorizeCollectionClient(settings):p==='stripe_connect'?createConnectedCollectionClient(settings):createStripeCollectionClient(settings)
+}
+async function paymentEvidence(provider,transactionId) {
+  const client=collectionClient(getSettings(),provider),account=await client.account()
+  const session=provider==='authorize_net'?await client.retrieveTransaction(transactionId):await client.retrieve(transactionId)
+  if(!client.matchesSettings(getSettings())) throw collectionError('collection_account')
+  return {session,account}
+}
+function acceptPaymentEvidence(provider,session,account,transactionId) {
+  const ref=provider==='authorize_net'?session.reference:session.metadata?.checkout_ref
+  if(provider!=='authorize_net' && session.metadata?.slug!==curSlug()) throw collectionError('collection_account')
+  const a=ref?paymentAttempt(ref):attemptBySession(provider,transactionId)
+  if(a) {
+    if(a.provider!==provider) throw collectionError('collection_account')
+    return reconcileCheckout(a,session,transactionId,account)
+  }
+  if(ref || session.metadata?.collection_version) {
+    if(session.paid) {
+      const iid=provider==='authorize_net'?null:Number(session.metadata?.invoice)||null
+      const inv=iid?get('SELECT id FROM invoices WHERE id=?',iid):null
+      const r=receiveCollectionPayment({attempt:inv?{reference:ref,invoice_id:inv.id}:null,reference:ref,provider,account,session,transactionId})
+      holdCollectionReceipt(r,'A verified payment has no matching checkout record. The shop must reconcile it before collecting again.')
+    }
+    throw collectionError('collection_review')
+  }
+  // A genuine pre-receipt Stripe session retains the historical metadata path. A modern
+  // checkout reference can never fall through here simply because its local row is missing.
+  if(provider!=='authorize_net' && session.paid && !session.test && session.currency===currencyCode(getSettings().currency)) {
+    const inv=get('SELECT * FROM invoices WHERE id=?',Number(session.metadata?.invoice)||0)
+    if(inv) return {invoice:recordStripePayment(inv,session,transactionId,session.metadata.kind)}
+  }
+  return {pending:true}
+}
+
 /** Record a confirmed Stripe payment against an invoice, idempotently (session id can't double-post). */
-function recordStripePayment(inv, session, sessionId, kind) {
-  if (get('SELECT 1 FROM payments WHERE stripe_session = ?', sessionId)) return syncInvoiceStatus(inv.id) // already recorded (idempotent)
+function recordStripePayment(inv, session, sessionId, kind, effects=null) {
+  if (session.test) return inv
+  if (!effects) {
+    const followups=[]
+    const result=tx(() => recordStripePayment(inv,session,sessionId,kind,followups))
+    runPaymentEffects(followups)
+    return result
+  }
+  inv=get('SELECT * FROM invoices WHERE id=?',inv.id)
+  if(!inv) throw new Error('Invoice unavailable')
+  if(!Number.isSafeInteger(session.amountCents) || session.amountCents<=0) throw new Error('Invalid payment amount')
+  const gateway=session.provider || 'Stripe'
+  const existing=get('SELECT invoice_id FROM payments WHERE stripe_session = ?',sessionId)
+  if(existing && existing.invoice_id!==inv.id) throw new Error('Payment is already recorded on another invoice')
+  if(existing) return syncInvoiceStatus(inv.id)
   // The pay page and the checkout route both refuse a voided invoice now, so the only way to land
   // here is a session that was already open when the shop voided it. That money is real and sitting
   // at Stripe: record it so it is visible, keep the invoice void, and say plainly that it needs
@@ -8076,8 +9177,9 @@ function recordStripePayment(inv, session, sessionId, kind) {
   if (live?.status === 'void') {
     const arrived = round2((Number(session.amountCents) || 0) / 100)
     run('INSERT INTO payments (invoice_id, amount, method, note, stripe_session, created_at) VALUES (?,?,?,?,?,?)',
-      inv.id, arrived, 'card', `Payment arrived AFTER ${inv.invoice_number} was voided — refund at Stripe`, sessionId, now())
-    logActivity('payment', `${money(arrived)} arrived by card on VOIDED ${inv.invoice_number} — refund it at Stripe`, { contact_id: inv.contact_id })
+      inv.id, arrived, 'card', `Payment arrived AFTER ${inv.invoice_number} was voided — refund at ${gateway}`, sessionId, now())
+    enqueueQbo(inv.id)
+    logActivity('payment', `${money(arrived)} arrived by card on VOIDED ${inv.invoice_number} — refund it at ${gateway}`, { contact_id: inv.contact_id })
     return syncInvoiceStatus(inv.id)
   }
   const paid = round2((Number(session.amountCents) || 0) / 100)
@@ -8096,24 +9198,69 @@ function recordStripePayment(inv, session, sessionId, kind) {
   // A/R aging filters on a positive balance so an overpaid invoice drops out of it cleanly.
   if (!(paid > 0)) return syncInvoiceStatus(inv.id)
   const over = Math.max(0, round2(paid - Math.max(0, bal)))
-  const label = `Online ${kind === 'deposit' ? 'deposit' : 'payment'} (Stripe)`
+  const label = `Online ${kind === 'deposit' ? 'deposit' : 'payment'} (${gateway})`
   run('INSERT INTO payments (invoice_id, amount, method, note, stripe_session, created_at) VALUES (?,?,?,?,?,?)',
-    inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at Stripe` : label, sessionId, now())
+    inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at ${gateway}` : label, sessionId, now())
   const amount = paid
   const updated = syncInvoiceStatus(inv.id)
-  advanceOrder(inv.estimate_id, 'paid')
+  if(!inv.payment_review && updated.status==='paid') advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Online ${money(amount)} on ${inv.invoice_number} (card)`, { contact_id: inv.contact_id })
   if (over > 0.005) {
     // Loud, and on the customer's own timeline, because the shop has to act on it at Stripe.
-    logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at Stripe`, { contact_id: inv.contact_id })
-    rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` })
+    logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at ${gateway}`, { contact_id: inv.contact_id })
+    effects.push(() => rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` }))
   }
-  if (updated.status === 'paid' && inv.status !== 'paid') {
-    fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
+  if (updated.status === 'paid' && inv.status !== 'paid' && !inv.payment_review) {
+    effects.push(() => fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due }))
   }
   enqueueQbo(inv.id) // online money in — queue the books update alongside the manual path
-  rtBroadcast('notify', { title: 'Payment received', body: `${money(amount)} on ${inv.invoice_number}` })
+  effects.push(() => rtBroadcast('notify', { title: 'Payment received', body: `${money(amount)} on ${inv.invoice_number}` }))
   return updated
+}
+
+app.get('/p/checkout/:reference', pPage((req,res) => {
+  const a=paymentAttempt(req.params.reference)
+  if(!a || a.provider!=='authorize_net' || !a.checkout_token || a.status!=='pending' || Date.now()-Date.parse(a.created_at+'Z') > 14*60*1000) return res.status(410).send(page('Checkout expired','<div class="wrap"><div class="card"><h1>Checkout expired</h1><p>Return to your invoice for a new payment link.</p></div></div>'))
+  const c=paymentCollection(a.reference)
+  if(c && c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:a.invoice_id,estimateId:a.estimate_id,currency:currencyCode(getSettings().currency)}))) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The invoice changed. Do not open another payment form; ask the shop to check this checkout.</p></div></div>'))
+  if(!['https://accept.authorize.net/payment/payment','https://test.authorize.net/payment/payment'].includes(a.checkout_url)) return res.status(500).send('Invalid checkout destination')
+  res.setHeader('Content-Security-Policy',String(res.getHeader('Content-Security-Policy')).replace("form-action 'self'", "form-action 'self' https://accept.authorize.net https://test.authorize.net"))
+  res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer')
+  res.send(page('Secure checkout',`<div class="wrap"><div class="card"><h1>Continue to secure payment</h1><p>Your card details are entered on Authorize.net.</p><form id="gateway-form" method="POST" action="${a.checkout_url}"><input type="hidden" name="token" value="${esc(a.checkout_token)}"><button class="btn">Continue to Authorize.net</button></form></div></div><script>document.getElementById('gateway-form').submit()</script>`))
+}))
+app.get('/p/checkout/:reference/return', pPage(async (req,res) => {
+  const a=paymentAttempt(req.params.reference)
+  if(!a) return res.status(404).send('Checkout not found')
+  if(req.query.session_id && ['stripe','stripe_connect'].includes(a.provider)) {
+    try {
+      const {session,account}=await paymentEvidence(a.provider,String(req.query.session_id))
+      if(session.metadata?.checkout_ref!==a.reference) throw collectionError('collection_account')
+      acceptPaymentEvidence(a.provider,session,account,String(req.query.session_id))
+    } catch(e) { failAttempt(a.reference,e.message) }
+  }
+  const fresh=paymentAttempt(a.reference), paid=fresh.status==='paid'
+  res.setHeader('Cache-Control','no-store')
+  if(get('SELECT 1 FROM payment_reversals WHERE attempt_ref=? AND is_test=0',a.reference)) return res.send(page('Payment updated','<div class="wrap"><div class="card"><h1>Payment updated</h1><p>A refund or payment change has been recorded. Do not pay again from this checkout. Contact the shop for your current invoice and refund status.</p></div></div>'))
+  if(fresh.status==='test_paid') return res.type('html').send(page('Test payment complete','<div class="wrap"><div class="card"><h1>Test payment complete</h1><p>No real money was collected. The invoice balance and production status have not changed.</p></div></div>'))
+  res.setHeader('Cache-Control','no-store')
+  res.send(page(paid ? 'Payment received' : 'Payment confirmation',`<div class="wrap"><div class="card"><h1>${paid ? 'Payment received' : 'Waiting for payment confirmation'}</h1><p>${paid ? 'Your payment has been recorded. Thank you.' : 'We are checking with your payment provider. If your card was charged, do not pay again. Refresh this page in a moment or contact the shop.'}</p>${!paid ? '<button class="btn" onclick="location.reload()">Check again</button>' : ''}</div></div>`))
+}))
+
+function paymentChoice(inv,settings) {
+  const data=Buffer.from(JSON.stringify({id:inv.id,slug:curSlug(),hash:collectionSnapshotHash(collectionSnapshot({invoiceId:inv.id,currency:currencyCode(settings.currency)})),expires:Date.now()+30*60000})).toString('base64url')
+  return data+'.'+crypto.createHmac('sha256',SECRET).update('invoice-choice:'+data).digest('hex')
+}
+function validPaymentChoice(token,inv,settings) {
+  if(typeof token!=='string' || token.length>1000)return false
+  const [data,sig,...rest]=token.split('.')
+  if(rest.length || !/^[a-f0-9]{64}$/.test(sig||''))return false
+  const expected=crypto.createHmac('sha256',SECRET).update('invoice-choice:'+data).digest()
+  if(!crypto.timingSafeEqual(expected,Buffer.from(sig,'hex')))return false
+  try {
+    const value=JSON.parse(Buffer.from(data,'base64url').toString())
+    return value.id===inv.id && value.slug===curSlug() && Number.isSafeInteger(value.expires) && value.expires>Date.now()
+      && value.hash===collectionSnapshotHash(collectionSnapshot({invoiceId:inv.id,currency:currencyCode(settings.currency)}))
+  } catch {return false}
 }
 
 app.get('/p/pay/:id', pPage(async (req, res) => {
@@ -8121,6 +9268,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   if (!checkToken('pay', id, req.query.k)) return res.status(403).send(page('Link expired', '<div class="wrap"><div class="card"><h1>Link expired</h1><p>Ask the shop to resend your payment link.</p></div></div>'))
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).send(page('Not found', '<div class="wrap"><div class="card"><h1>Not found</h1></div></div>'))
+  if(inv.payment_review) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The shop is reviewing a refund or payment change. Do not pay again; contact the shop for the updated invoice.</p></div></div>'))
   const s = escView(getSettings())
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
 
@@ -8146,7 +9294,8 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   if (req.query.session_id) {
     let outcome = 'unconfirmed'
     try {
-      const session = await confirmSession(s, String(req.query.session_id))
+      const gateway=isLite?'stripe_connect':'stripe'
+      const {session,account}=await paymentEvidence(gateway,String(req.query.session_id))
       // The session has to belong to THIS shop, and metadata.invoice is not enough to say so.
       //
       // In lite edition every shop is a Connect Express account on ONE platform Stripe key, so
@@ -8161,10 +9310,10 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       // startCheckout has stamped `slug: curSlug()` into the metadata since 1.0.0. Read it back.
       // Nothing about what we send to Stripe or infer from it changes; this is our own field.
       const forThisShop = String(session.metadata?.slug ?? '') === curSlug()
-      if (session.paid && forThisShop && String(session.metadata?.invoice) === String(id)) {
-        recordStripePayment(inv, session, String(req.query.session_id), session.metadata?.kind)
-        outcome = 'paid'
-      } else if (session.paid && !forThisShop) {
+      if (session.paid && !session.test && forThisShop && String(session.metadata?.invoice) === String(id) && session.currency===currencyCode(s.currency)) {
+        const verified=acceptPaymentEvidence(gateway,session,account,String(req.query.session_id))
+        outcome = verified.invoice || verified.duplicate ? 'paid' : 'unconfirmed'
+      } else if (session.paid && (!forThisShop || String(session.metadata?.invoice)!==String(id) || session.test || session.currency!==currencyCode(s.currency))) {
         // Deliberately NOT 'not_paid': that branch tells the customer nothing was charged and
         // offers them a Pay again button. This session really did pay something, somewhere else.
         console.error('pay-confirm: session belongs to another shop', String(session.metadata?.slug || '(none)'), '≠', curSlug())
@@ -8183,7 +9332,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       ? '<div class="ok">✓ Thank you — your payment went through.</div>'
       : outcome === 'not_paid'
         ? `<div class="ok">This payment was not completed. Nothing has been charged — you can try again below.</div>`
-        : `<div class="ok">We could not confirm this payment just yet. <strong>Do not pay again.</strong> If your card was charged it will be applied to ${esc(fresh.invoice_number)}; ${esc(s.shop_name)} has been notified and will be in touch.</div>`
+        : `<div class="ok">We could not confirm this payment just yet. <strong>Do not pay again.</strong> If your card was charged, the shop must verify the payment before applying it to ${esc(fresh.invoice_number)}; ${esc(s.shop_name)} has been notified and will be in touch.</div>`
     // Only invite another payment when we KNOW the first one did not happen. Offering it after a
     // failed confirm is exactly how a customer pays the same balance twice.
     const offerPay = bal > 0 && outcome === 'not_paid'
@@ -8198,7 +9347,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   }
 
   const balance = round2(inv.amount_due - inv.amount_paid)
-  if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">✓ This invoice is paid in full. Thank you!</div></div></div>`))
+  if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">${inv.credit_base ? 'This invoice is settled, including credit adjustments.' : '✓ This invoice is paid in full. Thank you!'}</div>${invoiceTotals(inv,balance,s,c)}</div></div>`))
 
   if (!paymentsReady(s)) {
     // Until the shop connects Stripe this IS the invoice its customers receive, so it has to be a
@@ -8215,9 +9364,9 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
   }
 
-  const deposit = round2(Math.min(balance, inv.amount_due * 0.5))
-  const depositBtn = (inv.amount_paid <= 0 && deposit > 0 && deposit < balance)
-    ? `<button class="btn" name="kind" value="deposit">Pay 50% deposit — ${money(deposit)}</button>`
+  const deposit = round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid)))
+  const depositBtn = (deposit > 0 && deposit < balance)
+    ? `<button class="btn" name="kind" value="deposit">Pay ${inv.amount_paid > 0 ? 'remaining ' : ''}50% deposit — ${money(deposit)}</button>`
     : ''
   res.send(page(`Pay ${inv.invoice_number}`, `<div class="wrap"><div class="card">
     <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">INVOICE</div><div class="num2">${inv.invoice_number}</div></div></div>
@@ -8225,10 +9374,11 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
     ${itemsTable(inv)}
     ${invoiceTotals(inv, balance, s, c)}
     <form method="POST" action="/p/pay/${id}/checkout?k=${req.query.k}${sQ(req)}" style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
+      <input type="hidden" name="choice" value="${paymentChoice(inv,getSettings())}">
       ${depositBtn}
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>
     </form>
-    <div class="terms">Secure payment through ${s.shop_name}'s Stripe account. Your card details go straight to Stripe.</div>
+    <div class="terms">Secure payment through ${s.shop_name}'s ${providerName(s)} account. Your card details go directly to the payment provider.</div>
     <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
 }))
 
@@ -8239,21 +9389,23 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   if (!inv) return res.status(404).send('Not found')
   // Never open a Stripe session for a cancelled invoice — see the note on GET /p/pay/:id.
   if (inv.status === 'void') return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
-  const s = escView(getSettings())
+  if(inv.payment_review) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The shop is reviewing a refund or payment change. Do not pay again; contact the shop for the updated invoice.</p></div></div>'))
+  if(!validPaymentChoice(req.body?.choice,inv,getSettings())) return res.status(409).send(page('Payment changed','<div class="wrap"><div class="card"><h1>Refresh this invoice</h1><p>The amount or checkout details changed. Reopen the invoice and confirm its current amount before paying.</p></div></div>'))
+  const s = getSettings()
   const balance = round2(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const kind = req.body?.kind === 'deposit' ? 'deposit' : 'balance'
-  const amount = kind === 'deposit' ? round2(Math.min(balance, inv.amount_due * 0.5)) : balance
+  const amount = kind === 'deposit' ? round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid))) : balance
   if (!(amount > 0)) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
-  const origin = `${req.protocol}://${req.get('host')}`
+  const origin = trustedOrigin(req)
   const back = `${origin}/p/pay/${id}?k=${req.query.k}${sQ(req)}`
   try {
     const { url } = await startCheckout(s, {
       lineItems: [{ name: `${inv.invoice_number} — ${kind === 'deposit' ? 'deposit' : 'balance'} (${s.shop_name})`, amountCents: Math.round(amount * 100), qty: 1 }],
       successUrl: `${back}&session_id={CHECKOUT_SESSION_ID}`,
       cancelUrl: back,
-      customerEmail: c?.email || undefined,
+      customerEmail: documentRecipient(inv).email || undefined,
       metadata: { invoice: String(id), kind, slug: curSlug() },
     })
     res.redirect(303, url)
@@ -8275,9 +9427,9 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
       logActivity('note', `A customer could not start card checkout on ${inv.invoice_number} — ${String(e.message).slice(0, 140)}`, { contact_id: inv.contact_id })
     } catch { /* the customer's page must not depend on the note landing */ }
     const reach = [s.shop_phone, s.shop_email].filter(Boolean).join(' · ')
-    res.status(502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1>
-      <p>We could not reach the card processor just now. Nothing has been charged.</p>
-      <p>Try again in a minute${reach ? `, or contact ${esc(s.shop_name || 'the shop')} to pay another way — ${esc(reach)}` : ''}.</p>
+    res.status(e.collectionSafe?e.status:502).send(page('Payment error', `<div class="wrap"><div class="card"><h1>Couldn't start checkout</h1>
+      <p>We could not confirm that checkout opened. If you already submitted a payment, do not pay again until its status is verified.</p>
+      <p>Contact ${esc(s.shop_name || 'the shop')} to check the payment${reach ? ` — ${esc(reach)}` : ''}.</p>
       <p><a href="${back}">Go back</a></p></div></div>`))
   }
 }))
@@ -8322,8 +9474,9 @@ app.get('/p/ticket/:id', pPage((req, res) => {
     .map((l) => ({ garment: l.description || l.garment || '', cells: Object.entries(l.sizes || {}).filter(([, n]) => Number(n) > 0) }))
     .filter((b) => b.cells.length)
   const grandTotal = sizeTables.reduce((t, b) => t + b.cells.reduce((s, [, n]) => s + Number(n), 0), 0)
-  const art = all('SELECT * FROM art_versions WHERE job_id = ? ORDER BY version DESC', j.id)
-  const approved = art.find((a) => a.status === 'approved')
+  const current = latestProof({job_id:j.id})
+  const approved = j.art_approved_at && current?.status === 'approved' ? current : null
+  const technical = artProduction.getArtProduction(j.id)
 
   // AGPL §13 covers "all users interacting with it remotely through a computer network", and this
   // is a complete, styled, self-contained page fetched over the network by a press operator on a
@@ -8376,10 +9529,11 @@ app.get('/p/ticket/:id', pPage((req, res) => {
       })()}
       <div class="tk-cols">
         <div><h2>Notes</h2><div class="tk-notes">${esc(j.notes || 'None.')}</div></div>
-        <div><h2>Approved Art</h2>
+        <div><h2>Current appearance proof</h2>
           ${approved ? `<div class="tk-art"><img src="${esc(proofSrc(approved))}" alt="v${esc(approved.version)}">
             <div class="cap">v${esc(approved.version)} — approved ${esc((approved.decided_at || '').slice(0, 10))} by ${esc(approved.decided_by || '')}</div></div>`
-            : '<div class="warnbox">⚠ NO APPROVED ART — do not print.</div>'}
+            : '<div class="warnbox">No current approved proof. Do not use an older version.</div>'}
+          <p class="cap">${technical.technical_ready ? `Technical release recorded by ${esc(technical.release.reviewed_by)} on ${esc(String(technical.release.reviewed_at || '').slice(0,10))}. Open the job while signed in to download the reviewed production files.` : technical.required ? 'Technical production release required before production.' : 'Technical review not recorded. A customer proof is not a prepared production file.'}</p>
         </div>
       </div>
       <div class="tk-sign">
@@ -8404,6 +9558,7 @@ app.get('/p/art/:id', pPage((req, res) => {
   const ec = e ? get('SELECT name, company FROM contacts WHERE id = ?', e.contact_id) : null
   const s = getSettings()
   const isImg = (a.mime || '').startsWith('image/')
+  const superseded=!proofIsCurrent(a)
   const decided = a.status === 'approved' || a.status === 'rejected'
   const subject = j
     ? `<strong>${esc(j.title)}</strong> · ${esc(j.job_number)} · ${esc(j.decoration || '')}`
@@ -8412,10 +9567,11 @@ app.get('/p/art/:id', pPage((req, res) => {
     <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">Artwork for approval</div></div>
       <div class="right"><div class="doc">PROOF</div><div class="num2">v${esc(a.version)}</div></div></div>
     <div class="to">${subject}</div>
+    ${superseded ? '<div class="warn">This proof has been replaced by a newer version. It is shown for reference only. Ask the shop for the current proof link.</div>' : ''}
     <div class="proof">${isImg ? `<img src="${esc(proofSrc(a))}" alt="Proof v${esc(a.version)}">`
       : `<a class="btn ghost" href="${esc(proofSrc(a))}" target="_blank">Open ${esc(a.original_name)}</a>`}</div>
-    <div class="check"><strong>Check before approving:</strong> spelling, placement, size, colors, and garment. Once approved, this is exactly what we print.</div>
-    ${decided ? `<div class="${a.status === 'approved' ? 'ok' : 'warn'}">${a.status === 'approved'
+    ${superseded ? '' : '<div class="check"><strong>Check before approving:</strong> spelling, placement, size, colors, and garment. Once approved, this is exactly what we print.</div>'}
+    ${superseded ? '' : decided ? `<div class="${a.status === 'approved' ? 'ok' : 'warn'}">${a.status === 'approved'
         // "Moving this to production" is only true when a job exists. On an estimate-attached mockup
         // there is no production floor yet, so promising one would be a lie to the customer.
         ? (j ? '✓ Approved — thank you! We are moving this to production.' : '✓ Approved — thank you! The shop has your sign-off and will take it from here.')
@@ -8432,6 +9588,7 @@ app.post('/p/art/:id/decide', express.urlencoded({ extended: false }), pPage((re
   if (!checkToken('art', id, req.query.k)) return res.status(403).send('Forbidden')
   const a = get('SELECT * FROM art_versions WHERE id = ?', id)
   if (!a) return res.status(404).send('Not found')
+  if(!proofIsCurrent(a))return res.status(409).send('This proof has been replaced. Ask the shop for the current proof link.')
   // A proof link gets forwarded around a purchasing department and re-opened weeks later. Decide
   // once: a second POST would otherwise drag a job that is already printing back to prepress,
   // push its due date out by a full turnaround, and re-send the customer the automation email.
@@ -8530,7 +9687,9 @@ app.get('/uploads/:file', (req, res) => {
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; sandbox")
   // private: a shared proxy must not cache one shop's artwork and hand it to the next caller.
   res.setHeader('Cache-Control', 'private, max-age=86400')
-  res.sendFile(join(UPLOADS, f), { dotfiles: 'deny' }, (err) => {
+  // Deny hidden names relative to the upload directory. An absolute path also classifies
+  // a legitimate parent such as ~/.local or ~/.openclaw as a hidden upload and returns 404.
+  res.sendFile(f, { root: UPLOADS, dotfiles: 'deny' }, (err) => {
     if (err && !res.headersSent) res.status(404).end()
   })
 })
@@ -8756,10 +9915,27 @@ const authHtml = () => {
 // Control) are onboarded onto our platform via Connect Express and pay a 4% fee on collected
 // payments. Every payment call site routes through these three helpers so pro stays byte-identical.
 const isLite = EDITION === 'lite'
-const paymentsReady = (s) => (isLite ? connectReady(s) : stripeConfigured(s))
-const startCheckout = (s, args) => (isLite
-  ? createConnectedCheckout({ accountId: s.stripe_account_id, ...args })
-  : createCheckout({ settings: s, ...args }))
+const paymentProvider = s => s.payment_provider || 'stripe'
+const providerName = s => paymentProvider(s) === 'authorize_net' ? 'Authorize.net' : 'Stripe'
+const paymentsReady = (s) => isLite ? connectReady(s) : paymentProvider(s) === 'off' ? false : paymentProvider(s) === 'authorize_net' ? authorizeConfigured(s) : stripeConfigured(s) && /^whsec_/.test(s.stripe_webhook_secret || '')
+const startCheckout = async (s, args) => {
+  if(!paymentsReady(s)) throw collectionError('collection_changed')
+  const client=collectionClient(s),currency=currencyCode(s.currency)
+  const invoiceId=Number(args.metadata?.invoice)||null
+  const estimateId=invoiceId?null:get('SELECT id FROM estimates WHERE estimate_number=?',args.metadata?.estimate||'')?.id
+  const amountCents=args.lineItems.reduce((n,l)=>n+Math.round(l.amountCents)*(l.qty||1),0)
+  const attempt=reserveCollection({client,invoiceId,estimateId,amountCents,currency,kind:args.metadata?.kind||'balance',returnUrl:args.cancelUrl,
+    buildRequest:a=>client.buildRequest({...args,amountCents,currency,reference:a.reference,
+      successUrl:new URL(`/p/checkout/${a.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href+(client.provider==='authorize_net'?'':'&session_id={CHECKOUT_SESSION_ID}'),
+      metadata:{...args.metadata,slug:curSlug(),checkout_ref:a.reference,collection_version:'1',currency}})})
+  const result=await resumeCollection({reference:attempt.reference,client})
+  if(result.session.paid) {
+    reconcileCheckout(paymentAttempt(attempt.reference),result.session,result.session.id,result.account)
+    return {id:attempt.reference,url:new URL(`/p/checkout/${attempt.reference}/return?s=${encodeURIComponent(curSlug())}`,args.cancelUrl).href}
+  }
+  if(result.expired || result.session.status==='complete') throw collectionError('collection_review')
+  return {id:attempt.reference,url:client.provider==='authorize_net'?new URL(`/p/checkout/${attempt.reference}?s=${encodeURIComponent(curSlug())}`,args.cancelUrl).href:result.url}
+}
 const confirmSession = (s, sessionId) => (isLite
   ? retrieveConnectedSession({ sessionId })
   : retrieveSession({ settings: s, sessionId }))
@@ -8923,7 +10099,7 @@ const shutdown = (sig) => {
   // carry every deploy all the way to the hard exit below — 8016ms measured, versus 14ms with no
   // tab open — and that hard exit is what severs an in-flight request. The graceful path only
   // existed on paper until the live layer was taught to let go.
-  server.close(() => process.exit(0))
+  server.close(() => { shutdownImportCheckpoints().finally(() => process.exit(0)) })
   closeRealtime()
   setTimeout(() => process.exit(0), 8000).unref() // never hang a deploy
 }

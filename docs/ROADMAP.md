@@ -1,0 +1,73 @@
+# Community roadmap and release standard
+
+The goal is to make PrintShopCRM the dependable open-source operating system for print shops.
+The optional paid service is hosting and basic setup. Any future hosted artwork processing must
+be separately metered; shops can use their own devices or provider accounts. This is a direction,
+not a claim that the current release replaces every specialized product.
+
+## Protect the shop's working day
+
+A change is ready when its regression tests pass, the full CI suite is green, and a reviewer has
+checked its effect on customers, money, artwork, tenant separation, and existing data. New modules
+need explicit acceptance cases and compatibility plans. Keep changes small enough to review.
+
+- Every money-changing path uses the shared pricing code and preserves payment history.
+- Every shop boundary is tested with a neighboring shop and with an unauthenticated visitor.
+- Migrations must preserve existing records and be rehearsed against copies of old databases.
+- A release requires a recoverable backup, strict health checks, and tested rollback instructions.
+- Stable container images come from version tags only, after all reusable CI jobs pass.
+- Hosted releases identify their version; compare deployed file hashes against that version.
+- Experimental work stays out of stable releases until it meets the same requirements.
+
+## Current scope
+
+Implemented workflows include customers, quoting, approvals, invoices and payments, production
+stages, artwork history, purchasing documents, price matrices, capacity planning, profitability,
+imports/exports, staff roles, automations, and integration adapters. Automated tests are extensive;
+external integrations still need provider-specific validation with the shop's own configuration.
+
+Current-proof approval now invalidates replaced artwork, refuses obsolete decision links and refreshes production task revisions. [Artwork approval rules](ARTWORK.md) describe history, deletion and production-file limits. This does not supply reliable digitizing, separations or physical output validation.
+
+Customer imports now count only committed batches, recheck email duplicates inside each write transaction, and preserve partial results when activity logging fails. [Import reliability](IMPORT-RELIABILITY.md) records the tests and the unresolved synchronous SQLite latency issue. Later passing CI runs do not close that blocker.
+
+[Artwork compute ownership](ARTWORK-COMPUTE.md) separates researched adapters from implemented functionality. The manual browser composer now preserves original artwork and a shop photo or exact S&S catalog image, with bounded uploads and retry receipts. SanMar media, calibrated templates, PSD/local-worker connections and physical separation validation remain open; the free core continues to work without them.
+
+[Hosting checkout recovery](HOSTING-CHECKOUTS.md) now records one unresolved checkout per shop, reuses provider idempotency keys, verifies expiration and supports evidence-backed operator reviews. Subscription revisions and non-reused tenant IDs protect against stale callbacks and cross-shop history. Provider-owned sandbox acceptance remains required. [Voluntary project support](PROJECT-SUPPORT.md) is available when the operator configures verified funding links; it never changes feature access.
+
+## Expansion priorities
+
+| Area | Current boundary | Acceptance work before calling it complete |
+|---|---|---|
+| Core shop operations | Implemented; continue real-shop validation | First-day walkthrough, cross-shop isolation, interrupted writes, replayed payments, upgrade and restore |
+| Community releases | Cross-platform PR checks and code-owner review exist | Verify branch-protection enforcement; validate exact release tags; establish additional trusted reviewers |
+| Stores and fundraising | Not a complete customer storefront product | Catalog, checkout, inventory reservations, order import, refunds, fulfillment, accessibility |
+| Customer product designer | Not a complete online personalization system | Placement constraints, safe uploads, proof versioning, production-ready output |
+| Decoration coverage | Screen print, embroidery, DTF and UV DTF; other methods vary | Shop-supplied fixtures for sublimation, vinyl, patches, laser, signs and wide format |
+| Accounting | Invoices, payments, exports and QuickBooks adapter | Reconciliation, credits, taxes, audit history; a general ledger is a separate large module |
+| Purchasing and inventory | Local POs, partial receiving/short-close, S&S submission and supplier status adapters | Real supplier acceptance, SanMar electronic POs, substitutions, stock reservations, carrier label/event integration and returns |
+| Localization | Currency/locale support exists; text largely inline | Translate strings, test dates and formats, accessibility review in each language |
+| Scale and recovery | Per-shop SQLite, snapshots, strict health checks | Measured load targets, noisy-shop limits, off-site restore drills, documented capacity limits |
+
+## Competitor reference points
+
+The comparison is workflow-based. Printavo documents quoting, scheduling, payments, and shop
+management: [Printavo features](https://www.printavo.com/features/). InkSoft documents online stores
+and web-to-print: [InkSoft stores](https://www.inksoft.com/e-commerce-stores-and-web-to-print-sites/).
+Those storefront and design workflows are material gaps; do not describe this release as a full
+replacement for them. Reference pages checked September 4, 2026.
+
+For the podcast, demonstrate the verified shop-management workflow and invite shops to shape the
+next modules. Do not promise perfect reliability, complete competitor parity, or a delivery date
+for unbuilt systems.
+
+## Guided workspace follow-up
+
+- OAuth mailbox connections and reliable inbound email synchronization (outgoing SMTP already works).
+- Native migration adapters, partial payment allocation, active production mapping and attachment reconciliation. Existing CSV customer/history imports provide editable column mapping, strict payment-state review and resumable committed-batch reports.
+- Independently revocable agent keys now provide endpoint scopes, request audit, expiry and production tools; the legacy shared key remains compatible. Customer/estimate API creation now supports persistent idempotency keys and atomic rollback. Per-connection OpenAPI downloads now expose only granted operations and the shop URL; active staff IDs/names can be queried for assignment. Automatic runtime installation, OAuth consent and external-agent approval policies remain open. See [Agent connections](AGENT-CONNECTIONS.md).
+- Real Slack installation and phone-workflow acceptance. The optional operator already verifies linked staff and team identity, checks scopes, preserves confirmations and replay protection, and can draft quotes, schedule, assign and complete permitted production tasks. It does not cover every shop action or send customer quotes automatically. External agents can also use the scoped REST API.
+- Real customer-owned Twilio, SMTP and Slack end-to-end acceptance on a public staging host. Local tests use fixtures and the evaluation launcher blocks outbound network access.
+
+### Payment accounting after the provider adapters
+
+Stripe and Authorize.net hosted checkout now share verified, idempotent invoice posting. The next release gate is merchant-owned sandbox acceptance on public HTTPS. Stripe refunds, Authorize.net refunds/voids and explicit invoice credits now preserve history and pause collections for review. Chargebacks, unmatched external transactions, background reconciliation, QuickBooks credit/refund documents and jurisdiction-specific tax records remain before claiming complete payment accounting. See [PAYMENTS.md](PAYMENTS.md).

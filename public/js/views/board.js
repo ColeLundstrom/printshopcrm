@@ -1,6 +1,7 @@
 import { api, $, $$, el, esc, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
+import { mountArtProduction } from '../art-production.js'
 
 const STAGE_COLOR = { new: '#5f6b7d', art_approval: '#f7b955', prepress: '#7c6cff', production: '#4aa8ff', qc: '#10d39a', shipping: '#10d39a', complete: '#333b49' }
 const DECORATIONS = ['Screen Print', 'DTF Transfer', 'Embroidery', 'UV DTF', 'Vinyl', 'Patch', 'Laser', 'Promo']
@@ -29,7 +30,7 @@ const decoOptions = (cur) => {
 const boardState = { filter: 'all', assignee: 'all' }
 
 export async function boardView() {
-  setPage('Job Board', `<button class="btn" id="new-job">+ New Job</button>`)
+  setPage('Job Board', `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn" id="new-job">+ New Job</button>`)
   // The Job Board is the shared screen. A realtime 'board' event re-runs this whole function
   // (app.js handleRealtime), and so does every filter chip and the assignee select — and the
   // render below is `#view`.innerHTML, which destroys whatever had focus. A keyboard user tabbing
@@ -236,10 +237,16 @@ export async function jobForm(job, after) {
         <div class="field"><label>Due date</label><input class="input" name="due_date" type="date" value="${esc(job?.due_date || '')}"></div>
         <div class="field"><label>Assigned to</label><input class="input" name="assigned_to" value="${esc(job?.assigned_to || '')}" placeholder="Press 1 / Marco"></div>
       </div>
+      <div class="field"><label for="job-shipping-address">Shipping address</label><textarea class="input" id="job-shipping-address" name="shipping_address" rows="4" maxlength="600">${esc(job?.shipping_address || '')}</textarea>
+        <div class="dim" style="font-size:12px;margin-top:4px">Up to 8 lines. Prints on the packing slip. Saved for this job; invoice addresses are edited separately.</div></div>
       <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Ink colors, placement, packing…">${esc(job?.notes || '')}</textarea></div>
       <label class="row" style="gap:7px;cursor:pointer"><input type="checkbox" name="rush" ${job?.rush ? 'checked' : ''}> <span style="font-size:13px">Rush job</span></label>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${job ? 'Save' : 'Create Job'}</button>`,
     onMount: (bg) => {
+      if (!job) $('[name="contact_id"]', bg)?.addEventListener('change', event => {
+        const contact = contacts.find(c => c.id === +event.target.value)
+        $('#job-shipping-address', bg).value = contact?.shipping_address || contact?.billing_address || ''
+      })
       // Opening the customer form closes this modal, so reopen the job form once it saves —
       // it refetches contacts, which now includes the one just created.
       $('#add-contact', bg)?.addEventListener('click', () => contactForm(null, () => jobForm(job, after)))
@@ -359,7 +366,7 @@ export async function jobDetailView(id) {
     : `<div class="schednote ok"><div><strong>Art approved ${fmtDate(sc.approvedOn)}</strong></div>
         <div class="dim">${j.turnaround_days} working days from approval → due ${fmtDate(sc.due)}.</div></div>`
 
-  setPage(j.title, `<button class="btn ghost" id="edit">Edit</button><button class="btn" id="upload-btn">+ Upload Art</button>`,
+  setPage(j.title, `<a class="btn ghost" href="#/production/jobs/${id}">Production tasks</a>${window.__me?.can_manage===false?'':`<a class="btn ghost" href="#/costing/jobs/${id}">Job margin</a>`}<button class="btn ghost" id="edit">Edit</button><button class="btn" id="upload-btn">+ Upload Art</button>`,
     `<a href="#/board">Board</a> /`)
 
   $('#view').innerHTML = `<div class="cols">
@@ -378,16 +385,16 @@ export async function jobDetailView(id) {
       </div></div>
 
       <div class="card"><div class="card-h"><h3>Art & Proofs</h3><div class="spacer"></div>
-        <span class="dim" style="font-size:12px">${j.art.length} version${j.art.length === 1 ? '' : 's'}</span></div>
+        <span class="dim" style="font-size:12px">${j.art.length} version${j.art.length === 1 ? '' : 's'}</span><a class="btn ghost sm" href="#/jobs/${id}/mockup">Create mockup</a></div>
         <div class="card-b" id="art-list">
-          <div class="drop" id="drop">Drop art here or click to upload — PNG, JPG, PDF, AI, SVG</div>
-          <input type="file" id="file" hidden accept="image/*,.pdf,.ai,.eps,.svg">
+          <div class="drop" id="drop">Drop a new customer proof here or click to upload — PNG, JPG, WebP, SVG or PDF. A new version requires a new approval. Keep machine files in Prepared production files.</div>
+          <input type="file" id="file" hidden accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf">
           ${j.art.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-top:14px">
             ${j.art.map((a) => `<div class="card" style="background:var(--panel-2)">
-              ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" src="/uploads/${esc(a.filename)}" alt="v${a.version}">`
+              ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" src="${esc(a.url || `/uploads/${a.filename}`)}" alt="v${a.version}">`
                 : `<div class="art-thumb" style="display:grid;place-items:center;font-size:26px">◈</div>`}
               <div style="padding:10px">
-                <div class="row"><strong style="font-size:12.5px">v${a.version}</strong><div class="sp"></div>${pill(a.status)}</div>
+                <div class="row"><strong style="font-size:12.5px">v${a.version}</strong><div class="sp"></div>${pill(a.status)}${a.id!==j.art[0]?.id?'<span class="tag">Superseded</span>':''}</div>
                 <div class="dim" style="font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.original_name || '')}</div>
                 ${a.notes ? `<div class="muted" style="font-size:11.5px;margin-top:5px;font-style:italic">"${esc(a.notes)}"</div>` : ''}
                 <div class="wrap-row" style="margin-top:8px">
@@ -398,15 +405,17 @@ export async function jobDetailView(id) {
                         rejection was a mis-click on their phone, there was nothing on any screen
                         that could put it back in front of them. The server has always allowed both;
                         only these two conditions stopped it. */''}
-                  ${a.status === 'draft' || a.status === 'rejected' ? `<button class="btn sm" data-send="${a.id}">${a.status === 'rejected' ? 'Send it again' : 'Send for approval'}</button>` : ''}
+                  ${a.id===j.art[0]?.id && (a.status === 'draft' || a.status === 'rejected') ? `<button class="btn sm" data-send="${a.id}">${a.status === 'rejected' ? 'Send it again' : 'Send for approval'}</button>` : ''}
                   ${a.status !== 'draft' ? `<a class="btn ghost sm" href="${esc(a.share_url)}" target="_blank">Proof link</a>` : ''}
-                  ${a.status === 'sent' || a.status === 'rejected' ? `<button class="btn ghost sm" data-decide="${a.id}" data-v="${a.version}">Approved by phone</button>` : ''}
-                  <a class="btn ghost sm" href="/uploads/${esc(a.filename)}" target="_blank">Open</a>
+                  ${a.id===j.art[0]?.id && a.status === 'sent' ? `<button class="btn ghost sm" data-decide="${a.id}" data-v="${a.version}">Approved by phone</button>` : ''}
+                  <a class="btn ghost sm" href="${esc(a.url || `/uploads/${a.filename}`)}" target="_blank">Open</a>
                   <button class="btn ghost sm" data-delart="${a.id}" data-v="${a.version}" data-st="${a.status}">Delete</button>
                 </div>
               </div></div>`).join('')}</div>` : ''}
         </div>
       </div>
+
+      <section id="art-production" class="card" aria-label="Production files and review"><div class="card-h"><h3>Production files & review</h3></div><div class="card-b" role="status">Loading file review…</div></section>
 
       <div class="card"><div class="card-h"><h3>Job Details</h3><div class="spacer"></div>
         <button class="btn ghost sm" id="print-ticket">Work ticket</button></div><div class="card-b">
@@ -461,12 +470,10 @@ export async function jobDetailView(id) {
           </div></div>`
       })() : ''}
 
-      <div class="card"><div class="card-h"><h3>Production Files</h3><span class="pill green">RIP-ready</span></div>
+      <div class="card"><div class="card-h"><h3>Blank garments</h3></div>
         <div class="card-b">
-          <p class="dim" style="font-size:12px;margin-bottom:11px;line-height:1.55">One bundle for the press — approved art, ink list and the full size grid — ready to drop into your RIP.</p>
           <div class="stack" style="gap:8px">
-            <a class="btn sm" href="/api/jobs/${id}/print-package?download=1" style="width:100%">↓ Print-ready package</a>
-            <button class="btn ghost sm" id="po-order" style="width:100%">Order blanks from supplier</button>
+            <button class="btn ghost sm" id="po-order" style="width:100%">Review purchase order</button>
             <a class="btn ghost sm" href="/api/jobs/${id}/po?download=1" style="width:100%">↓ Download PO (JSON)</a>
           </div>
         </div></div>
@@ -484,6 +491,7 @@ export async function jobDetailView(id) {
     </div>
   </div>`
 
+  mountArtProduction($('#art-production'), id, j)
   $('#po-order')?.addEventListener('click', () => openPO(id, j.job_number))
   loadReceiving(id)
   $('#print-ticket').onclick = () => window.open(j.ticket_url || `/p/ticket/${id}`, '_blank')
@@ -562,8 +570,8 @@ export async function jobDetailView(id) {
 }
 
 /**
- * Order blanks from the connected distributor. Shows the CONSOLIDATED PO (one line per
- * style/color/size — never split-ships), then submits it. Real spend, so it confirms clearly.
+ * Review a PO and record an order already confirmed by the supplier. The current catalog
+ * does not provide exact orderable size/color identifiers, so this screen never orders goods.
  */
 async function openPO(id, jobNumber) {
   let po
@@ -571,43 +579,37 @@ async function openPO(id, jobNumber) {
   const rows = (po.lines || []).map((l) => `<tr>
     <td>${esc(l.sku || l.style || '—')}</td><td>${esc(l.color || '—')}</td><td>${esc(l.size)}</td>
     <td class="num">${l.qty}</td><td class="num muted">${l.unit_cost != null ? money(l.unit_cost) : '—'}</td></tr>`).join('')
-  const connected = po.status === 'ready-to-submit' && po.supplier
+  const recorded = ['confirmed_manual','confirmed_supplier'].includes(po.placement_state)
+  const confirmation = po.purchase_order?.manual_confirmation
+  const uncertain = ['unknown','unverified_legacy','submitting'].includes(po.placement_state)
   const warn = (po.warnings || []).length
     ? `<div class="card-b" style="border:1px solid rgba(247,185,85,.4);border-radius:8px;background:rgba(247,185,85,.08);font-size:12px;margin-bottom:12px">⚠ ${po.warnings.map(esc).join('<br>⚠ ')}</div>` : ''
   modal({
-    title: `Order blanks — ${esc(jobNumber || po.job || '')}`,
+    title: `Purchase order — ${esc(jobNumber || po.job || '')}`,
     wide: true,
     body: `${warn}
-      <p class="dim" style="font-size:12.5px;margin-bottom:10px">${connected
-        ? `Submitting to <strong style="color:var(--txt-2)">${esc(po.supplier)}</strong>. Lines are consolidated to one row per style/color/size, so nothing split-ships.`
-        : 'No distributor connected. Add S&S / SanMar / AlphaBroder credentials in Settings, or download this PO to place it manually.'}</p>
+      <p class="dim" style="font-size:12.5px;margin-bottom:10px">${recorded
+        ? `Supplier confirmation recorded${confirmation ? ` by ${esc(confirmation.recorded_by)} — ${esc(confirmation.supplier)}, reference ${esc(confirmation.reference)}` : ` — ${esc(po.purchase_order.order_id)}`}. Nothing new will be ordered.`
+        : uncertain ? 'Placement has not been verified in this software. Check the supplier order history first so you do not order the same garments twice. Record the existing supplier confirmation below.'
+        : esc(po.submission_note)}</p>
+      ${po.purchase_order ? '<p class="dim" style="font-size:12px">These are the quantities on the saved PO. Later edits to the job do not change this record.</p>' : ''}
       <table class="tbl"><thead><tr><th>SKU / Style</th><th>Color</th><th>Size</th><th class="num">Qty</th><th class="num">Cost</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5" class="dim">No sized lines on this job.</td></tr>'}</tbody></table>
       <div class="row" style="justify-content:space-between;margin-top:12px;font-size:13px">
         <span class="dim">${po.total_units} units${po.color ? ` · ${esc(po.color)}` : ''}</span>
         <strong>${po.est_cost ? money(po.est_cost) + ' est.' : ''}</strong></div>
-      <div id="po-note" class="dim" style="font-size:12px;margin-top:10px"></div>`,
-    footer: connected
-      ? `<button class="btn ghost" data-close>Cancel</button><a class="btn ghost" href="/api/jobs/${id}/po?download=1">Download</a><button class="btn" id="po-submit">Submit order to ${esc(po.supplier)}</button>`
-      : `<button class="btn ghost" data-close>Close</button><a class="btn" href="/api/jobs/${id}/po?download=1">Download PO</a>`,
+      ${recorded ? '' : `<div class="grid2" style="margin-top:16px"><div class="field"><label for="po-supplier">Supplier</label><input class="input" id="po-supplier" maxlength="100" value="${esc(po.supplier || '')}" placeholder="Supplier name"></div><div class="field"><label for="po-reference">Supplier order / confirmation reference</label><input class="input" id="po-reference" maxlength="120" placeholder="From the supplier confirmation"></div></div><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="po-confirmed" style="width:auto"><span>I checked the supplier confirmation and it matches these garments, colors, sizes and quantities.</span></label><p class="dim" style="font-size:12px;margin-top:8px">Recording this acknowledgement does not place an order or receive any garments.</p>`}
+      <div id="po-note" class="dim" role="status" style="font-size:12px;margin-top:10px"></div>`,
+    footer: `<button class="btn ghost" data-close>Close</button><a class="btn ghost" href="/api/jobs/${id}/po?download=1">Download PO</a>${recorded || !po.lines?.length ? '' : '<button class="btn" id="po-confirm">Record supplier confirmation</button>'}`,
     onMount: (bg) => {
-      const btn = $('#po-submit', bg); if (!btn) return
+      const btn = $('#po-confirm', bg); if (!btn) return
       btn.onclick = async () => {
-        btn.disabled = true; btn.textContent = 'Submitting…'
+        if (!$('#po-confirmed',bg).checked) { $('#po-note',bg).textContent='Check the supplier confirmation and acknowledge the quantities first.'; return }
+        btn.disabled = true; btn.textContent = 'Recording…'
         try {
-          const r = await api.post(`/api/jobs/${id}/po/submit`, {})
-          if (r.ok) { toast(`Order placed with ${r.supplier}${r.order_id ? ` — #${r.order_id}` : ''}`); closeModal(); jobDetailView(id) }
-          // The error branch used to be unreachable: a failed submit came back with pending:true
-          // and no note, so this rendered esc(undefined) — an empty line — and the shop saw the
-          // button quietly reset. Check for a real error FIRST, and show the distributor's own
-          // words, because "Could not place order" does not tell anyone which key expired.
-          else if (r.error) {
-            $('#po-note', bg).innerHTML = `<strong>Not ordered.</strong> ${esc(r.error)}`
-            toast(`Order NOT placed: ${r.error}`, true)
-            btn.disabled = false; btn.textContent = 'Retry'
-          } else if (r.pending) { $('#po-note', bg).innerHTML = esc(r.note || 'Submit this one by hand in the distributor’s portal, then mark it received here.'); btn.textContent = 'Submit order to ' + esc(r.supplier); btn.disabled = false }
-          else { toast('Could not place order', true); btn.disabled = false; btn.textContent = 'Retry' }
-        } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Retry' }
+          await api.post(`/api/jobs/${id}/po/manual`, {confirmed:true,supplier:$('#po-supplier',bg).value,reference:$('#po-reference',bg).value,review_key:po.review_key})
+          toast('Supplier confirmation recorded'); closeModal(); jobDetailView(id)
+        } catch (e) { $('#po-note',bg).textContent=e.message; toast(e.message,true); btn.disabled=false; btn.textContent='Record supplier confirmation' }
       }
     },
   })
@@ -627,6 +629,9 @@ async function loadReceiving(jobId) {
 }
 
 function poStatusPill(po) {
+  if (po.placement_state === 'unverified_legacy') return '<span class="pill amber">Placement unverified</span>'
+  if (po.placement_state === 'unknown' || po.placement_state === 'submitting') return '<span class="pill amber">Check supplier outcome</span>'
+  if (po.status === 'manual_required' || po.status === 'draft') return '<span class="pill amber">Awaiting supplier confirmation</span>'
   const map = { received: 'green', partial: 'amber', submitted: '', placed_manually: '', draft: '' }
   const label = po.status === 'placed_manually' ? 'placed by hand' : po.status
   return `<span class="pill ${map[po.status] || ''}">${esc(label)}</span>`

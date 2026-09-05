@@ -3,14 +3,13 @@
 #
 #   docker run -p 3333:3333 -e PSC_SECRET=... -v psc:/data ghcr.io/colelundstrom/printshopcrm:latest
 #
-# `latest` tracks main; a `v*` tag also publishes its exact version. Images are multi-arch so they
+# `latest` tracks validated release tags. Images are multi-arch so they
 # run on a cheap ARM VPS (Ampere, Graviton, Pi) as well as x86.
 
 name: Publish image
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
@@ -19,7 +18,13 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   publish:
+    needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,6 +32,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Require a versioned release from main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_REF" in
+            refs/tags/v*) ;;
+            *) echo "::error::Publish a version tag, never an unreviewed branch"; exit 1 ;;
+          esac
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).version")
+          test "$RELEASE_REF" = "refs/tags/v$VERSION" || { echo "::error::Tag and package version differ"; exit 1; }
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::Release must belong to main"; exit 1; }
 
       # ARM builds run under emulation. This is pure JavaScript with no native modules, so it is
       # slow to build but has nothing that can fail to cross-compile.
@@ -44,7 +64,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

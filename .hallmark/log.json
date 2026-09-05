@@ -1,0 +1,28 @@
+[
+  {
+    "date": "2026-09-04",
+    "scope": "app",
+    "genre": "modern-minimal",
+    "macrostructure": "workbench",
+    "design_system": "design.md",
+    "designed_as_app": true,
+    "critique": {
+      "P": 4,
+      "H": 4,
+      "E": 4,
+      "S": 4,
+      "R": 4,
+      "V": 4
+    },
+    "review": "Existing dark/light tokens inherited. Desktop setup and email screenshots inspected. Setup measured at 320/375/414/768 with no page overflow. Native tables and specialist routes preserved. Deep-link scrolling corrected during browser QA. No decorative art or invented metrics."
+  },
+  {
+    "date": "2026-09-04",
+    "scope": "payment setup",
+    "genre": "modern-minimal",
+    "macrostructure": "workbench",
+    "design_system": "design.md",
+    "designed_as_app": true,
+    "review": "Sequential provider selection and connection fields with specialist reconciliation under a disclosure. Desktop and 375px screenshots inspected. Phone document width equals scroll width (366px). Missing-credential feedback verified in the final local copy. Shared tokens and native form controls retained. Reusing the original preview origin exposed stale service-worker styling. Fixed with network-first public assets and verified online/offline behavior in a focused worker test."
+  }
+]

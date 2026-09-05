@@ -28,7 +28,7 @@ export const GOTO = [
   ['d', '/', 'Dashboard'],
   ['a', '/autopilot', 'Autopilot'],
   ['b', '/board', 'Job Board'],
-  ['y', '/capacity', 'Capacity & promise dates'],
+  ['y', '/capacity', 'Screen print capacity'],
   ['e', '/estimates', 'Estimates'],
   ['v', '/invoices', 'Invoices'],
   ['p', '/pipeline', 'Pipeline'],

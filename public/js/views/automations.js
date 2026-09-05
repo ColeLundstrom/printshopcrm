@@ -42,7 +42,8 @@ export async function automationsView() {
           const stopped = !!p.status
           const why = p.status === 'orphaned' ? (p.note || 'the record it was about is gone')
             : p.status === 'failed' ? (p.note || 'the step kept failing')
-              : rule && !rule.enabled ? 'the rule is switched off' : ''
+              : p.note || (rule && !rule.enabled ? 'the rule is switched off' : '')
+          const recipientDocument=Number.isSafeInteger(p.invoice_id)?`/invoices/${p.invoice_id}`:Number.isSafeInteger(p.estimate_id)?`/estimates/${p.estimate_id}`:null
           return `<tr data-pending="${p.id}">
             <td style="font-weight:600">${esc(p.label || '—')}</td>
             <td>${esc(p.automation_name || '')}</td>
@@ -50,7 +51,7 @@ export async function automationsView() {
             <td>${stopped || why
               ? `<span class="pill ${stopped ? 'red' : 'gray'}" title="${esc(why)}">${esc(p.status || 'paused')}</span>`
               : '<span class="pill gray">waiting</span>'}${why ? `<div class="dim" style="font-size:11px;margin-top:2px">${esc(why)}</div>` : ''}</td>
-            <td class="num">${stopped ? `<button class="btn ghost sm" data-resume="${p.id}">Resume</button> ` : ''}<button class="btn ghost sm" data-cancel-seq="${p.id}">Cancel</button></td>
+            <td class="num">${p.status==='recipient_review' && recipientDocument?`<a class="btn ghost sm" href="#${recipientDocument}">Review document</a> `:''}${stopped && p.status!=='recipient_review' ? `<button class="btn ghost sm" data-resume="${p.id}">Resume</button> ` : ''}<button class="btn ghost sm" data-cancel-seq="${p.id}">Cancel</button></td>
           </tr>`
         }).join('')}</tbody></table></div>
     </div>` : ''}

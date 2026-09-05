@@ -427,6 +427,7 @@ export function guessGarmentCost(text) { const t = String(text || ''); for (cons
  * applied this rule; it lives here so the editor and the ROI page cannot drift apart again.
  */
 export function lineBlankCost(it) {
+  if(it?.matrix?.customerSupplied===true)return 0
   const stamped = Number(it?.garment_cost) > 0 ? Number(it.garment_cost)
     : Number(it?.blank_cost) > 0 ? Number(it.blank_cost)
     : 0

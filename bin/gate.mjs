@@ -1518,7 +1518,7 @@ await t('the two Follow-ups buttons obey the same switch the automation engine d
     assert.match(body, /const deliver = s\.mode_followups !== 'manual'/, `${what} ignores the shop's Manual follow-up mode`)
     assert.match(body, /vars: \{[^}]*\}, deliver \}\)/, `${what} computes deliver and then does not pass it`)
     assert.match(body, /delivered: deliver/, `${what} must tell the screen which of the two things happened`)
-    assert.match(body, /\$\{deliver \? 'sent' : 'drafted'\}/, '…and the customer timeline must not say "sent" for a draft')
+    assert.match(body, /\$\{deliver \? '(?:sent|queued)' : 'drafted'\}/, '…and the customer timeline must distinguish a delivery request from an unsent draft')
   }
 })
 await t('…and the button asks first, and reports what actually happened', async () => {
@@ -4544,6 +4544,9 @@ await t('the recovery tool loads the .env the server uses, and does not lie abou
     // The gates themselves are the exception, deliberately: they must run against a throwaway
     // database with no shop's configuration anywhere near them.
     if (/bin\/gate(-e2e)?\.mjs/.test(cmd)) continue
+    // Demo provisioning builds an exclusive install with a clean environment; loading the
+    // operator's .env would violate that isolation. test/demo.test.mjs checks this boundary.
+    if (name === 'demo' && cmd === 'node bin/demo.mjs') continue
     if (!/\b(server|seed)\.mjs|\bbin\/[\w-]+\.mjs/.test(cmd)) continue
     assert.match(cmd, /--env-file-if-exists=\.env/, `npm run ${name} opens the database without loading .env`)
   }
@@ -4824,8 +4827,8 @@ section('the distributor has to hand back an order number before we say the orde
       answer(200, '<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>', 'text/html')
       const r = await submit()
       assert.ok(r.threw, `it resolved as a success: ${JSON.stringify(r.resolved)}`)
-      assert.match(r.threw, /NOT placed/, 'the shop has to be told the order did not go')
-      assert.match(r.threw, /portal/, '…and where to check before sending it again')
+      assert.match(r.threw, /not confirmed the outcome/, 'a missing receipt leaves an unknown outcome, not a claim that nothing was ordered')
+      assert.match(r.threw, /supplier order history/, '…and where to check before placing anything again')
     })
     await t('…nor is a 200 whose JSON carries no order number', async () => {
       answer(200, JSON.stringify({ status: 'accepted' }), 'application/json')
@@ -4930,9 +4933,14 @@ await t('an HTML error page from Stripe becomes a sentence, on every call', asyn
         assert.match(msg, /Stripe/, `${name} on HTTP ${status}: the message has to say who is not answering — ${msg}`)
       }
     }
-    // A real Stripe error body still reaches the caller verbatim; that message is the whole point.
-    answer(402, JSON.stringify({ error: { message: 'Your card was declined.' } }), 'application/json')
-    assert.match(await failed(calls[0][1]), /Your card was declined\./, 'a real Stripe message must survive')
+    // Provider text can echo credentials or customer data. Only our local safe error survives.
+    answer(402, JSON.stringify({ error: { message: 'SECRET_SENTINEL card was declined.' } }), 'application/json')
+    await assert.rejects(calls[0][1], error => {
+      assert.equal(error.code,'stripe_request_rejected')
+      assert.equal(error.stripeSafe,true)
+      assert.doesNotMatch(error.message + JSON.stringify(error),/SECRET_SENTINEL|card was declined/)
+      return true
+    })
     // …and a good response still parses.
     answer(200, JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_1', id: 'cs_1' }), 'application/json')
     assert.equal((await stripe.createCheckout({ settings, lineItems: [{ name: 'x', amountCents: 100, qty: 1 }], successUrl: 'https://a/', cancelUrl: 'https://a/' })).id, 'cs_1')
@@ -4965,7 +4973,8 @@ await t('…and the shop is told a customer could not pay', async () => {
   assert.match(handler, /could not start card checkout/, '…and the note has to say what happened')
   assert.doesNotMatch(handler.slice(0, handler.indexOf('res.status(502)') + 600), /esc\(e\.message\)/,
     'the page still prints the raw exception to the shop\'s customer')
-  assert.match(handler, /Nothing has been charged/, 'the first thing a customer needs to know')
+  assert.doesNotMatch(handler, /Nothing has been charged/, 'an uncertain provider result cannot establish that no charge exists')
+  assert.match(handler, /do not pay again until its status is verified/, 'an uncertain result must direct the customer to payment verification')
 })
 
 section('the documented way out of a lockout finds the shops')
@@ -5909,15 +5918,15 @@ await t('a PO that has gone out is never sent again, whatever receiving did to i
     assert.equal(poAlreadySent({ status }), true, `${status} must not re-order`)
   }
 })
-await t('the in-flight claim blocks the second click but does not wedge the shop forever', async () => {
+await t('a lost in-flight claim never becomes permission for a duplicate supplier order', async () => {
   const { poAlreadySent } = await import('../lib/suppliers.mjs')
   const at = (msAgo) => new Date(Date.now() - msAgo).toISOString().slice(0, 19).replace('T', ' ')
   // The claim taken synchronously before the await — this is the double-click case.
   assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(1000) }), true)
-  // A row stuck here means the process died mid-send. A PO the shop can neither place nor clear
-  // is exactly the dead end this codebase refuses to ship.
-  assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(6 * 60 * 1000) }), false)
-  assert.equal(poAlreadySent({ status: 'submitting', updated_at: null }), false)
+  // The supplier may have accepted it before the process died. Time cannot prove otherwise.
+  // Recovery is explicit acknowledgement of the supplier confirmation, not another API send.
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: at(6 * 60 * 1000) }), true)
+  assert.equal(poAlreadySent({ status: 'submitting', updated_at: null }), true)
 })
 
 const { deliveryVerdict: deliveryVerdictSync } = await import('../lib/webhook.mjs')
@@ -6536,13 +6545,12 @@ await t('…and the card it opens can move the order in either direction', async
   assert.match(card, /<select class="input" id="ob-stage" name="stage">/,
     'with drag gone on touch, the modal is the ONLY way to change a stage — and it had no stage control')
   assert.match(card, /api\.put\(`\/api\/orders\/\$\{c\.id\}\/stage`, \{ stage \}\)/, 'and it has to actually send it')
-  // Order matters: /tracking calls advanceOrder afterwards and advanceOrder is forward-only, so a
-  // stage set second would be clobbered by a tracking number still sitting in the box.
-  assert.ok(card.indexOf('/stage`, { stage })') < card.indexOf('/tracking`, f)'),
-    'the stage has to be sent BEFORE the tracking number, or a walk-back is silently undone')
-  // The screen used to promise that clearing the tracking number moves the card back. It does not.
-  assert.doesNotMatch(card, /Adding a tracking number moves this card to Shipped\.<\/div>/,
-    'the copy has to say that tracking only ever moves a card FORWARD')
+  // Shipping is its own operation. Sending unchanged legacy tracking used to undo a manual
+  // reopen; shipping-http.test drives that sequence and checks the actual saved stage.
+  assert.doesNotMatch(card, /api\.put\(`\/api\/orders\/\$\{c\.id\}\/tracking/,
+    'saving a stage must not also resubmit the old tracking field')
+  assert.match(card, /Shipment records below do not move this card/,
+    'tracking references are not evidence that the order has been dispatched')
 })
 
 section('no invoice ever charges a negative sales tax')
@@ -7671,7 +7679,7 @@ await t('the clamp that dropped an overpayment is gone', async () => {
   const body = src.slice(i, src.indexOf('\napp.', i))
   assert.ok(!/const amount = Math\.min\(paid, bal\)/.test(body),
     'the arrived amount must not be clamped to the balance — that is what dropped the money')
-  assert.match(body, /refund the difference at Stripe/,
+  assert.match(body, /refund the difference at \$\{gateway\}/,
     'an overpayment must be recorded with something that tells the shop to refund it')
   assert.match(body, /OVERPAID/, 'and it must reach the activity log, not only the payment note')
 })
@@ -8843,8 +8851,16 @@ section('a chase that could not send is not recorded as a chase')
     assert.equal(row.status, 'skipped', "a run in which nothing happened was logged 'ran', which latches the record for ever")
   })
 
-  await t('…so the shop adding the missing email gets the quote chased', () => {
+  await t('…a reviewed and resent quote can be chased without rerouting the old draft', async () => {
     dbmod.run("UPDATE contacts SET email = 'wanda@example.com' WHERE id = 1")
+    auto.tick(deps)
+    assert.equal(sends,0,'a changed customer default must not reroute this old quote')
+    const {updateDocumentRecipients}=await import('../lib/billing-recipients.mjs')
+    const reviewed=updateDocumentRecipients('estimate',9,{recipient_revision:0,use_customer_defaults:true},'Fixture manager')
+    assert.equal(reviewed.status,'draft','a different quote buyer needs a fresh send/approval')
+    // Time fixture: the reviewed quote was then sent and has now been quiet for twenty days.
+    // The actual HTTP delivery path is exercised separately by billing-recipients.test.mjs.
+    dbmod.run("UPDATE estimates SET status='sent',sent_at=datetime('now','-20 days') WHERE id=9")
     const fired = auto.tick(deps)
     assert.ok(fired.some((f) => /EST-9001/.test(String(f))), `the $4,200 quote is still never chased: ${JSON.stringify(fired)}`)
     assert.equal(sends, 1, 'and the chase actually went out')
@@ -9838,9 +9854,11 @@ section('three screens that threw away the shop’s work')
     // correct change in this file. Assert the property; do not measure the formatting.
     const next = src.slice(i + 1).search(/\n(?:export )?(?:async )?function /)
     const fn = next > 0 ? src.slice(i, i + 1 + next) : src.slice(i)
-    assert.ok(fn.includes("$('#ct-text')"), 'the window must actually cover the draft handling it asserts about')
-    assert.match(fn, /const draft = \$\('#ct-text'\)\?\.value/, 'the draft is not captured before the repaint')
-    assert.match(fn, /if \(draft\) \$\('#ct-text'\)\.value = draft/, 'the draft is captured and then never put back')
+    assert.match(fn, /captureDraft\(s\)/, 'typing during the read must be captured before repaint')
+    assert.match(fn, /const \{ text: draft, channel: channelWas \} = draftFor\(s, id\)/, 'restore only the requested customer’s own draft')
+    assert.match(fn, /input\.value = draft/, 'the customer-scoped draft is restored')
+    assert.ok(fn.indexOf('captureDraft(s)') > fn.indexOf('await api.get'), 'typing while the read is in flight must survive too')
+    assert.match(fn, /activeId !== id \|\| request !== s\.threadRequest/, 'stale reads must not replace another conversation')
   })
 
   /* …and the path it was written for does not enter at drawThread at all.
@@ -9863,15 +9881,14 @@ section('three screens that threw away the shop’s work')
       'the guard has to be in FRONT of the innerHTML, not after it')
   })
 
-  await t('…and the channel picker survives the repaint, so an SMS reply is not sent as an email', async () => {
+  await t('…and the channel picker belongs to the customer whose reply will be sent', async () => {
     const src = await readView('public/js/views/conversations.js')
-    const i = src.indexOf('async function drawThread')
-    const fn = src.slice(i, i + 4000)
-    assert.match(fn, /channelWas = \$\('#ct-channel \.on'\)\?\.dataset\.ch/,
-      'the chosen channel is read back before the markup holding it is replaced')
-    assert.doesNotMatch(fn, /let channel = 'email'/,
-      "the repaint re-initialises the channel to email, so a reply the shop had set to SMS goes out as an email with nothing on screen saying so")
-    assert.match(fn, /let channel = channelWas/, 'and the handler has to start from the restored value')
+    assert.match(src, /draftFor\(s, id\)/, 'drafts and channels must be keyed by customer')
+    assert.match(src, /let channel = channelWas/, 'the handler starts from the restored customer channel')
+    assert.match(src, /saveDraft\(s, id, input\.value, channel\)/, 'channel changes are saved to the same customer')
+    assert.match(src, /s\.sending\.has\(id\)/, 'realtime repaint must retain the per-customer send lock')
+    // Behavioral switch, delayed-read, send and AI races are exercised against the actual view
+    // by test/conversations-view.test.mjs; the old global-DOM capture was unsafe across customers.
   })
 
   await t('…and the receptionist screen it was modelled on is still guarded', async () => {
@@ -11835,11 +11852,8 @@ section('an automation writes a stage the board can draw, or it writes nothing')
   const fixture = () => {
     const mem = new DatabaseSync(':memory:')
     dbm.setDefaultDb(mem)
+    dbm.initDb(mem)
     auto.initAutomations(mem)
-    mem.exec("CREATE TABLE contacts (id INTEGER PRIMARY KEY, name TEXT, tags TEXT DEFAULT '', updated_at DATETIME)")
-    mem.exec("CREATE TABLE jobs (id INTEGER PRIMARY KEY, job_number TEXT, stage TEXT, status TEXT, rush INTEGER DEFAULT 0, updated_at DATETIME)")
-    mem.exec("CREATE TABLE activities (id INTEGER PRIMARY KEY, contact_id INTEGER, job_id INTEGER, type TEXT, description TEXT, created_at DATETIME)")
-    mem.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)')
     dbm.run("INSERT INTO jobs (id, job_number, stage, status) VALUES (1, 'JOB-1042', 'production', 'active')")
     // automation_runs.automation_id is a real FK, so the rule has to exist to be logged against.
     dbm.run("INSERT INTO automations (id, name, enabled, trigger, actions) VALUES (1, 'R', 1, 'invoice.paid', '[]')")
@@ -14838,7 +14852,7 @@ section('every credential a lite shop can enter, it can also remove')
   })
 
   await t('the lite Take Payments card offers a way to unlink the Stripe payout account', () => {
-    const card = slice('<h3>Take Payments</h3>', '<h3>Online Gang-Sheet Ordering</h3>')
+    const card = slice('<h3>Take Payments</h3>', '<h3>Online ordering & payments</h3>')
     assert.match(card, /disconnectBtn\('stripe'/,
       'lite has no Disconnect for Stripe: a shop onboarded onto the wrong account keeps paying out to it')
   })
@@ -14864,7 +14878,7 @@ section('every credential a lite shop can enter, it can also remove')
       'the note never reaches the DOM')
     assert.match(misc, /const \{ disconnect: group, label, note \} = btn\.dataset/, 'the handler never reads it')
     assert.match(misc, /confirmModal\(`Disconnect \$\{label\}\?`,\s*\n?\s*note \|\|/, 'the handler never prefers it')
-    const card = slice('<h3>Take Payments</h3>', '<h3>Online Gang-Sheet Ordering</h3>')
+    const card = slice('<h3>Take Payments</h3>', '<h3>Online ordering & payments</h3>')
     assert.ok(!/pasting the keys back in/.test(card), 'lite Stripe must not claim it is reconnected by pasting a key')
     assert.match(card, /Connect Stripe/, 'the confirm should name the button that undoes this')
   })

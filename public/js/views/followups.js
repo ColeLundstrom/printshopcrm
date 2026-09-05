@@ -41,7 +41,7 @@ export async function followupsView() {
                 <div class="dim" style="font-size:11.5px">${esc(e.company || e.email || '')}</div></td>
               <td class="num"><strong>${money(e.total)}</strong></td>
               <td class="num"><span style="color:${e.age >= 5 ? 'var(--amber)' : 'var(--txt-2)'}">${age(e.age)}</span></td>
-              <td class="num"><button class="btn ghost sm" data-nudge-est="${e.id}" data-who="${esc(e.contact_name || e.email || 'this customer')}">Nudge</button></td>
+              <td class="num"><button class="btn ghost sm" data-nudge-est="${e.id}" data-recipient-revision="${e.recipient_revision || 0}" data-who="${esc(e.recipient?.email || 'no saved email')}">Nudge</button></td>
             </tr>`).join('')}</tbody></table>`
             : empty('✓', 'No quotes hanging', 'Every estimate you sent has been answered.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
         </div>
@@ -56,7 +56,7 @@ export async function followupsView() {
                 <div class="dim" style="font-size:11.5px">due ${fmtDate(i.due_date)}</div></td>
               <td class="num"><strong style="color:var(--amber)">${money(i.balance)}</strong></td>
               <td class="num"><span style="color:var(--red);font-weight:600">${age(i.age)}</span></td>
-              <td class="num"><button class="btn ghost sm" data-nudge-inv="${i.id}" data-who="${esc(i.contact_name || i.email || 'this customer')}">Remind</button></td>
+              <td class="num"><button class="btn ghost sm" data-nudge-inv="${i.id}" data-recipient-revision="${i.recipient_revision || 0}" data-who="${esc(i.recipient?.email || 'no saved email')}">Remind</button></td>
             </tr>`).join('')}</tbody></table>`
             : empty('▣', 'Nothing overdue', 'Everyone has paid on time.', '<a class="btn" href="#/invoices">View invoices</a>')}
         </div>
@@ -104,7 +104,7 @@ export async function followupsView() {
     confirmModal(title, `An email goes to ${who} now. There is no way to unsend it.`, async () => {
       t.disabled = true
       try {
-        const r = await api.post(path(t))
+        const r = await api.post(path(t),{recipient_revision:Number(t.dataset.recipientRevision)})
         toast(r.delivered === false ? `Drafted to the Outbox — ${verb} are on Manual` : `${verb === 'follow-ups' ? 'Follow-up' : 'Reminder'} sent to ${r.emailed_to || who}`)
         followupsView()
       } catch (err) { toast(err.message, true); t.disabled = false }

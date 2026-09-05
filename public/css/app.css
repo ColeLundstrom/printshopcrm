@@ -194,11 +194,18 @@ a.host-badge:hover { color: var(--accent); }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
-  height: 58px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-6);
-  padding: 0 var(--sp-8); background: var(--glass); backdrop-filter: saturate(1.4) blur(14px); position: sticky; top: 0; z-index: 20;
+  min-height: 58px; flex-wrap: wrap; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-6);
+  padding: var(--sp-4) var(--sp-8); background: var(--glass); backdrop-filter: saturate(1.4) blur(14px); position: sticky; top: 0; z-index: 20;
 }
 .topbar h2 { font-size: var(--fs-lg); font-weight: 650; letter-spacing: -.2px; }
 .topbar .spacer { flex: 1; }
+/* Task actions get a full row, so money controls never sit beyond the right edge. */
+#page-actions:not(:empty) { flex-basis: 100%; min-width: 0; flex-wrap: wrap; padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.topbar h2 { white-space: nowrap; }
+.invoice-workspace .tbl .num { white-space: nowrap; }
+.invoice-workspace .totbox > div { gap: var(--sp-5); }
+.invoice-workspace .totbox > div > span:last-child { white-space: nowrap; flex-shrink: 0; }
+@media (max-width: 1150px) { .cols.invoice-workspace { grid-template-columns: 1fr; } }
 .crumb { color: var(--txt-3); font-size: var(--fs-sm); }
 .crumb a:hover { color: var(--accent); }
 
@@ -414,7 +421,8 @@ body.dragging { cursor: grabbing; user-select: none; }
 .modal-h .x { margin-left: auto; background: 0; border: 0; color: var(--txt-3); font-size: var(--fs-xl); cursor: pointer; line-height: 1; padding: 0 var(--sp-2); }
 .modal-h .x:hover { color: var(--txt); }
 .modal-b { padding: var(--sp-7); }
-.modal-f { padding: var(--sp-5) var(--sp-7); border-top: 1px solid var(--line); display: flex; gap: var(--sp-4); justify-content: flex-end; background: var(--bg-2); border-radius: 0 0 var(--r-md) var(--r-md); }
+.modal-f { padding: var(--sp-5) var(--sp-7); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4); justify-content: flex-end; background: var(--bg-2); border-radius: 0 0 var(--r-md) var(--r-md); }
+.modal-f > .btn { white-space: nowrap; }
 
 /* ---------- line items ---------- */
 
@@ -911,9 +919,17 @@ body { overflow-x: hidden; }
 .trialbar strong { color:var(--accent); }
 .trialbar.danger { background:#e5484d; color:#fff; }
 .bill { max-width:1000px; margin:0 auto; }
+.bill .plans { grid-template-columns:minmax(0,1fr); max-width:640px; margin-inline:auto; }
 .bill-status { padding:var(--sp-5) var(--sp-6); border:1px solid var(--line); border-radius:var(--r-md); background:var(--panel-2); font-size:var(--fs-md); margin-bottom:var(--sp-7); }
 .bill-status.ok { border-color:var(--accent); }
 .bill-status.warn { border-color:#e5a23d; }
+.hosting-recovery { margin-block:var(--sp-6); }
+.hosting-recovery code, .hosting-session-id { overflow-wrap:anywhere; }
+.hosting-recovery p { line-height:1.6; margin-bottom:var(--sp-4); }
+.hosting-recovery-actions { flex-wrap:wrap; }
+.hosting-recovery-details { margin-top:var(--sp-5); }
+.hosting-recovery-details summary { cursor:pointer; margin-bottom:var(--sp-4); }
+.hosting-recovery .field { max-width:40rem; }
 .bill-toggle { display:flex; gap:var(--sp-2); background:var(--panel-2); border:1px solid var(--line); border-radius:var(--r-md); padding:var(--sp-2); width:max-content; margin:0 auto var(--sp-8); }
 .bill-toggle button { border:0; background:transparent; color:var(--txt-2); font:inherit; font-weight:600; padding:var(--sp-4) var(--sp-6); border-radius:var(--r-md); cursor:pointer; }
 .bill-toggle button.on { background:var(--accent); color:var(--accent-ink); }
@@ -1598,3 +1614,47 @@ td.bad, .bad { color: var(--red); }
 .dev-key-row code { padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
 .dev-secret { display: block; margin-top: 10px; padding: 12px; background: rgba(16, 211, 154, .08); border: 1px solid rgba(16, 211, 154, .3); border-radius: 8px; font-size: 13px; word-break: break-all; }
 .dev-events code { padding: 1px 5px; background: var(--panel-2); border-radius: 4px; }
+
+/* Hallmark · genre: modern-minimal · macrostructure: workbench · design-system: design.md · designed-as-app */
+html, body { overflow-x: clip; }
+.setup-workspace { max-width: 1040px; margin-inline: auto; }
+.setup-intro { padding-block: var(--sp-6) var(--sp-8); border-bottom: 1px solid var(--line); }
+.setup-intro h1 { font-size: var(--fs-2xl); letter-spacing: -.03em; margin-bottom: var(--sp-4); }
+.setup-intro p { max-width: 65ch; color: var(--txt-2); }
+.setup-section { padding-block: var(--sp-8); border-bottom: 1px solid var(--line); }
+.setup-section h2 { font-size: var(--fs-lg); margin-bottom: var(--sp-3); }
+.setup-section > p { color: var(--txt-2); margin-bottom: var(--sp-6); }
+.setup-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: var(--sp-6); align-items: center; padding-block: var(--sp-6); }
+.setup-row + .setup-row { border-top: 1px solid var(--line); }
+.setup-number { font-family: var(--mono); color: var(--txt-3); font-size: var(--fs-sm); }
+.setup-row h3 { font-size: var(--fs-md); margin-bottom: var(--sp-2); }
+.setup-row p { color: var(--txt-2); font-size: var(--fs-sm); max-width: 60ch; }
+.setup-status { display: block; margin-top: var(--sp-3); font-size: var(--fs-xs); color: var(--txt-3); }
+.setup-actions { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin-top: var(--sp-6); }
+.setup-workspace .btn { white-space: nowrap; }
+.setup-workspace details { margin-top: var(--sp-6); }
+.setup-workspace summary { cursor: pointer; padding-block: var(--sp-4); }
+.setup-workspace code, .setup-workspace pre { overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--mono); font-size: var(--fs-xs); }
+.setup-workspace pre { padding: var(--sp-6); background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-sm); margin-block: var(--sp-5); }
+.setup-workspace label { display: block; margin-block: var(--sp-5) var(--sp-3); }
+.settings-workspace { max-width: 880px; }
+.settings-jumps { display: flex; flex-wrap: wrap; gap: var(--sp-4); padding-bottom: var(--sp-5); border-bottom: 1px solid var(--line); }
+.settings-jumps :is(a, button) { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--sp-4) var(--sp-5); cursor: pointer; min-height: var(--tap); font-size: var(--fs-sm); }
+.settings-jumps :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tdy-ic svg { width: 18px; height: 18px; }
+@media (max-width: 600px) {
+ .setup-row { grid-template-columns: 24px minmax(0,1fr); gap: var(--sp-4); }
+ .setup-row > .btn { grid-column: 2; justify-self: start; }
+ .setup-actions .btn { max-width: 100%; }
+ .setup-intro h1 { overflow-wrap: anywhere; }
+}
+
+.settings-workspace .card { scroll-margin-top: calc(var(--sp-11) + var(--sp-9)); }
+#view.view-in { animation: none; }
+/* Payment setup follows the shop setup workbench. */
+.payment-attempt { display:grid; grid-template-columns:minmax(0,1fr) minmax(160px,240px); gap:20px; padding:18px 0; border-bottom:1px solid var(--line); }
+.payment-attempt small { overflow-wrap:anywhere; }
+.payment-attempt p { margin:6px 0; }
+#payment-form [hidden] { display:none; }
+#payment-form .field { margin:16px 0; }
+@media(max-width:600px) { .payment-attempt { grid-template-columns:1fr; } }

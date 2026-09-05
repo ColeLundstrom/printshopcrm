@@ -7,7 +7,7 @@ import { api, $, $$, esc, money, money0, setPage, empty, on, go , onOnce} from '
 let sortBy = 'margin'
 
 export async function roiView() {
-  setPage('Profitability', `<a class="btn ghost" href="/api/export/quickbooks.iif" download>Export to QuickBooks</a>`)
+  setPage('Profitability', `<a class="btn ghost" href="#/costing">Machine & employee costs</a><a class="btn ghost" href="/api/export/quickbooks.iif" download>Export to QuickBooks</a>`)
   // The sort tabs are inside the #view repaint their own click triggers, so pressing one dropped
   // focus on <body>. Same shape board.js already uses, and the gate already asserts it there.
   const active = document.activeElement

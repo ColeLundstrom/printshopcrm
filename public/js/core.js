@@ -44,7 +44,7 @@ export const api = {
     else if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body) }
     const r = await fetch(url, opts)
     // Session expired or not signed in → bounce to the login page.
-    if (r.status === 401 && !url.startsWith('/api/auth/')) { location.href = '/login'; throw new Error('Not signed in') }
+    if (r.status === 401 && !url.startsWith('/api/auth/')) { location.href = '/login' + (/^#\/production\/jobs\/\d+(?:\?shop=[a-zA-Z0-9_-]+)?$/.test(location.hash)?location.hash:''); throw new Error('Not signed in') }
     const text = await r.text()
     // Not everything that answers this app speaks JSON. A proxy 502/504 during a deploy, an
     // Express default HTML 404 on a mistyped path, "unknown shop" from the tenant resolver — all

@@ -40,6 +40,22 @@
   -H "Authorization: Bearer psc_live_XXXXXXXXXXXX"</code></pre>
   <p>Keys are shop-scoped and can be rotated or revoked at any time. Rotating invalidates the old key immediately.</p>
 
+  <h2>Separate agent connections</h2>
+  <p><a href="/openapi.json">OpenAPI tool definitions</a> describe 22 supported agent operations. Use <strong>Download tools</strong> on a connection in Setup for a file filtered to its permissions with this installation’s absolute API URL. Import it into a compatible agent and configure bearer authentication separately. The file contains no key or shop records. GET <code>/api/v1/production/team</code> returns active employee IDs and names for assignments under the production:read permission.</p>
+  <p>For a new agent, use <strong>Setup &amp; connections → Connect your own agent</strong>. Named keys have independent permissions, expiry and revocation. They belong to their creator’s active manager account. <code>GET /api/v1/me</code> returns scopes and expiry. Copy the key once into your agent’s secret storage; the server stores only its hash.</p>
+  <p>Agent permissions cover pricing, customer/estimate reads and writes, invoice/payment reads, job stages, and production tasks. Unselected operations are refused even with a browser cookie. Agent keys cannot access internal endpoints, settings, credentials or webhook administration. Writes happen immediately; your agent must provide its own approval policy. Customer creation and stage changes may trigger configured automations.</p>
+  <table>
+    <tr><td><code>GET /api/v1/pricing</code></td><td>Resolved price book, custom matrix summaries and selected pricing defaults; requires pricing:read</td></tr>
+    <tr><td><code>GET /api/v1/matrices/:id</code></td><td>Custom matrix cells; pricing:read</td></tr>
+    <tr><td><code>GET /api/v1/matrices/:id/price?row=0&amp;col=0&amp;qty=24</code></td><td>Matrix lookup; pricing:read. A missing price is null.</td></tr>
+    <tr><td><code>GET /api/v1/production/queue?department=QC</code></td><td>Department queue; production:read</td></tr>
+    <tr><td><code>GET /api/v1/jobs/:id/workflow</code></td><td>Tasks and current revision; production:read</td></tr>
+    <tr><td><code>POST /api/v1/jobs/:id/tasks/:taskId/action</code></td><td>{revision, action:"complete"}; production:write</td></tr>
+    <tr><td><code>PUT /api/v1/jobs/:id/tasks/:taskId/assignment</code></td><td>{revision, assigned_id}; production:write. Null unassigns.</td></tr>
+    <tr><td><code>PUT /api/v1/jobs/:id/timing</code></td><td>{revision, timing:{enabled:true,production_date:"YYYY-MM-DD"}, reason}; production:write</td></tr>
+  </table>
+  <p>Use numeric record IDs. Workflow holds still apply. On a 409 conflict, reload the workflow and review before changing it again. Draft creation with a new inline customer also needs customers:write. For POST /api/v1/customers and /api/v1/estimates, persist a unique Idempotency-Key (8–128 letters, digits, dots, colons, underscores or hyphens) before sending. Reuse the same key, credential and body after a timeout: successful replays return the original 201 response with Idempotency-Replayed: true. Changed bodies return 409; rejected requests roll back and do not consume the key. Receipts persist across restarts without automatic expiry. A new credential starts a new namespace, and replayed data is the original response snapshot; use GET for current state. Without the header, creation has no retry protection. Customer hooks run after commit and are not guaranteed exactly-once delivery. This connects an existing runtime; it does not install a Slack or model agent.</p>
+
   <h2>Endpoints</h2>
   <table>
     <tr><th>Route</th><th>What it does</th></tr>

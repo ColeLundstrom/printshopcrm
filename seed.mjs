@@ -130,8 +130,11 @@ const CONTACTS = [
 
 const cid = {}
 for (const [name, email, phone, company, notes, tags] of CONTACTS) {
-  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)',
-    name, email, phone, company, notes, tags, stamp(-90), stamp(-90))
+  const sampleNumber = Object.keys(cid).length + 1
+  const billing = `${100 + sampleNumber} Sample Lane\nDemo City, CA 90210`
+  const shipping = sampleNumber % 2 ? `Receiving desk\n${200 + sampleNumber} Example Road\nDemo City, CA 90210` : ''
+  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, created_at, updated_at, billing_address, shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    name, email, phone, company, notes, tags, stamp(-90), stamp(-90), billing, shipping)
   cid[name] = Number(r.lastInsertRowid)
 }
 

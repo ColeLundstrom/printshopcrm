@@ -6,6 +6,6 @@ contact_links:
   - name: Security vulnerability
     url: https://github.com/ColeLundstrom/printshopcrm/security/advisories/new
     about: Please report privately, never as a public issue.
-  - name: Managed hosting or a commercial license
+  - name: Managed hosting and basic setup
     url: https://printshopcrm.com
-    about: Hosting, setup and migration, or a license that releases you from AGPL terms.
+    about: Optional server hosting and basic shop setup. The same software is free and open source.

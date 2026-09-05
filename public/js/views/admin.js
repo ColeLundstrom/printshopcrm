@@ -1,4 +1,4 @@
-import { api, $, esc, money, fmtDate, setPage, on, modal, closeModal, confirmModal, toast, go } from '../core.js'
+import { api, $, esc, money, fmtDate, setPage, on, modal, closeModal, toast, go } from '../core.js'
 
 /**
  * Platform Control Room — the admin's cockpit over every shop on this deployment. Only reachable by
@@ -38,31 +38,56 @@ export async function adminView() {
 
   on($('#ad-rows'), '[data-act]', async (e, t) => {
     const id = +t.dataset.id; const act = t.dataset.act; const name = t.dataset.name || 'this shop'
-    if (act === 'signin') {
+    if (act === 'hosting') {
+      await hostingReviewModal(id,name)
+    } else if (act === 'signin') {
       if (!confirm(`Sign in as ${name}? Your admin session will switch to their shop — sign back in to your own account afterward.`)) return
       try { await api.post(`/api/admin/shops/${id}/signin`, {}); location.href = '/' } catch (ex) { toast(ex.message, true) }
     } else if (act === 'suspend' || act === 'activate') {
       try { await api.post(`/api/admin/shops/${id}/status`, { status: act === 'suspend' ? 'suspended' : 'active' }); adminView() }
       catch (ex) { toast(ex.message, true) }
     } else if (act === 'delete') {
-      confirmModal(
-        `Delete ${name}?`,
-        `This permanently removes the shop and all its invoices, customers, and history. This can't be undone.`,
-        // The shop and its DATA are removed by two different things, and the second one can fail on
-        // its own (a read-only mount, a permissions change, an open handle). It used to fail
-        // silently and still say "Shop deleted", and the next shop to take that slug opened the old
-        // one's books. If the directory is still there, say so and keep it on screen: moving it is
-        // the operator's job and this toast is the only place they will ever be told.
-        async () => {
-          try {
-            const r = await api.del(`/api/admin/shops/${id}`)
-            if (r && r.dataRemoved === false) toast(r.warning || 'The shop was removed but its data is still on disk.', true)
-            else toast('Shop deleted')
-            adminView()
-          } catch (ex) { toast(ex.message, true) }
-        },
-        'Delete forever')
+      deleteShopModal(id, name)
     }
+  })
+}
+
+function deleteShopModal(tenantId, name) {
+  const rows = $('#ad-rows')
+  modal({
+    title: `Delete ${name}?`,
+    body: `<p>This permanently removes the shop's accounts, jobs, invoices and customers. This can't be undone.</p>
+      <p>Recorded hosting subscriptions must have ended in Stripe before deletion can proceed. Hosting payment records are retained for reconciliation.</p>
+      <p id="shop-delete-status" class="dim" role="status" aria-live="polite"></p>
+      <p id="shop-delete-error" role="alert"></p>`,
+    footer: '<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="shop-delete-go">Verify and delete</button>',
+    onMount: bg => {
+      const button = $('#shop-delete-go', bg)
+      let pending = false
+      button.onclick = async () => {
+        if (pending) return
+        pending = true; button.disabled = true; button.textContent = 'Checking hosting…'
+        $('#shop-delete-error', bg).textContent = ''
+        $('#shop-delete-status', bg).textContent = 'Checking hosting before removing this shop. Closing this dialog does not cancel the request.'
+        try {
+          const r = await api.del(`/api/admin/shops/${tenantId}`)
+          // A delayed deletion must not close another dialog or replace a screen the admin opened.
+          if (!bg.isConnected) return
+          closeModal()
+          if (r && r.dataRemoved === false) toast(r.warning || 'The shop was removed but its data is still on disk.', true)
+          else toast('Shop deleted')
+          if (rows?.isConnected) await adminView()
+        } catch (error) {
+          if (bg.isConnected) $('#shop-delete-error', bg).textContent = error.message
+        } finally {
+          pending = false
+          if (bg.isConnected) {
+            button.disabled = false; button.textContent = 'Verify and delete'
+            $('#shop-delete-status', bg).textContent = ''
+          }
+        }
+      }
+    },
   })
 }
 
@@ -82,11 +107,67 @@ function row(s) {
     <td>${money(s.revenue)}</td>
     <td class="dim" style="font-size:12px">${s.last_login ? esc(fmtDate(s.last_login)) : 'never'}</td>
     <td style="text-align:right;white-space:nowrap;padding-right:12px">
+      <button class="btn ghost sm" data-act="hosting" data-id="${s.id}" data-name="${esc(s.shop_name)}">Hosting</button>
       <button class="btn ghost sm" data-act="signin" data-id="${s.id}" data-name="${esc(s.shop_name)}">Sign in</button>
       <button class="btn ghost sm" data-act="${suspended ? 'activate' : 'suspend'}" data-id="${s.id}" data-name="${esc(s.shop_name)}">${suspended ? 'Reactivate' : 'Suspend'}</button>
       <button class="btn ghost sm" data-act="delete" data-id="${s.id}" data-name="${esc(s.shop_name)}" style="color:#ef4444">Delete</button>
     </td>
   </tr>`
+}
+
+let hostingReviewRequest=0
+async function hostingReviewModal(tenantId,name) {
+  const request=++hostingReviewRequest, rows=$('#ad-rows')
+  let data
+  try { data=await api.get(`/api/admin/shops/${tenantId}/hosting`) }
+  catch(error) { if(request===hostingReviewRequest && rows?.isConnected && !$('#modal-root')?.children.length) toast(error.message,true);return }
+  // Another dialog or navigation may have happened during the request. Never replace its draft.
+  if(request!==hostingReviewRequest || !rows?.isConnected || $('#modal-root')?.children.length) return
+  const issues=data.anomalies || []
+  const verifications=data.pending_verifications || []
+  modal({
+    title:`Hosting — ${name}`,
+    body:`<p>Subscription: <strong>${esc(data.state?.status || 'None')}</strong></p>
+      ${data.intent ? `<p>Latest checkout: <strong>${esc(data.intent.state)}</strong>${data.intent.session_id ? `<br><code class="hosting-session-id">${esc(data.intent.session_id)}</code>` : ''}</p>` : '<p>No current checkout.</p>'}
+      ${verifications.length ? `<p>A received hosting payment still needs verification. Check its current state in Stripe before starting another checkout or deleting the shop.</p>
+        ${verifications.map(item=>`<section class="card hosting-recovery"><div class="card-b">
+          <p><strong>Payment awaiting verification</strong></p>
+          <p>Checkout<br><code>${esc(item.session_id)}</code></p>
+          ${item.subscription_id ? `<p>Subscription<br><code>${esc(item.subscription_id)}</code></p>` : ''}
+          <button type="button" class="btn ghost" data-hosting-check="${esc(item.id)}">Check payment</button>
+        </div></section>`).join('')}` : ''}
+      ${issues.length ? `<p>Review each payment in the connected Stripe account. This action verifies its current state and records your review. Refunds and subscription changes must be handled in Stripe first.</p>
+        ${issues.map(issue=>`<section class="card hosting-recovery"><div class="card-b">
+          <p><strong>Payment needs review</strong><br>${esc(String(issue.code || '').replaceAll('_',' '))}</p>
+          ${issue.session_id ? `<p>Checkout<br><code>${esc(issue.session_id)}</code></p>` : ''}
+          ${issue.subscription_id ? `<p>Subscription<br><code>${esc(issue.subscription_id)}</code></p>` : ''}
+          <div class="field"><label for="hosting-note-${issue.id}">What did you check?</label><textarea class="input" id="hosting-note-${issue.id}" maxlength="1000" rows="3"></textarea></div>
+          <button type="button" class="btn ghost" data-hosting-resolve="${esc(issue.id)}">Verify and close review</button>
+        </div></section>`).join('')}` : verifications.length ? '' : '<p>No unresolved payment reviews.</p>'}
+      ${data.resolved_anomalies?.length ? `<details class="hosting-recovery-details"><summary>Recent completed reviews</summary>
+        ${data.resolved_anomalies.map(review=>`<div class="hosting-recovery"><strong>${esc(Number.isSafeInteger(review.resolved_at) && review.resolved_at > 0 && review.resolved_at <= 8640000000000000 ? fmtDate(new Date(review.resolved_at).toISOString()) : 'Date unavailable')}</strong><p>${esc(review.resolution_note || '')}</p></div>`).join('')}
+      </details>` : ''}
+      <p class="dim" id="hosting-review-error" role="alert"></p>`,
+    footer:'<button class="btn ghost" data-close>Close</button>',
+    onMount:bg=>{
+      let pending=false
+      on(bg,'[data-hosting-resolve],[data-hosting-check]',async(_event,button)=>{
+        if(pending) return
+        const verificationId=button.dataset.hostingCheck,anomalyId=button.dataset.hostingResolve
+        const note=verificationId ? '' : $(`#hosting-note-${anomalyId}`,bg).value.trim()
+        if(!verificationId && !note) { $('#hosting-review-error',bg).textContent='Enter what you checked in Stripe.';return }
+        pending=true;button.disabled=true
+        $('#hosting-review-error',bg).textContent=''
+        try {
+          if(verificationId) await api.post('/api/admin/hosting-verification/reconcile',{tenant_id:tenantId,verification_id:verificationId})
+          else await api.post('/api/admin/hosting-checkout/resolve',{tenant_id:tenantId,anomaly_id:anomalyId,note})
+          if(!bg.isConnected) return
+          closeModal();toast(verificationId ? 'Payment checked. Review the current hosting details.' : 'Payment review verified and recorded.');await hostingReviewModal(tenantId,name)
+        } catch(error) { if(bg.isConnected) $('#hosting-review-error',bg).textContent=error.message }
+        finally { pending=false;button.disabled=false }
+      })
+    },
+  })
 }
 
 function newShopModal() {

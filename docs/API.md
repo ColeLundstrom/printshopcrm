@@ -2,7 +2,7 @@
 
 A stable REST API under `/api/v1`, plus signed outbound webhooks.
 
-There is also a live, copy-pasteable version of this at **`/docs-api.html`** on any running install.
+There is also a live, copy-pasteable version of this at **`/docs-api.html`** on any running install. Agent operations have an OpenAPI description at **`/openapi.json`**. Setup downloads a version filtered to a connection’s scopes with this installation’s absolute API URL; configure its bearer key separately. GET `/api/v1/production/team` lists active IDs/names under `production:read`.
 
 > The API requires multi-tenant mode (`PSC_AUTH=1`), because an API key belongs to a shop. On a
 > single-shop install the internal `/api/*` routes are open to whoever can reach the port.
@@ -10,6 +10,8 @@ There is also a live, copy-pasteable version of this at **`/docs-api.html`** on 
 ---
 
 ## Authentication
+
+For a new agent, use **Setup & connections → Connect your own agent** to create a separate named key with selected scopes and expiry. See [Agent connections](AGENT-CONNECTIONS.md) for production tools, pricing reads and permission boundaries. The legacy shared key below remains supported.
 
 Every request carries a Bearer key:
 
@@ -53,6 +55,16 @@ Missing or invalid key → `401`:
 - Errors return an appropriate status and `{ "error": "...", "code": "..." }`. `code` is stable;
   `error` is human-readable and may be reworded.
 
+### Safe retries for creation
+
+For `POST /api/v1/customers` and `POST /api/v1/estimates`, send `Idempotency-Key` with a unique value per intended creation (8–128 letters, digits, dots, colons, underscores or hyphens; a UUID works). Persist that value before sending. After a timeout, retry the same body with the same key and credential. A successful retry returns the original 201 response with `Idempotency-Replayed: true`; the first response uses `false`.
+
+Reusing a key with a different body returns 409 `idempotency_conflict`. Object field order is ignored; array order and value types are significant. Validation failures are rolled back and do not consume the key. Customer creation, estimate creation, pipeline records and the successful response receipt commit together. Rejected estimates leave no newly created inline customer, even without this header.
+
+Receipts are scoped to the shop, authenticated credential (or signed-in member), and endpoint. They persist across restarts with no automatic expiry. Rotating credentials starts a new namespace: reconcile existing records before retrying with a replacement key. Replays return the original response snapshot, even if the record has since changed or been deleted; GET the record for current state. Requests without the header retain ordinary creation behavior and have no retry protection. A database restore restores only the receipts and records contained in that backup.
+
+Replays do not repeat customer-created hooks. Those hooks run after commit and are not an exactly-once delivery guarantee: a process crash between commit and dispatch can omit an automation. The header does not add retry protection to other endpoints. Workflow writes continue to use revision conflicts.
+
 ### Errors are refusals, not guesses
 
 Writes **reject** bad input rather than coercing it. An integration cannot see a silently-defaulted
@@ -62,6 +74,12 @@ unknown size, a fractional quantity, or a missing `unit_price` is a `400`, every
 ---
 
 ## Endpoints
+
+### Browser quote approval and conversion
+
+The signed-in browser routes `POST /api/estimates/:id/approve` and `POST /api/estimates/:id/convert` require the current `commercial_revision` after a quote has been revised. Read it from the estimate detail and include it in the request body. A missing or stale revision returns `409 estimate_changed`; reload and review the current quote before trying again. For older clients, omission remains supported only for a quote still at revision zero. These internal routes do not expand the permissions of an external agent key.
+
+Conversion accepts separate `payment_due_date` and `production_due_date` values in real `YYYY-MM-DD` calendar-date format. An empty production date uses the quote's rush turnaround or the standard production turnaround. The older `due_date` field retains its combined payment/production meaning for compatibility. An explicit production date does not change the payment due date. Changing accepted commercial content supersedes its approval and rotates its public link; it does not silently authorize the revised quote. Customer reorders use accepted history rather than an unsent draft.
 
 ### `GET /api/v1/me`
 
@@ -89,6 +107,12 @@ product and every shop has all of it.
 
 ### Estimates
 
+Customers accept `billing_address` and `shipping_address` as multiline text (up to 8 nonempty lines and 600 characters). Customer reads return both fields. A blank customer shipping address defaults to billing on new documents. Existing documents retain their own addresses when customer defaults change.
+
+Estimate creation accepts optional `billing_address` and `shipping_address` overrides, including an explicit blank. Omitted fields use customer defaults; `customer{…}` also accepts these fields when creating a new customer. Quote, invoice and job screens let staff maintain the saved addresses for that document. These are postal text, not carrier validation or a tax-jurisdiction lookup.
+
+Documents also save separate buyer and billing email recipients. Customer default changes do not redirect existing documents. The manager-only browser API uses recipient revisions for explicit edits and subsequent sending; see [billing recipients](BILLING-RECIPIENTS.md) for the exact routes, migration behavior and stale-message recovery. These browser routes are separate from the scoped `/api/v1` external-agent API.
+
 | | |
 |---|---|
 | `GET /api/v1/estimates` | List. `?status=draft\|sent\|approved\|declined`. |
@@ -102,6 +126,7 @@ contact on email and creates one if there is no match.
 curl -X POST https://shop.example.com/api/v1/estimates \
   -H "Authorization: Bearer psc_live_xxxx" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: quote-20260904-001" \
   -d '{
     "customer": { "name": "Jamie Rivera", "email": "jamie@example.edu", "company": "Lakeside High School" },
     "items": [

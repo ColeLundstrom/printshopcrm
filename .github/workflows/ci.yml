@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -25,7 +29,7 @@ jobs:
       - run: npm ci
 
       - name: Unit tests
-        run: node bin/gate.mjs
+        run: npm test
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs
@@ -55,7 +59,7 @@ jobs:
       - run: npm ci
 
       - name: Unit tests
-        run: node bin/gate.mjs
+        run: npm test
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs
@@ -74,7 +78,7 @@ jobs:
       - run: npm ci
 
       - name: Unit tests
-        run: node bin/gate.mjs
+        run: npm test
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs
@@ -293,7 +297,7 @@ jobs:
           # never match a line nobody wrote, so the scan keeps its full strength and admitting a
           # placeholder stays a reviewed edit.
           ALLOW=.github/secret-scan-allowlist.txt
-          PATTERN='(sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+          PATTERN='(psc_agent_[A-Za-z0-9_-]{43}|sk_live_[A-Za-z0-9]{10,}|sk_test_[A-Za-z0-9]{10,}|whsec_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
 
           # -o so each hit is the matched token itself, and the allowlist compares against the
           # secret rather than against whatever else shares its line.
