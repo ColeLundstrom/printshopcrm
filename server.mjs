@@ -1,3 +1,4 @@
+import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { createWithRetry, createResult } from './lib/api-retries.mjs'
 import { AGENT_SCOPES, requiredAgentScope } from './lib/agent-access.mjs'
 import * as agentProduction from './lib/production.mjs'
@@ -2576,7 +2577,8 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
 
   // Only committed batches count. Storage failures stop the import; constraint failures may
   // skip a row. Email dedupe is checked again inside each transaction because preview can be stale.
-  const { created, duplicates: newDupes, skipped: rejected, stopped } = await writeContactImport(getDb(), toAdd)
+  const importDb = getDb()
+  const { created, duplicates: newDupes, skipped: rejected, stopped } = await withImportCheckpoints(importDb, checkpoint => writeContactImport(importDb, toAdd, { checkpoint }))
   if (created) {
     // The contacts are durable even if a full disk prevents writing this final timeline row.
     try { logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {}) }
@@ -5987,7 +5989,7 @@ function groupImportedOrders(orders) {
 
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const diagnostic = process.env.PSC_IMPORT_DIAGNOSTICS === '1'
-  const metrics = { parse_ms: 0, map_ms: 0, prepare_ms: 0, max_order_ms: 0, max_batch_ms: 0, max_commit_ms: 0 }
+  const metrics = { parse_ms: 0, map_ms: 0, prepare_ms: 0, max_order_ms: 0, max_batch_ms: 0, max_commit_ms: 0, max_checkpoint_ms: 0 }
   const preparedAt = performance.now()
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
@@ -6144,27 +6146,35 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // is exactly false here: every batch before this one is committed and durable. See
   // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
   let stopped = null
-  for (let i = 0; i < grouped.length;) {
-    const start = i, started = performance.now()
-    const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
-    let commitAt = started
-    try {
-      tx(() => {
-        // A fixed row count is not a latency budget: slower disks or large orders can make
-        // 200 records monopolize the process. Yield after 25 ms at an ORDER boundary.
-        do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
-        while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
-        commitAt = performance.now()
-      })
-      metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
-      metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
-    } catch (e) {
-      // SQLite rolled back this whole batch; the partial-import report must do the same.
-      ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
-      stopped = e; break
+  const importDb = getDb()
+  await withImportCheckpoints(importDb, async checkpoint => {
+    for (let i = 0; i < grouped.length;) {
+      const start = i, started = performance.now()
+      const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
+      let commitAt = started
+      try {
+        tx(() => {
+          // A fixed row count is not a latency budget: slower disks or large orders can make
+          // 200 records monopolize the process. Yield after 25 ms at an ORDER boundary.
+          do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
+          while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
+          commitAt = performance.now()
+        })
+        metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
+        metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
+      } catch (e) {
+        // SQLite rolled back this whole batch; the partial-import report must do the same.
+        ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
+        stopped = e; break
+      }
+      // Checkpoint maintenance yields the request thread after committed counts are durable.
+      // A pinned-WAL limit stops here without undoing the batch's successful accounting.
+      const checkpointAt = performance.now()
+      try { await checkpoint() } catch (error) { stopped = error; break }
+      metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
+      if (i < grouped.length) await new Promise((r) => setImmediate(r))
     }
-    if (i < grouped.length) await new Promise((r) => setImmediate(r))
-  }
+  })
   if (diagnostic) console.log('[import-diagnostics]', JSON.stringify({ orders: grouped.length, ...Object.fromEntries(Object.entries(metrics).map(([k,v])=>[k,Math.round(v)])) }))
   if (stopped) {
     const report = interruptedImportReport({
@@ -6177,7 +6187,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
     return res.status(503).json(report)
   }
-  logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {})
+  // These orders have committed. A secondary timeline failure must not report that import failed.
+  try { logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {}) } catch { /* preserve the durable import result */ }
   res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
 }))
 
@@ -9432,7 +9443,7 @@ const shutdown = (sig) => {
   // carry every deploy all the way to the hard exit below — 8016ms measured, versus 14ms with no
   // tab open — and that hard exit is what severs an in-flight request. The graceful path only
   // existed on paper until the live layer was taught to let go.
-  server.close(() => process.exit(0))
+  server.close(() => { shutdownImportCheckpoints().finally(() => process.exit(0)) })
   closeRealtime()
   setTimeout(() => process.exit(0), 8000).unref() // never hang a deploy
 }
