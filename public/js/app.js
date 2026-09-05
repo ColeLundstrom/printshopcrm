@@ -276,7 +276,7 @@ function drawTabbar(path) {
  */
 async function drawChrome() {
   try {
-    const [{ settings }, b] = await Promise.all([api.get('/api/settings'), api.get('/api/chrome/badges')])
+    const [{ settings, role }, b] = await Promise.all([api.get('/api/settings'), api.get('/api/chrome/badges')])
     // Before anything is painted: every view formats money through core.js, and this is where it
     // learns the shop's currency and locale. Re-run on every chrome repaint, so a save in Settings
     // is live on the next screen without a reload.
@@ -290,6 +290,8 @@ async function drawChrome() {
       document.title = settings.brand_name
     }
     $('#shop-name').textContent = settings.shop_name
+    const roleLabel = $('#shop-role')
+    if (roleLabel) roleLabel.textContent = ({ owner: 'Owner', manager: 'Manager', staff: 'Team member' }[role] || 'Team member') + ' · unlimited seats'
     $('#shop-initials').textContent = initials(settings.shop_name)
     badges = b
     drawNav()
