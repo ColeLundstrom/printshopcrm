@@ -40,7 +40,7 @@ export async function artView() {
       <div class="card-h"><h3>${title}</h3><span class="pill ${color}">${list.length}</span></div>
       <div class="card-b"><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">
         ${list.map((a) => `<div class="card" style="background:var(--panel-2);cursor:pointer" data-job="${a.job_id}">
-          ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" loading="lazy" decoding="async" alt="" src="/uploads/${esc(a.filename)}">`
+          ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" loading="lazy" decoding="async" alt="" src="${esc(a.url || `/uploads/${a.filename}`)}">`
             : '<div class="art-thumb" style="display:grid;place-items:center;font-size:26px">▤</div>'}
           <div style="padding:11px">
             <div class="row"><strong style="font-size:12.5px">${esc(a.job_title || '')}</strong><div class="sp"></div><span class="tag">v${a.version}</span></div>

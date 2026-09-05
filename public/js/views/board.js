@@ -380,14 +380,14 @@ export async function jobDetailView(id) {
       <div class="card"><div class="card-h"><h3>Art & Proofs</h3><div class="spacer"></div>
         <span class="dim" style="font-size:12px">${j.art.length} version${j.art.length === 1 ? '' : 's'}</span></div>
         <div class="card-b" id="art-list">
-          <div class="drop" id="drop">Drop art here or click to upload — PNG, JPG, PDF, AI, SVG</div>
+          <div class="drop" id="drop">Drop a new proof here or click to upload — PNG, JPG, PDF, AI, SVG. A new version requires a new approval.</div>
           <input type="file" id="file" hidden accept="image/*,.pdf,.ai,.eps,.svg">
           ${j.art.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-top:14px">
             ${j.art.map((a) => `<div class="card" style="background:var(--panel-2)">
-              ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" src="/uploads/${esc(a.filename)}" alt="v${a.version}">`
+              ${(a.mime || '').startsWith('image/') ? `<img class="art-thumb" src="${esc(a.url || `/uploads/${a.filename}`)}" alt="v${a.version}">`
                 : `<div class="art-thumb" style="display:grid;place-items:center;font-size:26px">◈</div>`}
               <div style="padding:10px">
-                <div class="row"><strong style="font-size:12.5px">v${a.version}</strong><div class="sp"></div>${pill(a.status)}</div>
+                <div class="row"><strong style="font-size:12.5px">v${a.version}</strong><div class="sp"></div>${pill(a.status)}${a.id!==j.art[0]?.id?'<span class="tag">Superseded</span>':''}</div>
                 <div class="dim" style="font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.original_name || '')}</div>
                 ${a.notes ? `<div class="muted" style="font-size:11.5px;margin-top:5px;font-style:italic">"${esc(a.notes)}"</div>` : ''}
                 <div class="wrap-row" style="margin-top:8px">
@@ -398,10 +398,10 @@ export async function jobDetailView(id) {
                         rejection was a mis-click on their phone, there was nothing on any screen
                         that could put it back in front of them. The server has always allowed both;
                         only these two conditions stopped it. */''}
-                  ${a.status === 'draft' || a.status === 'rejected' ? `<button class="btn sm" data-send="${a.id}">${a.status === 'rejected' ? 'Send it again' : 'Send for approval'}</button>` : ''}
+                  ${a.id===j.art[0]?.id && (a.status === 'draft' || a.status === 'rejected') ? `<button class="btn sm" data-send="${a.id}">${a.status === 'rejected' ? 'Send it again' : 'Send for approval'}</button>` : ''}
                   ${a.status !== 'draft' ? `<a class="btn ghost sm" href="${esc(a.share_url)}" target="_blank">Proof link</a>` : ''}
-                  ${a.status === 'sent' || a.status === 'rejected' ? `<button class="btn ghost sm" data-decide="${a.id}" data-v="${a.version}">Approved by phone</button>` : ''}
-                  <a class="btn ghost sm" href="/uploads/${esc(a.filename)}" target="_blank">Open</a>
+                  ${a.id===j.art[0]?.id && a.status === 'sent' ? `<button class="btn ghost sm" data-decide="${a.id}" data-v="${a.version}">Approved by phone</button>` : ''}
+                  <a class="btn ghost sm" href="${esc(a.url || `/uploads/${a.filename}`)}" target="_blank">Open</a>
                   <button class="btn ghost sm" data-delart="${a.id}" data-v="${a.version}" data-st="${a.status}">Delete</button>
                 </div>
               </div></div>`).join('')}</div>` : ''}

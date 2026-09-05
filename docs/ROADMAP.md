@@ -25,6 +25,8 @@ stages, artwork history, purchasing documents, price matrices, capacity planning
 imports/exports, staff roles, automations, and integration adapters. Automated tests are extensive;
 external integrations still need provider-specific validation with the shop's own configuration.
 
+Current-proof approval now invalidates replaced artwork, refuses obsolete decision links and refreshes production task revisions. [Artwork approval rules](ARTWORK.md) describe history, deletion and production-file limits. This does not supply reliable digitizing, separations or physical output validation.
+
 ## Expansion priorities
 
 | Area | Current boundary | Acceptance work before calling it complete |

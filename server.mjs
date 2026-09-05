@@ -2097,7 +2097,7 @@ app.get('/api/chrome/badges', wrap((_req, res) => {
     active_jobs: n(`SELECT COUNT(*) AS c FROM jobs WHERE status = 'active'`),
     open_invoices: n(`SELECT COUNT(*) AS c FROM invoices WHERE status NOT IN ('paid','void')`),
     art_pending: n(`SELECT COUNT(*) AS c FROM art_versions a JOIN jobs j ON j.id = a.job_id
-      WHERE a.status IN ('sent','rejected')`),
+      WHERE a.status IN ('sent','rejected') AND a.id=(SELECT newest.id FROM art_versions newest WHERE newest.job_id=a.job_id ORDER BY newest.version DESC,newest.id DESC LIMIT 1)`),
     followups: n(`SELECT COUNT(*) AS c FROM estimates WHERE status = 'sent'`)
       + n(`SELECT COUNT(*) AS c FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today),
     automations: n(`SELECT COUNT(*) AS c FROM automations WHERE enabled = 1`),
@@ -2143,7 +2143,7 @@ app.get('/api/dashboard', wrap((_req, res) => {
     // Jobs whose promised date is already unreachable because the proof is still out.
     // Surfaced before the deadline, not after — this is the whole point of gating.
     at_risk: all(`SELECT j.*, c.name AS contact_name,
-        (SELECT sent_at FROM art_versions a WHERE a.job_id=j.id AND a.status='sent' ORDER BY version DESC LIMIT 1) AS proof_sent_at
+        (SELECT CASE WHEN a.status='sent' THEN a.sent_at END FROM art_versions a WHERE a.job_id=j.id ORDER BY version DESC,id DESC LIMIT 1) AS proof_sent_at
       FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.approval_gated=1 AND j.art_approved_at IS NULL AND j.due_date IS NOT NULL
         AND j.stage IN ('new','art_approval')
@@ -2239,7 +2239,7 @@ app.get('/api/today', wrap((req, res) => {
   }
   // Proofs waiting on the customer — these block production and silently eat the schedule.
   for (const j of all(`SELECT j.*, c.name AS cn,
-        (SELECT sent_at FROM art_versions a WHERE a.job_id=j.id AND a.status='sent' ORDER BY version DESC LIMIT 1) AS proof_sent
+        (SELECT CASE WHEN a.status='sent' THEN a.sent_at END FROM art_versions a WHERE a.job_id=j.id ORDER BY version DESC,id DESC LIMIT 1) AS proof_sent
       FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.stage='art_approval' ORDER BY j.due_date LIMIT 6`)) {
     const waited = ageInDays(j.proof_sent)
@@ -3167,6 +3167,19 @@ const artUrl = (a) => a.drive_link || `/uploads/${a.filename}`
  * "so the proof page can show it", which is exactly the page that did not.
  */
 const proofSrc = (a) => a.drive_link || uploadUrl(a.filename)
+const latestProof = a => a.job_id
+  ? get('SELECT * FROM art_versions WHERE job_id=? ORDER BY version DESC,id DESC LIMIT 1',a.job_id)
+  : a.estimate_id ? get('SELECT * FROM art_versions WHERE estimate_id=? ORDER BY version DESC,id DESC LIMIT 1',a.estimate_id) : null
+const proofIsCurrent = a => latestProof(a)?.id===a.id
+const requireCurrentProof = (a,res) => {
+  if(proofIsCurrent(a))return false
+  res.status(409).json({error:'This proof was replaced by a newer version. Open the current proof before sending or deciding.',code:'proof_superseded'})
+  return true
+}
+const touchProofWorkflow = (jobId, actor, detail) => {
+  if(!run('UPDATE production_jobs SET revision=revision+1 WHERE job_id=?',jobId).changes)return
+  run('INSERT INTO production_events(job_id,task_id,actor,action,detail) VALUES(?,?,?,?,?)',jobId,null,String(actor || 'Staff').slice(0,120),'art.changed',detail)
+}
 const mockupRow = (a) => ({
   id: a.id, version: a.version, filename: a.filename, original_name: a.original_name, mime: a.mime,
   status: a.status, notes: a.notes, sent_at: a.sent_at, decided_at: a.decided_at, decided_by: a.decided_by,
@@ -3201,6 +3214,8 @@ app.post('/api/mockups/:id/send', outboundLimit, wrap((req, res) => {
   if (!mockupGate(req, res)) return
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a || !a.estimate_id) return res.status(404).json({ error: 'Mockup not found' })
+  if(requireCurrentProof(a,res))return
+  if(a.status==='approved')return res.status(409).json({error:'This proof is already approved. Upload a new version to request a different approval.',code:'already_decided'})
   const e = get('SELECT * FROM estimates WHERE id = ?', a.estimate_id)
   const c = get('SELECT * FROM contacts WHERE id = ?', e?.contact_id)
   const s = getSettings()
@@ -3696,6 +3711,8 @@ app.get('/api/jobs/:id', wrap((req, res) => {
     FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id LEFT JOIN invoices i ON i.id=j.invoice_id
     LEFT JOIN estimates e ON e.id=j.estimate_id WHERE j.id=?`, +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
+  const currentProof=latestProof({job_id:j.id})
+  if(j.art_approved_at && currentProof && currentProof.status!=='approved')j.art_approved_at=null
   res.json({
     ...j,
     schedule: scheduleFor(j),
@@ -4038,7 +4055,8 @@ app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
 app.get('/api/art', wrap((_req, res) => {
   res.json(all(`SELECT a.*, j.job_number, j.title AS job_title, j.due_date, c.name AS contact_name
     FROM art_versions a JOIN jobs j ON j.id = a.job_id LEFT JOIN contacts c ON c.id = j.contact_id
-    ORDER BY a.created_at DESC, a.id DESC`).map((a) => ({ ...a, share_url: shareUrl('art', a.id, a.share_key) })))
+    WHERE a.id=(SELECT newest.id FROM art_versions newest WHERE newest.job_id=a.job_id ORDER BY newest.version DESC,newest.id DESC LIMIT 1)
+    ORDER BY a.created_at DESC, a.id DESC`).map((a) => ({ ...a, url: artUrl(a), share_url: shareUrl('art', a.id, a.share_key) })))
 }))
 
 // Art must actually be art: allowed types only, and the magic bytes must match — a text file or
@@ -4107,9 +4125,14 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
     } catch (e) { console.error('gdrive upload threw:', e && e.message) }
   }
 
-  const version = (get('SELECT COALESCE(MAX(version), 0) AS v FROM art_versions WHERE job_id = ?', jobId).v) + 1
-  const id = Number(run('INSERT INTO art_versions (job_id, version, filename, original_name, mime, size, status, notes, drive_file_id, drive_link, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+  const {id,version}=tx(()=>{
+    const version = (get('SELECT COALESCE(MAX(version), 0) AS v FROM art_versions WHERE job_id = ?', jobId).v) + 1
+    const id = Number(run('INSERT INTO art_versions (job_id, version, filename, original_name, mime, size, status, notes, drive_file_id, drive_link, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
     jobId, version, req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, 'draft', req.body?.notes || '', driveFileId, driveLink, now()).lastInsertRowid)
+    run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),jobId)
+    touchProofWorkflow(jobId,req.member?.name,`Proof v${version} uploaded; new approval required`)
+    return {id,version}
+  })
   // Only NOW is the local copy safe to drop, and only if Drive really holds the file. Deleting it
   // beside the upload — before this INSERT — meant any throw between the two (a dangling job row,
   // a disk hiccup, a locked database) destroyed the only copy of the customer's artwork with no
@@ -4118,12 +4141,15 @@ app.post('/api/jobs/:id/art', upload.single('file'), reTenant, wrap(async (req, 
   if (driveFileId) { try { unlinkSync(req.file.path) } catch { /* best effort */ } }
   logActivity('art', `Art v${version} uploaded${driveFileId ? ' to Google Drive' : ''} — ${req.file.originalname}`, { contact_id: j.contact_id, job_id: jobId })
   const row = get('SELECT * FROM art_versions WHERE id = ?', id)
+  rtBroadcast('production',{});rtBroadcast('board',{job_id:jobId})
   res.json({ ...row, url: artUrl(row), drive: !!driveFileId })
 }))
 
 app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   const a = get('SELECT * FROM art_versions WHERE id = ?', +req.params.id)
   if (!a) return res.status(404).json({ error: 'Art version not found' })
+  if(requireCurrentProof(a,res))return
+  if(a.status==='approved')return res.status(409).json({error:'This proof is already approved. Upload a new version to request a different approval.',code:'already_decided'})
   // Everything below assumes a job row. An estimate-attached mockup (lite, and the mockup route
   // on the quote screen in pro) has job_id NULL, so `j.contact_id` threw and this answered a bare
   // 500 — on the button that sends the proof.
@@ -4138,7 +4164,11 @@ app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   // the button the screen offers. Its four siblings have called this guard all along.
   if (requireCustomerEmail(c, res, 'proof')) return
   const s = getSettings()
-  run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
+  tx(()=>{
+    run(`UPDATE art_versions SET status='sent', sent_at=? WHERE id=?`, now(), a.id)
+    run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),j.id)
+    touchProofWorkflow(j.id,req.member?.name,`Proof v${a.version} sent for approval`)
+  })
   run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress') AND NOT EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id)`, now(), j.id)
   queueEmail({ contact: c, kind: 'art', subject: `Proof v${a.version} for ${j.title} — approval needed`,
     template: s.email_template_art, vars: { contact_name: c?.name || '', version: a.version, job_title: j.title } })
@@ -4171,11 +4201,18 @@ app.delete('/api/jobs/:jobId/art/:id', requireRole('manager'), wrap((req, res) =
   const a = get('SELECT * FROM art_versions WHERE id = ? AND job_id = ?', +req.params.id, +req.params.jobId)
   if (!a) return res.status(404).json({ error: 'Art version not found', code: 'not_found' })
   const j = get('SELECT * FROM jobs WHERE id = ?', a.job_id)
-  run('DELETE FROM art_versions WHERE id = ?', a.id)
+  tx(()=>{
+    if(proofIsCurrent(a)){
+      run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),a.job_id)
+      touchProofWorkflow(a.job_id,req.member?.name,`Current proof v${a.version} deleted; approval cleared`)
+    }
+    run('DELETE FROM art_versions WHERE id = ?', a.id)
+  })
   if (a.filename) { try { unlinkSync(join(UPLOADS, a.filename)) } catch { /* Drive-stored, or already gone */ } }
   logActivity('art', a.status === 'approved'
     ? `Proof v${a.version} DELETED — it had been approved by ${a.decided_by || 'the customer'}${a.decided_at ? ` on ${String(a.decided_at).slice(0, 10)}` : ''}`
     : `Proof v${a.version} deleted (${a.status})`, { contact_id: j?.contact_id, job_id: a.job_id })
+  rtBroadcast('production',{});rtBroadcast('board',{job_id:a.job_id})
   res.json({ ok: true, deleted: a.id, link_revoked: true, drive_copy_left: !!a.drive_file_id })
 }))
 
@@ -4196,12 +4233,16 @@ app.post('/api/art/:id/decide', wrap((req, res) => {
       art: a,
     })
   }
+  if(requireCurrentProof(a,res))return
+  if(!['approved','rejected'].includes(req.body?.decision))return res.status(400).json({error:'Choose approved or rejected.',code:'invalid_decision'})
   const approved = req.body?.decision === 'approved'
   decideArt(a, approved, str(req.body?.notes, ''), str(req.body?.by, 'staff'))
   res.json({ ok: true })
 }))
 
 function decideArt(a, approved, notes, by) {
+  const dispatch=[]
+  tx(()=>{
   // An estimate-attached mockup (lite: no job board) records the decision and stops — there is no
   // job to release to prepress and no turnaround clock to move. Everything below this point assumes
   // a job row exists, so returning here is what keeps the shared proof page usable in both editions.
@@ -4217,11 +4258,13 @@ function decideArt(a, approved, notes, by) {
     return
   }
   const j = get('SELECT * FROM jobs WHERE id = ?', a.job_id)
+  touchProofWorkflow(j.id,by,`Proof v${a.version} ${approved?'approved':'changes requested'}`)
   run(`UPDATE art_versions SET status=?, decided_at=?, decided_by=?, notes=? WHERE id=?`,
     approved ? 'approved' : 'rejected', now(), by, notes || a.notes, a.id)
   if (!approved) {
+    run('UPDATE jobs SET art_approved_at=NULL,updated_at=? WHERE id=?',now(),j.id)
     logActivity('art', `Proof v${a.version} changes requested by ${by}${notes ? ` — "${notes}"` : ''}`, { contact_id: j.contact_id, job_id: j.id })
-    fireAuto('art.rejected', { job: j, contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
+    dispatch.push(['art.rejected', { job: j, contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version }])
     return
   }
 
@@ -4234,7 +4277,7 @@ function decideArt(a, approved, notes, by) {
   // page said Prepress. Nothing could put it back — every screen that moves a job reads the board.
   run(`UPDATE jobs SET stage=CASE WHEN EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id) THEN stage ELSE 'prepress' END, status='active', art_approved_at=?, updated_at=? WHERE id=?`, now(), now(), j.id)
   logActivity('art', `Proof v${a.version} APPROVED by ${by} — released to prepress`, { contact_id: j.contact_id, job_id: j.id })
-  fireAuto('art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version })
+  dispatch.push(['art.approved', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: get('SELECT * FROM contacts WHERE id = ?', j.contact_id), version: a.version }])
 
   // The clock starts now, not at intake. Move the due date and say so out loud — a proof
   // that sat for four days silently ate four days of the production window.
@@ -4250,6 +4293,9 @@ function decideArt(a, approved, notes, by) {
         { contact_id: j.contact_id, job_id: j.id })
     }
   }
+  })
+  for(const [trigger,context] of dispatch)fireAuto(trigger,context)
+  rtBroadcast('production',{})
 }
 
 /* ================= FOLLOW-UPS ================= */
@@ -4276,7 +4322,7 @@ app.get('/api/followups', wrap((_req, res) => {
   // Proofs sitting with the customer — these block production, so they cost days.
   const proofs = all(`SELECT a.*, j.job_number, j.title AS job_title, j.due_date, c.name AS contact_name, c.email
     FROM art_versions a JOIN jobs j ON j.id = a.job_id LEFT JOIN contacts c ON c.id = j.contact_id
-    WHERE a.status = 'sent' ORDER BY a.sent_at`)
+    WHERE a.status = 'sent' AND a.id=(SELECT newest.id FROM art_versions newest WHERE newest.job_id=a.job_id ORDER BY newest.version DESC,newest.id DESC LIMIT 1) ORDER BY a.sent_at`)
     .map((a) => ({ ...a, age: days(a.sent_at) }))
 
   // Repeat customers who have gone quiet — the cheapest revenue in the building.
@@ -5775,7 +5821,8 @@ app.post('/api/purchase-orders/:id/reopen', requireRole('manager'), wrap((req, r
 app.get('/api/jobs/:id/print-package', wrap((req, res) => {
   const j = get('SELECT * FROM jobs WHERE id = ?', +req.params.id)
   if (!j) return res.status(404).json({ error: 'Job not found' })
-  const approved = get(`SELECT * FROM art_versions WHERE job_id = ? AND status='approved' ORDER BY version DESC LIMIT 1`, j.id)
+  const current=latestProof({job_id:j.id})
+  const approved=j.art_approved_at && current?.status==='approved' ? current : null
   const sep = parse(j.separation, null)
   if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="print-package-${j.job_number}.json"`)
   res.json({
@@ -5783,7 +5830,7 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
     // `sizes` is the rolled-up total; `lines` carries each garment with its own grid, so a RIP
     // package for a two-style order no longer describes it as one merged run.
     sizes: parse(j.sizes, {}), lines: jobLines(j), quantities: j.quantities,
-    approved_art: approved ? { file: `/uploads/${approved.filename}`, version: approved.version } : null,
+    approved_art: approved ? { file: artUrl(approved), version: approved.version } : null,
     separation: sep ? { mode: sep.mode, screens: sep.screens, inks: sep.inks, dark: sep.dark } : null,
     // Print-readiness is APPROVED ART. A screen separation is a screen-print-only extra that
     // nothing in the running product records any more — jobs.separation is read everywhere and
@@ -8859,6 +8906,7 @@ app.get('/p/art/:id', pPage((req, res) => {
   const ec = e ? get('SELECT name, company FROM contacts WHERE id = ?', e.contact_id) : null
   const s = getSettings()
   const isImg = (a.mime || '').startsWith('image/')
+  const superseded=!proofIsCurrent(a)
   const decided = a.status === 'approved' || a.status === 'rejected'
   const subject = j
     ? `<strong>${esc(j.title)}</strong> · ${esc(j.job_number)} · ${esc(j.decoration || '')}`
@@ -8867,10 +8915,11 @@ app.get('/p/art/:id', pPage((req, res) => {
     <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">Artwork for approval</div></div>
       <div class="right"><div class="doc">PROOF</div><div class="num2">v${esc(a.version)}</div></div></div>
     <div class="to">${subject}</div>
+    ${superseded ? '<div class="warn">This proof has been replaced by a newer version. It is shown for reference only. Ask the shop for the current proof link.</div>' : ''}
     <div class="proof">${isImg ? `<img src="${esc(proofSrc(a))}" alt="Proof v${esc(a.version)}">`
       : `<a class="btn ghost" href="${esc(proofSrc(a))}" target="_blank">Open ${esc(a.original_name)}</a>`}</div>
-    <div class="check"><strong>Check before approving:</strong> spelling, placement, size, colors, and garment. Once approved, this is exactly what we print.</div>
-    ${decided ? `<div class="${a.status === 'approved' ? 'ok' : 'warn'}">${a.status === 'approved'
+    ${superseded ? '' : '<div class="check"><strong>Check before approving:</strong> spelling, placement, size, colors, and garment. Once approved, this is exactly what we print.</div>'}
+    ${superseded ? '' : decided ? `<div class="${a.status === 'approved' ? 'ok' : 'warn'}">${a.status === 'approved'
         // "Moving this to production" is only true when a job exists. On an estimate-attached mockup
         // there is no production floor yet, so promising one would be a lie to the customer.
         ? (j ? '✓ Approved — thank you! We are moving this to production.' : '✓ Approved — thank you! The shop has your sign-off and will take it from here.')
@@ -8887,6 +8936,7 @@ app.post('/p/art/:id/decide', express.urlencoded({ extended: false }), pPage((re
   if (!checkToken('art', id, req.query.k)) return res.status(403).send('Forbidden')
   const a = get('SELECT * FROM art_versions WHERE id = ?', id)
   if (!a) return res.status(404).send('Not found')
+  if(!proofIsCurrent(a))return res.status(409).send('This proof has been replaced. Ask the shop for the current proof link.')
   // A proof link gets forwarded around a purchasing department and re-opened weeks later. Decide
   // once: a second POST would otherwise drag a job that is already printing back to prepress,
   // push its due date out by a full turnaround, and re-send the customer the automation email.
