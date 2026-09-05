@@ -1,12 +1,9 @@
 import { api, $, $$, esc, money, setPage, toast, go, on, store } from '../core.js'
 
 /**
- * Autopilot — the front office running itself.
- *
- * A customer email goes in; a paid job with a mockup comes out. The server does the record
- * chain atomically (/api/autopilot); the client narrates it as an animated pipeline and adds
- * the two visual steps that have to happen in canvas: pull/synthesize the art and build the
- * garment mockup. The point Cole wants made: the shop becomes "just a printer."
+ * Draft an order from an inquiry, with an optional browser-only artwork concept.
+ * The server owns estimate delivery. A generic illustration must never be uploaded as
+ * a customer proof, and missing customer artwork must never be invented silently.
  */
 
 const SAMPLE = `From: Dana Wu <dana@example.org>
@@ -26,8 +23,8 @@ const STEPS = [
   { key: 'read', ico: '✉', title: 'Read the email', phase: 1 },
   { key: 'customer', ico: '◉', title: 'Log the customer', phase: 1 },
   { key: 'estimate', ico: '▤', title: 'Draft the estimate', phase: 1 },
-  { key: 'art', ico: '◈', title: 'Pull the artwork', phase: 1 },
-  { key: 'mockup', ico: '▧', title: 'Build the mockup', phase: 1 },
+  { key: 'art', ico: '◈', title: 'Check the artwork', phase: 1 },
+  { key: 'mockup', ico: '▧', title: 'Preview the artwork', phase: 1 },
   // Phase 2 — the one irreversible, customer-facing step. In Review mode it waits for a human.
   //
   // This used to be three: "Send & approve", "Collect the deposit", "Onto the floor" — and the
@@ -67,8 +64,8 @@ export async function autopilotView() {
     <div class="ap">
       <div class="ap-hero">
         <div class="ap-badge">◆ AUTOPILOT</div>
-        <h1>Your front office, running itself.</h1>
-        <p>Paste a customer email. Watch it become a quote, a payment, a mockup, and a job on the floor — with nobody touching it. The shop's only job left is to print.</p>
+        <h1>From inquiry to estimate.</h1>
+        <p>Paste a customer email to draft an estimate and a job. Review it here, or let Full auto send the estimate. Customer approval, payment and production remain separate steps.</p>
       </div>
 
       <div class="ap-grid">
@@ -82,13 +79,14 @@ export async function autopilotView() {
             </div>
             <div class="field"><label>The message</label>
               <textarea class="input" id="ap-text" style="min-height:200px;font-size:13px" placeholder="Paste what the customer sent…"></textarea></div>
-            <div class="field"><label>Artwork (optional — otherwise we synthesize one)</label>
-              <div class="drop" id="ap-drop" style="padding:14px">Drop the logo they attached, or leave it — Autopilot makes a placeholder</div>
-              <input type="file" id="ap-file" accept="image/*" hidden></div>
+            <div class="field"><label>Artwork reference (optional)</label>
+              <div class="drop" id="ap-drop" style="padding:14px">Drop a PNG or JPG for a local concept preview. Add the actual proof on the job.</div>
+              <input type="file" id="ap-file" accept="image/*" hidden>
+              <button type="button" class="btn ghost sm" id="ap-clear" hidden>Remove reference</button></div>
             <div class="field" style="margin-bottom:0"><label>How far should it go?</label>
               <div class="ap-dial" id="ap-dial">
                 <button type="button" data-mode="review" class="${mode === 'review' ? 'on' : ''}" aria-pressed="${mode === 'review'}">
-                  <strong>Review first</strong><span>Drafts the quote &amp; mockup, then stops for you to send</span></button>
+                  <strong>Review first</strong><span>Drafts the estimate, then stops for you to review and send</span></button>
                 <button type="button" data-mode="auto" class="${mode === 'auto' ? 'on' : ''}" aria-pressed="${mode === 'auto'}">
                   <strong>Full auto</strong><span>Sends the estimate for you — the customer approves, nothing is charged</span></button>
               </div>
@@ -114,10 +112,14 @@ export async function autopilotView() {
   }
   const fileEl = $('#ap-file'); const drop = $('#ap-drop')
   drop.onclick = () => fileEl.click()
-  fileEl.onchange = (e) => { const f = e.target.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
+  $('#ap-clear').onclick = () => {
+    releaseArt(); fileEl.value = ''; $('#ap-clear').hidden = true
+    drop.textContent = 'Drop a PNG or JPG for a local concept preview. Add the actual proof on the job.'
+  }
+  fileEl.onchange = (e) => { const f = e.target.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}`; $('#ap-clear').hidden = false } }
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over') }
   drop.ondragleave = () => drop.classList.remove('over')
-  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}` } }
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) { releaseArt(); uploadedArt = URL.createObjectURL(f); drop.textContent = `✓ ${f.name}`; $('#ap-clear').hidden = false } }
   on($('#ap-dial'), '[data-mode]', (_e, t) => {
     mode = t.dataset.mode; store.set('psc-ap-mode', mode)
     $$('#ap-dial button').forEach((b) => { const on = b.dataset.mode === mode; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
@@ -168,20 +170,21 @@ async function run(resume = null) {
     // Phase 1 always runs — read, customer, draft estimate.
     for (const k of ['read', 'customer', 'estimate']) { activate(k); await sleep(400); complete(k, detailOf(k)) }
 
-    // Art + mockup — client-side, attach to the job that now exists.
+    // This fixed-size illustration uses this device only. It is not the catalog garment,
+    // and never enters the approval queue. Missing artwork stays missing.
     activate('art'); await sleep(300)
-    const artUrl = uploadedArt || synthArt(r.order, $('#ap-name').value)
-    const artImg = await loadImg(artUrl)
-    complete('art', uploadedArt ? 'Pulled from the attachment' : 'Synthesized from the order')
-
-    activate('mockup'); await sleep(300)
-    const garment = garmentFor(r.order)
-    const mockCanvas = renderMockup(artImg, garment.hex)
-    const mockUrl = mockCanvas.toDataURL('image/png')
-    const blob = await new Promise((res) => mockCanvas.toBlob(res, 'image/png'))
-    const fd = new FormData(); fd.append('file', blob, `${r.job.job_number}-mockup.png`); fd.append('notes', 'Auto-generated by Autopilot')
-    await api.req('POST', `/api/jobs/${r.job.id}/art`, fd)
-    complete('mockup', `${garment.name} garment · proof attached`)
+    let mockUrl = null
+    if (uploadedArt) {
+      const artImg = await loadImg(uploadedArt)
+      complete('art', 'Reference opened on this device')
+      activate('mockup'); await sleep(300)
+      const garment = garmentFor(r.order)
+      mockUrl = renderMockup(artImg, garment.hex).toDataURL('image/png')
+      complete('mockup', 'Generic concept only · no proof attached')
+    } else {
+      complete('art', 'No artwork supplied')
+      complete('mockup', 'Skipped · upload the actual proof on the job')
+    }
 
     if (r.mode === 'review') {
       await sleep(300)
@@ -207,7 +210,7 @@ async function run(resume = null) {
     $('#ap-stage').innerHTML = `<div class="ap-empty">
       <div class="ap-orbit"><span>◆</span></div>
       <p class="ap-err" role="alert">${esc(e.message)}</p>
-      <button class="btn ap-go" id="ap-run">${lastRun ? 'Finish the mockup →' : 'Try again →'}</button>
+      <button class="btn ap-go" id="ap-run">${lastRun ? 'Finish the preview →' : 'Try again →'}</button>
     </div>`
     // A failure BEFORE the server wrote anything re-runs the whole thing, which is right. A failure
     // after it re-enters at the art step against the estimate and job that already exist, so the
@@ -220,7 +223,8 @@ async function run(resume = null) {
 /** Review mode: the editable draft, waiting for a human to send it (or not). The manual gate. */
 function reviewReveal(r, mockUrl) {
   $('#ap-stage').innerHTML = `<div class="ap-reveal">
-    <div class="ap-mockup"><img src="${mockUrl}" alt="mockup"></div>
+    ${mockUrl ? `<div class="ap-mockup"><img src="${mockUrl}" alt="Generic T-shirt concept using the supplied artwork; not the ordered garment"></div>
+      <p class="ap-review-note">Generic T-shirt concept only. Garment, color and placement are approximate. This preview stays on this device and is not attached as a proof. Add the actual proof on the job.</p>` : '<p class="ap-review-note">Artwork still needed. Open the job to upload the actual proof when it is ready.</p>'}
     <div class="ap-review-h">${r.held_for_review?.length ? 'Held for your call' : 'Draft ready for your call'}</div>
     ${r.ai_note ? `<p class="ap-review-note ap-held">${esc(r.ai_note)}</p>` : ''}
     <div class="ap-stats">
@@ -262,12 +266,13 @@ function doneReveal(r, mockUrl) {
   const approved = r.estimate?.status === 'approved'
   const paid = Number(r.invoice?.amount_paid) || 0
   $('#ap-stage').innerHTML = `<div class="ap-reveal">
-    <div class="ap-mockup"><img src="${mockUrl}" alt="mockup"></div>
-    <div class="ap-done-h">${approved ? 'Approved. The shop just prints.' : 'Sent. Waiting on the customer.'}</div>
+    ${mockUrl ? `<div class="ap-mockup"><img src="${mockUrl}" alt="Generic T-shirt concept using the supplied artwork; not the ordered garment"></div>
+      <p class="ap-review-note">Generic T-shirt concept only. Garment, color and placement are approximate. This preview stays on this device and is not attached as a proof. Add the actual proof on the job.</p>` : '<p class="ap-review-note">Artwork still needed. Open the job to upload the actual proof when it is ready.</p>'}
+    <div class="ap-done-h">${approved ? 'Estimate approved.' : 'Sent. Waiting on the customer.'}</div>
     <div class="ap-stats">
       <div><span>${money(r.estimate.total)}</span><em>quoted &amp; ${approved ? 'approved' : 'sent'}</em></div>
       ${r.invoice ? `<div><span>${money(paid)}</span><em>${paid > 0 ? 'collected' : 'invoiced, unpaid'}</em></div>` : ''}
-      <div><span>${r.job.job_number}</span><em>${approved ? 'on the floor' : 'drafted, not started'}</em></div>
+      <div><span>${r.job.job_number}</span><em>${approved ? 'check production readiness' : 'drafted, not started'}</em></div>
     </div>
     <div class="ap-links">
       <a class="btn" href="#/jobs/${r.job.id}">Open the job →</a>
@@ -276,7 +281,7 @@ function doneReveal(r, mockUrl) {
       <button class="btn ghost" id="ap-again">Run another</button>
     </div>
     <p class="ap-foot">Customer <strong>${esc(r.contact.name)}</strong>, estimate <strong>${esc(r.estimate.estimate_number)}</strong>${r.invoice ? `, invoice <strong>${esc(r.invoice.invoice_number)}</strong>` : ''} and job <strong>${esc(r.job.job_number)}</strong> now exist.
-      ${approved ? '' : 'Nothing is approved and nothing has been charged — that happens when the customer clicks Approve on the link they were just sent.'}</p>
+      ${approved ? '' : 'The estimate still needs customer approval. Sending it does not collect a payment or approve artwork.'}</p>
   </div>`
   $('#ap-again').onclick = autopilotView
 }
@@ -318,25 +323,11 @@ const loadImg = (src) => new Promise((res, rej) => {
   const i = new Image()
   i.crossOrigin = 'anonymous'
   i.onload = () => res(i)
-  i.onerror = () => rej(new Error('That attachment could not be read as an image — attach a PNG or JPG, or leave it blank and Autopilot will draw one.'))
+  i.onerror = () => rej(new Error('That attachment could not be read as an image — attach a PNG or JPG, or leave it blank to continue without an artwork preview.'))
   i.src = src
 })
 
-/** A clean generative emblem when no art was attached — initials in a ringed badge. */
-function synthArt(order, name) {
-  const c = document.createElement('canvas'); c.width = 480; c.height = 480
-  const x = c.getContext('2d')
-  const inks = (order.locations?.[0]?.colors >= 2) ? ['#f5d21e', '#e23b3b', '#1e46aa'] : ['#f5f5f5', '#1e46aa']
-  x.fillStyle = inks[0]; x.beginPath(); x.arc(240, 240, 175, 0, 7); x.fill()
-  x.strokeStyle = inks[1]; x.lineWidth = 16; x.beginPath(); x.arc(240, 240, 150, 0, 7); x.stroke()
-  const initials = String(name || 'INK').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'INK'
-  x.fillStyle = inks[inks.length - 1]; x.font = '900 150px Impact, Haettenschweiler, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'
-  x.fillText(initials, 240, 235)
-  x.fillStyle = inks[1]; x.font = '700 34px Georgia, serif'; x.fillText('EST. 2026', 240, 350)
-  return c.toDataURL('image/png')
-}
-
-/** Composite the art onto a t-shirt silhouette with fabric shading — a real proof mockup. */
+/** Fixed-size browser illustration, visibly labelled even if saved or screenshotted. */
 function renderMockup(artImg, garmentHex) {
   const W = 620, H = 640
   const c = document.createElement('canvas'); c.width = W; c.height = H
@@ -370,6 +361,9 @@ function renderMockup(artImg, garmentHex) {
   x.globalAlpha = 0.96
   x.drawImage(artImg, bx + (boxW - dw) / 2, by + (boxH - dh) / 2, dw, dh)
   x.globalAlpha = 1
+  x.fillStyle = '#ffffff'; x.fillRect(0, H - 38, W, 38)
+  x.fillStyle = '#111111'; x.font = 'bold 15px sans-serif'; x.textAlign = 'center'
+  x.fillText('CONCEPT ONLY — generic garment, approximate color and placement', W / 2, H - 15, W - 20)
   return c
 }
 
