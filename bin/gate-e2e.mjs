@@ -2975,9 +2975,14 @@ try {
     }
     chk('…and nothing was written to the Outbox claiming otherwise', String(await outboxLen()), `^${before}$`)
 
-    // Give them an address and every one of those works, which is the other half of the promise.
+    // A customer default does not silently reroute an existing invoice. Review its recipients.
     await req('PUT', `/api/contacts/${noMailC}`, { body: { name: 'Phone Only Signs', email: 'phoneonly@e2e.test' } })
-    r = await req('POST', `/api/invoices/${nmInv}/send`)
+    chk('a new customer email does not override a saved blank document recipient',
+      String((await req('POST', `/api/invoices/${nmInv}/send`)).json?.code), '^no_email$')
+    const nmCurrent=(await req('GET', `/api/invoices/${nmInv}`)).json
+    const nmRecipients=await req('PUT', `/api/invoices/${nmInv}/recipients`, {body:{recipient_revision:nmCurrent.recipient_revision,use_customer_defaults:true}})
+    chk('the invoice recipient can be explicitly updated from the customer',String(nmRecipients.status),'^200$')
+    r = await req('POST', `/api/invoices/${nmInv}/send`, {body:{recipient_revision:nmRecipients.json.recipient_revision}})
     chk('once they have an address the invoice really does go', String(r.status), '^200$')
     chk('…and the app says who it went to', String(r.json?.emailed_to), '^phoneonly@e2e\\.test$')
 
@@ -6185,7 +6190,10 @@ try {
       chk('…and adding the email address the message asked for makes it send', String(retry.status), '^200$')
       const jobSent = (await J('GET', `/api/jobs/${job.id}`)).json
       chk('…and only THEN does the job move to art approval', String(jobSent?.stage), '^art_approval$')
-      const estRetry = await J('POST', `/api/estimates/${est.id}/send`, {})
+      const savedQuote=(await J('GET', `/api/estimates/${est.id}`)).json
+      const reviewedRecipient=await J('PUT', `/api/estimates/${est.id}/recipients`, {recipient_revision:savedQuote.recipient_revision,use_customer_defaults:true})
+      chk('the quote buyer explicitly adopts the new customer email',String(reviewedRecipient.status),'^200$')
+      const estRetry = await J('POST', `/api/estimates/${est.id}/send`, {recipient_revision:reviewedRecipient.json.recipient_revision})
       chk('…the same for the estimate', String(estRetry.status), '^200$')
     } finally {
       try { s12.kill('SIGKILL') } catch { /* already gone */ }

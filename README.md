@@ -100,6 +100,7 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 
 **Sales**
 - Customers with billing/shipping addresses, tags, notes, lifetime value, and a timeline fed by other modules
+- Separate buyer and accounts-payable contacts saved on each document. Recipient changes hold older unsent messages for review ([details](docs/BILLING-RECIPIENTS.md))
 - Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link. Commercial revisions expire the old approval link, preserve approval history, and require another review
 - Sales pipeline with weighted value and win rate, auto-synced from estimate events
 - Conversation history for outbound email/SMS and connected inbound messages; SMTP alone does not synchronize a mailbox. Unsent drafts stay with their customer while navigating
@@ -110,7 +111,8 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 - Drag-to-move job board (pointer-based, works on touch) with rush/late/unpaid/assignee filters
 - Art & prepress: versioned proofs, customer approve/reject with notes, approval advances the job *and* moves the due date
 - Printable work tickets with a hard "NO APPROVED ART — do not print" block when the proof isn't signed off
-- Screenprinting capacity estimates; review decoration and machine assumptions before promising delivery
+- Screenprinting capacity estimates exclude completed presswork and flag unsupported/mixed work for review. A partial queue does not produce a positive print-date verdict
+- Shared shipment history across Sales and department views, with multiple parcels, pickup/local delivery and auditable corrections. Tracking does not silently move a job or send a message ([details](docs/SHIPPING.md))
 - Floor Mode: Code 128 barcode scanning that feeds measured labor back into costing
 - DTF resize and a gang-sheet builder (embeddable on your own site, checking out through your Stripe or Authorize.net account)
 

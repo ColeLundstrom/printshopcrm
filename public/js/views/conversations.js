@@ -105,10 +105,11 @@ async function drawThread(id, s) {
     <div class="ct-body" id="ct-body">
       ${d.messages.map((m) => `<div class="bubble ${m.direction === 'out' ? 'out' : 'in'}">
         <div class="bub-txt">${esc(m.body).replace(/\n/g, '<br>')}</div>
-        <div class="bub-meta">${m.channel === 'sms' ? 'SMS' : 'Email'} · ${relTime(m.created_at)}${m.kind === 'automation' ? ' · auto' : ''}</div>
+        <div class="bub-meta">${m.channel === 'sms' ? 'SMS' : 'Email'} · ${relTime(m.created_at)}${m.kind === 'automation' ? ' · auto' : ''}${m.direction==='out' && m.recipient_email?` · To: ${esc(m.recipient_name || '')} ${esc(m.recipient_email)}`:''}</div>
       </div>`).join('')}
     </div>
     <div class="ct-compose">
+      <p class="dim">Replies here go to the buyer: ${esc(c.email || 'no email saved')}. To contact accounts payable, open the invoice and use its saved billing recipient.</p>
       <div class="row" style="margin-bottom:7px">
         <div class="tabs" id="ct-channel" role="group" aria-label="Send this reply as">
           <button type="button" data-ch="email" class="${channelWas === 'email' ? 'on' : ''}" aria-pressed="${channelWas === 'email'}">Email</button><button type="button" data-ch="sms" class="${channelWas === 'sms' ? 'on' : ''}" aria-pressed="${channelWas === 'sms'}">SMS</button>

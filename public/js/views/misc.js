@@ -106,7 +106,7 @@ export async function outboxView(showNeeds = false) {
   // messages; the dozen estimates already sitting here never did, because only the button's
   // condition was left behind when the route was added. POST /api/outbox/:id/send delivers a
   // 'logged' row perfectly well, and answers 502 with the reason when mail is still not wired.
-  const sendable = (m) => !m.delivered && (m.via === 'draft' || m.via === 'error' || m.via === 'logged')
+  const sendable = (m) => !m.delivered && !m.recipient_stale && (m.via === 'draft' || m.via === 'error' || m.via === 'logged')
   $('#view').innerHTML = `
     <div class="card" style="margin-bottom:14px;border-color:var(--line-2)"><div class="card-b">
       <strong style="font-size:13px">${live ? '✉ Delivery is live' : '▤ Logging only'}</strong>
@@ -144,6 +144,7 @@ export async function outboxView(showNeeds = false) {
     const m = rows.find((r) => r.id === +t.dataset.id)
     if (!m) return
     modal({ title: m.subject, body: `<div class="dim" style="font-size:12px;margin-bottom:12px">To: ${esc(m.to_email || '—')} · ${fmtDate(m.created_at)}</div>
+      ${m.recipient_stale?'<p role="status">Delivery contacts changed. Open the document, review its recipients, and create a fresh message. This draft cannot be sent.</p>':''}
       ${m.via === 'draft' ? '<div class="dim" style="font-size:12px;margin-bottom:12px;color:var(--amber)">Follow-ups are on “Ask me first”, so this was drafted and is waiting for you.</div>' : ''}
       ${m.via === 'error' && m.delivery_error ? `<div class="dim" style="font-size:12px;margin-bottom:12px;color:var(--red)">It did not go out: ${esc(m.delivery_error)}</div>` : ''}
       <div style="white-space:pre-wrap;font-size:13.5px;line-height:1.65;background:var(--bg);padding:15px;border-radius:8px;border:1px solid var(--line)">${esc(m.body)}</div>`,
@@ -619,7 +620,7 @@ export async function settingsView() {
           : `<a class="btn ghost sm" href="/api/export/all.json" download>Download everything (JSON)</a>
         <details class="disc"><summary>One table at a time (CSV)</summary>
           <div class="disc-b"><div class="wrap-row">
-            ${['contacts', 'estimates', 'line_items', 'invoices', 'payments', 'jobs', 'activities']
+            ${['contacts', 'estimates', 'line_items', 'invoices', 'payments', 'jobs', 'shipments', 'shipment_events', 'activities']
               .map((t) => `<a class="btn ghost sm" href="/api/export/${t}.csv" download>${t.replace('_', ' ')}.csv</a>`).join('')}
           </div></div></details>`}
       </div>

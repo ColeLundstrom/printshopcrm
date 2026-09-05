@@ -1518,7 +1518,7 @@ await t('the two Follow-ups buttons obey the same switch the automation engine d
     assert.match(body, /const deliver = s\.mode_followups !== 'manual'/, `${what} ignores the shop's Manual follow-up mode`)
     assert.match(body, /vars: \{[^}]*\}, deliver \}\)/, `${what} computes deliver and then does not pass it`)
     assert.match(body, /delivered: deliver/, `${what} must tell the screen which of the two things happened`)
-    assert.match(body, /\$\{deliver \? 'sent' : 'drafted'\}/, '…and the customer timeline must not say "sent" for a draft')
+    assert.match(body, /\$\{deliver \? '(?:sent|queued)' : 'drafted'\}/, '…and the customer timeline must distinguish a delivery request from an unsent draft')
   }
 })
 await t('…and the button asks first, and reports what actually happened', async () => {
@@ -6545,13 +6545,12 @@ await t('…and the card it opens can move the order in either direction', async
   assert.match(card, /<select class="input" id="ob-stage" name="stage">/,
     'with drag gone on touch, the modal is the ONLY way to change a stage — and it had no stage control')
   assert.match(card, /api\.put\(`\/api\/orders\/\$\{c\.id\}\/stage`, \{ stage \}\)/, 'and it has to actually send it')
-  // Order matters: /tracking calls advanceOrder afterwards and advanceOrder is forward-only, so a
-  // stage set second would be clobbered by a tracking number still sitting in the box.
-  assert.ok(card.indexOf('/stage`, { stage })') < card.indexOf('/tracking`, f)'),
-    'the stage has to be sent BEFORE the tracking number, or a walk-back is silently undone')
-  // The screen used to promise that clearing the tracking number moves the card back. It does not.
-  assert.doesNotMatch(card, /Adding a tracking number moves this card to Shipped\.<\/div>/,
-    'the copy has to say that tracking only ever moves a card FORWARD')
+  // Shipping is its own operation. Sending unchanged legacy tracking used to undo a manual
+  // reopen; shipping-http.test drives that sequence and checks the actual saved stage.
+  assert.doesNotMatch(card, /api\.put\(`\/api\/orders\/\$\{c\.id\}\/tracking/,
+    'saving a stage must not also resubmit the old tracking field')
+  assert.match(card, /Shipment records below do not move this card/,
+    'tracking references are not evidence that the order has been dispatched')
 })
 
 section('no invoice ever charges a negative sales tax')
@@ -8852,8 +8851,16 @@ section('a chase that could not send is not recorded as a chase')
     assert.equal(row.status, 'skipped', "a run in which nothing happened was logged 'ran', which latches the record for ever")
   })
 
-  await t('…so the shop adding the missing email gets the quote chased', () => {
+  await t('…a reviewed and resent quote can be chased without rerouting the old draft', async () => {
     dbmod.run("UPDATE contacts SET email = 'wanda@example.com' WHERE id = 1")
+    auto.tick(deps)
+    assert.equal(sends,0,'a changed customer default must not reroute this old quote')
+    const {updateDocumentRecipients}=await import('../lib/billing-recipients.mjs')
+    const reviewed=updateDocumentRecipients('estimate',9,{recipient_revision:0,use_customer_defaults:true},'Fixture manager')
+    assert.equal(reviewed.status,'draft','a different quote buyer needs a fresh send/approval')
+    // Time fixture: the reviewed quote was then sent and has now been quiet for twenty days.
+    // The actual HTTP delivery path is exercised separately by billing-recipients.test.mjs.
+    dbmod.run("UPDATE estimates SET status='sent',sent_at=datetime('now','-20 days') WHERE id=9")
     const fired = auto.tick(deps)
     assert.ok(fired.some((f) => /EST-9001/.test(String(f))), `the $4,200 quote is still never chased: ${JSON.stringify(fired)}`)
     assert.equal(sends, 1, 'and the chase actually went out')

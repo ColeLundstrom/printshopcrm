@@ -1,4 +1,5 @@
 import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick } from '../core.js'
+import { billingFields, bindBillingFields } from '../shared/billing-recipients.js'
 
 let filterTag = ''
 
@@ -233,10 +234,12 @@ export function contactForm(c, after) {
         <label>Resale / exemption certificate #</label>
         <input class="input" name="tax_exempt_id" value="${esc(c?.tax_exempt_id || '')}" placeholder="Optional — kept on file for your records">
       </div>
+      ${billingFields(c || {})}<p class="dim">Billing defaults apply to new quotes and invoices. Existing documents keep their saved delivery contacts.</p>
       <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Sizing preferences, PO requirements, who signs off…">${esc(c?.notes || '')}</textarea></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${c ? 'Save' : 'Create Customer'}</button>`,
     onMount: (bg) => {
       // Only ask for the certificate number once the box is ticked.
+      bindBillingFields(bg)
       const box = $('#tax-exempt', bg)
       box.onchange = () => { $('#exempt-id-wrap', bg).style.display = box.checked ? '' : 'none' }
       onceClick($('#save', bg), c ? 'Saving…' : 'Creating…', async () => {

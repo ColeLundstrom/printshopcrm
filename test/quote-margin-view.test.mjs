@@ -1,3 +1,4 @@
+import { unsupportedScreenPrintMethods } from '../public/js/shared/capacity-scope.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -11,7 +12,7 @@ const end=source.indexOf('\n  const draw',start)
 assert(start>0 && end>start)
 function preview(items, revenue=288, settings={}) {
   const node={hidden:false,innerHTML:'',className:''}
-  const ctx=vm.createContext({items,settings,$:()=>node,sizeTotal,guessColors,jobCost,lineBlankCost,margin,marginVerdict,
+  const ctx=vm.createContext({items,settings,$:()=>node,unsupportedScreenPrintMethods,sizeTotal,guessColors,jobCost,lineBlankCost,margin,marginVerdict,
     esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),money:value=>'$'+Number(value).toFixed(2)})
   vm.runInContext(source.slice(start,end)+'\nmarginGuard('+revenue+');',ctx)
   return node

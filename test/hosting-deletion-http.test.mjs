@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
+import { readFixtureJson, writeFixtureJson, readFixtureRecords } from './helpers/json-fixture.mjs'
 import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
@@ -19,8 +20,9 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 function installDeletionProvider() {
   if (process.env.PSC_DEMO !== '1' || !process.env.PSC_HOSTING_DELETION_FIXTURE) throw new Error('Private deletion fixture required')
   const path = process.env.PSC_HOSTING_DELETION_FIXTURE, guardedFetch = globalThis.fetch
-  const read = () => JSON.parse(readFileSync(path, 'utf8'))
-  const write = value => writeFileSync(path, JSON.stringify(value))
+  const read = () => readFixtureJson(path)
+  let sequence = readFixtureRecords(path + '.requests').length
+  const record = request => writeFixtureJson(join(path + '.requests', String(++sequence).padStart(8, '0') + '.json'), request)
   const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(String(input))
@@ -28,17 +30,16 @@ function installDeletionProvider() {
     const state = read(), method = options.method || 'GET', headers = new Headers(options.headers)
     if (headers.get('authorization') !== 'Bearer ' + process.env.PSC_PLATFORM_STRIPE_SECRET) throw new Error('Wrong synthetic account credential')
     const request = { method, path: url.pathname, query: url.search }
-    state.requests.push(request)
-    if (method !== 'GET') { state.unexpected.push(request); write(state); throw new Error('Deletion must never change a provider payment') }
+    request.unexpected = method !== 'GET' || (url.pathname !== '/v1/account' && !/^\/v1\/subscriptions\/sub_[A-Za-z0-9_]+$/.test(url.pathname) && !state.sessions[url.pathname.split('/').at(-1)])
+    record(request)
+    if (method !== 'GET') throw new Error('Deletion must never change a provider payment')
     if (url.pathname === '/v1/account') {
-      write(state)
       return reply({ object: 'account', id: state.account_id, private_account_value: 'raw-hosting-deletion-provider-error-sentinel' })
     }
     const sub = url.pathname.match(/^\/v1\/subscriptions\/(sub_[A-Za-z0-9_]+)$/)
     if (sub) {
       if (url.searchParams.get('expand[]') !== 'items.data.price.product') throw new Error('Full subscription evidence required')
       const id = sub[1], result = state.subscriptions[id], failure = state.failures[id]
-      write(state)
       if (state.defer_subscription === id) {
         const deadline = Date.now() + 5000
         while (!read().release_read) {
@@ -52,8 +53,7 @@ function installDeletionProvider() {
       return reply(result)
     }
     const session = url.pathname.match(/^\/v1\/checkout\/sessions\/(cs_[A-Za-z0-9_]+)$/)
-    if (session && state.sessions[session[1]]) { write(state); return reply(state.sessions[session[1]]) }
-    state.unexpected.push(request); write(state)
+    if (session && state.sessions[session[1]]) return reply(state.sessions[session[1]])
     throw new Error('Unexpected synthetic hosting deletion read')
   }
 }
@@ -62,8 +62,8 @@ test('admin HTTP deletion verifies recorded hosting before removing any shop dat
   const root = mkdtempSync(join(tmpdir(), 'psc-hosting-deletion-http-')), demo = join(root, 'demo'), server = await createHttpTestServer()
   const {port,base} = server, fixture = join(root, 'provider.json')
   let control, ownerCookie, env, logs = '', deletionResponses = '', shopNumber = 0
-  const provider = () => JSON.parse(readFileSync(fixture, 'utf8'))
-  const mutateProvider = callback => { const state = provider(); callback(state); writeFileSync(fixture, JSON.stringify(state)) }
+  const provider = () => { const requests = readFixtureRecords(fixture + '.requests'); return { ...readFixtureJson(fixture), requests, unexpected: requests.filter(row => row.unexpected) } }
+  const mutateProvider = callback => { const state = readFixtureJson(fixture); callback(state); writeFixtureJson(fixture, state) }
   const cookies = response => response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
   const request = async (path, { method = 'GET', body, cookie = ownerCookie } = {}) => {
     const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
@@ -156,8 +156,10 @@ test('admin HTTP deletion verifies recorded hosting before removing any shop dat
     assert.equal(built.status, 0, built.stderr)
     env = JSON.parse(readFileSync(join(demo, 'demo-env.json'), 'utf8'))
     Object.assign(env, { PSC_TICK_MS: '3600000', PSC_PLATFORM_STRIPE_SECRET: SECRET, PSC_STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, PSC_ADMIN_EMAIL: 'dylan@example.test', PSC_HOSTING_DELETION_FIXTURE: fixture })
-    writeFileSync(fixture, JSON.stringify({ account_id: 'acct_deletionFixture', requests: [], unexpected: [], subscriptions: {}, sessions: {}, failures: {}, defer_subscription: null, release_read: false }))
-    writeFileSync(join(demo, 'hosting-deletion-provider.mjs'), "import {readFileSync,writeFileSync} from 'node:fs';\n(" + installDeletionProvider.toString() + ')();\n')
+    mkdirSync(fixture + '.requests')
+    writeFixtureJson(fixture, { account_id: 'acct_deletionFixture', subscriptions: {}, sessions: {}, failures: {}, defer_subscription: null, release_read: false })
+    writeFileSync(join(demo, 'hosting-json-fixture.mjs'), readFileSync(new URL('./helpers/json-fixture.mjs', import.meta.url)))
+    writeFileSync(join(demo, 'hosting-deletion-provider.mjs'), "import {join} from 'node:path';\nimport {readFixtureJson,writeFixtureJson,readFixtureRecords} from './hosting-json-fixture.mjs';\n(" + installDeletionProvider.toString() + ')();\n')
     control = new DatabaseSync(join(demo, 'data', 'control.db')); control.exec('PRAGMA busy_timeout=5000')
     await server.start({cwd:demo,env,args:['--no-warnings','--import','./bin/demo-network-guard.mjs','--import','./hosting-deletion-provider.mjs','server.mjs'],onOutput:text=>{logs+=text}})
     await server.assertPortOwned()
@@ -233,6 +235,8 @@ test('admin HTTP deletion verifies recorded hosting before removing any shop dat
       const shop = await makeShop(), ids = seedHosting(shop, { providerStatus: 'canceled' })
       mutateProvider(state => { state.defer_subscription = ids.subscriptionId; state.release_read = false })
       const pending = remove(shop.id)
+      // Attach rejection handling immediately, even if a barrier/assertion below fails first.
+      pending.catch(() => {})
       try {
         for (let n = 0; n < 300 && !provider().requests.some(row => row.path === '/v1/subscriptions/' + ids.subscriptionId); n++) await pause(10)
         assert.ok(provider().requests.some(row => row.path === '/v1/subscriptions/' + ids.subscriptionId), 'deletion reached the deferred provider read')
@@ -244,7 +248,10 @@ test('admin HTTP deletion verifies recorded hosting before removing any shop dat
         const result = await pending
         assert.equal(result.status, 409, JSON.stringify(result.json)); assert.equal(result.json.code, 'hosting_deletion_changed')
         assert.deepEqual(snapshot(shop), before)
-      } finally { mutateProvider(state => { state.release_read = true; state.defer_subscription = null }) }
+      } finally {
+        try { mutateProvider(state => { state.release_read = true; state.defer_subscription = null }) }
+        finally { await pending.catch(() => {}) }
+      }
       const retried = await remove(shop.id)
       assert.equal(retried.status, 200, JSON.stringify(retried.json)); assertGone(shop)
     })

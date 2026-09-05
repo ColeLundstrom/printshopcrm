@@ -16,6 +16,7 @@ import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
+import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
 import { verifyTwilio, ingestSms, phoneKey } from './lib/inbound-sms.mjs'
@@ -75,6 +76,7 @@ import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund
 import { recordReversal, recentReversals } from './lib/payment-reversals.mjs'
 import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary } from './lib/invoice-credits.mjs'
 import { currencyCode } from './lib/payment-currency.mjs'
+import { billingDefaults, recipientSnapshot, documentRecipient, documentForRecipient, recipientMessageIssue, updateDocumentRecipients } from './lib/billing-recipients.mjs'
 import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize } from './lib/authorizenet.mjs'
 import { newPaymentAttempt, paymentAttempt, attemptBySession, readyAttempt, failAttempt, completeAttempt, recentAttempts } from './lib/payment-attempts.mjs'
 import { connectReady, createExpressAccount, createAccountLink, getConnectAccount, createConnectedCheckout, retrieveConnectedSession, FEE_PCT } from './lib/connect.mjs'
@@ -103,10 +105,10 @@ try { const pc = getPlatformConfig(); setPlatformCredentials({ secret: pc.platfo
 db.exec('CREATE INDEX IF NOT EXISTS idx_msg_contact ON messages(contact_id)')
 
 /** Record a message on the thread. Every outbound touch (email, SMS, nudge) also lands here. */
-function recordMessage({ contact_id, direction, channel = 'email', subject = '', body = '', kind = '', read }) {
+function recordMessage({ contact_id, direction, channel = 'email', subject = '', body = '', kind = '', read, recipient_name='', recipient_email='' }) {
   if (!contact_id) return
-  run('INSERT INTO messages (contact_id, direction, channel, subject, body, kind, read, created_at) VALUES (?,?,?,?,?,?,?,?)',
-    contact_id, direction, channel, subject, body, kind, read ?? (direction === 'in' ? 0 : 1), now())
+  run('INSERT INTO messages (contact_id, direction, channel, subject, body, kind, read, created_at,recipient_name,recipient_email) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    contact_id, direction, channel, subject, body, kind, read ?? (direction === 'in' ? 0 : 1), now(),recipient_name,recipient_email)
   if (direction === 'in') { try { broadcast(curSlug(), 'conversation', { contact_id, channel, preview: String(body).slice(0, 80) }) } catch {} }
 }
 
@@ -773,6 +775,7 @@ const str = (v, fallback = '') =>
 // drop, because a date the shop typed and the app quietly discarded is worse than an error.
 const badDate = (v) => v !== undefined && v !== null && String(v).trim() !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(String(v).trim())
 const BAD_DATE = { error: 'Due date must be a calendar date, as YYYY-MM-DD', code: 'bad_due_date' }
+const realCalendarDate = value => typeof value==='string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value+'T00:00:00Z')) && new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value
 /**
  * Resolve the customer a document is being raised for, or answer why not.
  *
@@ -894,7 +897,7 @@ function markDelivery(slug, rowId, result) {
   // enough to trigger it, so swallow everything.
   try {
     withSlugDb(slug, () => {
-      run('UPDATE email_log SET delivered = ?, via = ?, delivery_error = ? WHERE id = ?',
+      run('UPDATE email_log SET delivered = ?, via = ?, delivery_error = ?, sending_at=NULL WHERE id = ?',
         result.delivered ? 1 : 0, result.via || 'logged', result.error || null, rowId)
     })
   } catch (e) { console.error('markDelivery:', e && e.message) }
@@ -905,16 +908,24 @@ function markDelivery(slug, rowId, result) {
  * has wired SMTP. With no credentials the message still records (tagged "logged"), so nothing
  * silently vanishes — the honesty rule, now with real delivery on top.
  */
-function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, deliver = true }) {
+function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, estimate_id=null, recipient_revision, deliver = true }) {
   const s = getSettings()
   const slug = curSlug()
-  const merged = { first_name: String(contact?.name || '').split(' ')[0], ...vars }
+  const {to,body,rowId}=tx(()=>{
+  const type=invoice_id?'invoice':estimate_id?'estimate':null
+  const doc=type?documentForRecipient(type,invoice_id || estimate_id):null
+  if(doc && doc.contact_id!==contact?.id) throw Object.assign(new Error('Document customer changed. Reload before sending.'),{status:409,expose:true})
+  const recipient=doc?documentRecipient(doc,type):{name:contact?.name || '',email:contact?.email || ''}
+  if(doc && (recipient.blocked || (recipient_revision!==undefined && recipient_revision!==recipient.revision)))
+    throw Object.assign(new Error(recipient.blocked || 'Document recipients changed. Create a fresh message.'),{status:409,expose:true,code:'recipient_review'})
+  const merged = { ...vars, first_name: String(recipient.name).split(' ')[0], recipient_name:recipient.name, recipient_first_name:String(recipient.name).split(' ')[0] }
   const body = String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => templateValue(k, merged, s))
-  const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    contact?.id ?? null, contact?.email ?? '', subject, body, kind, deliver ? 'logged' : 'draft', now()).lastInsertRowid)
-  if(invoice_id)run('UPDATE email_log SET invoice_id=? WHERE id=?',invoice_id,rowId)
-  recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'email', subject, body, kind })
-  const to = contact?.email
+  const to = recipient.email
+  const rowId = Number(run('INSERT INTO email_log (contact_id,to_email,subject,body,kind,via,created_at,invoice_id,estimate_id,recipient_name,recipient_revision,sending_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    contact?.id ?? null,to,subject,body,kind,deliver?'logged':'draft',now(),invoice_id,estimate_id,recipient.name,doc?recipient.revision:null,deliver&&to?now():null).lastInsertRowid)
+  recordMessage({ contact_id: contact?.id, direction: 'out', channel: 'email', subject, body, kind,recipient_name:recipient.name,recipient_email:to })
+  return {to,body,rowId}
+  })
   if (deliver && to) sendEmail({ to, subject, body, settings: s }).then((r) => markDelivery(slug, rowId, r)).catch((e) => markDelivery(slug, rowId, { delivered: false, via: 'error', error: String(e.message) })).catch(() => {})
   return body
 }
@@ -2299,37 +2310,54 @@ app.get('/api/dashboard', wrap((_req, res) => {
   })
 }))
 
-/* ================= CAPACITY & PROMISE DATES =================
- * "Can we physically hit this date given everything already on the press?" No MIS answers it.
- * Reuses the costing engine's press-time tables, so the schedule and the quote never disagree. */
+/* ================= SCREEN PRINT CAPACITY =================
+ * Estimate press completion from supported work. Packing, carrier transit and unsupported
+ * decoration methods are outside this model; unresolved work prevents a positive date verdict. */
 
 /** The committed board, each job tagged with its honest due date (proof-gated projection). */
-const activeJobsForCapacity = () =>
+const activeJobsForCapacity = () => {
+  const tasks = new Map()
+  for (const task of all("SELECT t.* FROM production_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.status='active' ORDER BY t.job_id,t.position,t.id")) {
+    if (!tasks.has(task.job_id)) tasks.set(task.job_id,[])
+    tasks.get(task.job_id).push(task)
+  }
   // The estimate rides along so a job that was never separated still schedules against the colour
   // count the shop actually quoted, rather than the flat capacity_default_colors guess.
-  all(`SELECT j.*, c.name AS contact_name, e.items AS est_items
+  return all(`SELECT j.*, c.name AS contact_name, e.items AS est_items,p.job_id AS workflow_id
        FROM jobs j
        LEFT JOIN contacts c ON c.id = j.contact_id
        LEFT JOIN estimates e ON e.id = j.estimate_id
+       LEFT JOIN production_jobs p ON p.job_id=j.id
        WHERE j.status = 'active'`)
     .map((j) => ({
       id: j.id, title: j.title, job_number: j.job_number, contact_name: j.contact_name,
       stage: j.stage, rush: !!j.rush, due: scheduleFor(j).due || j.due_date, separation: j.separation,
       colors: colorsFromItems(parse(j.est_items, [])),
       sizes: j.sizes, quantities: j.quantities,
+      status:j.status,decoration:j.decoration,est_items:j.est_items,line_sizes:j.line_sizes,
+      workflow_enrolled:j.workflow_id != null,workflow_tasks:tasks.get(j.id) || [],
     }))
+}
 
-app.get('/api/capacity', wrap((_req, res) => {
-  res.json(capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }))
+app.get('/api/capacity', wrap((req, res) => {
+  res.json({...capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }),can_manage:hasRole(req,'manager')})
 }))
 
 /** Live "can we promise this date?" check — schedules the board, then drops the prospective job in. */
 app.post('/api/capacity/promise', wrap((req, res) => {
   const b = req.body || {}
+  if (b.due_date != null && b.due_date!=='' && !realCalendarDate(b.due_date))
+    return res.status(400).json({error:'Print-by date must be a real YYYY-MM-DD date.',code:'invalid_date'})
+  const numeric=value=>(typeof value==='number'||typeof value==='string'&&value.trim()!=='')&&Number.isFinite(Number(value))
+  if (!numeric(b.pieces) || !Number.isSafeInteger(Number(b.pieces)) || Number(b.pieces)<1 || Number(b.pieces)>MAX_PIECES ||
+      b.colors!==undefined && (!numeric(b.colors)||!Number.isSafeInteger(Number(b.colors))||Number(b.colors)<1||Number(b.colors)>12))
+    return res.status(400).json({error:`Use whole pieces from 1 to ${MAX_PIECES} and 1–12 colors.`,code:'invalid_capacity_input'})
   res.json(capacityPromise(activeJobsForCapacity(), getSettings(), {
     pieces: Math.min(MAX_PIECES, Math.max(0, Number(b.pieces) || 0)),
     colors: Math.max(1, Number(b.colors) || 1),
     dueDate: b.due_date || null,
+    ...(Object.hasOwn(b,'decoration') ? {decoration:b.decoration} : {}),
+    ...(Object.hasOwn(b,'method') ? {method:b.method} : {}),
   }))
 }))
 
@@ -2338,10 +2366,20 @@ app.post('/api/capacity/promise', wrap((req, res) => {
  *  same manager gate as PUT /api/settings rather than being a back door around it. */
 app.put('/api/capacity/settings', requireRole('manager'), wrap((req, res) => {
   const b = req.body || {}
-  for (const k of ['capacity_stations', 'capacity_hours_per_day', 'utilization_pct', 'capacity_default_colors', 'press_type']) {
-    if (b[k] !== undefined && b[k] !== null && b[k] !== '') setSetting(k, String(b[k]))
+  const limits={capacity_stations:[1,20,true],capacity_hours_per_day:[0.5,24,false],utilization_pct:[5,100,false],capacity_default_colors:[1,12,true]},patch={}
+  for (const [k,[min,max,integer]] of Object.entries(limits)) {
+    if (!Object.hasOwn(b,k)) continue
+    const value=b[k],n=Number(value)
+    if (!['number','string'].includes(typeof value)||typeof value==='string'&&!value.trim()||!Number.isFinite(n)||n<min||n>max||integer&&!Number.isInteger(n))
+      return res.status(400).json({error:`${k.replaceAll('_',' ')} must be ${integer?'a whole number':'a number'} from ${min} to ${max}.`,code:'invalid_capacity_setting'})
+    patch[k]=String(n)
   }
-  res.json(capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }))
+  if (Object.hasOwn(b,'press_type')) {
+    if (!['manual','auto'].includes(b.press_type)) return res.status(400).json({error:'Choose a manual or automatic press.',code:'invalid_capacity_setting'})
+    patch.press_type=b.press_type
+  }
+  tx(()=>{for(const [k,value] of Object.entries(patch))setSetting(k,value)})
+  res.json({...capacityReport(activeJobsForCapacity(), getSettings(), { days: 14 }),can_manage:hasRole(req,'manager')})
 }))
 
 /* ================= TODAY — role-aware action center =================
@@ -2535,14 +2573,15 @@ const contactAddressError = (b) => (
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
   const postal = postalPatch(b)
+  const billing = billingDefaults(b)
   const name = str(b.name).trim()
   if (!name) return res.status(400).json({ error: 'Name is required' })
   const bad = contactAddressError(b)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
-  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, billing_address, shipping_address, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, billing_address, shipping_address, billing_mode,billing_name,billing_email,created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
-    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), postal.billing_address, postal.shipping_address, now(), now())
+    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email,now(), now())
   const id = Number(r.lastInsertRowid)
   logActivity('contact', `Contact created — ${name}`, { contact_id: id })
   fireAuto('contact.created', { contact: get('SELECT * FROM contacts WHERE id = ?', id) })
@@ -2569,6 +2608,7 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const cur = get('SELECT * FROM contacts WHERE id = ?', id)
   if (!cur) return res.status(404).json({ error: 'Contact not found' })
   const postal = postalPatch(b, cur)
+  const billing = billingDefaults(b,cur)
   const sent = (k) => Object.prototype.hasOwnProperty.call(b, k)
   const text = (k) => (sent(k) ? str(b[k]) : (cur[k] ?? ''))
   const tags = sent('tags') ? (Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)) : (cur.tags ?? '')
@@ -2578,10 +2618,10 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const merged = { ...cur, ...(sent('email') ? { email: str(b.email) } : {}), ...(sent('phone') ? { phone: str(b.phone) } : {}) }
   const bad = contactAddressError(merged)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
-  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, billing_address=?, shipping_address=?, updated_at=? WHERE id=?',
+  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, billing_address=?, shipping_address=?,billing_mode=?,billing_name=?,billing_email=?, updated_at=? WHERE id=?',
     name, text('email'), text('phone'), text('company'), text('notes'), tags,
     sent('tax_exempt') ? (b.tax_exempt ? 1 : 0) : (cur.tax_exempt ? 1 : 0),
-    text('tax_exempt_id'), postal.billing_address, postal.shipping_address, now(), id)
+    text('tax_exempt_id'), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email, now(), id)
   logActivity('contact', 'Contact updated', { contact_id: id })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
@@ -2608,6 +2648,8 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
   const id = +req.params.id
   const c = get('SELECT id, name FROM contacts WHERE id = ?', id)
   if (!c) return res.status(404).json({ error: 'Customer not found', code: 'not_found' })
+  if (get('SELECT 1 FROM shipping_records r LEFT JOIN estimates e ON e.id=r.estimate_id LEFT JOIN jobs j ON j.id=r.job_id WHERE e.contact_id=? OR j.contact_id=? LIMIT 1',id,id))
+    return res.status(409).json({code:'shipping_history_retained',error:'This customer has shipment history. Keep the customer so their dispatch and correction records remain available.'})
   const live = get("SELECT COUNT(*) AS n FROM invoices WHERE contact_id = ? AND status != 'void'", id).n
   const paid = round2(get('SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.contact_id = ?', id).v)
   const history=get(`SELECT i.id FROM invoices i WHERE i.contact_id=? AND (
@@ -2988,6 +3030,8 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     if (contactId == null) return
   }
   if (contactId !== e.contact_id) {
+    if (get('SELECT 1 FROM shipping_records WHERE estimate_id=?',id))
+      return res.status(409).json({code:'shipping_customer_retained',error:'This order has shipment history for its customer. Create a separate quote for a different customer.'})
     const linked = get('SELECT job_number FROM jobs WHERE estimate_id=? AND contact_id IS NOT ? ORDER BY id LIMIT 1', id, contactId)
     if (linked) return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `This quote already has ${linked.job_number} for another customer. Keep its customer or create a separate quote for the new customer.` })
   }
@@ -3030,6 +3074,8 @@ app.put('/api/estimates/:id', wrap((req, res) => {
 }))
 
 app.delete('/api/estimates/:id', requireRole('manager'), wrap((req, res) => {
+  if (get('SELECT 1 FROM shipping_records WHERE estimate_id=?',+req.params.id))
+    return res.status(409).json({ code:'shipping_history_retained', error:'This order has shipment history. Keep the order so its dispatch and correction records remain available.' })
   const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", +req.params.id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — can't delete a converted estimate.` })
   /* …and the same refusal for a job that is on the floor against this quote but has not been
@@ -3093,7 +3139,7 @@ app.post('/api/estimates/:id/send', outboundLimit, wrap((req, res) => {
   // No address, no send — and therefore no `sent` status and no "emailed to customer" on the
   // timeline. The four other customer-mail routes have refused this all along; this one flipped
   // the quote to `sent` for a contact it could not reach.
-  if (requireCustomerEmail(c, res, 'estimate')) return
+  if (requireDocumentEmail(e,'estimate',res,req.body)) return
   const s = getSettings()
   // Re-sending emails a copy. It must not REVERSE the customer's decision. This UPDATE was
   // unconditional, so "resend the estimate" on an already-approved, already-invoiced, part-paid
@@ -3104,13 +3150,14 @@ app.post('/api/estimates/:id/send', outboundLimit, wrap((req, res) => {
   const settled = ['approved', 'declined', 'invoiced'].includes(e.status)
   if (settled) run('UPDATE estimates SET sent_at=? WHERE id=?', now(), id)
   else run(`UPDATE estimates SET status='sent', sent_at=? WHERE id=?`, now(), id)
-  queueEmail({ contact: c, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`,
+  queueEmail({ contact: c, estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`,
     template: s.email_template_estimate,
     vars: { contact_name: c?.name || '', estimate_number: e.estimate_number, total: money(e.total) } })
-  logActivity('estimate', `Estimate ${e.estimate_number} emailed to ${c?.email || 'customer'}`, { contact_id: e.contact_id })
+  const sentTo=documentRecipient(e,'estimate').email
+  logActivity('estimate', `Estimate ${e.estimate_number} queued to ${sentTo}`, { contact_id: e.contact_id })
   fireAuto('estimate.sent', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: c, total: e.total })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'sent')
-  res.json({ ok: true, share_url: shareUrl('estimate', id), emailed_to: c?.email || null, email_live: notifyStatus(s).shop_email, estimate: estimateView(get('SELECT * FROM estimates WHERE id = ?', id)) })
+  res.json({ ok: true, share_url: shareUrl('estimate', id), emailed_to: sentTo, email_live: notifyStatus(s).shop_email, estimate: estimateView(get('SELECT * FROM estimates WHERE id = ?', id)) })
 }))
 
 app.post('/api/estimates/:id/approve', wrap((req, res) => {
@@ -3171,6 +3218,7 @@ function advanceOrder(estimateId, toStage) {
 app.get('/api/orders', wrap((_req, res) => {
   const rows = all(`
     SELECT e.id, e.estimate_number, e.total, e.board_stage, e.tracking_number, e.carrier, e.stage_moved_at,
+           (SELECT COUNT(*) FROM shipping_records sr WHERE sr.estimate_id=e.id AND sr.status!='void') AS shipment_count,
            e.status AS estimate_status, c.name AS contact_name, c.company,
            i.id AS invoice_id, i.invoice_number, i.status AS invoice_status, i.due_date,
            i.amount_due, i.amount_paid,
@@ -3218,20 +3266,33 @@ app.put('/api/orders/:id/stage', wrap((req, res) => {
   res.json({ ok: true, stage })
 }))
 
-/** Tracking number + carrier. Shown on the card and on the invoice the customer sees. */
+const shippingActor = req => ({ id:req.member?.id ?? null, name:req.member?.name || 'Shop operator', manager:hasRole(req,'manager') })
+const shippingJobId = value => {
+  if (value == null) return null
+  if (!Number.isSafeInteger(value) || value < 1) throw Object.assign(new Error('Choose a valid production job.'),{status:400,expose:true})
+  return value
+}
+app.get('/api/orders/:id/shipments', wrap((req,res) => {
+  res.json(shippingView({estimate_id:+req.params.id},shippingActor(req)))
+}))
+app.post('/api/orders/:id/shipments', wrap((req,res) => {
+  const ref = { estimate_id:+req.params.id,job_id:shippingJobId(req.body?.job_id) },who=shippingActor(req)
+  const mutation = mutateShipment(ref,req.body,who)
+  if (mutation.changed && !mutation.replayed) rtBroadcast('production', {job_id:ref.job_id})
+  res.json({...shippingView({estimate_id:ref.estimate_id},who),mutation})
+}))
+for (const action of ['correct','void']) app.post(`/api/shipping/:id/${action}`,requireRole('manager'),wrap((req,res) => {
+  const record=get('SELECT * FROM shipping_records WHERE id=?',+req.params.id)
+  if (!record) return res.status(404).json({error:'Shipment not found.'})
+  const ref={estimate_id:record.estimate_id,job_id:record.job_id},who=shippingActor(req)
+  const mutation=mutateShipment(ref,req.body,who,{action,shipment_id:record.id})
+  if (mutation.changed && !mutation.replayed) rtBroadcast('production',{job_id:record.job_id})
+  res.json({mutation})
+}))
+
+/** Compatibility adapter for one legacy tracking field; never changes a board stage. */
 app.put('/api/orders/:id/tracking', wrap((req, res) => {
-  const id = +req.params.id
-  const e = get('SELECT * FROM estimates WHERE id = ?', id)
-  if (!e) return res.status(404).json({ error: 'Order not found' })
-  const tracking = String(req.body?.tracking_number || '').trim().slice(0, 80)
-  const carrier = String(req.body?.carrier || '').trim().slice(0, 40)
-  run('UPDATE estimates SET tracking_number = ?, carrier = ? WHERE id = ?', tracking, carrier, id)
-  // Adding a tracking number means it went out — move the card unless staff are already past Shipped.
-  if (tracking) advanceOrder(id, 'shipped')
-  if (tracking && tracking !== e.tracking_number) {
-    logActivity('stage', `${e.estimate_number} shipped — ${carrier ? carrier + ' ' : ''}${tracking}`, { contact_id: e.contact_id })
-  }
-  res.json({ ok: true, tracking_number: tracking, carrier })
+  res.json(legacyOrderTracking(+req.params.id,req.body || {},shippingActor(req)))
 }))
 
 /**
@@ -3427,7 +3488,7 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   for (const field of ['payment_due_date', 'production_due_date']) {
     if (req.body?.[field] === undefined || req.body[field] === '') continue
     const value = req.body[field]
-    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value+'T00:00:00Z')) || new Date(value+'T00:00:00Z').toISOString().slice(0,10) !== value)
+    if (!realCalendarDate(value))
       return res.status(400).json({ error: `${field === 'payment_due_date' ? 'Payment' : 'Production'} due date must be a real date in YYYY-MM-DD format.`, code: 'invalid_date' })
   }
   const picked = String(req.body?.payment_due_date ?? req.body?.due_date ?? '').trim()
@@ -3531,7 +3592,7 @@ app.get('/api/estimates/:id/pdf', wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!e) return res.status(404).send('Not found')
   const pdf = renderDocument('ESTIMATE', {
-    doc: e, contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id),
+    doc: e, contact: savedDocumentContact(e,get('SELECT * FROM contacts WHERE id = ?', e.contact_id),'estimate'),
     settings: getSettings(), items: parse(e.items, []), upcharges: getUpcharges(),
   })
   res.type('application/pdf')
@@ -3648,17 +3709,17 @@ app.post('/api/invoices/:id/request-payment', outboundLimit, wrap((req, res) => 
   // A voided invoice is a cancelled demand. POST /payments and both public pay routes were taught
   // that in v1.11.0; this one was missed, so the app would build a live pay link for a cancelled
   // document and email a real customer a real demand for money the shop had already withdrawn.
-  if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'payment link')) return
+  if (refuseVoided(inv, res) || requireDocumentEmail(inv,'invoice',res,req.body)) return
   const s = getSettings()
   const balance = round2(inv.amount_due - inv.amount_paid)
   const origin = publicOrigin(req)
   const link = origin + shareUrl('pay', id)
   const deliver = s.mode_followups !== 'manual'
-  queueEmail({ contact: c, invoice_id:id, kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
+  queueEmail({ contact: c, invoice_id:id,recipient_revision:inv.recipient_revision,kind: 'payment', subject: `Payment link for invoice ${inv.invoice_number}`,
     template: `Hi {{first_name}},\n\nYou can pay invoice ${inv.invoice_number} (balance ${money(balance)}) securely online here:\n\n${link}\n\nThank you,\n{{shop_name}}`,
     vars: { shop_name: s.shop_name }, deliver })
   logActivity('note', `Payment link ${deliver ? 'sent' : 'drafted'} for ${inv.invoice_number}`, { contact_id: inv.contact_id })
-  res.json({ ok: true, delivered: deliver, link, stripe_ready: paymentsReady(s) })
+  res.json({ ok: true, delivered: deliver, link, emailed_to:documentRecipient(inv).email,stripe_ready: paymentsReady(s) })
 }))
 
 app.post('/api/invoices/:id/payments', wrap((req, res) => {
@@ -3779,6 +3840,21 @@ const requireCustomerEmail = (c, res, what) => {
   })
   return true
 }
+const requireDocumentEmail = (doc,type,res,body) => {
+  if((body?.recipient_revision!==undefined || doc.recipient_revision>0) && body?.recipient_revision!==doc.recipient_revision) {
+    res.status(409).json({error:'Document recipients changed. Reload and review the saved recipient before sending.',code:'recipient_changed'});return true
+  }
+  const recipient=documentRecipient(doc,type)
+  if(!recipient.blocked)return false
+  res.status(400).json({error:recipient.blocked+' Open Delivery contacts on this document to update it.',code:'no_email'})
+  return true
+}
+for(const [path,type] of [['estimates','estimate'],['invoices','invoice']]) {
+  app.put(`/api/${path}/:id/recipients`,requireRole('manager'),wrap((req,res)=>{
+    const doc=updateDocumentRecipients(type,+req.params.id,req.body,req.member?.name || 'staff')
+    res.json({...doc,recipient:documentRecipient(doc,type)})
+  }))
+}
 /** A voided invoice is a cancelled demand. Nothing may chase money on it. */
 const refuseVoided = (inv, res) => {
   if(inv.payment_review) { res.status(409).json({error:'Payment changes need review before requesting more money.',code:'payment_review'});return true }
@@ -3794,13 +3870,14 @@ app.post('/api/invoices/:id/send', outboundLimit, wrap((req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
-  if (refuseVoided(inv, res) || requireCustomerEmail(c, res, 'invoice')) return
+  if (refuseVoided(inv, res) || requireDocumentEmail(inv,'invoice',res,req.body)) return
   const s = getSettings()
-  queueEmail({ contact: c, invoice_id:inv.id, kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
+  queueEmail({ contact: c, invoice_id:inv.id,recipient_revision:inv.recipient_revision,kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
     template: s.email_template_invoice,
     vars: { contact_name: c?.name || '', invoice_number: inv.invoice_number, total: money(inv.amount_due), due_date: inv.due_date } })
-  logActivity('invoice', `Invoice ${inv.invoice_number} emailed to ${c.email}`, { contact_id: inv.contact_id })
-  res.json({ ok: true, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+  const sentTo=documentRecipient(inv).email
+  logActivity('invoice', `Invoice ${inv.invoice_number} queued to ${sentTo}`, { contact_id: inv.contact_id })
+  res.json({ ok: true, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
 }))
 
 app.get('/api/invoices/:id/pdf', wrap((req, res) => {
@@ -3811,7 +3888,7 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
   // Total breakdown that reconciles to amount_due, instead of labeling the tax-inclusive total "Subtotal".
   const pdf = renderDocument('INVOICE', {
     doc: { ...i, ...invoiceCreditSummary(i), notes: i.payment_review ? 'PAYMENT UNDER REVIEW — Do not pay again. '+i.payment_review : i.notes, subtotal: i.credit_base ? JSON.parse(i.credit_base).subtotal : est ? est.subtotal : round2(i.amount_due), tax: i.credit_base ? JSON.parse(i.credit_base).tax : est ? est.tax : 0, total: i.amount_due, tax_rate: est?.tax_rate },
-    contact: get('SELECT * FROM contacts WHERE id = ?', i.contact_id),
+    contact: savedDocumentContact(i,get('SELECT * FROM contacts WHERE id = ?', i.contact_id),'invoice'),
     settings: getSettings(), items: est ? parse(est.items, []) : [{ description: 'Custom apparel order', qty: 1, unit_price: i.amount_due }],
     payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id), upcharges: getUpcharges(),
   })
@@ -4208,6 +4285,8 @@ app.delete('/api/jobs/:id', requireRole('manager'), wrap((req, res) => {
   const id = +req.params.id
   const j = get('SELECT * FROM jobs WHERE id = ?', id)
   if (!j) return res.status(404).json({ error: 'Job not found', code: 'not_found' })
+  if (get('SELECT 1 FROM shipping_records WHERE job_id=?',id))
+    return res.status(409).json({code:'shipping_history_retained',error:'This job has shipment history. Keep the job so its dispatch and correction records remain available.'})
   const pos = purchaseOrdersForJob(id)
   const out = pos.filter((p) => PO_STILL_OUT.includes(String(p.status)) && poAlreadySent(p))
   if (out.length) {
@@ -4722,7 +4801,7 @@ app.get('/api/followups', wrap((_req, res) => {
     .map((c) => ({ ...c, age: days(c.last_job) }))
 
   res.json({
-    stale, overdue, proofs, reorder,
+    stale:stale.map(e=>({...e,recipient:documentRecipient(e,'estimate')})), overdue:overdue.map(i=>({...i,recipient:documentRecipient(i)})), proofs, reorder,
     totals: {
       // dealValue, not SUM(total): total is subtotal + sales tax, and the tax is the state's money,
       // not revenue the shop is chasing. The dashboard KPI and the pipeline were corrected for
@@ -4738,7 +4817,7 @@ app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   const e = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
-  if (requireCustomerEmail(c, res, 'follow-up')) return
+  if (requireDocumentEmail(e,'estimate',res,req.body)) return
   const s = getSettings()
   // The shop's own Manual follow-up switch. queueEmail's default is deliver:true, and these two
   // routes were the only customer-mail paths in the file that never passed it — the automation
@@ -4748,11 +4827,12 @@ app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   // shop that set it to Manual still had a live customer email leave the building from a 24px
   // button in a table row.
   const deliver = s.mode_followups !== 'manual'
-  queueEmail({ contact: c, kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
+  queueEmail({ contact: c,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
     template: s.email_template_nudge,
     vars: { estimate_number: e.estimate_number, total: money(e.total) }, deliver })
-  logActivity('estimate', `Follow-up ${deliver ? 'sent' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${c.email}`, { contact_id: e.contact_id })
-  res.json({ ok: true, delivered: deliver, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+  const sentTo=documentRecipient(e,'estimate').email
+  logActivity('estimate', `Follow-up ${deliver ? 'queued' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${sentTo}`, { contact_id: e.contact_id })
+  res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
 }))
 
 /** Nudge an overdue invoice. */
@@ -4760,14 +4840,15 @@ app.post('/api/invoices/:id/nudge', outboundLimit, wrap((req, res) => {
   const i = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!i) return res.status(404).json({ error: 'Invoice not found' })
   const c = get('SELECT * FROM contacts WHERE id = ?', i.contact_id)
-  if (refuseVoided(i, res) || requireCustomerEmail(c, res, 'reminder')) return
+  if (refuseVoided(i, res) || requireDocumentEmail(i,'invoice',res,req.body)) return
   const s = getSettings()
   const deliver = s.mode_followups !== 'manual'   // the same switch, for the same reason as above
-  queueEmail({ contact: c, invoice_id:i.id, kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
+  queueEmail({ contact: c, invoice_id:i.id,recipient_revision:i.recipient_revision,kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
     vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver })
-  logActivity('invoice', `Payment reminder ${deliver ? 'sent' : 'drafted'} on ${i.invoice_number} to ${c.email}`, { contact_id: i.contact_id })
-  res.json({ ok: true, delivered: deliver, emailed_to: c.email, email_live: notifyStatus(s).shop_email })
+  const sentTo=documentRecipient(i).email
+  logActivity('invoice', `Payment reminder ${deliver ? 'queued' : 'drafted'} on ${i.invoice_number} to ${sentTo}`, { contact_id: i.contact_id })
+  res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
 }))
 
 /* ================= AUTOMATIONS ================= */
@@ -4808,7 +4889,9 @@ app.get('/api/automations', wrap((_req, res) => {
     // so the card said "3 parked" over a table containing none of them. Ascending puts the rows
     // the shop is being asked to act on where this query exists to put them.
     pending: all(`SELECT id, automation_id, automation_name, trigger, next_index, due_at, label,
-                         status, attempts, note, created_at
+                         status, attempts, note, created_at,
+                         CASE WHEN json_valid(ctx) THEN json_extract(ctx,'$.invoice.id') END AS invoice_id,
+                         CASE WHEN json_valid(ctx) THEN json_extract(ctx,'$.estimate.id') END AS estimate_id
                     FROM automation_pending ORDER BY status IS NULL, due_at LIMIT 100`),
   })
 }))
@@ -4821,6 +4904,7 @@ app.get('/api/automations', wrap((_req, res) => {
 app.post('/api/automations/pending/:id/resume', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM automation_pending WHERE id = ?', +req.params.id)
   if (!p) return res.status(404).json({ error: 'That queued sequence is no longer there.', code: 'not_found' })
+  if(p.status==='recipient_review')return res.status(409).json({error:'Delivery contacts changed. Review the document and create a fresh message, then cancel this old sequence.',code:'recipient_review'})
   const rule = get('SELECT enabled FROM automations WHERE id = ?', p.automation_id)
   if (!rule) return res.status(409).json({ error: 'The rule behind this sequence was deleted, so there is nothing left to run. Cancel it instead.', code: 'rule_deleted' })
   if (!rule.enabled) return res.status(409).json({ error: 'That rule is switched off. Turn it back on and the sequence picks up where it stopped.', code: 'rule_disabled' })
@@ -5321,7 +5405,7 @@ function commitAutopilot(estId, contact, { steps, jobId } = {}) {
   // conversion belongs. Autopilot's job ends at a sent estimate and a visible "waiting on them".
   run(`UPDATE estimates SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), estId)
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'sent')
-  queueEmail({ contact, kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
+  queueEmail({ contact,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
     vars: { estimate_number: e.estimate_number, total: money(e.total) } })
   logActivity('estimate', `Estimate ${e.estimate_number} sent to ${contact.name} by autopilot`, { contact_id: contact.id })
   // The same event the manual Send fires. Without it the shop's own rules never saw an autopilot
@@ -7587,6 +7671,8 @@ const EXPORTS = {
   invoices: () => iterate('SELECT * FROM invoices ORDER BY id'),
   payments: () => iterate('SELECT * FROM payments ORDER BY id'),
   jobs: () => iterate('SELECT * FROM jobs ORDER BY id'),
+  shipments: () => iterate('SELECT * FROM shipping_records ORDER BY id'),
+  shipment_events: () => iterate('SELECT * FROM shipping_events ORDER BY id'),
   activities: () => iterate('SELECT * FROM activities ORDER BY id'),
   art_versions: () => iterate('SELECT * FROM art_versions ORDER BY id'),
   // The one everyone else drops: every line of every document, flattened, with sizes.
@@ -7934,6 +8020,8 @@ app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Message not found', code: 'not_found' })
   if(row.payment_stale || (row.invoice_id && get('SELECT payment_review FROM invoices WHERE id=?',row.invoice_id)?.payment_review)) return res.status(409).json({error:'Invoice payment details changed. Create a fresh message after reviewing the invoice.',code:'payment_review'})
   if (row.delivered) return res.status(409).json({ error: 'That message has already gone out.', code: 'already_sent' })
+  const recipientIssue=recipientMessageIssue(row)
+  if(recipientIssue)return res.status(409).json({error:recipientIssue,code:'recipient_review'})
   const c = row.contact_id ? get('SELECT email, phone FROM contacts WHERE id = ?', row.contact_id) : null
   const to = String(row.to_email || '').trim() || String((row.kind === 'sms' ? c?.phone : c?.email) || '').trim()
   if (!to) return res.status(400).json({ error: 'No address on file for this message — add one to the customer first.', code: 'no_recipient' })
@@ -7949,9 +8037,14 @@ app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   // and nothing else in the product clears this column. sendEmail is bounded by smtpTimeoutMs()
   // (60s ceiling), so five minutes is well clear of a slow relay and still releases a lost claim
   // inside one automation tick.
-  const claim = run(
+  const claim = tx(()=>{
+    const fresh=get('SELECT * FROM email_log WHERE id=?',row.id)
+    const issue=recipientMessageIssue(fresh)
+    if(issue)throw Object.assign(new Error(issue),{status:409,expose:true,code:'recipient_review'})
+    return run(
     "UPDATE email_log SET sending_at = ? WHERE id = ? AND delivered = 0 AND (sending_at IS NULL OR sending_at < datetime('now', '-5 minutes'))",
     now(), row.id)
+  })
   if (!claim.changes) return res.status(409).json({ error: 'That message is going out right now — give it a moment.', code: 'already_sending' })
   const s = getSettings()
   const r = row.kind === 'sms'
@@ -8685,7 +8778,11 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
  */
 const documentAddresses = doc => ['billing_address', 'shipping_address'].filter(key => doc[key]).map(key =>
   `<div class="to"><strong>${key === 'billing_address' ? 'Billing address' : 'Ship to'}</strong><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(doc[key])}</div></div>`).join('')
-const billedTo = (inv, c) => `<div class="to">Billed to <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}`
+const savedDocumentContact = (doc,c,type) => {
+  const saved=recipientSnapshot(doc),recipient=documentRecipient(doc,type)
+  return {...c,name:saved.buyer_name,email:recipient.email,attention:type==='invoice' && saved.billing_mode==='custom'?recipient.name:''}
+}
+const billedTo = (inv, c) => `<div class="to">Billed to <strong>${esc(recipientSnapshot(inv).buyer_name)}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}`
   + `${inv.po_number ? ` · PO ${esc(inv.po_number)}` : ''}${inv.due_date ? ` · due ${esc(inv.due_date)}` : ''}</div>` + documentAddresses(inv)
 
 /**
@@ -8800,7 +8897,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
     <div class="card">
       <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">${esc(s.shop_tagline)}</div></div>
         <div class="right"><div class="doc">ESTIMATE</div><div class="num2">${esc(e.estimate_number)}</div></div></div>
-      <div class="to">Prepared for <strong>${esc(c?.name || '')}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
+      <div class="to">Prepared for <strong>${esc(recipientSnapshot(e).buyer_name)}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
       ${documentAddresses(e)}
       <table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="totals"><div><span>Subtotal</span><span>${money(e.subtotal)}</span></div>
@@ -9181,7 +9278,7 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
       lineItems: [{ name: `${inv.invoice_number} — ${kind === 'deposit' ? 'deposit' : 'balance'} (${s.shop_name})`, amountCents: Math.round(amount * 100), qty: 1 }],
       successUrl: `${back}&session_id={CHECKOUT_SESSION_ID}`,
       cancelUrl: back,
-      customerEmail: c?.email || undefined,
+      customerEmail: documentRecipient(inv).email || undefined,
       metadata: { invoice: String(id), kind, slug: curSlug() },
     })
     res.redirect(303, url)

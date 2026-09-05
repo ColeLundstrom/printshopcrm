@@ -1,3 +1,5 @@
+import { unsupportedScreenPrintMethods } from '../shared/capacity-scope.js'
+import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
 import { api, $, $$, el, esc, money, moneyShort, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
@@ -189,8 +191,7 @@ export async function estimateEditor(id) {
    */
   const marginGuard = (revenue) => {
     const g = $('#margin-guard'); if (!g) return
-    const unsupported = [...new Set(items.filter(it => it.sizes && sizeTotal(it.sizes) > 0)
-      .map(it => it.decoration || it.matrix?.name || 'Unspecified decoration').filter(method => !/^screen[\s-]*print(?:ing)?$/i.test(String(method).trim())))]
+    const unsupported = unsupportedScreenPrintMethods(items)
     if (unsupported.length) {
       g.hidden = false; g.className = 'margin-guard'
       g.innerHTML = `<div class="mg-sub">Use Job costing for ${esc(unsupported.join(', '))} labor and machine costs. This quick preview supports screen printing only.</div>`
@@ -659,8 +660,10 @@ export async function estimateDetailView(id) {
     }
   }
   $('#edit')?.addEventListener('click', () => go(`/estimates/${id}/edit`))
+  $('#view').insertAdjacentHTML('afterbegin',recipientsPanel(e,'estimate',!e.invoice && window.__me?.can_manage!==false))
+  bindRecipientEditor(e,'estimate',()=>estimateDetailView(id))
   onceClick($('#send'), 'Sending…', async () => {
-    const r = await api.post(`/api/estimates/${id}/send`)
+    const r = await api.post(`/api/estimates/${id}/send`,{recipient_revision:e.recipient_revision})
     // Tell the truth: with no email connected, nothing was sent, so the shop hands over the link.
     toast(r.email_live && r.emailed_to ? `Emailed to ${r.emailed_to}` : 'Marked sent. No email connected yet, copy the customer link to send it')
     estimateDetailView(id)

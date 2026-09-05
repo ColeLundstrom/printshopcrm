@@ -236,21 +236,23 @@ test('actual tenant module preserves billed data and verifies terminal hosting b
   try {
     const script = `
       import assert from 'node:assert/strict'; import {existsSync} from 'node:fs'; import {join} from 'node:path'; import {DatabaseSync} from 'node:sqlite';
+      const started=Date.now(), phase=label=>console.log('deletion-fixture '+label+' '+(Date.now()-started)+'ms');
+      phase('started');
       let actual='active', calls=0;
       globalThis.fetch=async url=>{calls++; const path=new URL(url).pathname; assert.ok(path==='/v1/account'||path==='/v1/subscriptions/sub_fixture');
         const body=path==='/v1/account'?{id:'acct_fixture',object:'account'}:{id:'sub_fixture',object:'subscription',customer:'cus_fixture',status:actual,livemode:false,metadata:{tenant_id:'1',plan:'everything'},items:{data:[{quantity:1,price:{currency:'usd',unit_amount:14900,recurring:{interval:'month'},product:{name:'PrintShopCRM Everything'}}}]}};
         return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});};
-      const t=await import('./lib/tenants.mjs'); const billing=await import('./lib/billing.mjs');billing.setPlatformCredentials({secret:'sk_test_fake_only'});
+      phase('importing-tenants');const t=await import('./lib/tenants.mjs');phase('tenants-imported'); const billing=await import('./lib/billing.mjs');billing.setPlatformCredentials({secret:'sk_test_fake_only'});
       const shop=await t.createTenant({shop_name:'Synthetic delete',owner_email:'delete@example.test',password:'fixture-password-123'});
-      t.setSubscription(shop.id,{plan:'everything',status:'canceled',customerId:'cus_fixture',subscriptionId:'sub_fixture'});
+      phase('billed-shop-created');t.setSubscription(shop.id,{plan:'everything',status:'canceled',customerId:'cus_fixture',subscriptionId:'sub_fixture'});
       const token=t.createSession(shop.id), path=join(${JSON.stringify(directory)},'tenants',shop.slug,'printshop.db');assert.ok(existsSync(path));
       assert.throws(()=>t.deleteTenantFully(shop.id),e=>e.code==='hosting_deletion_verification_required');
       await assert.rejects(t.deleteTenantWithHostingCheck(shop.id),e=>e.code==='hosting_deletion_active');assert.ok(existsSync(path));assert.ok(t.getSession(token));assert.ok(t.getTenantById(shop.id));
-      actual='canceled';const result=await t.deleteTenantWithHostingCheck(shop.id);assert.equal(result.dataRemoved,true);assert.equal(existsSync(path),false);assert.equal(t.getTenantById(shop.id),undefined);
-      const before=calls;assert.deepEqual(await t.deleteTenantWithHostingCheck(shop.id),result);assert.equal(calls,before);
-      const other=await t.createTenant({shop_name:'Never billed',owner_email:'unbilled@example.test',password:'fixture-password-123'});assert.equal(t.deleteTenantFully(other.id).dataRemoved,true);assert.equal(calls,before);
+      phase('active-deletion-refused');actual='canceled';const result=await t.deleteTenantWithHostingCheck(shop.id);assert.equal(result.dataRemoved,true);assert.equal(existsSync(path),false);assert.equal(t.getTenantById(shop.id),undefined);
+      phase('terminal-deletion-complete');const before=calls;assert.deepEqual(await t.deleteTenantWithHostingCheck(shop.id),result);assert.equal(calls,before);
+      phase('retry-verified');const other=await t.createTenant({shop_name:'Never billed',owner_email:'unbilled@example.test',password:'fixture-password-123'});assert.equal(t.deleteTenantFully(other.id).dataRemoved,true);assert.equal(calls,before);phase('all-assertions-complete');
     `
     const child = spawnSync(process.execPath,['--no-warnings','--input-type=module','-e',script],{cwd:new URL('..',import.meta.url),env:{...process.env,PSC_DB:join(directory,'printshop.db'),PSC_CONTROL_DB:join(directory,'control.db'),PSC_AUTH:'1',PSC_DEMO:'1'},encoding:'utf8',timeout:30000})
-    assert.equal(child.status,0,child.stderr+'\n'+child.stdout)
+    assert.equal(child.status,0,`Subprocess status=${child.status} signal=${child.signal} error=${child.error?.code || 'none'}\n${child.stderr}\n${child.stdout}`)
   } finally { rmSync(directory,{recursive:true,force:true}) }
 })

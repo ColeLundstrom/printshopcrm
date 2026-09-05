@@ -1,5 +1,6 @@
 import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
+import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
 
 let filter = 'all'
 
@@ -160,6 +161,8 @@ export async function invoiceDetailView(id) {
     $$('[data-cancel-credit]',section).forEach(b=>b.onclick=()=>modal({title:'Cancel this credit',body:'<p>The invoice amount will increase again. No money moves; collections pause for review.</p><div class="field"><label for="cancel-reason">Reason</label><input class="input" id="cancel-reason" name="reason" maxlength="500"></div>',footer:'<button class="btn ghost" data-close>Back</button><button class="btn" id="cancel-save">Cancel credit</button>',onMount:bg=>onceClick($('#cancel-save',bg),'Saving…',async()=>{try{await api.post(`/api/invoices/${id}/credits/${b.dataset.cancelCredit}/cancel`,formData(bg));closeModal();await invoiceDetailView(id)}catch(e){toast(e.message,true)}})}))
   }
 
+  $('#view').insertAdjacentHTML('afterbegin',recipientsPanel(i,'invoice',manager))
+  bindRecipientEditor(i,'invoice',()=>invoiceDetailView(id))
   const openPay = () => modal({
     title: 'Record Payment',
     body: `<div class="field"><label>Amount</label><input class="input" name="amount" type="number" step="0.01" value="${bal.toFixed(2)}"></div>
@@ -233,7 +236,7 @@ export async function invoiceDetailView(id) {
   // says happened rather than announcing a delivery it has not been told about.
   onceClick($('#send'), 'Sending…', async () => {
     try {
-      const out = await api.post(`/api/invoices/${id}/send`)
+      const out = await api.post(`/api/invoices/${id}/send`,{recipient_revision:i.recipient_revision})
       toast(out?.emailed_to ? `Invoice emailed to ${out.emailed_to}. Check the Outbox` : 'Invoice queued. Check the Outbox')
     } catch (e) { toast(e.message, true) }
   })
@@ -250,7 +253,7 @@ export async function invoiceDetailView(id) {
     })
   $('#reqpay')?.addEventListener('click', async () => {
     try {
-      const r = await api.post(`/api/invoices/${id}/request-payment`)
+      const r = await api.post(`/api/invoices/${id}/request-payment`,{recipient_revision:i.recipient_revision})
       toast(r.delivered ? 'Payment link emailed to the customer' : 'Payment email drafted to Outbox (Manual mode)')
       if (!r.stripe_ready) toast('Connect a provider in Setup & connections to accept online card payments', true)
     } catch (e) { toast(e.message, true) }

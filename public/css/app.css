@@ -421,7 +421,8 @@ body.dragging { cursor: grabbing; user-select: none; }
 .modal-h .x { margin-left: auto; background: 0; border: 0; color: var(--txt-3); font-size: var(--fs-xl); cursor: pointer; line-height: 1; padding: 0 var(--sp-2); }
 .modal-h .x:hover { color: var(--txt); }
 .modal-b { padding: var(--sp-7); }
-.modal-f { padding: var(--sp-5) var(--sp-7); border-top: 1px solid var(--line); display: flex; gap: var(--sp-4); justify-content: flex-end; background: var(--bg-2); border-radius: 0 0 var(--r-md) var(--r-md); }
+.modal-f { padding: var(--sp-5) var(--sp-7); border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4); justify-content: flex-end; background: var(--bg-2); border-radius: 0 0 var(--r-md) var(--r-md); }
+.modal-f > .btn { white-space: nowrap; }
 
 /* ---------- line items ---------- */
 

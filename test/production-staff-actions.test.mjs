@@ -19,11 +19,11 @@ async function taskPage(data) {
   const context = vm.createContext({
     api: { get: async path => { assert.equal(path, '/api/production/jobs/' + data.job.id); return data } },
     $, $$: () => [], esc: v => String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
-    setPage() {}, fmtDate: v => v, window: { addEventListener() {} },
+    setPage() {}, mountShipments() {}, fmtDate: v => v, window: { addEventListener() {} },
     location: { hash: '#/production/jobs/' + data.job.id }, document: { body: { classList: { contains: () => false } } },
   })
   const source = readFileSync(new URL('../public/js/views/production.js', import.meta.url), 'utf8')
-    .replace(/^import[^\n]+\n/m, '').replaceAll('export async function ', 'async function ')
+    .replace(/^import[^\n]+\n/gm, '').replaceAll('export async function ', 'async function ')
   vm.runInContext(source + '\nglobalThis.subject = productionJobView;', context)
   await context.subject(data.job.id)
   return $('#view').innerHTML

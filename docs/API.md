@@ -111,6 +111,8 @@ Customers accept `billing_address` and `shipping_address` as multiline text (up 
 
 Estimate creation accepts optional `billing_address` and `shipping_address` overrides, including an explicit blank. Omitted fields use customer defaults; `customer{…}` also accepts these fields when creating a new customer. Quote, invoice and job screens let staff maintain the saved addresses for that document. These are postal text, not carrier validation or a tax-jurisdiction lookup.
 
+Documents also save separate buyer and billing email recipients. Customer default changes do not redirect existing documents. The manager-only browser API uses recipient revisions for explicit edits and subsequent sending; see [billing recipients](BILLING-RECIPIENTS.md) for the exact routes, migration behavior and stale-message recovery. These browser routes are separate from the scoped `/api/v1` external-agent API.
+
 | | |
 |---|---|
 | `GET /api/v1/estimates` | List. `?status=draft\|sent\|approved\|declined`. |

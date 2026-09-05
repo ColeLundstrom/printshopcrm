@@ -1,4 +1,5 @@
 import { api, $, $$, esc, money, fmtDate, setPage, toast, go, on, modal, closeModal, formData, daysOut } from '../core.js'
+import { mountShipments } from '../shared/shipments.js'
 
 /**
  * Order board — the lite edition's whiteboard. Five columns (Estimate → Paid → Mockup Approved →
@@ -37,7 +38,7 @@ export async function ordersView() {
         ${c.mockup_status === 'sent' ? '<span class="tag amber">art out</span>' : ''}
         ${c.mockup_status === 'rejected' ? '<span class="tag red">art changes</span>' : ''}
       </div>
-      ${c.tracking_number ? `<div class="jc-track">${esc(c.carrier || 'Tracking')} ${esc(c.tracking_number)}</div>` : ''}
+      ${c.shipment_count ? `<div class="jc-track">${c.shipment_count} shipment record${c.shipment_count===1?'':'s'} · open for tracking</div>` : c.tracking_number ? `<div class="jc-track">${esc(c.carrier || 'Tracking')} ${esc(c.tracking_number)}</div>` : ''}
     </div>`
   }
 
@@ -168,33 +169,24 @@ function openCard(c, rerender, stages) {
           ${opts.map((o) => `<option value="${esc(o.key)}"${c.stage === o.key ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
         </select>
         <div class="dim" style="font-size:11.5px;margin-top:4px">Moving a card back is allowed — this is the only way to do it on a touch screen, where a card cannot be dragged.</div></div>` : ''}
-      <div class="grid2">
-        <div class="field"><label>Carrier</label>
-          <input class="input" name="carrier" list="ob-carriers" value="${esc(c.carrier || '')}" placeholder="UPS">
-          <datalist id="ob-carriers"><option>UPS</option><option>FedEx</option><option>USPS</option><option>DHL</option><option>Local delivery</option><option>Customer pickup</option></datalist>
-        </div>
-        <div class="field"><label>Tracking number</label>
-          <input class="input" name="tracking_number" value="${esc(c.tracking_number || '')}" placeholder="1Z999…"></div>
-      </div>
-      <div class="dim" style="font-size:11.5px;margin-top:8px;line-height:1.6">Adding a tracking number moves this card forward to Shipped. It never moves one back — clearing the number leaves the card where it is, so use the Stage select above.</div>`,
+      <p class="dim">Save the stage separately. Shipment records below do not move this card.</p>
+      <div id="ob-shipments"></div>`,
     footer: `<button class="btn ghost" data-close>Close</button>
       <a class="btn ghost" href="#/estimates/${c.id}">Open estimate</a>
       ${c.invoice_id ? `<a class="btn ghost" href="#/invoices/${c.invoice_id}">Open invoice</a>` : ''}
-      <button class="btn" id="ob-save">Save</button>`,
+      <button class="btn" id="ob-save">Save stage</button>`,
     onMount: (bg) => {
+      mountShipments($('#ob-shipments',bg),{
+        key:`order:${c.id}`,endpoint:`/api/orders/${c.id}/shipments`,
+        load:()=>api.get(`/api/orders/${c.id}/shipments`),
+      })
       $('#ob-save', bg).onclick = async () => {
         const btn = $('#ob-save', bg); btn.disabled = true; btn.textContent = 'Saving…'
         try {
-          const f = formData(bg)
-          // Stage FIRST. /tracking runs advanceOrder afterwards, and advanceOrder is forward-only
-          // by construction — so a stage set first is never clobbered by a tracking number that is
-          // still in the box, while the other order would silently undo a walk-back.
-          const stage = f.stage
-          delete f.stage
+          const stage = $('#ob-stage',bg)?.value
           if (stage && stage !== c.stage) await api.put(`/api/orders/${c.id}/stage`, { stage })
-          await api.put(`/api/orders/${c.id}/tracking`, f)
-          closeModal(); toast('Saved'); rerender()
-        } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Save' }
+          if (bg.isConnected) { closeModal(); rerender() }
+        } catch (e) { if(bg.isConnected) {toast(e.message, true); btn.disabled = false; btn.textContent = 'Save stage'} }
       }
       // Modal links are plain hashes; close so the board isn't left underneath.
       bg.querySelectorAll('a[href^="#/"]').forEach((a) => a.addEventListener('click', () => closeModal()))
