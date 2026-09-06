@@ -77,8 +77,14 @@ jobs:
 
       - run: npm ci
 
+      # Each HTTP fixture creates its own SQLite shop. Keep independent files from
+      # competing for Windows filesystem syncs; concurrency assertions inside each
+      # fixture still run unchanged, with their original deadlines.
       - name: Unit tests
-        run: npm test
+        run: |
+          node --test --test-concurrency=1 test/*.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node bin/gate.mjs
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs
