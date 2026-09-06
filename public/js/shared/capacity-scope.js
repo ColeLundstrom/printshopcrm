@@ -6,6 +6,7 @@ const parsed = (value, fallback) => { if (typeof value !== 'string') return valu
 const named = value => typeof value === 'string' && value.trim() ? value.trim() : null
 
 function lineMethod(line) {
+  if(line?.decoration_pricing) return {supported:false,label:'Per-location decoration (use recorded job costs)'}
   const labels = [named(line?.decoration), named(line?.matrix?.decoration) || named(line?.matrix?.name)].filter(Boolean)
   return { supported: labels.length > 0 && labels.every(isScreenPrintMethod), label: labels.join(' / ') || 'Unspecified decoration' }
 }

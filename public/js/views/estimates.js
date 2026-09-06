@@ -1,7 +1,8 @@
+import { locationPricing, normalizeLocationItem, pickedLocation } from '../shared/location-pricing.js'
 import { unsupportedScreenPrintMethods } from '../shared/capacity-scope.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
 import { api, $, $$, el, esc, money, moneyShort, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
-import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, guessColors } from '../shared/pricing.js'
+import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, guessColors } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
 import { matrixPickerModal } from './matrices.js'
@@ -45,6 +46,8 @@ export async function estimatesView() {
 }
 
 /* ---------- editor ---------- */
+
+const displayLineAmount = (it, up) => { try { return money(lineAmount(it, up)) } catch { return '—' } }
 
 const blankItem = () => ({ description: '', detail: '', decoration: 'Screen Print', sizes: { S: 0, M: 0, L: 0, XL: 0 }, unit_price: 0, taxable: true })
 const blankFee = () => ({ description: '', detail: '', qty: 1, unit_price: 0, taxable: false })
@@ -149,34 +152,68 @@ export async function estimateEditor(id) {
   const sizesFor = (it) => [...new Set([...COMMON_SIZES, ...Object.keys(it.sizes || {}).filter((s) => Number(it.sizes[s]) > 0)])]
     .sort((a, b) => SIZES.indexOf(a) - SIZES.indexOf(b))
 
+  const locationBreakdown = (it, i) => {
+    const p = it.decoration_pricing
+    if (!p) return ''
+    let result, error=''
+    try { result=locationPricing(it) } catch(e) { error=e.message }
+    return `${error ? `<p role="alert" style="color:var(--red)">${esc(error)}</p>` : ''}
+      ${(result?.locations || p.locations).map((l,j)=>`<div class="location-price-row">
+        <div><strong>${esc(l.location)}</strong> · ${esc(l.method)}<div class="dim">${esc(l.matrix?.name||'Manual price')} · ${esc(l.matrix?.row||'')} · ${esc(l.matrix?.col||'')}</div></div>
+        <span>${money(l.price)} ${l.unit==='flat'?'once':'/ piece'}</span>
+        <button type="button" class="btn ghost sm" data-location-edit="${i}" data-location-index="${j}">Edit / reprice</button>
+        <button type="button" class="btn ghost sm" data-location-remove="${i}" data-location-index="${j}" aria-label="Remove ${esc(l.location)} decoration">Remove</button>
+      </div>`).join('')}
+      ${result ? `<p class="dim">${result.qty} garments × ${money(result.perPiece)}${result.flat ? ` + ${money(result.flat)} one-time decoration charges` : ''}. ${p.customer_supplied?'No garment or size charges; tax follows the quote setting.':'Size upcharges and tax are added once.'} Saved matrix prices; use Edit / reprice to load current prices.</p>` : ''}`
+  }
+  const locationPanel = (it,i) => `<div class="location-pricing" data-location-panel="${i}">
+    ${it.decoration_pricing ? `<label>Garment-only selling price / piece <input class="input" style="max-width:130px" type="number" min="0" step="0.01" data-garment-price="${i}" value="${esc(it.decoration_pricing.garment_price)}" ${it.decoration_pricing.customer_supplied?'disabled':''}></label><label><input type="checkbox" data-customer-supplied="${i}" ${it.decoration_pricing.customer_supplied?'checked':''}> Customer supplied (no garment or size charges)</label>` : ''}
+    <div data-location-breakdown="${i}">${locationBreakdown(it,i)}</div>
+    <button class="btn ghost sm" type="button" data-location-add="${i}">+ Decoration location</button>
+    ${!it.decoration_pricing ? '<span class="dim"> Mix screen printing, embroidery, DTF or your own methods on this garment.</span>' : ''}
+  </div>`
+  const refreshLocation = i => {
+    if (!items[i].decoration_pricing) return
+    try { Object.assign(items[i],normalizeLocationItem(items[i])) } catch {}
+    const panel=$(`[data-location-breakdown="${i}"]`);if(panel) panel.innerHTML=locationBreakdown(items[i],i)
+    const rate=$(`.ir[data-i="${i}"] [data-f="unit_price"]`);if(rate) rate.value=items[i].unit_price
+  }
+
   const rowHtml = (it, i) => {
     const gridded = !!it.sizes
     const extra = lineUpcharge(it, up)
+    const itemUp = lineUpcharges(it, up)
     return `<div class="ir" data-i="${i}">
       <input class="input" data-f="description" aria-label="Description, line ${i + 1}" value="${esc(it.description)}" placeholder="${gridded ? 'Gildan 5000 Tee, 2 color front' : 'Screen setup, 3 screens'}">
-      <input class="input" data-f="detail" aria-label="Detail or decoration, line ${i + 1}" value="${esc(it.detail || '')}" placeholder="${gridded ? 'Black, 2 colors front' : 'One-time charge'}">
+      <input class="input" data-f="detail" aria-label="Detail or decoration, line ${i + 1}" value="${esc(it.decoration_pricing ? it.decoration_pricing.notes || '' : it.detail || '')}" placeholder="${gridded ? 'Black, 2 colors front' : 'One-time charge'}">
       ${gridded
         ? `<div class="qtycell" title="Set by the size grid">${lineQty(it)}<span class="dim" style="font-size:10px"> pcs</span></div>`
         : `<input class="input num" data-f="qty" type="number" min="0" aria-label="Quantity, line ${i + 1}" value="${esc(it.qty)}">`}
       <div class="rate-cell">
-        <input class="input num" data-f="unit_price" type="number"${gridded ? ' min="0"' : ''} step="0.01" aria-label="Rate, line ${i + 1}" value="${esc(it.unit_price)}">
-        <button class="mx-btn" data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${esc(it.matrix.name)}: ${esc(it.matrix.row)} × ${esc(it.matrix.col)}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
+        <input class="input num" data-f="unit_price" ${it.decoration_pricing ? 'readonly title="Combined garment and location rate. Edit the garment rate or each location below."' : ''} type="number"${gridded ? ' min="0"' : ''} step="0.01" aria-label="Rate, line ${i + 1}" value="${esc(it.unit_price)}">
+        <button class="mx-btn" ${it.decoration_pricing ? 'disabled' : ''} data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${esc(it.matrix.name)}: ${esc(it.matrix.row)} × ${esc(it.matrix.col)}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
       </div>
-      <div class="amt">${money(lineAmount(it, up))}</div>
+      <div class="amt">${displayLineAmount(it, up)}</div>
       <button class="del" data-del="${i}" title="Remove line" aria-label="Remove line ${i + 1}">&times;</button>
     </div>
     ${gridded ? `<div class="sizegrid" data-sg="${i}">
       ${sizesFor(it).map((s) => `<label class="sz ${Number(it.sizes[s]) > 0 ? 'on' : ''}">
-        <span>${esc(s)}${up[s] ? `<em>+${esc(moneyShort(up[s]))}</em>` : ''}</span>
+        <span>${esc(s)}${itemUp[s] ? `<em>+${esc(moneyShort(itemUp[s]))}</em>` : ''}</span>
         <input type="number" min="0" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0">
       </label>`).join('')}
       <button class="sz-more" data-more="${i}" title="Add another size" aria-label="Add another size to line ${i + 1}">+</button>
       <div class="sz-sum">${lineQty(it)} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}</div>
-    </div>` : ''}`
+    </div>
+    ${locationPanel(it,i)}` : ''}`
   }
 
   const totals = () => {
-    const t = computeTotals(items, +$('#tax').value || 0, up)
+    let t
+    try { t = computeTotals(items, +$('#tax').value || 0, up) } catch {
+      for(const id of ['sub','taxv','tot']) $('#'+id).textContent='—'
+      $('#margin-guard').hidden=true
+      return
+    }
     $('#pcs').textContent = `${items.reduce((s, i) => s + (i.sizes ? sizeTotal(i.sizes) : 0), 0)} pcs`
     $('#sub').textContent = money(t.subtotal)
     $('#taxv').textContent = money(t.tax)
@@ -323,8 +360,10 @@ export async function estimateEditor(id) {
   on($('#rows'), '[data-f]', (e, t) => {
     const i = +t.closest('[data-i]').dataset.i
     const f = t.dataset.f
-    items[i][f] = f === 'qty' || f === 'unit_price' ? +t.value : t.value
-    t.closest('.ir').querySelector('.amt').textContent = money(lineAmount(items[i], up))
+    if(f==='detail' && items[i].decoration_pricing) items[i].decoration_pricing.notes=t.value
+    else items[i][f] = f === 'qty' || f === 'unit_price' ? +t.value : t.value
+    refreshLocation(i)
+    t.closest('.ir').querySelector('.amt').textContent = displayLineAmount(items[i], up)
     totals()
   }, 'input')
 
@@ -332,10 +371,11 @@ export async function estimateEditor(id) {
     const i = +t.dataset.i
     const n = Math.max(0, +t.value || 0)
     items[i].sizes = { ...items[i].sizes, [t.dataset.size]: n }
+    refreshLocation(i)
     t.closest('.sz').classList.toggle('on', n > 0)
     const row = $(`.ir[data-i="${i}"]`)
     row.querySelector('.qtycell').innerHTML = `${lineQty(items[i])}<span class="dim" style="font-size:10px"> pcs</span>`
-    row.querySelector('.amt').textContent = money(lineAmount(items[i], up))
+    row.querySelector('.amt').textContent = displayLineAmount(items[i], up)
     const extra = lineUpcharge(items[i], up)
     t.closest('.sizegrid').querySelector('.sz-sum').innerHTML = `${lineQty(items[i])} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}`
     totals()
@@ -357,6 +397,54 @@ export async function estimateEditor(id) {
     markEditorDirty()
     draw()
   })
+
+  const editLocation = (i,j) => {
+    const target=items[i], current=target.decoration_pricing?.locations[j], rowRoot=$('#rows')
+    const qty=lineQty(target)
+    if(!qty) return toast('Enter the garment quantities first.',true)
+    modal({title:current?'Edit decoration location':'Add decoration location',body:`
+      <div class="field"><label for="location-name">Location</label><input class="input" id="location-name" maxlength="120" value="${esc(current?.location||'')}" placeholder="Left sleeve, front, back…"></div>
+      ${!target.decoration_pricing?`<div class="field"><label for="location-garment">Garment-only selling price / piece</label><input class="input" id="location-garment" type="number" min="0" step="0.01" placeholder="Required — 0 for customer-supplied garments"><p class="dim">Enter only the garment charge. This replaces the current ${money(target.unit_price)} all-in rate; each decoration is added separately. Use decoration-only matrices.</p><label><input type="checkbox" id="location-supplied"> Customer supplied (no garment or size charges)</label></div>`:''}
+      <p class="dim">Next, choose any method's matrix and its stitch count, colors, size or other column. This location applies to all ${qty} pieces on the line. Split garments into separate lines when their decorations differ.</p>`,
+      footer:'<button class="btn ghost" data-close>Cancel</button><button class="btn" id="location-next">Choose matrix</button>',
+      onMount:bg=>{
+        const supplied=$('#location-supplied',bg)
+        if(supplied) supplied.onchange=()=>{const f=$('#location-garment',bg);f.disabled=supplied.checked;f.value=supplied.checked?'0':''}
+        $('#location-next',bg).onclick=()=>{
+        const location=$('#location-name',bg).value.trim()
+        const baseField=$('#location-garment',bg),base=baseField?Number(baseField.value):target.decoration_pricing.garment_price
+        if(!location || (baseField&&!baseField.value.trim()) || !Number.isFinite(base)||base<0) return toast('Enter a location and a garment-only price (0 is allowed).',true)
+        closeModal()
+        matrixPickerModal({qty,lockQty:true,onPick:pick=>{
+          if(!rowRoot.isConnected || $('#rows')!==rowRoot || !items.includes(target)) return
+          const p=target.decoration_pricing||{version:1,customer_supplied:supplied?.checked===true,garment_price:base,notes:target.detail||'',locations:[]}
+          const locations=[...p.locations], next=pickedLocation(pick,location)
+          if(current)locations[j]=next;else locations.push(next)
+          try { Object.assign(target,normalizeLocationItem({...target,decoration_pricing:{...p,locations}})) }
+          catch(e){return toast(e.message,true)}
+          delete target.matrix
+          markEditorDirty();draw()
+        }})
+      }}
+    })
+  }
+  on($('#rows'),'[data-location-add]',(_e,t)=>editLocation(+t.dataset.locationAdd))
+  on($('#rows'),'[data-location-edit]',(_e,t)=>editLocation(+t.dataset.locationEdit,+t.dataset.locationIndex))
+  on($('#rows'),'[data-location-remove]',(_e,t)=>{
+    const i=+t.dataset.locationRemove,p=items[i].decoration_pricing
+    p.locations.splice(+t.dataset.locationIndex,1)
+    if(!p.locations.length){items[i].unit_price=p.garment_price;items[i].detail=p.notes||'';items[i].decoration='Undecorated';delete items[i].decoration_pricing}
+    else refreshLocation(i)
+    markEditorDirty();draw()
+  })
+  on($('#rows'),'[data-customer-supplied]',(_e,t)=>{
+    const i=+t.dataset.customerSupplied,p=items[i].decoration_pricing;p.customer_supplied=t.checked;if(t.checked)p.garment_price=0
+    refreshLocation(i);markEditorDirty();draw()
+  },'change')
+  on($('#rows'),'[data-garment-price]',(_e,t)=>{
+    const i=+t.dataset.garmentPrice;items[i].decoration_pricing.garment_price=t.value===''?NaN:Number(t.value)
+    refreshLocation(i);$(`.ir[data-i="${i}"] .amt`).textContent=displayLineAmount(items[i],up);totals()
+  },'input')
 
   /**
    * Price a line from one of the shop's own matrices. Every line can use a DIFFERENT matrix, which
@@ -436,6 +524,7 @@ export async function estimateEditor(id) {
   $('#tax').oninput = totals
   $('#cancel').onclick = () => go(isNew ? '/estimates' : `/estimates/${id}`)
   $('#save').onclick = async () => {
+    try { items=items.map(normalizeLocationItem) } catch(e) { return toast(e.message,true) }
     const payload = {
       contact_id: +$('#contact').value,
       items: items.filter((i) => i.description.trim() || i.unit_price),

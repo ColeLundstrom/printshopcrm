@@ -1,0 +1,8 @@
+
+/* One garment, independently priced decoration locations. */
+.location-pricing { padding: 12px 16px; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 6px; }
+.location-pricing > label { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.location-price-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.location-price-row > div { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
+.location-pricing .btn { min-height: 44px; }
+@media (max-width: 600px) { .location-pricing { padding: 10px; } .location-price-row > div { flex-basis: 100%; } }

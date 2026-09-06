@@ -1,3 +1,4 @@
+import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
 import * as artProduction from './lib/art-production.mjs'
@@ -2861,7 +2862,7 @@ function sanitizeEstimateItems(items, rejected = []) {
         out.matrix = { id: Number(m.id) || null, name: String(m.name ?? '').slice(0, 60), row: String(m.row ?? '').slice(0, 40), col: String(m.col ?? '').slice(0, 48) }
       } else delete out.matrix
     }
-    return out
+    return normalizeLocationItem(out)
   }))
 }
 
@@ -6939,6 +6940,7 @@ app.post('/api/v1/estimates', v1Create('estimates', (req, afterCommit) => {
       else if (typeof it.taxable === 'string' && /^(true|false)$/i.test(it.taxable.trim())) taxable = it.taxable.trim().toLowerCase() === 'true'
       else return createResult(400, { error: `${where}.taxable must be true or false`, code: 'invalid_taxable' })
     }
+    if (it.decoration_pricing != null) return createResult(400, { error: 'Per-location pricing must be saved through the estimate editor or /api/estimates endpoint.', code: 'location_pricing_requires_estimate_editor' })
     items.push({
       description: String(it.description || 'Item').slice(0, 200),
       sizes,

@@ -1,3 +1,4 @@
+import { locationPricing } from './location-pricing.js'
 /**
  * Shared pricing/size logic — imported by BOTH the browser (as a module URL) and
  * server.mjs (as a file path). One source of truth: the total a customer sees in the
@@ -72,6 +73,7 @@ export const upchargeFor = (size, upcharges) => Number((upcharges || DEFAULT_UPC
  * behaviour — nothing re-prices on upgrade.
  */
 export const lineUpcharges = (item, upcharges) => (
+  item?.decoration_pricing?.customer_supplied === true ? {} :
   item && item.size_upcharges && typeof item.size_upcharges === 'object' && !Array.isArray(item.size_upcharges)
     ? item.size_upcharges : upcharges
 )
@@ -146,7 +148,8 @@ export function lineQty(item) {
  * Base rate applies to every piece; 2XL+ add their upcharge on top.
  */
 export function lineAmount(item, upcharges) {
-  const price = Number(item?.unit_price) || 0
+  const locations = locationPricing(item)
+  const price = locations ? locations.perPiece : Number(item?.unit_price) || 0
   if (item?.sizes && sizeTotal(item.sizes) > 0) {
     const up = lineUpcharges(item, upcharges)
     let total = 0
@@ -154,9 +157,9 @@ export function lineAmount(item, upcharges) {
       const qty = Number(n) || 0
       if (qty > 0) total += qty * (price + upchargeFor(s, up))
     }
-    return round2(total)
+    return round2(total + (locations?.flat || 0))
   }
-  return round2(posQty(item?.qty ?? item?.quantity) * price)
+  return round2(posQty(item?.qty ?? item?.quantity) * price + (locations?.flat || 0))
 }
 
 /** Sum of upcharges on a line — surfaced so the customer sees why the math isn't qty × rate. */

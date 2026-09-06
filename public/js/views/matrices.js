@@ -1,3 +1,4 @@
+import { quantityBands } from '../shared/location-pricing.js'
 import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal , onOnce, guardLeave } from '../core.js'
 
 /* Custom price matrices — the shop's own price sheets, in any shape.
@@ -425,9 +426,12 @@ async function save() {
    Exported for the estimate editor: pick a matrix, a row and a column, see the price, use it.
    `onPick` receives the priced line so the caller decides whether to fill a line or add one. */
 
-export async function matrixPickerModal({ qty = 0, onPick } = {}) {
+export async function matrixPickerModal({ qty = 0, onPick, lockQty = false } = {}) {
+  const route=location.hash,account=window.__me
+  const active=()=>location.hash===route && window.__me===account
   let payload
   try { payload = await api.get('/api/matrices') } catch { return toast('Could not load your price matrices', true) }
+  if(!active()) return
   if (!payload.matrices.length) {
     return modal({
       title: 'No price matrices yet',
@@ -438,7 +442,7 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
   }
 
   const start = payload.matrices.find((x) => x.isDefault) || payload.matrices[0]
-  let loaded = null
+  let loaded = null, loadSequence = 0
 
   modal({
     title: 'Price from a matrix', wide: true,
@@ -446,7 +450,7 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
         <div class="field"><label>Matrix</label><select class="input" id="mp-matrix">
           ${payload.matrices.map((x) => `<option value="${x.id}" ${x.id === start.id ? 'selected' : ''}>${esc(x.name)}${x.isDefault ? ' — default' : ''}</option>`).join('')}
         </select></div>
-        <div class="field"><label>Quantity</label><input class="input" id="mp-qty" type="number" min="0" value="${Math.max(0, Number(qty) || 0)}"></div>
+        <div class="field"><label>Quantity</label><input class="input" id="mp-qty" ${lockQty ? 'readonly' : ''} type="number" min="0" value="${Math.max(0, Number(qty) || 0)}"></div>
       </div>
       <div class="grid2">
         <div class="field"><label id="mp-rl">Row</label><select class="input" id="mp-row"></select></div>
@@ -457,7 +461,14 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="mp-use">Use this price</button>`,
     onMount: (bg) => {
       const load = async (id) => {
-        loaded = (await api.get(`/api/matrices/${id}`)).matrix
+        const sequence=++loadSequence
+        loaded=null;$('#mp-use',bg).disabled=true
+        let response
+        try { response=await api.get(`/api/matrices/${id}`) } catch { if(sequence===loadSequence) toast('Could not load that matrix. Select it again.',true);return }
+        if(sequence!==loadSequence || !bg.isConnected || !active())return
+        loaded=response.matrix
+        $('#mp-use',bg).disabled=false
+        delete $('#mp-row',bg).dataset.touched
         $('#mp-rl', bg).textContent = loaded.rowLabel
         $('#mp-cl', bg).textContent = loaded.colLabel
         const q = Number($('#mp-qty', bg).value) || 0
@@ -469,6 +480,7 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
         show()
       }
       const show = () => {
+        if(!loaded)return
         const ri = +$('#mp-row', bg).value, ci = +$('#mp-col', bg).value
         const q = Number($('#mp-qty', bg).value) || 0
         const price = loaded.cells[ri]?.[ci]
@@ -489,6 +501,7 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
       $('#mp-row', bg).onchange = show
       $('#mp-col', bg).onchange = show
       $('#mp-qty', bg).oninput = () => {
+        if(!loaded)return
         // Re-suggest the band as the quantity changes, unless the user has picked a row by hand.
         const sel = $('#mp-row', bg)
         if (!sel.dataset.touched) {
@@ -501,12 +514,14 @@ export async function matrixPickerModal({ qty = 0, onPick } = {}) {
       $('#mp-desc', bg).addEventListener('input', (e) => { e.target.dataset.touched = '1' })
 
       $('#mp-use', bg).onclick = () => {
+        if(!active() || !loaded || String(loaded.id)!==$('#mp-matrix',bg).value)return
         const ri = +$('#mp-row', bg).value, ci = +$('#mp-col', bg).value
         const price = loaded.cells[ri]?.[ci]
         if (price === null || price === undefined) return toast('That cell has no price yet', true)
         closeModal()
         onPick?.({
           price, unit: loaded.unit,
+          quantity_tiers: /qty|quantit|pieces/i.test(loaded.rowLabel) && quantityBands(loaded.rows)?.findIndex(b=>Number($('#mp-qty',bg).value)>=b.min&&(b.max===null||Number($('#mp-qty',bg).value)<=b.max))===ri && quantityBands(loaded.rows)?.map((band,index)=>({...band,row:loaded.rows[index],price:loaded.cells[index]?.[ci]??null})),
           qty: Number($('#mp-qty', bg).value) || 0,
           description: $('#mp-desc', bg).value.trim() || loaded.name,
           detail: `${loaded.rows[ri]} · ${loaded.cols[ci]}`,
