@@ -297,16 +297,17 @@ section('intake: the customer writes the email, so the model may not re-price it
 }
 
 section('deadline parsing')
+const deadlineFixtureToday = new Date(2026, 7, 18) // fixed clock: explicit future dates must not age into failures
 // parseDeadline returns { date: ISO|null, text: matched-phrase|null }
 for (const [text, check] of [
   ['need them by 2026-09-08', (d) => d === '2026-09-08'],
   ['due 9/30/2026', (d) => d === '2026-09-30'],
   ['by Sept 8th', (d) => /-09-08$/.test(d || '')],
-  ['in 3 weeks', (d) => !!d && d > new Date().toISOString().slice(0, 10)],
+  ['in 3 weeks', (d) => !!d && d > '2026-08-18'],
   ['no date at all here', (d) => d === null],
 ]) {
   await t(JSON.stringify(text), () => {
-    const r = parseDeadline(text)
+    const r = parseDeadline(text, deadlineFixtureToday)
     assert.ok(check(r.date), `got ${JSON.stringify(r)}`)
   })
 }

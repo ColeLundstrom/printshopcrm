@@ -2391,7 +2391,7 @@ app.get('/api/today', wrap((req, res) => {
 
   // Money at risk — overdue invoices, biggest first.
   for (const i of all(`SELECT i.*, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id
-      WHERE i.status NOT IN ('paid','void') AND i.due_date < ? ORDER BY (i.amount_due-i.amount_paid) DESC LIMIT 6`, today)) {
+      WHERE i.status NOT IN ('paid','void') AND i.amount_due-i.amount_paid > 0.005 AND i.due_date < ? ORDER BY (i.amount_due-i.amount_paid) DESC LIMIT 6`, today)) {
     const bal = round2(i.amount_due - i.amount_paid)
     add({ kind: 'collect', icon: '💸', priority: (production ? 40 : 90) + Math.min(20, bal / 200),
       title: `Collect ${money(bal)} from ${i.cn || 'customer'}`, sub: `${i.invoice_number} · overdue since ${i.due_date}`,
@@ -2417,7 +2417,7 @@ app.get('/api/today', wrap((req, res) => {
   for (const j of all(`SELECT j.*, c.name AS cn FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.due_date <= date(?, '+1 day') AND j.stage NOT IN ('complete','shipping') ORDER BY j.due_date LIMIT 8`, today)) {
     add({ kind: 'floor', icon: '🖨️', priority: (production ? 92 : 70) + (j.rush ? 8 : 0),
-      title: `${j.title} — ${j.due_date === today ? 'due today' : 'due tomorrow'}`, sub: `${j.job_number} · ${j.stage.replace('_', ' ')}${j.rush ? ' · RUSH' : ''}`, href: `#/jobs/${j.id}` })
+      title: `${j.title} — ${j.due_date < today ? 'overdue since ' + j.due_date : j.due_date === today ? 'due today' : 'due tomorrow'}`, sub: `${j.job_number} · ${j.stage.replace('_', ' ')}${j.rush ? ' · RUSH' : ''}`, href: `#/jobs/${j.id}` })
   }
   // Unread customer messages.
   const unread = get(`SELECT COUNT(*) AS n FROM messages WHERE direction='in' AND read=0`).n
@@ -2433,14 +2433,24 @@ app.get('/api/today', wrap((req, res) => {
 
   actions.sort((a, b) => b.priority - a.priority)
 
-  const overdue = round2(get(`SELECT COALESCE(SUM(amount_due-amount_paid),0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND due_date < ?`, today).v)
+  const overdue = round2(get(`SELECT COALESCE(SUM(amount_due-amount_paid),0) AS v FROM invoices WHERE status NOT IN ('paid','void') AND amount_due-amount_paid > 0.005 AND due_date < ?`, today).v)
   res.json({
     role, date: today,
+    // Counts stay inside the authenticated tenant context. Do not download whole customer
+    // and document collections just to decide whether Today needs an onboarding card.
+    counts: {
+      contacts: get('SELECT COUNT(*) AS n FROM contacts').n,
+      estimates: get('SELECT COUNT(*) AS n FROM estimates').n,
+      invoices: get('SELECT COUNT(*) AS n FROM invoices').n,
+      open: get("SELECT COUNT(*) AS n FROM invoices WHERE status NOT IN ('paid','void') AND amount_due-amount_paid > 0.005").n,
+      jobs: get('SELECT COUNT(*) AS n FROM jobs').n,
+    },
     pulse: {
       money_at_risk: overdue,
       jobs_at_risk: actions.filter((a) => a.kind === 'risk').length,
-      approvals: actions.filter((a) => a.kind === 'approval').length,
-      due_week: get(`SELECT COUNT(*) AS n FROM jobs WHERE status='active' AND due_date <= date(?, '+7 day') AND stage NOT IN ('complete','shipping')`, today).n,
+      approvals: get("SELECT COUNT(*) AS n FROM jobs WHERE status='active' AND stage='art_approval'").n,
+      due_week: get(`SELECT COUNT(*) AS n FROM jobs WHERE status='active' AND due_date >= ? AND due_date <= date(?, '+7 day') AND stage NOT IN ('complete','shipping')`, today, today).n,
+      overdue_jobs: get("SELECT COUNT(*) AS n FROM jobs WHERE status='active' AND due_date < ? AND stage NOT IN ('complete','shipping')", today).n,
     },
     actions: actions.slice(0, 12),
     clear: actions.length === 0,

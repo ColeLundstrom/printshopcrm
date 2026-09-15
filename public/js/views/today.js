@@ -1,4 +1,4 @@
-import { api, $, esc, money0, setPage, go, empty, shopLocale } from '../core.js'
+import { api, $, esc, money0, setPage, empty, shopLocale } from '../core.js'
 
 /**
  * Today: the role-aware action center that replaces the flat dashboard. One ranked "do this next"
@@ -7,23 +7,6 @@ import { api, $, esc, money0, setPage, go, empty, shopLocale } from '../core.js'
  */
 
 const KIND_TINT = { collect: 'var(--red)', risk: 'var(--amber)', approval: 'var(--violet)', floor: 'var(--blue)', reply: 'var(--accent)', followup: 'var(--accent)' }
-
-/** Rows for the lite tiles + the first-run test. One call each, and a failure just reads as zero. */
-async function liteCounts() {
-  const len = (v, key) => (Array.isArray(v) ? v.length : (v?.[key] || []).length)
-  const [inv, est, con] = await Promise.all([
-    api.get('/api/invoices').catch(() => []),
-    api.get('/api/estimates').catch(() => []),
-    api.get('/api/contacts').catch(() => []),
-  ])
-  const invoices = Array.isArray(inv) ? inv : (inv.invoices || [])
-  return {
-    invoices: invoices.length,
-    open: invoices.filter((i) => Number(i.amount_due) - Number(i.amount_paid) > 0.005).length,
-    estimates: len(est, 'estimates'),
-    contacts: len(con, 'contacts'),
-  }
-}
 
 /**
  * A shop with nothing in it at all. The generic "You're all caught up" is technically true here but
@@ -34,7 +17,7 @@ async function liteCounts() {
 // false the moment the owner ran the sample quote, and Today then showed "all caught up" with zero
 // next actions. Keep the start card until there is real work: an invoice, or a second estimate or
 // contact beyond the demo's one.
-const isFirstRun = (_lite, c) => !!c && !c.invoices && (c.estimates || 0) <= 1 && (c.contacts || 0) <= 1
+const isFirstRun = (_lite, c) => !!c && !c.jobs && !c.invoices && (c.estimates || 0) <= 1 && (c.contacts || 0) <= 1
 
 /** Lite tiles: money and paperwork only. The pro version links to /capacity, /art and /board, none
  *  of which exist in this edition, so those tiles were dead ends. */
@@ -74,10 +57,9 @@ export async function todayView() {
   $('#view').innerHTML = '<div class="dim">Loading your day…</div>'
   const me = window.__me || {}
   const lite = window.__EDITION === 'lite'
-  // In lite there is no production floor, so the day is only about money and paperwork. Fetch the
-  // counts that decide whether this is a brand-new shop (which needs a start card, not an empty
-  // "all caught up") and what the tiles should say.
-  const [d, counts] = await Promise.all([api.get('/api/today'), liteCounts()])
+  // One tenant-scoped response supplies both the work queue and onboarding/tile counts.
+  const d = await api.get('/api/today')
+  const counts = d.counts
 
   const hour = new Date().getHours()
   const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
@@ -99,7 +81,7 @@ export async function todayView() {
       <a class="tdy-stat ${p.money_at_risk > 0 ? 'bad' : ''}" href="#/invoices"><div class="tdy-stat-v">${money0(p.money_at_risk)}</div><div class="tdy-stat-l">Money at risk</div></a>
       <a class="tdy-stat ${p.jobs_at_risk ? 'warn' : ''}" href="#/capacity"><div class="tdy-stat-v">${p.jobs_at_risk}</div><div class="tdy-stat-l">Deadlines slipping</div></a>
       <a class="tdy-stat ${p.approvals ? 'warn' : ''}" href="#/art"><div class="tdy-stat-v">${p.approvals}</div><div class="tdy-stat-l">Proofs waiting</div></a>
-      <a class="tdy-stat" href="#/board"><div class="tdy-stat-v">${p.due_week}</div><div class="tdy-stat-l">Due this week</div></a>
+      <a class="tdy-stat" href="#/board"><div class="tdy-stat-v">${p.due_week}</div><div class="tdy-stat-l">Due in 7 days${p.overdue_jobs ? ` · ${p.overdue_jobs} overdue` : ''}</div></a>
     </div>`}
 
     ${isFirstRun(lite, counts) ? startCard(lite) : `<div class="card">
