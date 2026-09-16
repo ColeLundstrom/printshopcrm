@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "provider": "ghl",
+  "locationId": "fictional-print-shop",
+  "contacts": [{"id":"sample-contact","name":"Example Buyer","email":"buyer@example.test","dnd":true}],
+  "opportunities": [{"id":"sample-deal","contactId":"sample-contact","name":"72 screen printed shirts","status":"open","pipelineStageId":"quote-stage","monetaryValue":864}],
+  "tasks": [{"id":"sample-task","contactId":"sample-contact","title":"Confirm shirt sizes","dueDate":"2026-10-01","completed":false}],
+  "stageMap": {"quote-stage":"quoted"}
+}
