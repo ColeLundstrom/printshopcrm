@@ -71,3 +71,7 @@ for unbuilt systems.
 ### Payment accounting after the provider adapters
 
 Stripe and Authorize.net hosted checkout now share verified, idempotent invoice posting. The next release gate is merchant-owned sandbox acceptance on public HTTPS. Stripe refunds, Authorize.net refunds/voids and explicit invoice credits now preserve history and pause collections for review. Chargebacks, unmatched external transactions, background reconciliation, QuickBooks credit/refund documents and jurisdiction-specific tax records remain before claiming complete payment accounting. See [PAYMENTS.md](PAYMENTS.md).
+
+## Normal-shop CRM migration
+
+Customer tasks and the [reviewed GHL customer/deal/task import](SHOP-CRM-MIGRATION.md) support an incremental cutover without adding event staffing. Complete mailbox synchronization, voice/booking, financial-history migration and transfer of running GHL workflows remain open. Do not advertise full GHL replacement based on this module.

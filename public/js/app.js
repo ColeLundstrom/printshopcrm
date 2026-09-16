@@ -1,3 +1,4 @@
+import { crmTasksView, crmMigrationView, communicationHoldsView } from './views/shop-crm.js'
 import { agentKeysView } from './views/agent-keys.js'
 import { slackOperatorView } from './views/slack-operator.js'
 import { calendarView } from './views/calendar.js'
@@ -72,6 +73,7 @@ const NAV = [
   { advanced: true, href: '/books', ico: 'invoices', name: 'Books & A/R' },
   { label: 'Customers', section: true },
   { href: '/contacts', ico: 'customers', name: 'Customers' },
+  { href: '/customer-tasks', ico: 'followups', name: 'Customer tasks' },
   { label: 'Automate', section: true },
   { advanced: true, href: '/autopilot', ico: 'autopilot', name: 'Autopilot' },
   { advanced: true, href: '/receptionist', ico: 'receptionist', name: 'AI Receptionist' },
@@ -106,6 +108,9 @@ function visibleNav() {
   return items.filter((n, i) => !n.section || items.slice(i + 1).some((x) => !x.section) && !items[i + 1]?.section)
 }
 
+route(/^\/customer-tasks(?:\?.*)?$/, crmTasksView)
+route(/^\/crm-migration$/, crmMigrationView)
+route(/^\/communication-holds(?:\?.*)?$/, communicationHoldsView)
 /* routes — order matters, first match wins */
 route(/^\/$/, todayView)
 route(/^\/dashboard$/, dashboardView)

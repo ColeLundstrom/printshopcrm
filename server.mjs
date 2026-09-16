@@ -1,3 +1,5 @@
+import { registerShopCrmRoutes } from './lib/shop-crm-routes.mjs'
+import { communicationHold } from './lib/shop-crm.mjs'
 import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
@@ -905,6 +907,8 @@ function markDelivery(slug, rowId, result) {
  * silently vanishes — the honesty rule, now with real delivery on top.
  */
 function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, estimate_id=null, recipient_revision, deliver = true }) {
+  const hold = communicationHold(contact?.id,'email')
+  if(deliver && hold) throw Object.assign(new Error('Email is held: '+hold.reason),{status:409,expose:true})
   const s = getSettings()
   const slug = curSlug()
   const {to,body,rowId}=tx(()=>{
@@ -928,6 +932,8 @@ function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, e
 
 /** SMS: same path as email, delivered over Twilio when the shop has wired it. */
 function queueSms({ contact, body, invoice_id=null, deliver = true }) {
+  const hold = communicationHold(contact?.id,'sms')
+  if(deliver && hold) throw Object.assign(new Error('SMS is held: '+hold.reason),{status:409,expose:true})
   const s = getSettings()
   const slug = curSlug()
   const rowId = Number(run('INSERT INTO email_log (contact_id, to_email, subject, body, kind, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -3903,6 +3909,7 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
 }))
 
 registerCostingRoutes(app,{requireRole,listMembers})
+registerShopCrmRoutes(app,{requireRole,hasRole,listMembers})
 registerProductionRoutes(app,{requireRole,hasRole,listMembers,broadcast:rtBroadcast,origin:publicOrigin,artUrl})
 
 /* ================= JOBS / BOARD ================= */
@@ -8027,6 +8034,8 @@ app.post('/api/outbox/:id/send', outboundLimit, wrap(async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Message not found', code: 'not_found' })
   if(row.payment_stale || (row.invoice_id && get('SELECT payment_review FROM invoices WHERE id=?',row.invoice_id)?.payment_review)) return res.status(409).json({error:'Invoice payment details changed. Create a fresh message after reviewing the invoice.',code:'payment_review'})
   if (row.delivered) return res.status(409).json({ error: 'That message has already gone out.', code: 'already_sent' })
+  const hold=communicationHold(row.contact_id,row.kind==='sms'?'sms':'email')
+  if(hold)return res.status(409).json({error:'Communication held: '+hold.reason,code:'communication_hold'})
   const recipientIssue=recipientMessageIssue(row)
   if(recipientIssue)return res.status(409).json({error:recipientIssue,code:'recipient_review'})
   const c = row.contact_id ? get('SELECT email, phone FROM contacts WHERE id = ?', row.contact_id) : null

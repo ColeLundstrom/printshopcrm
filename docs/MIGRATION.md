@@ -13,3 +13,7 @@ For backwards compatibility, direct legacy API calls without status_policy retai
 Review totals and original invoice references after import. Repeating the exact same order export skips existing source references. If a source lacks order IDs, keep the exact original file for retries; re-exporting can change the fallback identity. PDFs, artwork, custom objects, mailbox archives and vendor-specific attachments are not imported by these CSV tools.
 
 The preview is invalidated when pasted data changes, inputs stay locked while a request runs, and repeated clicks cannot submit competing imports from the same dialog. Failed batch imports report already-written counts rather than pretending nothing was saved.
+
+## GHL customers, deals and office tasks
+
+A separate [reviewed CRM migration](SHOP-CRM-MIGRATION.md) imports documented GHL JSON fields with source IDs, preview/retry protection and communication holds. It does not migrate active financial balances, running workflows, mailboxes or phone service.
