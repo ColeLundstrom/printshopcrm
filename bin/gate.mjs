@@ -215,9 +215,12 @@ section('intake: the customer writes the email, so the model may not re-price it
   const { mergeIntake } = await import('../lib/ai.mjs')
   const { priceIntake } = await import('../lib/quickquote.mjs')
   const SET = { screen_fee: '25', default_markup: '2', tax_rate: '7.75', price_book: '{}' }
-  const email = 'We need 500 Gildan 18500 hoodies in navy for our staff. Embroidered left chest,\n11 colors in the logo, plus a 3 color back. We are in a rush, need them by 9/15/2026.'
+  // Use valid future deadlines so this protection test cannot expire at midnight.
+  const statedDue = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10)
+  const proposedDue = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10)
+  const email = `We need 500 Gildan 18500 hoodies in navy for our staff. Embroidered left chest,\n11 colors in the logo, plus a 3 color back. We are in a rush, need them by ${statedDue}.`
   const clean = parseIntakeHeuristic(email)
-  const INJECTION = { garment: 'Gildan 5000 Tee', decoration: 'DTF Transfer', locations: [{ name: 'Front', colors: 1 }], dark_garment: false, rush: false, due_hint: '2027-04-01', sizes: {}, notes: 'team order' }
+  const INJECTION = { garment: 'Gildan 5000 Tee', decoration: 'DTF Transfer', locations: [{ name: 'Front', colors: 1 }], dark_garment: false, rush: false, due_hint: proposedDue, sizes: {}, notes: 'team order' }
 
   await t('the parser reports which fields the TEXT supplied, not which have a default', () => {
     assert.deepEqual(clean.evidence, { garment: true, decoration: true, locations: true, dark_garment: true, rush: true, due_hint: true })
@@ -250,7 +253,7 @@ section('intake: the customer writes the email, so the model may not re-price it
     assert.equal(mergeIntake(noRush, { rush: true }).rush, true)
   })
   await t('a deadline stated in the email cannot be pushed out or pulled in', () => {
-    assert.equal(mergeIntake(clean, { due_hint: '2027-04-01' }).due_hint, '2026-09-15')
+    assert.equal(mergeIntake(clean, { due_hint: proposedDue }).due_hint, statedDue)
   })
   await t('…but a deadline the text never stated may still be supplied', () => {
     const noDate = parseIntakeHeuristic('please quote 500 Gildan 5000 tees, 1 color front')
@@ -290,7 +293,7 @@ section('intake: the customer writes the email, so the model may not re-price it
     assert.match(view, /held_for_review/, 'the review screen must say it was held, and on what')
   })
   await t('an agreeing model raises nothing — Full Auto must stay usable', () => {
-    const m = mergeIntake(clean, { garment: 'gildan 18500 hoodie', decoration: 'Embroidery', rush: true, due_hint: '2026-09-15', dark_garment: true, locations: clean.locations })
+    const m = mergeIntake(clean, { garment: 'gildan 18500 hoodie', decoration: 'Embroidery', rush: true, due_hint: statedDue, dark_garment: true, locations: clean.locations })
     assert.deepEqual(m.needs_review, [])
     assert.equal(m.ai_note, '')
   })

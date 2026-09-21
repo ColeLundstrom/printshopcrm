@@ -1,3 +1,4 @@
+import { mountDesktopNavigation } from './shared/desktop-navigation.js'
 import { agentKeysView } from './views/agent-keys.js'
 import { slackOperatorView } from './views/slack-operator.js'
 import { calendarView } from './views/calendar.js'
@@ -460,6 +461,13 @@ menuBtn?.setAttribute('aria-controls', 'sidebar')
 menuBtn?.setAttribute('aria-haspopup', 'menu')
 setToggles(false)
 asButton(menuBtn, 'Menu', () => toggleDrawer(menuBtn))
+mountDesktopNavigation({
+  root: document.documentElement, sidebar, button: $('#desktop-nav-toggle'),
+  media: matchMedia('(min-width: 901px)'),
+  read: () => store.get('psc-desktop-navigation'),
+  write: (value) => store.set('psc-desktop-navigation', value),
+  closeMobileDrawer: () => closeDrawer({ silent: true }),
+})
 asButton($('#search-trigger'), 'Search', openSearch)
 
 // Skip link — the first focusable element on the page, visually hidden until focused, jumps focus
