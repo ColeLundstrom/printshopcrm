@@ -2243,7 +2243,7 @@ await t('a pasted sheet keeps its headings as TEXT', async () => {
   assert.deepEqual(parseSheet('Qty,"Front, Back"\n1-11,9.50').cols, ['Front, Back'])
   assert.deepEqual(parseSheet('Qty\tSmall\tLarge\n1-11\t4.00\t8.00').cols, ['Small', 'Large'], 'tab-separated paste')
   assert.throws(() => parseSheet('just one line'), /header row/i)
-  assert.throws(() => parseSheet('Qty,Small\n1-11,abc'), /No prices found/i)
+  assert.throws(() => parseSheet('Qty,Small\n1-11,abc'), /Invalid price/i)
 })
 
 await t('sanitize refuses an unusable matrix and never leaves ambiguous headers', async () => {

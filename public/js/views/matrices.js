@@ -19,11 +19,14 @@ export async function matricesView() {
 }
 
 async function drawList() {
-  cache = await api.get('/api/matrices')
+  const root = $('#mx-list'), active = captureImportContext(root)
+  const payload = await api.get('/api/matrices')
+  if (!active()) return
+  cache = payload
   const { matrices: list, templates } = cache
 
   $('#mx-list').innerHTML = `
-    <div class="card card-b" id="mx-drop"><strong>Bring your existing price sheet</strong><p class="dim">Drop one CSV or TSV here, or choose a file. The first row supplies column headings; the first column supplies row headings. Creates a new editable matrix.</p><label class="btn ghost">Choose price sheet<input id="mx-import-new" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden></label></div>
+    <div class="card card-b" id="mx-drop"><strong>Bring your existing price sheet</strong><p class="dim">Drop one CSV or TSV here, or choose a file. The first row supplies column headings; the first column supplies row headings. Creates a new editable matrix. Maximum 60 rows, 40 price columns and 2 MB. Invalid sheets leave saved prices unchanged.</p><label class="btn ghost">Choose price sheet<input id="mx-import-new" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden></label><p id="mx-import-note" role="status" aria-live="polite"></p></div>
     <div class="card"><div class="card-b">
       <p class="dim" style="font-size:12.5px;line-height:1.6;margin:0">A price matrix is your own price sheet. Name it anything, label the rows and columns in your own words, and type your prices in. Screen printing by ink colour, mugs by size, engraving by area, banners by the square foot — same grid, your labels. Quotes let you pick which matrix a line is priced from, so one estimate can use several.</p>
     </div></div>
@@ -84,9 +87,31 @@ function wireList() {
    * #mx-list is rebuilt by matricesView() on each entry, so onOnce still binds exactly once per
    * screen, and drawList()'s repaints (which only replace its innerHTML) do not re-bind. */
   const root = $('#mx-list')
-  const importNew=async file=>{if(!file)return;try{if(!/\.(csv|tsv)$/i.test(file.name))throw new Error('Choose a CSV or TSV price sheet');if(file.size>2e6)throw new Error('Price sheets must be under 2 MB');const body=new FormData();body.append('file',file);body.append('name',file.name.replace(/\.(csv|tsv)$/i,''));const r=await api.req('POST','/api/matrices/import',body);toast(`Imported ${r.filled} prices`);go(`/matrices/${r.matrix.id}`)}catch(e){toast(e.message,true)}}
-  $('#mx-import-new').onchange=e=>importNew(e.target.files?.[0])
-  const drop=$('#mx-drop');drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();if(e.dataTransfer.files.length!==1)return toast('Drop one price sheet at a time',true);importNew(e.dataTransfer.files[0])}
+  const active = captureImportContext(root)
+  const input = $('#mx-import-new'), note = $('#mx-import-note')
+  let importing = false
+  const importNew = async file => {
+    if (!file || importing || !active()) return
+    importing = true; input.disabled = true
+    note.textContent = 'Reading your sheet…'
+    try {
+      validateSheetFile(file)
+      const body = new FormData(); body.append('file', file); body.append('name', file.name.replace(/\.(csv|tsv)$/i, ''))
+      const r = await api.req('POST', '/api/matrices/import', body)
+      if (!active()) return
+      toast(`Imported ${r.filled} prices`); go(`/matrices/${r.matrix.id}`)
+    } catch (e) { if (active()) note.textContent = e.message + (e.status && e.status < 500 ? '' : ' If the upload started, check your matrix list before retrying.') }
+    finally { importing = false; input.disabled = false }
+  }
+  input.onchange = e => { const file = e.target.files?.[0]; e.target.value = ''; return importNew(file) }
+  const drop = $('#mx-drop')
+  drop.ondragover = e => e.preventDefault()
+  drop.ondrop = e => {
+    e.preventDefault()
+    if (importing) return
+    if (e.dataTransfer.files.length !== 1) { note.textContent = 'Drop one price sheet at a time'; return }
+    return importNew(e.dataTransfer.files[0])
+  }
 
   onOnce(root, '[data-edit]', (_e, el) => go(`/matrices/${el.dataset.edit}`))
   onOnce(root, '[data-tpl]', async (_e, el) => {
@@ -165,11 +190,12 @@ function newMatrixModal() {
 
 let m = null
 let dirty = false
+let importing = false
 
 export async function matrixEditor(id) {
   try { m = (await api.get(`/api/matrices/${id}`)).matrix }
   catch { setPage('Price matrix'); $('#view').innerHTML = empty('▦', 'Matrix not found', 'It may have been deleted.', '<a class="btn" href="#/matrices">Back to matrices</a>'); return }
-  dirty = false
+  dirty = false; importing = false
   setPage(m.name, `<button class="btn ghost" id="mx-back">Back</button><button class="btn" id="mx-save">Save matrix</button>`,
     `<a href="#/pricing">Pricing</a> / <a href="#/matrices">Price matrices</a> /`)
   drawEditor()
@@ -208,7 +234,7 @@ function drawEditor() {
           <label class="btn ghost sm" style="cursor:pointer">Import a price sheet<input type="file" id="mx-file" accept=".csv,.tsv,text/csv,text/plain" style="display:none"></label>
           <button class="btn ghost sm" id="mx-paste">Paste a grid</button>
         </div>
-        <div id="mx-note" class="dim" style="font-size:12px;margin-top:10px"></div>
+        <div id="mx-note" role="status" aria-live="polite" class="dim" style="font-size:12px;margin-top:10px"></div>
       </div></div>
 
     <div class="card"><div class="card-h"><h3>Danger zone</h3></div>
@@ -313,6 +339,7 @@ function wireEditor() {
   // the list and every price typed since the last Save was gone — no prompt, no undo, and this
   // grid is the one screen where a shop types for ten minutes before saving once.
   const leaveEditor = (to) => {
+    if (importing) return toast('Wait for the price sheet to finish importing')
     if (!dirty) return go(to)
     confirmModal('Leave without saving?',
       'The prices you typed are only in this browser. Leaving now discards them.',
@@ -325,6 +352,7 @@ function wireEditor() {
    * beforeunload — so the listener below never saw any of them. This is the choke point that does.
    * Refusing owns re-issuing the navigation once the shop has answered. */
   guardLeave((to) => {
+    if (importing) { toast('Wait for the price sheet to finish importing'); return false }
     if (!dirty) return true
     confirmModal('Leave without saving?',
       'The prices you typed are only in this browser. Leaving now discards them.',
@@ -341,12 +369,18 @@ function wireEditor() {
     `“${m.name}” is removed. Estimates already priced from it keep their prices.`,
     async () => { await api.del(`/api/matrices/${m.id}`); toast('Deleted'); go('/matrices') })
 
-  $('#mx-file').onchange = async (e) => {
-    const file = e.target.files && e.target.files[0]
-    if (!file) return
-    await importSheet(() => { const fd = new FormData(); fd.append('file', file); fd.append('replace', String(m.id)); return fd })
-    e.target.value = ''
+  $('#mx-file').onchange = e => {
+    const file = e.target.files?.[0]; e.target.value = ''
+    if (!file || importing) return
+    try { validateSheetFile(file) } catch (e) { $('#mx-note').textContent = e.message; return }
+    const id = m.id, active = captureImportContext($('#mx-table'))
+    confirmModal('Replace saved prices?', replacementWarning(), async () => {
+      if (!active()) return
+      const body = new FormData(); body.append('file', file); body.append('replace', String(id))
+      await importSheet(() => api.req('POST', '/api/matrices/import', body))
+    }, 'Replace saved grid')
   }
+
   $('#mx-paste').onclick = () => pasteModal()
 }
 
@@ -359,48 +393,79 @@ function markDirty() { dirty = true; countCells() }
 if (typeof window !== 'undefined' && !window.__pscMxGuard) {
   window.__pscMxGuard = true
   window.addEventListener('beforeunload', (e) => {
-    if (!dirty || !document.getElementById('mx-table')) return
+    if ((!dirty && !importing) || !document.getElementById('mx-table')) return
     e.preventDefault()
     e.returnValue = ''
   })
 }
 
-async function importSheet(bodyFn) {
-  const note = $('#mx-note')
+function validateSheetFile(file) {
+  if (!/\.(csv|tsv)$/i.test(file.name)) throw new Error('Choose a CSV or TSV price sheet')
+  if (file.size > 2e6) throw new Error('Price sheets must be under 2 MB')
+}
+
+// A late response must never repaint a different matrix, route or signed-in shop.
+function captureImportContext(node) {
+  const route = location.hash, account = window.__me
+  return () => node?.isConnected && location.hash === route && window.__me === account
+}
+
+function replacementWarning() {
+  return `This immediately replaces the saved grid in “${m.name}”. Existing estimates keep their prices. Name and other saved settings stay the same.${dirty ? ' Your unsaved edits will be discarded only if the import succeeds.' : ''}`
+}
+
+async function importSheet(request, onSuccess = () => {}) {
+  if (importing) return false
+  const note = $('#mx-note'), active = captureImportContext($('#mx-table'))
+  const controls = $$('#view input, #view select, #view button, #mx-save')
+  const disabled = controls.map(el => el.disabled)
+  importing = true; controls.forEach(el => { el.disabled = true })
   note.textContent = 'Reading your sheet…'
   try {
-    const r = await api.req('POST', '/api/matrices/import', bodyFn())
+    const r = await request()
+    if (!active()) return false
+    onSuccess()
     m = r.matrix; dirty = false
     drawEditor()
-    $('#mx-note').innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price${r.filled === 1 ? '' : 's'} — your headings came through as you wrote them.</span>`
-  } catch (e) { note.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>` }
+    $('#mx-note').textContent = `Imported ${r.filled} prices — saved. Quotes use these prices now.`
+    return true
+  } catch (e) {
+    if (active()) note.textContent = `${e.message} ${[400, 403, 404, 413].includes(e.status) ? 'Saved prices and your unsaved edits are unchanged.' : 'Your unsaved edits are still here. The save could not be confirmed; check the saved matrix before retrying.'}`
+    return false
+  } finally {
+    controls.forEach((el, i) => { el.disabled = disabled[i] })
+    importing = false
+  }
 }
 
 function pasteModal() {
+  if (importing) return
+  const id = m.id, active = captureImportContext($('#mx-table'))
   modal({
     title: 'Paste a price grid', wide: true,
     body: `<p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Copy the grid straight out of your spreadsheet and paste it here. First row = your column headings, first column = your row headings. Headings can be anything — “11 oz Mug”, “Both sides”, “1-11”.</p>
       <textarea class="input" id="mx-paste-text" rows="10" style="font-family:var(--mono,monospace);font-size:12px" placeholder="Quantity,11 oz Mug,15 oz Mug&#10;1-11,18.00,20.00&#10;12-23,13.00,14.50"></textarea>
-      <p class="dim" style="font-size:11.5px;margin-top:8px">This replaces the whole grid in <strong style="color:var(--txt-2)">${esc(m.name)}</strong>.</p>
+      <p class="dim" style="font-size:11.5px;margin-top:8px">${esc(replacementWarning())}</p>
       <div class="dim" id="mx-paste-err" role="alert" style="color:var(--red);font-size:12px;display:none;margin-top:6px"></div>`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="mx-paste-go">Read the grid</button>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="mx-paste-go">Replace saved grid</button>`,
     onMount: (bg) => {
       $('#mx-paste-go', bg).onclick = async () => {
         const text = $('#mx-paste-text', bg).value
         if (!text.trim()) { const e = $('#mx-paste-err', bg); e.textContent = 'Paste your grid first.'; e.style.display = ''; return }
-        try {
-          const r = await api.post('/api/matrices/import', { text, replace: m.id })
-          closeModal()
-          m = r.matrix; dirty = false
-          drawEditor()
-          $('#mx-note').innerHTML = `<span style="color:var(--accent)">Imported ${r.filled} price${r.filled === 1 ? '' : 's'}.</span>`
-        } catch (e) { const el = $('#mx-paste-err', bg); el.textContent = e.message; el.style.display = '' }
+        if (!active() || importing) return
+        const button = $('#mx-paste-go', bg); button.disabled = true
+        const ok = await importSheet(() => api.post('/api/matrices/import', { text, replace: id }), () => { if (bg.isConnected) closeModal() })
+        if (!ok && active() && bg.isConnected) {
+          const el = $('#mx-paste-err', bg); el.textContent = $('#mx-note').textContent; el.style.display = ''
+          button.disabled = false
+        }
       }
     },
   })
 }
 
 async function save() {
+  if (importing) return
   const note = $('#mx-note')
   note.textContent = 'Saving…'
   try {

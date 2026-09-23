@@ -6046,15 +6046,18 @@ app.post('/api/matrices/import', uploadMem.single('file'), reTenant, requireRole
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV or paste your price grid.' })
   let sheet
   try { sheet = matrices.parseSheet(text) } catch (e) { return res.status(400).json({ error: e.message }) }
-  const replaceId = Number(req.body?.replace) || 0
+  const replacing = Object.hasOwn(req.body || {}, 'replace')
+  const replaceId = replacing ? Number(req.body.replace) : 0
+  if (replacing && (!/^[0-9]+$/.test(String(req.body.replace)) || !Number.isSafeInteger(replaceId) || replaceId < 1))
+    return res.status(400).json({ error: 'Choose a valid matrix to replace.' })
   const payload = {
     rows: sheet.rows, cols: sheet.cols, cells: sheet.cells,
     ...(sheet.cornerLabel ? { rowLabel: sheet.cornerLabel } : {}),
   }
   try {
-    const m = replaceId
+    const m = tx(() => replaceId
       ? matrices.updateMatrix(replaceId, payload)
-      : matrices.createMatrix({ ...payload, name: req.body?.name || 'Imported price sheet' })
+      : matrices.createMatrix({ ...payload, name: req.body?.name || 'Imported price sheet' }))
     if (!m) return res.status(404).json({ error: 'No such price matrix' })
     res.json({ matrix: m, filled: sheet.filled })
   } catch (e) { res.status(400).json({ error: e.message }) }
