@@ -1,3 +1,4 @@
+import { contactTagFilter } from './lib/contact-filters.mjs'
 import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
@@ -2493,14 +2494,15 @@ app.get('/api/contacts', wrap((req, res) => {
   // twice. .toLowerCase() on an array threw, and this list — Customers — is one of the three
   // busiest screens in the app. Every /api/v1 twin has done this all along.
   const q = `%${String(req.query.q ?? '').toLowerCase()}%`
-  const tag = String(req.query.tag ?? '')
+  let tagFilter
+  try { tagFilter = contactTagFilter(req.query) } catch (e) { return res.status(400).json({ error: e.message }) }
   let sql = `SELECT c.*,
       (SELECT COUNT(*) FROM jobs j WHERE j.contact_id = c.id) AS job_count,
       (SELECT COALESCE(SUM(i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id) AS lifetime_value,
       (SELECT COALESCE(SUM(i.amount_due - i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id AND i.status NOT IN ('paid','void')) AS balance
     FROM contacts c WHERE (lower(c.name) LIKE ? OR lower(COALESCE(c.company,'')) LIKE ? OR lower(COALESCE(c.email,'')) LIKE ?)`
   const params = [q, q, q]
-  if (tag) { sql += ` AND ',' || c.tags || ',' LIKE ?`; params.push(`%,${tag},%`) }
+  sql += tagFilter.sql; params.push(...tagFilter.params)
   sql += ' ORDER BY c.name'
   const rows = all(sql, ...params).map((r) => ({ ...r, tags: r.tags ? r.tags.split(',').filter(Boolean) : [] }))
   const tags = [...new Set(all('SELECT tags FROM contacts').flatMap((r) => (r.tags || '').split(',')).filter(Boolean))].sort()

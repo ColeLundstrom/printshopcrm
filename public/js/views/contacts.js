@@ -1,7 +1,6 @@
 import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick } from '../core.js'
 import { billingFields, bindBillingFields } from '../shared/billing-recipients.js'
 
-let filterTag = ''
 
 // A single mapping editor shared by both import dialogs. No data leaves this shop.
 function mappingEditor(bg, prefix, kind) {
@@ -35,8 +34,23 @@ function mappingEditor(bg, prefix, kind) {
 
 export async function contactsView() {
   setPage('Customers', `<button class="btn ghost" id="import-c">Import CSV</button><button class="btn ghost" id="import-o">Import order history</button><button class="btn" id="new-c">+ New Customer</button>`)
+  const included = new Set(), excluded = new Set()
+  const account = window.__me, route = location.hash.split('?')[0]
+  let sequence = 0, listRoot
   const render = async (q = '') => {
-    const d = await api.get(`/api/contacts?q=${encodeURIComponent(q)}&tag=${encodeURIComponent(filterTag)}`)
+    const request = ++sequence, root = listRoot
+    const active = () => root?.isConnected && window.__me === account && location.hash.split('?')[0] === route && request === sequence
+    if (!active()) return
+    const query = new URLSearchParams({q, tag_mode: $('#tag-mode').value})
+    for (const tag of included) query.append('tag', tag)
+    for (const tag of excluded) query.append('exclude_tag', tag)
+    $('#customer-filter-status').textContent = 'Loading customers…'
+    let d
+    try { d = await api.get('/api/contacts?' + query) }
+    catch (e) { if (active()) { root.innerHTML = ''; $('#customer-filter-status').textContent = `Could not load customers: ${e.message}. Change a filter or search to retry.` }; return }
+    if (!active()) return
+    const filtered = included.size || excluded.size
+
     const body = d.contacts.length ? `<table class="tbl stack">
       <thead><tr><th>Customer</th><th>Contact</th><th>Tags</th><th class="num">Orders</th><th class="num">Lifetime</th><th class="num">Balance</th></tr></thead>
       <tbody>${d.contacts.map((c) => `<tr class="click" data-id="${c.id}">
@@ -49,7 +63,7 @@ export async function contactsView() {
         <td class="num" data-label="Lifetime"><strong>${money0(c.lifetime_value)}</strong></td>
         <td class="num" data-label="Balance">${c.balance > 0 ? `<span style="color:var(--amber);font-weight:600">${money0(c.balance)}</span>` : '<span class="dim">—</span>'}</td>
       </tr>`).join('')}</tbody></table>`
-      : empty('◉', 'No customers found', q || filterTag ? 'Try a different search or clear the tag filter.' : 'Add your first customer to get started.', q || filterTag ? '' : '<a class="btn" href="#/contacts?new=1">Add a customer</a>')
+      : empty('◉', 'No customers found', q || filtered ? 'Try a different search or clear the tag filter.' : 'Add your first customer to get started.', q || filtered ? '' : '<a class="btn" href="#/contacts?new=1">Add a customer</a>')
 
     // Only the innerHTML is replaced here. The delegated listeners are bound ONCE below, on the
     // persistent #list and #tags elements — binding them inside render() added a new listener on
@@ -61,18 +75,36 @@ export async function contactsView() {
     // and the gate asserts it there; this is the same control one screen over.
     const wasTag = document.activeElement?.dataset?.tag
     $('#list').innerHTML = body
-    $('#tags').innerHTML = ['', ...d.tags].map((t) => `<button type="button" class="${filterTag === t ? 'on' : ''}" data-tag="${esc(t)}" aria-pressed="${filterTag === t}">${t ? esc(t) : 'All'}</button>`).join('')
+    $('#tags').innerHTML = ['', ...d.tags].map((t) => `<button type="button" class="${(t ? included.has(t) : !filtered) ? 'on' : ''}" data-tag="${esc(t)}" aria-pressed="${t ? included.has(t) : !filtered}">${t ? esc(t) : 'All'}</button>`).join('')
+    $('#excluded-tags').innerHTML = [...excluded].map(tag => `<button class="btn ghost sm" type="button" data-excluded="${esc(tag)}" aria-label="Stop excluding ${esc(tag)}">Exclude: ${esc(tag)} ×</button>`).join('')
+    $('#exclude-tag').innerHTML = '<option value="">Choose a tag to exclude</option>' + d.tags.filter(tag => !excluded.has(tag)).map(tag => `<option value="${esc(tag)}">${esc(tag)}</option>`).join('')
+    $('#customer-filter-status').textContent = `${d.contacts.length} customer${d.contacts.length === 1 ? '' : 's'}${filtered ? ` · matching ${$('#tag-mode').value} included tags · ${excluded.size} excluded` : ''}`
     if (wasTag !== undefined) $(`#tags [data-tag="${CSS.escape(wasTag)}"]`)?.focus?.()
   }
 
   $('#view').innerHTML = `<div class="searchbar">
       <input class="input" id="q" placeholder="Search name, company, email…" autocomplete="off">
       <div class="tabs" id="tags" role="group" aria-label="Filter customers by tag"></div>
-    </div><div class="card" id="list"></div>`
+    </div><div class="card card-b" style="margin-bottom:12px"><div class="wrap-row">
+      <label for="tag-mode">Included tags must match</label><select class="input" id="tag-mode" style="width:auto"><option value="all">All selected tags</option><option value="any">Any selected tag</option></select>
+      <label for="exclude-tag">Exclude customers tagged</label><select class="input" id="exclude-tag" style="width:auto"><option value="">Choose a tag to exclude</option></select>
+      <button class="btn ghost" id="clear-tags" type="button">Clear tags</button>
+    </div><div class="wrap-row" id="excluded-tags" style="margin-top:8px"></div><p class="dim" id="customer-filter-status" role="status" aria-live="polite"></p></div><div class="card" id="list"></div>`
+
+  listRoot = $('#list')
 
   // Bound once, on elements that outlive every render.
   on($('#list'), '[data-id]', (_e, t) => go(`/contacts/${t.dataset.id}`))
-  on($('#tags'), '[data-tag]', (_e, t) => { filterTag = t.dataset.tag; render($('#q').value) })
+  on($('#tags'), '[data-tag]', (_e, t) => {
+    const tag = t.dataset.tag
+    if (!tag) { included.clear(); excluded.clear() }
+    else { if (!included.has(tag) && included.size >= 20) { $('#customer-filter-status').textContent = 'Choose at most 20 included tags.'; return }; excluded.delete(tag); included.has(tag) ? included.delete(tag) : included.add(tag) }
+    render($('#q').value)
+  })
+  $('#tag-mode').onchange = () => render($('#q').value)
+  $('#exclude-tag').onchange = e => { const tag = e.target.value; if (tag) { if (excluded.size >= 20) { $('#customer-filter-status').textContent = 'Choose at most 20 excluded tags.'; e.target.value = ''; return }; included.delete(tag); excluded.add(tag); render($('#q').value) } }
+  on($('#excluded-tags'), '[data-excluded]', (_e, button) => { excluded.delete(button.dataset.excluded); render($('#q').value); $('#exclude-tag').focus() })
+  $('#clear-tags').onclick = () => { included.clear(); excluded.clear(); render($('#q').value) }
 
   let t
   $('#q').oninput = (e) => { clearTimeout(t); t = setTimeout(() => render(e.target.value), 180) }
