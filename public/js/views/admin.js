@@ -11,22 +11,29 @@ export async function adminView() {
   try { data = await api.get('/api/admin/shops') } catch (e) {
     $('#view').innerHTML = `<div class="empty">${esc(e.message || 'Admins only')}</div>`; return
   }
-  const shops = data.shops || []
+  let usage
+  try { usage = await api.get('/api/admin/usage') } catch { usage = {available:false} }
+  const shops = (data.shops || []).map(s => ({...s, usage:usage.shops?.find(u=>u.id===s.id)}))
   const active = shops.filter((s) => s.status !== 'suspended').length
   const suspended = shops.length - active
   const revenue = shops.reduce((a, s) => a + (Number(s.revenue) || 0), 0)
 
   $('#view').innerHTML = `
     <div class="kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-      ${kpi(shops.length, 'Client shops')}
-      ${kpi(active, 'Active')}
+      ${kpi(shops.length, 'Shop accounts')}
+      ${kpi(active, 'Enabled accounts')}
       ${kpi(suspended, 'Suspended')}
       ${kpi(money(revenue), 'Collected across all shops')}
     </div>
-    <div class="card"><div class="card-b" style="padding:0">
+    <section class="card" style="margin-bottom:16px"><div class="card-b">
+      <h2>Customer usage</h2>
+      ${usage.available ? `<p><strong>${usage.customers_active7}</strong> confirmed customer shops worked in the last 7 UTC dates; <strong>${usage.customers_active30}</strong> in the last 30. ${usage.customer_shops} confirmed customer accounts; ${usage.unreviewed} unreviewed.</p>
+      <p class="dim">Measurement started ${esc(usage.started_at)}. Counts successful browser changes to customers, estimates, invoices, jobs and opportunities after a fresh member sign-in. Excludes support sign-ins, API integrations, reads and marked synthetic checks. Older sessions show uncertain activity until the next sign-in. Browser signals are not proof of a human. Review account classifications before interpreting adoption; zero does not mean no use before measurement began. Windows include today and the previous 6 or 29 UTC dates.</p>` : '<p role="alert">Usage measurement unavailable. No adoption count can be reported.</p>'}
+    </div></section>
+    <div class="card"><div class="card-b" style="padding:0;overflow-x:auto">
       <table class="tbl" style="width:100%;border-collapse:collapse">
         <thead><tr style="text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)">
-          <th style="padding:12px 14px">Shop</th><th>Owner</th><th>Status</th><th>Invoices</th><th>Customers</th><th>Collected</th><th>Last login</th><th></th>
+          <th style="padding:12px 14px">Shop</th><th>Owner</th><th>Status</th><th>Invoices</th><th>Customers</th><th>Collected</th><th>Last login</th><th>Usage / classification</th><th></th>
         </tr></thead>
         <tbody id="ad-rows">
           ${shops.length ? shops.map(row).join('') : '<tr><td colspan="8" style="padding:26px;text-align:center;color:var(--dim)">No client shops yet — add your first one.</td></tr>'}
@@ -38,7 +45,10 @@ export async function adminView() {
 
   on($('#ad-rows'), '[data-act]', async (e, t) => {
     const id = +t.dataset.id; const act = t.dataset.act; const name = t.dataset.name || 'this shop'
-    if (act === 'hosting') {
+    if (act === 'classification') {
+      const kind = t.closest('td').querySelector('select').value
+      try { await api.post(`/api/admin/shops/${id}/classification`,{kind}); await adminView() } catch(ex) { toast(ex.message,true) }
+    } else if (act === 'hosting') {
       await hostingReviewModal(id,name)
     } else if (act === 'signin') {
       if (!confirm(`Sign in as ${name}? Your admin session will switch to their shop — sign back in to your own account afterward.`)) return
@@ -97,7 +107,7 @@ function row(s) {
   const suspended = s.status === 'suspended'
   const statusPill = suspended
     ? '<span class="pill" style="background:rgba(239,68,68,.15);color:#ef4444">Suspended</span>'
-    : '<span class="pill" style="background:rgba(37,99,235,.15);color:var(--accent)">Active</span>'
+    : '<span class="pill" style="background:rgba(37,99,235,.15);color:var(--accent)">Enabled</span>'
   return `<tr style="border-top:1px solid var(--line)">
     <td style="padding:12px 14px"><strong>${esc(s.shop_name || '—')}</strong><div class="dim" style="font-size:11px">${esc(s.slug)}</div></td>
     <td><div>${esc(s.owner_name || '—')}</div><div class="dim" style="font-size:11px">${esc(s.owner_email || '')}</div></td>
@@ -106,6 +116,9 @@ function row(s) {
     <td>${s.customers}</td>
     <td>${money(s.revenue)}</td>
     <td class="dim" style="font-size:12px">${s.last_login ? esc(fmtDate(s.last_login)) : 'never'}</td>
+    <td><div>${s.usage ? `${s.usage.days7} / ${s.usage.days30} work days (7 / 30 dates)<br>${s.usage.uncertain_actions30} uncertain actions` : 'Measurement unavailable'}</div>
+      <label>Account type <select aria-label="Account type for ${esc(s.shop_name)}">${['unreviewed','customer','demo','test','internal'].map(k=>`<option value="${k}" ${s.usage?.kind===k?'selected':''}>${k==='customer'?'Confirmed customer':k}</option>`).join('')}</select></label>
+      <button class="btn ghost sm" data-act="classification" data-id="${s.id}">Save classification</button></td>
     <td style="text-align:right;white-space:nowrap;padding-right:12px">
       <button class="btn ghost sm" data-act="hosting" data-id="${s.id}" data-name="${esc(s.shop_name)}">Hosting</button>
       <button class="btn ghost sm" data-act="signin" data-id="${s.id}" data-name="${esc(s.shop_name)}">Sign in</button>

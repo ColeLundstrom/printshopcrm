@@ -13009,7 +13009,7 @@ await t('…and the signin route binds a real member rather than leaving it null
   const i = src.indexOf("app.post('/api/admin/shops/:id/signin'")
   assert.ok(i > 0, 'the impersonation route moved — re-point this test')
   const body = src.slice(i, src.indexOf('\n}))', i)).split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n')
-  assert.match(body, /createSession\(t\.id, firstOwnerId\(t\.id\)\)/,
+  assert.match(body, /createSession\(t\.id, firstOwnerId\(t\.id\), 'support'\)/,
     'a session with no member is invisible to every member-keyed purge, and answers role owner')
 })
 

@@ -1,0 +1,9 @@
+# 1.35.6 — measured customer usage
+
+Control Room now labels account status as Enabled, not Active. Its private usage report separates reviewed customer accounts from unreviewed, demo, test and internal accounts. A platform owner can save a classification without changing login, billing or shop records.
+
+The 7/30-date figures count distinct confirmed customer shops with a successful first-party browser business write on today or the preceding 6/29 UTC dates. Eligible routes cover customers, estimates, invoices, jobs and opportunities. Reads, exports, API-key integrations, errors, support impersonation and requests marked `X-PSC-Synthetic: 1` do not count. Browser headers can be forged; this is observed work, not proof of human identity or payment. Synthetic browser checks must carry that header and use test-classified accounts.
+
+Collection begins at deployment. Older sessions remain valid and their activity is uncertain until a new member sign-in establishes session provenance. No historical activity is invented. An enabled account, invoice count, login or valid session alone is not an active customer. Unknown accounts must be reviewed before reporting adoption; zero confirmed activity at rollout is not zero actual customers.
+
+Only platform owners can read the report or classify accounts. Measurement is stored in a separate `usage.db` beside the shop database: account IDs, UTC date counts, hashed session provenance and review timestamps. No request bodies, customer content, IPs, raw session tokens or third-party analytics. Existing databases and authentication schemas are unchanged. Measurement failure makes the report unavailable and does not block login or business requests. Backup the entire data directory, including usage.db. Rolling back to 1.35.5 leaves the measurement file intact but stops collection.

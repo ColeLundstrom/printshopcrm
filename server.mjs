@@ -1,3 +1,4 @@
+import { usageEligible, USAGE_KINDS } from './lib/usage.mjs'
 import { contactSearchFilter } from './lib/contact-filters.mjs'
 import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
@@ -49,7 +50,7 @@ import {
   verifyMemberPassword, setMemberPassword, setPassword, MIN_PASSWORD,
   createPasswordReset, checkPasswordReset, consumePasswordReset,
   getTenantByApiKey, rotateApiKey, revokeApiKey, brokenTenants, agentAccess,
-  firstOwnerId, hostingCheckouts,
+  firstOwnerId, hostingCheckouts, usage,
 } from './lib/tenants.mjs'
 import {
   PLANS, createBillingPortal, verifyWebhook, webhookSecret,
@@ -1156,6 +1157,7 @@ app.use((req, res, next) => {
     req.tenant = tenant
     req.member = member
     req.role = member?.role || 'staff'
+    res.once('finish', () => { if (usageEligible(req,res.statusCode)) usage.record(tenant.id,parseCookies(req).psc_session) })
     // A host an OWNER really signed in on is the only host we have any evidence for. Remember it,
     // so an emailed reset link never has to trust a Host header a stranger chose — trustedOrigin().
     if (req.role === 'owner' && req.method === 'GET') rememberPublicOrigin(req)
@@ -1551,7 +1553,7 @@ app.post('/api/auth/signup', ipLimit(6), wrap(async (req, res) => {
     // id" on every request — unrevocable by deleteMember, and it resolves to nobody (dropping the
     // founder to 'staff' mid-session) the day that owner is demoted.
     const owner = listMembers(t.id).find((m) => m.role === 'owner')
-    setSessionCookie(res, createSession(t.id, owner?.id || null), req)
+    setSessionCookie(res, createSession(t.id, owner?.id || null, 'member'), req)
     sendWelcomeEmail(t, trustedOrigin(req, t)) // fire-and-forget; delivers if platform SMTP is set
     res.json({ ok: true, slug: t.slug, shop_name: t.shop_name, onboarding: true })
   } catch (e) {
@@ -1591,7 +1593,7 @@ app.post('/api/auth/password', rateLimit({ max: 10 }), wrap(async (req, res) => 
   // setMemberPassword just signed out every session for this member, including this one. Mint a
   // fresh session for the device that made the change, so the person changing their password stays
   // signed in here while any other logged-in session — the one they are worried about — is dropped.
-  setSessionCookie(res, createSession(req.member.tenant_id, req.member.id), req)
+  setSessionCookie(res, createSession(req.member.tenant_id, req.member.id, 'member'), req)
   clearRateLimit(req)
   res.json({ ok: true })
 }))
@@ -1678,7 +1680,7 @@ app.post('/api/auth/reset', ipLimit(10), wrap(async (req, res) => {
     const { member } = await consumePasswordReset(String(req.body?.token || ''), String(req.body?.password || ''))
     // Every old session for this member was just dropped, so sign them straight into a new one
     // rather than bouncing them to a login form with a password they only typed a second ago.
-    setSessionCookie(res, createSession(member.tenant_id, member.id), req)
+    setSessionCookie(res, createSession(member.tenant_id, member.id, 'member'), req)
     clearLoginFails(member.email) // the reset is proof enough; don't leave them in a backoff window
     res.json({ ok: true })
   } catch (e) {
@@ -1830,7 +1832,7 @@ app.post('/api/auth/login', rateLimit({ max: 12 }), wrap(async (req, res) => {
   }
   clearRateLimit(req) // a correct login shouldn't count against the window
   clearLoginFails(b.email)
-  setSessionCookie(res, createSession(r.tenant.id, r.member.id), req)
+  setSessionCookie(res, createSession(r.tenant.id, r.member.id, 'member'), req)
   res.json({ ok: true, slug: r.tenant.slug, shop_name: r.tenant.shop_name, role: r.member.role })
 }))
 
@@ -2047,6 +2049,19 @@ app.post('/api/admin/billing', wrap((req, res) => {
 
 /* ---- platform admin: the control room for every shop on this deployment (admin-owner only) ---- */
 
+app.get('/api/admin/usage', wrap((req,res) => {
+  if (!requireAdmin(req,res)) return
+  res.json(usage.report(listTenantsAdmin()))
+}))
+app.post('/api/admin/shops/:id/classification', wrap((req,res) => {
+  if (!requireAdmin(req,res)) return
+  const id=Number(req.params.id),kind=req.body?.kind
+  if (!Number.isSafeInteger(id) || !getTenantById(id)) return res.status(404).json({error:'Shop not found.'})
+  if (!USAGE_KINDS.includes(kind)) return res.status(400).json({error:'Choose a valid account classification.'})
+  try { usage.classify(id,kind);res.json({ok:true}) }
+  catch { res.status(503).json({error:'Usage measurement unavailable. Classification was not saved.'}) }
+}))
+
 app.get('/api/admin/shops', wrap((req, res) => {
   if (!requireAdmin(req, res)) return
   res.json({ shops: listTenantsAdmin(), admin_email: (process.env.PSC_ADMIN_EMAIL || '').toLowerCase() })
@@ -2176,7 +2191,7 @@ app.post('/api/admin/shops/:id/signin', wrap((req, res) => {
   try {
     withTenant(t.slug, () => logActivity('admin', `Support sign-in — ${operator} (PrintShopCRM) signed in to this shop`))
   } catch (e) { console.error('admin signin audit:', e && e.message) }
-  setSessionCookie(res, createSession(t.id, firstOwnerId(t.id)), req)
+  setSessionCookie(res, createSession(t.id, firstOwnerId(t.id), 'support'), req)
   res.json({ ok: true, slug: t.slug })
 }))
 
