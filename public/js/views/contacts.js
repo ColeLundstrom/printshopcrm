@@ -37,6 +37,11 @@ export async function contactsView() {
   const included = new Set(), excluded = new Set()
   const account = window.__me, route = location.hash.split('?')[0]
   let sequence = 0, listRoot
+  const exportLink = () => $('#export-customers')
+  const disableExport = () => {
+    const link = exportLink()
+    if (link) { link.removeAttribute('href'); link.setAttribute('aria-disabled','true'); link.tabIndex = -1 }
+  }
   const render = async (q = '') => {
     const request = ++sequence, root = listRoot
     const active = () => root?.isConnected && window.__me === account && location.hash.split('?')[0] === route && request === sequence
@@ -44,6 +49,7 @@ export async function contactsView() {
     const query = new URLSearchParams({q, tag_mode: $('#tag-mode').value})
     for (const tag of included) query.append('tag', tag)
     for (const tag of excluded) query.append('exclude_tag', tag)
+    disableExport()
     $('#customer-filter-status').textContent = 'Loading customers…'
     let d
     try { d = await api.get('/api/contacts?' + query) }
@@ -79,6 +85,11 @@ export async function contactsView() {
     $('#excluded-tags').innerHTML = [...excluded].map(tag => `<button class="btn ghost sm" type="button" data-excluded="${esc(tag)}" aria-label="Stop excluding ${esc(tag)}">Exclude: ${esc(tag)} ×</button>`).join('')
     $('#exclude-tag').innerHTML = '<option value="">Choose a tag to exclude</option>' + d.tags.filter(tag => !excluded.has(tag)).map(tag => `<option value="${esc(tag)}">${esc(tag)}</option>`).join('')
     $('#customer-filter-status').textContent = `${d.contacts.length} customer${d.contacts.length === 1 ? '' : 's'}${filtered ? ` · matching ${$('#tag-mode').value} included tags · ${excluded.size} excluded` : ''}`
+    const link = exportLink()
+    if (link && d.contacts.length) {
+      link.href = '/api/export/contacts.csv?' + query
+      link.setAttribute('aria-disabled','false'); link.tabIndex = 0
+    }
     if (wasTag !== undefined) $(`#tags [data-tag="${CSS.escape(wasTag)}"]`)?.focus?.()
   }
 
@@ -89,6 +100,7 @@ export async function contactsView() {
       <label for="tag-mode">Included tags must match</label><select class="input" id="tag-mode" style="width:auto"><option value="all">All selected tags</option><option value="any">Any selected tag</option></select>
       <label for="exclude-tag">Exclude customers tagged</label><select class="input" id="exclude-tag" style="width:auto"><option value="">Choose a tag to exclude</option></select>
       <button class="btn ghost" id="clear-tags" type="button">Clear tags</button>
+      ${window.__me?.can_manage === false ? '' : '<a class="btn ghost" id="export-customers" aria-disabled="true" tabindex="-1" target="_blank" rel="noopener" download="printshopcrm-contacts.csv">Export matching CSV</a>'}
     </div><div class="wrap-row" id="excluded-tags" style="margin-top:8px"></div><p class="dim" id="customer-filter-status" role="status" aria-live="polite"></p></div><div class="card" id="list"></div>`
 
   listRoot = $('#list')
@@ -106,8 +118,11 @@ export async function contactsView() {
   on($('#excluded-tags'), '[data-excluded]', (_e, button) => { excluded.delete(button.dataset.excluded); render($('#q').value); $('#exclude-tag').focus() })
   $('#clear-tags').onclick = () => { included.clear(); excluded.clear(); render($('#q').value) }
 
+  if (exportLink()) exportLink().onclick = e => {
+    if (!listRoot?.isConnected || window.__me !== account || location.hash.split('?')[0] !== route || exportLink().getAttribute('aria-disabled') === 'true') e.preventDefault()
+  }
   let t
-  $('#q').oninput = (e) => { clearTimeout(t); t = setTimeout(() => render(e.target.value), 180) }
+  $('#q').oninput = (e) => { ++sequence; disableExport(); clearTimeout(t); t = setTimeout(() => render(e.target.value), 180) }
   $('#new-c').onclick = () => contactForm(null, () => render($('#q').value))
   $('#import-c').onclick = () => importContacts(() => render($('#q').value))
   $('#import-o').onclick = () => importOrders(() => render($('#q').value))

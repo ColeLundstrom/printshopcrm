@@ -1,4 +1,4 @@
-import { contactTagFilter } from './lib/contact-filters.mjs'
+import { contactSearchFilter } from './lib/contact-filters.mjs'
 import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
@@ -2493,16 +2493,14 @@ app.get('/api/contacts', wrap((req, res) => {
   // `?q=a&q=b` is something a client, a bookmark or a back-button produces by appending a filter
   // twice. .toLowerCase() on an array threw, and this list — Customers — is one of the three
   // busiest screens in the app. Every /api/v1 twin has done this all along.
-  const q = `%${String(req.query.q ?? '').toLowerCase()}%`
-  let tagFilter
-  try { tagFilter = contactTagFilter(req.query) } catch (e) { return res.status(400).json({ error: e.message }) }
+  let filter
+  try { filter = contactSearchFilter(req.query) } catch (e) { return res.status(400).json({ error: e.message }) }
   let sql = `SELECT c.*,
       (SELECT COUNT(*) FROM jobs j WHERE j.contact_id = c.id) AS job_count,
       (SELECT COALESCE(SUM(i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id) AS lifetime_value,
       (SELECT COALESCE(SUM(i.amount_due - i.amount_paid),0) FROM invoices i WHERE i.contact_id = c.id AND i.status NOT IN ('paid','void')) AS balance
-    FROM contacts c WHERE (lower(c.name) LIKE ? OR lower(COALESCE(c.company,'')) LIKE ? OR lower(COALESCE(c.email,'')) LIKE ?)`
-  const params = [q, q, q]
-  sql += tagFilter.sql; params.push(...tagFilter.params)
+    FROM contacts c WHERE ${filter.sql}`
+  const params = filter.params
   sql += ' ORDER BY c.name'
   const rows = all(sql, ...params).map((r) => ({ ...r, tags: r.tags ? r.tags.split(',').filter(Boolean) : [] }))
   const tags = [...new Set(all('SELECT tags FROM contacts').flatMap((r) => (r.tags || '').split(',')).filter(Boolean))].sort()
@@ -7722,6 +7720,13 @@ app.get('/api/export/:table.csv', requireRole('manager'), wrap(async (req, res) 
   // otherwise be "found" and called, 500ing on junk instead of returning a clean 404.
   const fn = Object.hasOwn(EXPORTS, req.params.table) ? EXPORTS[req.params.table] : null
   if (!fn) return res.status(404).json({ error: `Nothing to export called "${req.params.table}"` })
+  // Validate before attachment headers; malformed filters must never download a partial CSV.
+  let filter = null
+  if (req.params.table === 'contacts' && ['q','tag','tag_mode','exclude_tag'].some(key => Object.hasOwn(req.query,key))) {
+    try { filter = contactSearchFilter(req.query) } catch (e) { return res.status(400).json({error:e.message}) }
+  }
+  const rows = filter ? iterate(`SELECT c.* FROM contacts c WHERE ${filter.sql} ORDER BY c.name, c.id`, ...filter.params) : fn()
+  res.setHeader('Cache-Control', 'private, no-store')
   res.type('text/csv').setHeader('Content-Disposition', `attachment; filename="printshopcrm-${req.params.table}.csv"`)
   // Same backpressure contract as the JSON export: yield to the event loop when the socket is
   // full, so the copy does not simply move from the heap into the socket's user-space queue.
@@ -7731,7 +7736,7 @@ app.get('/api/export/:table.csv', requireRole('manager'), wrap(async (req, res) 
   // same answer and required holding all of them. An empty table sends an empty body, as before.
   let cols = null
   try {
-    for (const row of fn()) {
+    for (const row of rows) {
       if (!cols) { cols = Object.keys(row); await write(cols.join(',')) }
       await write(`\n${cols.map((c) => csvCell(row[c])).join(',')}`)
     }

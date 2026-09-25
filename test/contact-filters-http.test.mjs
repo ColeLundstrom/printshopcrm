@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { parseCsv } from '../lib/csv.mjs'
 import { createHttpTestServer } from './helpers/http-test-server.mjs'
 
 test('customer tag filtering preserves records, authentication and tenant boundaries', { timeout: 120000 }, async () => {
@@ -29,6 +30,7 @@ test('customer tag filtering preserves records, authentication and tenant bounda
     assert.equal(other.status,0,other.stderr)
     const otherSession = control.prepare('SELECT token FROM sessions WHERE tenant_id!=? LIMIT 1').get(owner.tenant_id)
     const snapshot = () => JSON.stringify(['contacts','estimates','invoices','jobs','payments'].map(t => db.prepare('SELECT * FROM '+t+' ORDER BY id').all()))
+    db.prepare("UPDATE contacts SET notes=?, company=? WHERE name='Filter Alpha'").run('=1+1','Print, \"Studio\"\nWest')
     const before = snapshot()
     await server.start({ cwd: dest, env, args: ['--no-warnings','--import','./bin/demo-network-guard.mjs','server.mjs'] })
     const request = async (query='', cookieValue=cookie) => {
@@ -46,6 +48,22 @@ test('customer tag filtering preserves records, authentication and tenant bounda
     const isolated=await request('tag=school','psc_session='+otherSession.token);assert.equal(isolated.status,200);assert.deepEqual(isolated.body.contacts,[]);assert.deepEqual(isolated.body.tags,[])
     assert.equal((await request('tag_mode=bad')).status,400)
     assert.equal((await request(Array(21).fill('tag=school').join('&'))).status,400)
+    const csv = async (query, auth=cookie) => {
+      const r=await fetch(server.base+'/api/export/contacts.csv'+(query===null?'':'?q=Filter&'+query),{headers:auth?{cookie:auth}:{},signal:AbortSignal.timeout(10000)})
+      return {status:r.status,text:await r.text(),type:r.headers.get('content-type'),attachment:r.headers.get('content-disposition'),cache:r.headers.get('cache-control')}
+    }
+    for (const query of ['','tag=school&tag=repeat','tag=school&tag=repeat&tag_mode=any&exclude_tag=overdue','tag=100%25','tag=missing',"tag=%27%20OR%201%3D1--"]){
+      const exported=await csv(query);assert.equal(exported.status,200);assert.match(exported.type,/text\/csv/);assert.match(exported.attachment,/attachment/);assert.equal(exported.cache,'private, no-store')
+      const expected=(await request(query)).body.contacts.map(c=>c.id).sort((a,b)=>a-b)
+      assert.deepEqual(parseCsv(exported.text).map(c=>Number(c.id)).sort((a,b)=>a-b),expected)
+    }
+    const alpha=parseCsv((await csv('tag=school&tag=repeat')).text)[0]
+    assert.equal(alpha.notes,"'=1+1",'Formula text must stay literal');assert.equal(alpha.company,'Print, "Studio"\nWest')
+    assert.equal((await csv('',staffCookie)).status,403);assert.equal((await csv('',null)).status,401)
+    assert.equal((await csv('tag_mode=bad')).status,400);assert.equal((await csv('tag_mode=bad')).attachment,null)
+    assert.equal((await csv(Array(21).fill('tag=school').join('&'))).status,400)
+    assert.equal((await csv('','psc_session='+otherSession.token)).text,'','Another tenant cannot export these customers')
+    assert.equal(parseCsv((await csv(null)).text).length,db.prepare('SELECT count(*) n FROM contacts').get().n,'Legacy full export preserved')
     assert.equal(snapshot(),before,'Filtering must never mutate customer or production records')
 
   } finally { await server.close(); db?.close(); control?.close(); rmSync(temp,{recursive:true,force:true}) }
