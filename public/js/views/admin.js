@@ -31,7 +31,7 @@ export async function adminView() {
       <p class="dim">Measurement started ${esc(usage.started_at)}. Counts successful browser changes to customers, estimates, invoices, jobs and opportunities after a fresh member sign-in. Excludes support sign-ins, API integrations, reads and marked synthetic checks. Older sessions show uncertain activity until the next sign-in. Browser signals are not proof of a human. Review account classifications before interpreting adoption; zero does not mean no use before measurement began. Windows include today and the previous 6 or 29 UTC dates.</p>` : '<p role="alert">Usage measurement unavailable. No adoption count can be reported.</p>'}
     </div></section>
     <div class="card"><div class="card-b" style="padding:0;overflow-x:auto">
-      <table class="tbl" style="width:100%;border-collapse:collapse">
+      <table class="tbl" style="width:100%;min-width:1200px;border-collapse:collapse">
         <thead><tr style="text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)">
           <th style="padding:12px 14px">Shop</th><th>Owner</th><th>Status</th><th>Invoices</th><th>Customers</th><th>Collected</th><th>Last login</th><th>Usage / classification</th><th></th>
         </tr></thead>
@@ -111,7 +111,7 @@ function row(s) {
   return `<tr style="border-top:1px solid var(--line)">
     <td style="padding:12px 14px"><strong>${esc(s.shop_name || '—')}</strong><div class="dim" style="font-size:11px">${esc(s.slug)}</div></td>
     <td><div>${esc(s.owner_name || '—')}</div><div class="dim" style="font-size:11px">${esc(s.owner_email || '')}</div></td>
-    <td>${statusPill}</td>
+    <td style="white-space:nowrap">${statusPill}</td>
     <td>${s.invoices}</td>
     <td>${s.customers}</td>
     <td>${money(s.revenue)}</td>

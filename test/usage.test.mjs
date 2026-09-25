@@ -18,7 +18,7 @@ test('only successful first party browser business writes count',()=>{
   const req={method:'POST',path:'/api/contacts',headers:{'sec-fetch-site':'same-origin','sec-fetch-mode':'cors'}}
   assert.equal(usageEligible(req,201),true)
   for(const status of [301,400,401,403,422,500])assert.equal(usageEligible(req,status),false)
-  for(const path of ['/health','/api/admin/shops','/api/v1/contacts','/api/auth/login','/api/export/customers.csv'])assert.equal(usageEligible({...req,path},200),false)
+  for(const path of ['/health','/api/admin/shops','/api/v1/contacts','/api/auth/login','/api/export/customers.csv','/api/estimates/1/preview','/api/invoices/1/send'])assert.equal(usageEligible({...req,path},200),false)
   assert.equal(usageEligible({...req,method:'GET'},200),false)
   assert.equal(usageEligible({...req,headers:{}},200),false)
   assert.equal(usageEligible({...req,headers:{...req.headers,'x-psc-synthetic':'1'}},200),false)
