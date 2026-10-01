@@ -255,12 +255,14 @@ try {
   })
   chk('signup creates a tenant', r.text, '"ok":true|"shop"|"user"')
 
+  // Keep the requested deadline in the future so the intake assertion survives date rollover.
+  const intakeDeadline = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10)
   r = await req('POST', '/api/autopilot', {
-    body: { text: '144 Bella+Canvas 3001 in White, 1 color front, need by 2026-09-30. Gate Buyer gate-buyer@e2e.test' },
+    body: { text: `144 Bella+Canvas 3001 in White, 1 color front, need by ${intakeDeadline}. Gate Buyer gate-buyer@e2e.test` },
   })
   chk('paste → estimate', r.text, '"estimate_number":"EST-')
   chk('estimate carries blank cost', r.text, 'blank_cost')
-  chk('deadline honoured', r.text, '"due_hint":"2026-09-30"')
+  chk('deadline honoured', r.text, `"due_hint":"${intakeDeadline}"`)
   const estId = r.json?.estimate?.id
 
   // Autopilot commit SENDS the estimate and stops. It used to immediately mark it "approved —

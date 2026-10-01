@@ -335,7 +335,8 @@ export async function estimateEditor(id) {
           const f = $(field, bg)
           if (f) { f.setAttribute('aria-invalid', 'true'); f.setAttribute('aria-describedby', 'nc-err'); f.focus() }
         }
-        $('#nc-save', bg).addEventListener('click', async () => {
+        // A second click while the request is pending otherwise creates a second customer.
+        onceClick($('#nc-save', bg), 'Creating…', async () => {
           $('#nc-name', bg).removeAttribute('aria-invalid')
           const name = $('#nc-name', bg).value.trim()
           if (!name) return err('A customer name is required.')
