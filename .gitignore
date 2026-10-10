@@ -37,6 +37,8 @@ Thumbs.db
 .claude/
 coverage/
 tmp/
+.browser-tools/
+browser-artifacts/
 
 # Created on the server by INSTALL.md step 2: the symlink the systemd unit runs, flipped by
 # deploy/release.sh on every deploy. Never part of the source tree.

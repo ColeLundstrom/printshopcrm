@@ -44,6 +44,37 @@ jobs:
           curl -sf -o /dev/null -w 'GET / → %{http_code}\n' http://localhost:3999/
           curl -sf -o /dev/null -w 'GET /api/dashboard → %{http_code}\n' http://localhost:3999/api/dashboard
 
+  # Browser tooling stays outside the application's package/lockfile and Docker install.
+  # The fixture creates only synthetic data and never reads the operator's database or .env.
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+          cache: npm
+      - run: npm ci
+      - name: Install pinned official browser tooling (CI only)
+        run: npm install --prefix .browser-tools --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.56.1
+      - name: Install Chromium and system dependencies
+        run: node .browser-tools/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Check browser isolation harness
+        run: |
+          node --check test/browser/smoke.mjs
+          node --test test/browser-smoke-harness.test.mjs
+      - name: Exercise desktop and mobile UI with Chromium sandbox enabled
+        run: node test/browser/smoke.mjs
+      - name: Preserve synthetic screenshots, quantity exports and error evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-${{ github.sha }}
+          path: browser-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
   # macOS is the platform most shop owners evaluate the app on before they put it on a server, and
   # README.md and INSTALL.md both said all three OSes were "covered by CI" while this job did not
   # exist. Same suites as Linux and Windows — they are pure Node, so there is nothing to install.

@@ -1,8 +1,9 @@
 # 1.36.0 candidate: free profit planning and self-host reliability
 
-Status: local implementation and review candidate. Repository publication was explicitly reauthorized
-on October 10, 2026 after an earlier tree-creation cancellation. Publishing may resume; exact-commit
-CI and production access/backup/health checks remain required. Not deployed.
+Status: published review candidate in [draft PR #14](https://github.com/ColeLundstrom/printshopcrm/pull/14).
+Repository publication was explicitly reauthorized on October 10, 2026 after an earlier cancellation.
+The application candidate passed cross-platform CI; browser evidence is being added before final
+release acceptance. Production access/backup/health checks remain required. Not deployed.
 
 Base: 41fa29b6d4f064c69c47e880f82b95750071ccf8 (1.35.7).
 
@@ -28,7 +29,8 @@ Bootstrap regressions failed before the fix: partial migration left new tables c
 settings seeding could partially commit. Regression tests cover rollback, caller transactions,
 tenant isolation, preserved settings and reopen/retry. Fresh bootstrap instrumentation found
 185 unbatched write calls before the change and zero afterward. The existing Windows CI failure
-stopped during demo shop creation before payment assertions; the new code still needs Windows CI.
+stopped during demo shop creation before payment assertions. The candidate now passes the complete
+Windows CI job, including unit/regression gates, E2E, seed/reset/reseed and server boot.
 
 Profit-model and behavioral view tests cover exact price floors, margin versus markup, zeros,
 invalid numbers, quantity breaks, forecast losses, stale reads/navigation, retry and export.
@@ -36,11 +38,23 @@ The independent review caught a whole-unit-currency display that could show a un
 
 Full E2E: 1,262 checks passed, exit 0, with one explicit skip because this runner denies optional network-interface enumeration. Loopback binding and all other checks ran. The regression gate passed 955/955 after its narrow doctor-parser exception. Final focused suite: 375/375 passed. The full regression gate again passed 955/955 after the display fix. Independent review passed 61 focused checks and found no remaining material code blockers after both findings were fixed.
 
-Browser-level visual acceptance remains pending: the cloud browser cannot reach the isolated executor localhost, and direct Chromium launch is blocked by the execution sandbox. DOM behavior tests are not described as a visual/browser pass. No real provider payment or outbound email was made.
+### Published candidate CI
 
-Exact remote commit and CI/deployment evidence remain release gates. When publication is authorized again, the draft pull request must record
-the exact commit being checked. Production backup/health evidence is required before this document
-describes the release as shipped.
+Commit `ac7fcd9fc2c3608eeb19a7d5b433f90f1739a96b`, tree
+`8f2add8a8e902a8374def9726373eaa2f3428d98`, passed [CI run 38087746230](https://github.com/ColeLundstrom/printshopcrm/actions/runs/38087746230):
+Linux Node 22/current LTS, macOS, Windows, Docker persistence/compose, deployment configuration
+validation and secret scanning. Linux Node 22 and macOS each ran 375 unit tests and 955 regression
+checks with no skips, and their E2E gates passed without skips. Windows ran 373 unit tests with two
+symlink-test skips, 925 regression checks with 30 POSIX skips, and E2E with two POSIX skips; the
+Linux/macOS jobs cover those platform-specific paths. Stable-image publication correctly skips PRs.
+
+Browser-level visual acceptance remains pending: the cloud browser cannot reach the isolated
+executor localhost, and direct Chromium startup is blocked by the execution sandbox. A normal CI
+browser job supplies synthetic loopback smoke checks and screenshots for review. Behavioral VM
+tests are not represented as a visual/browser pass. No real provider payment or outbound email was made.
+
+Any later commit must pass its own CI; the draft PR records the exact current candidate and results.
+Production backup/health evidence is required before this document describes the release as shipped.
 
 ## Deployment and rollback
 

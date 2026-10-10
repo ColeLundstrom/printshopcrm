@@ -1,5 +1,7 @@
 # Never bake these into an image.
 node_modules
+.browser-tools
+browser-artifacts
 .git
 .github
 data

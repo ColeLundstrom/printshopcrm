@@ -13,9 +13,10 @@ is not a claim of a production deployment or complete competitor parity.
 ## Publication status
 
 Repository publishing was explicitly reauthorized on October 10, 2026 after the earlier cancelled
-GitHub tree creation. The earlier pause is resolved. Resume from the verified candidate and avoid
-duplicating confirmed source uploads. Exact-commit CI and verified deployment access, backups,
-rollback and health checks remain release gates; repository publication is not deployment.
+GitHub tree creation. The earlier pause is resolved. [Draft PR #14](https://github.com/ColeLundstrom/printshopcrm/pull/14)
+contains the candidate; check its current head and CI before continuing. The original published
+candidate passed Linux/macOS/Windows/Docker CI. Browser acceptance and verified deployment access,
+backups, rollback and health checks remain release gates; repository publication is not deployment.
 
 ## Next product milestones, in order
 

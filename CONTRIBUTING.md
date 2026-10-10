@@ -48,6 +48,37 @@ npm run test:e2e         # complete workflow checks against throwaway databases
 Both must pass before anything merges. CI runs on pull requests and pushes to `main`.
 Use sample data and an isolated checkout; never test against a shop's working database.
 
+### Browser smoke and screenshot checks
+
+CI also runs Chromium against a disposable, authenticated demo on `127.0.0.1`. It checks the
+profit planner at desktop and mobile widths: known quantity prices and monthly targets, CSV
+downloads after repeated edits, invalid/empty input, losses, navigation and Back/Forward,
+associated field labels, keyboard interactions, page overflow, and browser errors. This is basic
+accessibility coverage, not a complete accessibility audit. Screenshots are review evidence, not
+pixel-diff baselines.
+
+To run the same check locally on a machine that supports Chromium's sandbox:
+
+```bash
+npm ci
+npm install --prefix .browser-tools --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.56.1
+node .browser-tools/node_modules/playwright/cli.js install chromium
+node test/browser/smoke.mjs
+```
+
+Linux may also need Playwright's documented system dependencies (`install --with-deps chromium`).
+The pinned official package is isolated test tooling; it is not added to the application or its
+runtime dependencies. Do not disable Chromium's sandbox to make this pass. Browser startup
+restrictions are a test blocker and should be reported as such.
+
+The harness creates a new temporary demo, keeps the demo server's outbound guard enabled, and
+allows browser HTTP/WebSocket traffic only to that exact loopback app origin. Redirects and
+service workers are blocked. It never accepts a production URL. These are application-level test
+safeguards, not an operating-system network firewall. Login happens before screenshots, and no
+trace, session file, database, `.env`, or demo credential file is uploaded. CI's
+`browser-smoke-<commit>` artifact contains desktop/mobile screenshots, numeric CSVs, and a JSON
+report including console/page errors. Local output is in the ignored `browser-artifacts/` folder.
+
 ### The one hard rule: a bug fix needs a failing test first
 
 Write the test, watch it fail, then fix the code. Every regression test in `bin/gate.mjs` is a bug
