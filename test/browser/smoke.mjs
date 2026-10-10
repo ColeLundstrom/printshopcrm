@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Real Chromium UI checks against a disposable demo. Never accepts a production URL. */
+/** Real Google Chrome UI checks against a disposable demo. Never accepts a production URL. */
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,7 +17,7 @@ const quote = { quantity: 100, garment_cost: 4, consumable_cost: 1, spoilage_pct
   overhead_rate: 10, other_cost: 5, payment_pct: 3, payment_flat: 0.3, target_margin_pct: 40 }
 const monthly = { fixed_cost_month: 6000, variable_cost_pct: 40, target_profit_month: 3000,
   forecast_revenue: 20000, productive_hours_month: 120 }
-const report = { browser: 'Chromium (sandbox enabled)', data: 'Disposable synthetic demo', scenarios: [] }
+const report = { browser: 'Google Chrome (sandbox enabled)', browserChannel: 'chrome', data: 'Disposable synthetic demo', scenarios: [] }
 const secrets = []
 let server, browser, temp
 
@@ -215,8 +215,10 @@ try {
   assert(session, 'Synthetic demo session missing')
   secrets.push(session)
   const cookies = [{ name: 'psc_session', value: session, url: server.base, httpOnly: true, sameSite: 'Lax' }]
-  // Do not weaken Chromium's sandbox when a runner cannot start it. That is a CI blocker.
-  browser = await chromium.launch({ headless: true, chromiumSandbox: true })
+  // Official Chrome uses the host's existing supported sandbox/AppArmor configuration.
+  // Do not weaken the sandbox when a runner cannot start it. That is a CI blocker.
+  browser = await chromium.launch({ channel: 'chrome', headless: true, chromiumSandbox: true })
+  report.browserVersion = browser.version()
   const failures = []
   for (const viewport of [{ name: 'desktop', width: 1440, height: 1000, mobile: false }, { name: 'mobile', width: 390, height: 844, mobile: true }]) {
     console.log('Browser smoke: ' + viewport.name)

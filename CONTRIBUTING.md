@@ -50,25 +50,31 @@ Use sample data and an isolated checkout; never test against a shop's working da
 
 ### Browser smoke and screenshot checks
 
-CI also runs Chromium against a disposable, authenticated demo on `127.0.0.1`. It checks the
+CI also runs the runner's installed Google Chrome against a disposable, authenticated demo on
+`127.0.0.1`. It checks the
 profit planner at desktop and mobile widths: known quantity prices and monthly targets, CSV
 downloads after repeated edits, invalid/empty input, losses, navigation and Back/Forward,
 associated field labels, keyboard interactions, page overflow, and browser errors. This is basic
 accessibility coverage, not a complete accessibility audit. Screenshots are review evidence, not
 pixel-diff baselines.
 
-To run the same check locally on a machine that supports Chromium's sandbox:
+To run the same check locally, use an official Google Chrome installation with a working sandbox:
 
 ```bash
 npm ci
-npm install --prefix .browser-tools --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.56.1
-node .browser-tools/node_modules/playwright/cli.js install chromium
+npm install --prefix .browser-tools --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.64.0
 node test/browser/smoke.mjs
 ```
 
-Linux may also need Playwright's documented system dependencies (`install --with-deps chromium`).
-The pinned official package is isolated test tooling; it is not added to the application or its
-runtime dependencies. Do not disable Chromium's sandbox to make this pass. Browser startup
+The harness selects Playwright's supported `chrome` channel and records the actual browser version
+in its report. GitHub's Ubuntu runner already includes Google Chrome. On Ubuntu 24.04, this uses
+the official installation's existing AppArmor profile, which downloaded Chromium headless-shell
+binaries do not have. No security settings are changed. See the official
+[runner software inventory](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
+[Playwright channel documentation](https://playwright.dev/docs/browsers#google-chrome--microsoft-edge),
+and [Chromium sandbox explanation](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
+The pinned Playwright package is isolated test tooling; it is not added to the application or its
+runtime dependencies. Do not disable Chrome's sandbox to make this pass. Browser startup
 restrictions are a test blocker and should be reported as such.
 
 The harness creates a new temporary demo, keeps the demo server's outbound guard enabled, and

@@ -57,14 +57,16 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Install pinned official browser tooling (CI only)
-        run: npm install --prefix .browser-tools --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.56.1
-      - name: Install Chromium and system dependencies
-        run: node .browser-tools/node_modules/playwright/cli.js install --with-deps chromium
+        run: npm install --prefix .browser-tools --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.64.0
+      # Use the runner's official Chrome installation and its existing AppArmor profile.
+      # Downloaded headless-shell binaries lack that profile on Ubuntu 24.04.
+      - name: Verify the runner's installed Google Chrome
+        run: google-chrome --version
       - name: Check browser isolation harness
         run: |
           node --check test/browser/smoke.mjs
           node --test test/browser-smoke-harness.test.mjs
-      - name: Exercise desktop and mobile UI with Chromium sandbox enabled
+      - name: Exercise desktop and mobile UI with Chrome sandbox enabled
         run: node test/browser/smoke.mjs
       - name: Preserve synthetic screenshots, quantity exports and error evidence
         if: always()
