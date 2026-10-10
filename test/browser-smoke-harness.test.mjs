@@ -40,13 +40,17 @@ test('browser isolation refuses redirects instead of following an unreviewed des
   assert.deepEqual(evidence.blockedRequests, ['redirect from http://127.0.0.1:4380/redirect'])
 })
 
-test('browser isolation forwards unchanged local responses and local WebSockets', async () => {
-  const handlers = {}, evidence = { blockedRequests: [], networkErrors: [] }
+test('browser isolation forwards unchanged HTTP responses but explicitly stubs only the app realtime socket', async () => {
+  const handlers = {}, evidence = { blockedRequests: [], networkErrors: [], mockedWebSockets: [] }
   await isolateBrowser({ async route(_, fn) { handlers.http = fn }, async routeWebSocket(_, fn) { handlers.ws = fn } }, 'http://127.0.0.1:4380', evidence)
   const response = { status: () => 200, headers: () => ({}) }
-  let fulfilled, connected = false
+  let fulfilled
   await handlers.http({ request: () => ({ url: () => 'http://127.0.0.1:4380/api/costing/config' }), fetch: async () => response, fulfill: async value => { fulfilled = value } })
-  handlers.ws({ url: () => 'ws://127.0.0.1:4380/ws', connectToServer: () => { connected = true } })
-  assert.deepEqual(fulfilled, { response }); assert(connected)
-  assert.deepEqual(evidence, { blockedRequests: [], networkErrors: [] })
+  handlers.ws({ url: () => 'ws://127.0.0.1:4380/ws', connectToServer: () => { throw Error('Smoke tests must not create real realtime connections') } })
+  assert.deepEqual(fulfilled, { response })
+  assert.deepEqual(evidence, { blockedRequests: [], networkErrors: [], mockedWebSockets: ['ws://127.0.0.1:4380/ws'] })
+  let closed = false
+  handlers.ws({ url: () => 'ws://127.0.0.1:4380/unexpected', close: () => { closed = true }, connectToServer: () => { throw Error('Unexpected socket must not connect') } })
+  assert(closed)
+  assert.deepEqual(evidence.blockedRequests, ['ws://127.0.0.1:4380/unexpected'])
 })

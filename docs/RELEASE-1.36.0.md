@@ -50,8 +50,11 @@ Linux/macOS jobs cover those platform-specific paths. Stable-image publication c
 
 Browser-level visual acceptance remains pending: the cloud browser cannot reach the isolated
 executor localhost, and direct Chromium startup is blocked by the execution sandbox. A normal CI
-browser job supplies synthetic loopback smoke checks and screenshots for review. Behavioral VM
-tests are not represented as a visual/browser pass. No real provider payment or outbound email was made.
+browser job supplies synthetic loopback smoke checks and screenshots for review using the runner's
+official Chrome with its sandbox enabled. The fixture explicitly stubs its exact `/ws` socket;
+real WebSocket connectivity and message delivery are outside this visual test's scope. Browser
+local-network protections remain enabled. Behavioral VM tests are not represented as a visual/browser
+pass. No real provider payment or outbound email was made.
 
 Any later commit must pass its own CI; the draft PR records the exact current candidate and results.
 Production backup/health evidence is required before this document describes the release as shipped.

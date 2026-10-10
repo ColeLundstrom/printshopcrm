@@ -40,7 +40,13 @@ export async function isolateBrowser(context, base, evidence) {
     }
   })
   await context.routeWebSocket('**/*', socket => {
-    if (appRequestAllowed(socket.url(), base, true)) return socket.connectToServer()
+    if (appRequestAllowed(socket.url(), base, true) && new URL(socket.url()).pathname === '/ws' && !new URL(socket.url()).search) {
+      // The planner does not depend on realtime. Playwright's documented mock mode
+      // opens this socket in-page without a network connection when connectToServer
+      // is omitted. Keep Chrome's local-network checks intact; this is not realtime QA.
+      evidence.mockedWebSockets.push(requestLabel(socket.url()))
+      return
+    }
     evidence.blockedRequests.push(requestLabel(socket.url()))
     return socket.close({ code: 1008, reason: 'Synthetic local demo only' })
   })

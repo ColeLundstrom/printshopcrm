@@ -17,6 +17,9 @@ GitHub tree creation. The earlier pause is resolved. [Draft PR #14](https://gith
 contains the candidate; check its current head and CI before continuing. The original published
 candidate passed Linux/macOS/Windows/Docker CI. Browser acceptance and verified deployment access,
 backups, rollback and health checks remain release gates; repository publication is not deployment.
+The subsequent request to assess a Rust migration is being reviewed separately. Keep this tested
+candidate intact; merge/stable deployment is on hold until that direction is reconciled. A language
+change does not remove license obligations or establish immunity from legal claims.
 
 ## Next product milestones, in order
 

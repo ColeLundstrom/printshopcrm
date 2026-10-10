@@ -17,7 +17,8 @@ const quote = { quantity: 100, garment_cost: 4, consumable_cost: 1, spoilage_pct
   overhead_rate: 10, other_cost: 5, payment_pct: 3, payment_flat: 0.3, target_margin_pct: 40 }
 const monthly = { fixed_cost_month: 6000, variable_cost_pct: 40, target_profit_month: 3000,
   forecast_revenue: 20000, productive_hours_month: 120 }
-const report = { browser: 'Google Chrome (sandbox enabled)', browserChannel: 'chrome', data: 'Disposable synthetic demo', scenarios: [] }
+const report = { browser: 'Google Chrome (sandbox enabled)', browserChannel: 'chrome', data: 'Disposable synthetic demo',
+  realtimeCoverage: 'The exact local /ws endpoint is explicitly stubbed. Real WebSocket connectivity and delivery are not tested.', scenarios: [] }
 const secrets = []
 let server, browser, temp
 
@@ -26,12 +27,14 @@ async function check(scenario, name, action) {
   catch (error) { scenario.checks.push({ name, status: 'failed', error: redact(error.stack || error, secrets) }); throw error }
 }
 
-async function screenshot(page, scenario, name, selector) {
+async function screenshot(page, scenario, name) {
   // No auth pages or traces are captured. Even an unexpected password field is masked.
   assert.equal(new URL(page.url()).pathname, '/', 'Screenshots are limited to the signed-in app')
-  const target = selector ? page.locator(selector) : page
   const filename = scenario.name + '-' + name + '.png'
-  await target.screenshot({ path: join(artifacts, filename), ...(selector ? {} : { fullPage: true }),
+  // Start at the top so fixed navigation and sticky headers appear once, at the top
+  // of the composite, instead of obscuring whichever field the last action scrolled to.
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.screenshot({ path: join(artifacts, filename), fullPage: true,
     animations: 'disabled', mask: [page.locator('input[type="password"]')] })
   scenario.screenshots.push(filename)
 }
@@ -66,7 +69,7 @@ async function readExport(page, scenario, filename) {
 }
 
 async function exercise(viewport, cookies) {
-  const scenario = { name: viewport.name, checks: [], screenshots: [], consoleErrors: [], pageErrors: [], blockedRequests: [], networkErrors: [], unexpectedWrites: [] }
+  const scenario = { name: viewport.name, checks: [], screenshots: [], consoleErrors: [], pageErrors: [], blockedRequests: [], networkErrors: [], unexpectedWrites: [], mockedWebSockets: [] }
   report.scenarios.push(scenario)
   const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height },
     isMobile: viewport.mobile, hasTouch: viewport.mobile, deviceScaleFactor: 1, locale: 'en-US',
@@ -114,8 +117,6 @@ async function exercise(viewport, cookies) {
       const dimensions = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }))
       assert(dimensions.content <= dimensions.viewport + 1, 'The planner must not cause horizontal page overflow')
       await screenshot(page, scenario, 'valid-planner')
-      await screenshot(page, scenario, 'quantity-results', '#profit-quote-results')
-      await screenshot(page, scenario, 'monthly-results', '#profit-month-results')
       const rows = await readExport(page, scenario, 'quantity-100')
       assert.equal(rows.length, 8)
       assert.deepEqual(rows.find(row => row[0] === 100).slice(0, 6), [100, 10.89, 1089, 620, 32.97, 436.03])
@@ -125,17 +126,17 @@ async function exercise(viewport, cookies) {
       const rows = await readExport(page, scenario, 'quantity-240')
       assert(rows.some(row => row[0] === 240)); assert(!rows.some(row => row[0] === 100))
       assert.equal(await page.locator('#profit-breaks tbody tr').filter({ has: page.getByRole('cell', { name: '240', exact: true }) }).count(), 1)
-      await screenshot(page, scenario, 'repeated-edit', '#profit-quote-results')
+      await screenshot(page, scenario, 'repeated-edit')
     })
     await check(scenario, 'Invalid and then empty input clear both results and downloadable CSV state', async () => {
       await page.getByLabel('Finished pieces', { exact: true }).fill('0')
       await emptyQuote(page, /quantity must be a positive safe integer/, 'alert')
-      await screenshot(page, scenario, 'invalid-quantity', '#profit-quote-form >> xpath=..')
+      await screenshot(page, scenario, 'invalid-quantity')
       await page.getByLabel('Finished pieces', { exact: true }).fill('100')
       await metric(page, '#profit-quote-results', 'Minimum modeled price / piece', '$10.89')
       await page.getByLabel('Blank cost / piece', { exact: true }).fill('')
       await emptyQuote(page, /Enter your costs/)
-      await screenshot(page, scenario, 'cleared-after-edit', '#profit-quote-form >> xpath=..')
+      await screenshot(page, scenario, 'cleared-after-edit')
       await page.getByLabel('Blank cost / piece', { exact: true }).fill('4')
       await page.getByLabel('Finished pieces', { exact: true }).fill('1.5')
       await emptyQuote(page, /quantity must be a positive safe integer/, 'alert')
@@ -145,11 +146,11 @@ async function exercise(viewport, cookies) {
       await fill(page, 'profit-month-', { fixed_cost_month: 10000, variable_cost_pct: 50, target_profit_month: 5000, forecast_revenue: 1000, productive_hours_month: 100 })
       await metric(page, '#profit-month-results', 'Forecast modeled profit', '-$9,500.00')
       await metric(page, '#profit-month-results', 'Sales for your profit goal', '$30,000.00')
-      await screenshot(page, scenario, 'monthly-loss', '#profit-month-results')
+      await screenshot(page, scenario, 'monthly-loss')
       await page.getByLabel('Variable costs as % of sales', { exact: true }).fill('100')
       assert.match(await page.locator('#profit-month-results').getByRole('alert').innerText(), /less than 100/)
       assert.equal(await page.locator('#profit-month-results .kpi').count(), 0)
-      await screenshot(page, scenario, 'invalid-monthly', '#profit-month-form >> xpath=..')
+      await screenshot(page, scenario, 'invalid-monthly')
       await page.getByLabel('Variable costs as % of sales', { exact: true }).fill('')
       assert.match(await page.locator('#profit-month-results').getByRole('status').innerText(), /Enter all five/)
       assert.equal(await page.locator('#profit-month-results .kpi').count(), 0)
@@ -183,6 +184,7 @@ async function exercise(viewport, cookies) {
       assert.deepEqual(scenario.networkErrors, [])
       assert.deepEqual(scenario.pageErrors, [])
       assert.deepEqual(scenario.consoleErrors, [])
+      assert(scenario.mockedWebSockets.length > 0, 'The explicitly stubbed realtime connection should be recorded')
     })
   } catch (error) {
     if (new URL(page.url()).pathname === '/') await screenshot(page, scenario, 'failure').catch(() => {})

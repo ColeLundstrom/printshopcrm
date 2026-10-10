@@ -78,8 +78,13 @@ runtime dependencies. Do not disable Chrome's sandbox to make this pass. Browser
 restrictions are a test blocker and should be reported as such.
 
 The harness creates a new temporary demo, keeps the demo server's outbound guard enabled, and
-allows browser HTTP/WebSocket traffic only to that exact loopback app origin. Redirects and
-service workers are blocked. It never accepts a production URL. These are application-level test
+allows browser HTTP traffic only to that exact loopback app origin. The app's exact local `/ws`
+endpoint is explicitly stubbed using [Playwright's WebSocket mock mode](https://playwright.dev/docs/api/class-websocketroute#mocking):
+no real socket is opened and no realtime messages are injected. The report records that limitation
+and every stubbed connection. Planner calculations use HTTP-loaded settings and local inputs;
+this suite does not cover realtime connectivity or delivery. Other WebSockets, redirects and
+service workers are blocked. Chrome's local-network access checks remain enabled, with no extra
+permission granted. It never accepts a production URL. These are application-level test
 safeguards, not an operating-system network firewall. Login happens before screenshots, and no
 trace, session file, database, `.env`, or demo credential file is uploaded. CI's
 `browser-smoke-<commit>` artifact contains desktop/mobile screenshots, numeric CSVs, and a JSON
