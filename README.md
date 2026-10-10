@@ -6,7 +6,7 @@
 **Open-source shop management for screen printers, embroiderers, and DTF shops — with the CRM built in.**
 
 Quoting, estimates, invoicing, a production board, art proofing, purchasing, and per-job
-profitability in one app. Node.js + SQLite. No build step, four runtime dependencies, and every
+profitability in one app. Node.js + SQLite. No build step, a small runtime dependency set, and every
 shop's data in a plain SQLite file you can copy.
 
 [![CI](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml)
@@ -19,13 +19,19 @@ shop's data in a plain SQLite file you can copy.
 ```bash
 git clone https://github.com/ColeLundstrom/printshopcrm.git
 cd printshopcrm
-npm install
-npm run seed      # optional: a demo shop mid-week, so the app isn't empty
+npm ci
+npm run doctor    # check this computer before the first run
 npm start         # → http://localhost:3333
 ```
 
-That's the whole install — measured at about 3 seconds on a cold npm cache. No Postgres, no Redis,
-no build pipeline, nothing to compile.
+The complete software runs on your own computer or server. No software subscription or hosted
+account is required. No Postgres, no Redis, and no build pipeline. Installation time depends on
+your computer and connection. See the [self-host checks](docs/SELF-HOST-CHECK.md) if anything fails.
+
+Want a sample shop first? Use the [isolated evaluation demo](docs/DEMO.md); it keeps fictional
+orders and payments separate from your working data and blocks outbound services. For a public
+server, follow [INSTALL.md](INSTALL.md) for authentication, HTTPS, persistent artwork and backups.
+Optional managed hosting is a paid service; it does not unlock additional features.
 
 Prefer containers?
 
@@ -117,6 +123,7 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 - DTF resize and a gang-sheet builder (embeddable on your own site, checking out through your Stripe or Authorize.net account)
 
 **Money**
+- Free profit planner: cost-plus quantity price breaks using machine, loaded labor, overhead and payment-fee assumptions; monthly break-even and profit goals. CSV export, no provider account, and no changes to existing customer prices ([model limits](docs/PROFIT-PLANNER.md))
 - Quoting calculator: garment × markup + imprint charge scaled by run length and colors-per-location + one-time screens; tiered rush; dark garments automatically add an underbase
 - Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
 - Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins

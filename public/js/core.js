@@ -89,6 +89,8 @@ export const shopSymbol = () => fmt.symbol
 
 // Negatives read as -$40.00, not $-40.00 — a discount line is a signed credit.
 export const money = (n) => fmt.money(n)
+/** Preserve a model's cent precision, including for whole-unit currency displays. */
+export const moneyModel = (n) => fmt.moneyModel(n)
 export const money0 = (n) => fmt.money0(n)
 /** Compact: "$2", "$2.50" — for a size-upcharge badge or a per-piece hint, never a total. */
 export const moneyShort = (n) => fmt.moneyShort(n)

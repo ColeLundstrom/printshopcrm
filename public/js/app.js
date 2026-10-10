@@ -29,6 +29,7 @@ import { conversationsView } from './views/conversations.js'
 import { pipelineView } from './views/pipeline.js'
 import { autopilotView } from './views/autopilot.js'
 import { roiView } from './views/roi.js'
+import { profitPlannerView } from './views/profit-planner.js'
 import { onboardingView } from './views/onboarding.js'
 import { ordersView } from './views/orders.js'
 import { gangSheetView } from './views/gangsheet.js'
@@ -68,6 +69,7 @@ const NAV = [
   { advanced: true, href: '/scan', ico: 'board', name: 'Floor Mode' },
   { label: 'Money', section: true },
   { href: '/pricing', ico: 'pricing', name: 'Pricing' },
+  { href: '/profit-planner', ico: 'roi', name: 'Profit planner', manage: true },
   { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
   { advanced: true, href: '/roi', ico: 'roi', name: 'Profitability' },
   { advanced: true, href: '/books', ico: 'invoices', name: 'Books & A/R' },
@@ -144,6 +146,7 @@ route(/^\/estimates\/(\d+)$/, estimateDetailView)
 route(/^\/invoices$/, invoicesView)
 route(/^\/invoices\/(\d+)$/, invoiceDetailView)
 route(/^\/roi$/, roiView)
+route(/^\/profit-planner$/, profitPlannerView)
 route(/^\/scan$/, scanView)
 route(/^\/books$/, booksView)
 route(/^\/developers$/, developersView)

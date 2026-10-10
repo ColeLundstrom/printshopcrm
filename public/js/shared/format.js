@@ -122,6 +122,9 @@ export function moneyFormatter({ currency, locale, charset } = {}) {
   const digits = full.resolvedOptions().maximumFractionDigits
   const whole = new Intl.NumberFormat(loc, { ...base, minimumFractionDigits: 0, maximumFractionDigits: 0 })
   const plain = new Intl.NumberFormat(loc)
+  // Planning prices use cent increments even in currencies whose ordinary display
+  // drops decimals. A price floor must never be displayed below its computed value.
+  const model = new Intl.NumberFormat(loc, { ...base, minimumFractionDigits: Math.max(2, digits), maximumFractionDigits: Math.max(2, digits) })
 
   // Never NaN, never Infinity, and never negative zero: `-$0.00` on a paid-in-full invoice is the
   // kind of thing a customer phones about.
@@ -132,6 +135,7 @@ export function moneyFormatter({ currency, locale, charset } = {}) {
     locale: loc,
     symbol: symbolOf(full),
     money: (n) => full.format(num(n)),
+    moneyModel: (n) => model.format(num(n)),
     // Math.round first, then format: Intl rounds half away from zero, Math.round rounds half up,
     // and this is what the previous money0 did. Keeping the rounding keeps every dashboard tile.
     money0: (n) => whole.format(num(Math.round(num(n)))),

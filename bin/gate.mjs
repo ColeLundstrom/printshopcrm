@@ -4551,6 +4551,9 @@ await t('the recovery tool loads the .env the server uses, and does not lie abou
     // Demo provisioning builds an exclusive install with a clean environment; loading the
     // operator's .env would violate that isolation. test/demo.test.mjs checks this boundary.
     if (name === 'demo' && cmd === 'node bin/demo.mjs') continue
+    // Doctor parses .env as data and probes only in-memory SQLite; Node's env-file flag
+    // could execute NODE_OPTIONS before diagnostics. test/doctor.test.mjs covers its parser.
+    if (name === 'doctor' && cmd === 'node --no-warnings bin/doctor.mjs') continue
     if (!/\b(server|seed)\.mjs|\bbin\/[\w-]+\.mjs/.test(cmd)) continue
     assert.match(cmd, /--env-file-if-exists=\.env/, `npm run ${name} opens the database without loading .env`)
   }
@@ -5980,8 +5983,10 @@ await t('Node accepts what pinnedLookupFor returns, on a real socket', async () 
   const srv = http.createServer((_q, r) => { r.writeHead(200); r.end('ok') })
   await new Promise((r) => srv.listen(0, '127.0.0.1', r))
   const port = srv.address().port
+  // A runner's HTTP_PROXY must not replace the lookup this socket test controls.
+  const agent = new http.Agent({ proxyEnv: {} })
   const hit = (lookup) => new Promise((resolve) => {
-    const rq = http.request({ hostname: 'pinned.invalid', port, path: '/hook', method: 'POST', lookup, timeout: 4000 },
+    const rq = http.request({ hostname: 'pinned.invalid', port, path: '/hook', method: 'POST', lookup, timeout: 4000, agent },
       (res) => { res.resume(); resolve(`HTTP ${res.statusCode}`) })
     rq.on('error', (e) => resolve(`ERROR ${e.message}`))
     rq.on('timeout', () => { rq.destroy(); resolve('TIMEOUT') })
@@ -6012,7 +6017,7 @@ await t('Node accepts what pinnedLookupFor returns, on a real socket', async () 
     let blocked = null
     pinnedLookupFor('127.0.0.1')('x', { all: true }, (err) => { blocked = err })
     assert.match(String(blocked?.message), /blocked address/, 'a loopback pin must still be refused')
-  } finally { srv.close() }
+  } finally { agent.destroy(); srv.close() }
 })
 
 section('artwork never survives its estimate')

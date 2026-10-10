@@ -1,6 +1,6 @@
 {
   "name": "printshopcrm",
-  "version": "1.35.7",
+  "version": "1.36.0",
   "type": "module",
   "description": "Open-source shop management for screen printers, embroiderers and DTF shops — quoting, production, invoicing and per-job profitability, with the CRM built in.",
   "keywords": [
@@ -35,7 +35,8 @@
     "test": "node --test test/*.test.mjs && node bin/gate.mjs",
     "test:e2e": "node bin/gate-e2e.mjs",
     "test:all": "npm test && npm run test:e2e",
-    "demo": "node bin/demo.mjs"
+    "demo": "node bin/demo.mjs",
+    "doctor": "node --no-warnings bin/doctor.mjs"
   },
   "engines": {
     "node": ">=22.13.0"

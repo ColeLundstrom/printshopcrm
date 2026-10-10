@@ -41,14 +41,21 @@ const env = { ...cleanEnv, PSC_AUTH: '1', PSC_HOST: '127.0.0.1', PSC_TRUST_PROXY
   PSC_PUBLIC_URL: `http://127.0.0.1:${port}`, PORT: String(port), PSC_DEMO: '1',
   PSC_BRAND_TAG: 'Demo shop · Sample data · External services disabled',
 }
-function run(args, extraEnv = {}) {
+function run(stage, args, extraEnv = {}) {
   const result = spawnSync(process.execPath, ['--no-warnings', '--import', './bin/demo-network-guard.mjs', ...args], {
     cwd: dest, env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 60000,
   })
-  if (result.status !== 0) throw new Error(result.stderr || result.stdout || 'Demo preparation failed')
+  if (result.status !== 0) {
+    // A timed-out or unspawnable process has no exit status and may print nothing.
+    // Preserve its reason and stage without dumping the command or credential env.
+    const reason = [result.error?.code, result.error?.message,
+      result.signal && `signal ${result.signal}`, result.status != null && `exit ${result.status}`].filter(Boolean).join('; ')
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
+    throw new Error(`Demo preparation failed during ${stage}${reason ? ` (${reason})` : ''}${output ? `:\n${output}` : ''}`)
+  }
   return result.stdout
 }
-run(['--input-type=module', '-e', `
+run('shop creation', ['--input-type=module', '-e', `
   import {createTenant,saveOnboarding} from './lib/tenants.mjs';
   const t = await createTenant({shop_name:"Dylan Demo Shop",owner_name:"Dylan",owner_email:process.env.DEMO_EMAIL,password:process.env.DEMO_PASSWORD});
   saveOnboarding(t.id,{done:true});
@@ -56,8 +63,8 @@ run(['--input-type=module', '-e', `
 const tenants = readdirSync(join(dest, 'data', 'tenants'))
 if (tenants.length !== 1) throw new Error('Expected exactly one demo shop')
 const tenantDb = join(dest, 'data', 'tenants', tenants[0], 'printshop.db')
-run(['seed.mjs'], { PSC_DB: tenantDb })
-run(['--input-type=module', '-e', `
+run('sample data seeding', ['seed.mjs'], { PSC_DB: tenantDb })
+run('demo identity setup', ['--input-type=module', '-e', `
   import {DatabaseSync} from 'node:sqlite';
   const d=new DatabaseSync(process.env.DEMO_TENANT_DB);
   d.prepare('UPDATE settings SET value=? WHERE key=?').run('Dylan Demo Shop','shop_name');

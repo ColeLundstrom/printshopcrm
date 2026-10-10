@@ -8,8 +8,8 @@
  * meant the end-to-end suite couldn't run on Windows and needed three things installed that the
  * app itself doesn't use. This needs only the Node you already have.
  */
-import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
+import { createE2eDirectory, e2eEnvironment, e2eLanAddress, spawnE2e as spawn } from '../test/helpers/e2e-process.mjs'
+import { rmSync, writeFileSync, readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +31,10 @@ await new Promise((resolve,reject)=>{
   probe.once('error',()=>reject(new Error(`Port ${PORT} is occupied. Choose an unused PSC_GATE_PORT; no test requests were sent.`)))
   probe.listen(PORT,'127.0.0.1',()=>probe.close(resolve))
 })
-const TMP = mkdtempSync(join(tmpdir(), 'psc-e2e-'))
+const TMP = createE2eDirectory('main')
+// Only these spawned test applications load the network fixture. The harness keeps real
+// loopback HTTP/WebSocket access, including the explicit off-loopback bind regression.
+const E2E_ENV = e2eEnvironment()
 
 let fails = 0, skips = 0
 const say = (mark, msg) => console.log(`  ${mark} ${msg}`)
@@ -108,7 +111,7 @@ const shopDb = (slug, fn) => {
 /* ---------- boot a server against a throwaway db ---------- */
 const server = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PSC_IMPORT_DIAGNOSTICS: '1', PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
+  env: { ...E2E_ENV, PSC_IMPORT_DIAGNOSTICS: '1', PORT: String(PORT), PSC_DB: join(TMP, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${PORT}` },
   stdio: ['ignore', 'pipe', 'pipe'], detached: true,
 })
 let serverLog = ''
@@ -1254,7 +1257,7 @@ try {
    * row by row; here we just prove the streamed bytes are still valid, complete JSON. */
   // A live webhook has to exist before the export runs, or the redaction assertions below pass
   // vacuously on an empty table.
-  await req('POST', '/api/developers/webhooks', { body: { url: 'https://example.com/hook-export-redaction', events: ['invoice.paid'] } })
+  await req('POST', '/api/developers/webhooks', { body: { url: 'https://webhook.public.test/hook-export-redaction', events: ['invoice.paid'] } })
   r = await req('GET', '/api/export/all.json')
   chk('the full export returns 200', String(r.status), '^200$')
   {
@@ -2097,7 +2100,7 @@ try {
     const rogue = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
       // Deliberately the port the harness server already holds.
-      env: { ...process.env, PORT: String(PORT), PSC_DB: join(TMP, 'rogue.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
+      env: { ...E2E_ENV, PORT: String(PORT), PSC_DB: join(TMP, 'rogue.db'), PSC_AUTH: '1', PSC_SECRET: 'gate' },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     let rogueLog = ''
@@ -2135,12 +2138,12 @@ try {
     })
     chk('…and a non-numeric customer_id is refused', `${r.status} ${r.text}`, '^400 .*invalid_customer_id')
 
-    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-empty', events: [] } })
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://webhook.public.test/hook-empty', events: [] } })
     chk('a webhook subscribing to no events is refused, not subscribed to all', String(r.status), '^400$')
     chk('…and says what to send instead', r.text, 'at least one event')
-    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-list', events: ['invoice.paid', 'contact.created'] } })
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://webhook.public.test/hook-list', events: ['invoice.paid', 'contact.created'] } })
     chk('…while the documented array form still subscribes to exactly those', String(r.json?.events ?? 'missing'), '^invoice.paid,contact.created$')
-    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-all' } })
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://webhook.public.test/hook-all' } })
     chk('…and omitting events still means all of them', String(r.json?.events ?? 'missing'), '^\\*$')
 
     /* ---------- one URL, one secret ----------
@@ -2155,7 +2158,7 @@ try {
      * Refused at the door with the id of the one that already exists, so the fix is a Delete the
      * shop can find. No unique index and no de-dupe migration: an install that already carries a
      * duplicate must keep both rows visible and deletable rather than have one silently removed. */
-    const dupeUrl = 'https://hooks.zapier.com/hooks/catch/999/dupe'
+    const dupeUrl = 'https://webhook.public.test/hooks/catch/999/dupe'
     const dupeA = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: dupeUrl, events: ['contact.created'] } })
     chk('a first subscription to a URL is accepted', String(dupeA.status), '^201$')
     const dupeB = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: dupeUrl, events: ['contact.created'] } })
@@ -2288,11 +2291,12 @@ try {
    * backoffs — the same reason this harness winds an automation's clock forward. Everything the
    * test then CHECKS comes back through the API. */
   {
-    // A public URL: assertPublicUrl() refuses loopback, and rightly so. Whether the POST actually
-    // reaches anything is irrelevant here — the exhausted state is written directly below.
-    r = await req('POST', '/api/developers/webhooks', { body: { url: 'https://example.com/hook-redeliver', events: ['contact.created'] } })
+    // Synthetic DNS returns a public TEST-NET address so the real SSRF validator runs.
+    // The test-only preloader blocks delivery; the exhausted state is written below.
+    r = await req('POST', '/api/developers/webhooks', { body: { url: 'https://webhook.public.test/hook-redeliver', events: ['contact.created'] } })
     chk('a shop can subscribe a webhook', String(r.status), '^201$')
     const subId = r.json?.id
+    if (!Number.isInteger(subId)) throw new Error(`Webhook subscription failed before delivery setup: ${r.status} ${r.text}`)
     await req('POST', '/api/contacts', { body: { name: 'Webhook Redeliver Wanda', email: 'wh-redeliver@e2e.test' } })
     await sleep(400)
 
@@ -2326,8 +2330,9 @@ try {
      * nothing in the product can name an id to give it. When retention prunes, the payloads go
      * with them. This is the Outbox defect on the route the redeliver feature compares itself to.
      * The case above creates ONE delivery, so the window never overflowed and it stayed green. */
-    r = await req('POST', '/api/developers/webhooks', { body: { url: 'https://example.com/hook-window', events: ['contact.created'] } })
+    r = await req('POST', '/api/developers/webhooks', { body: { url: 'https://webhook.public.test/hook-window', events: ['contact.created'] } })
     const winSub = r.json?.id
+    if (!Number.isInteger(winSub)) throw new Error(`Webhook window subscription failed before delivery setup: ${r.status} ${r.text}`)
     shopDb('gate-shop', (db) => {
       const ins = db.prepare("INSERT INTO webhook_deliveries (subscription_id, event, payload, status, attempts, last_error, next_attempt_at, created_at) VALUES (?,?,?,?,?,?,NULL,datetime('now'))")
       for (let i = 0; i < 40; i++) ins.run(winSub, 'invoice.paid', '{}', 'failed', 3, 'HTTP 502')
@@ -2550,7 +2555,7 @@ try {
     chk('…and so is one with no scheme, which is the ordinary typo', String(g.status), '^400$')
     g = await mkRule([{ key: 'webhook.post', config: {} }])
     chk('…and so is one with no URL at all', String(g.status), '^400$')
-    g = await mkRule([{ key: 'webhook.post', config: { url: 'https://example.com/zap' } }])
+    g = await mkRule([{ key: 'webhook.post', config: { url: 'https://webhook.public.test/zap' } }])
     chk('…while a real endpoint saves', String(g.status), '^200$')
     if (g.json?.id) await req('DELETE', `/api/automations/${g.json.id}`)
   }
@@ -3119,7 +3124,7 @@ try {
     const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, readdirSync, rmSync } = await import('node:fs')
     const sh = (env, cwd) => {
       try {
-        const out = execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], { env: { ...process.env, ...env }, cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        const out = execFileSync('bash', [join(ROOT, 'deploy/backup.sh')], { env: { ...E2E_ENV, ...env }, cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
         return { code: 0, out }
       } catch (e) { return { code: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` } }
     }
@@ -4338,18 +4343,18 @@ try {
    * The one thing it must never do is quietly accept a weak one instead. */
   {
     const mine = 'whsec_gate_integrator_secret_0123456789'
-    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-mysecret', events: ['invoice.paid'], secret: mine } })
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://webhook.public.test/hook-mysecret', events: ['invoice.paid'], secret: mine } })
     chk('a webhook is created', String(r.status), '^201$')
     chk('…signing with the secret the integrator configured', String(r.json?.secret), `^${mine}$`)
     const madeId = r.json?.id
     r = await req('GET', '/api/v1/webhooks', asKey())
     chk('…and it is listed', String((r.json?.data || []).some((w) => w.id === madeId)), '^true$')
 
-    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-weak', events: ['invoice.paid'], secret: 'hunter2' } })
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://webhook.public.test/hook-weak', events: ['invoice.paid'], secret: 'hunter2' } })
     chk('a secret too weak to sign with is refused, not quietly replaced', String(r.status), '^400$')
     chk('…and says what is wrong with it', String(r.json?.error || ''), 'secret')
 
-    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://example.com/hook-gen', events: ['invoice.paid'] } })
+    r = await req('POST', '/api/v1/webhooks', { ...asKey(), body: { url: 'https://webhook.public.test/hook-gen', events: ['invoice.paid'] } })
     chk('omitting it still generates one', String(r.json?.secret || ''), '^whsec_')
     await req('DELETE', `/api/v1/webhooks/${madeId}`, asKey())
     await req('DELETE', `/api/v1/webhooks/${r.json?.id}`, asKey())
@@ -4412,9 +4417,9 @@ try {
    * support address printed on the operator's own website) gets the shop list, delete, suspend,
    * and one-click sign-in as any shop on the install. */
   {
-    const T6 = mkdtempSync(join(tmpdir(), 'psc-e2e-adminsquat-'))
+    const T6 = createE2eDirectory('adminsquat')
     const P6 = PORT + 12
-    const env6 = { ...process.env, PORT: String(P6), PSC_DB: join(T6, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P6}`, PSC_ADMIN_EMAIL: 'operator@example.com' }
+    const env6 = { ...E2E_ENV, PORT: String(P6), PSC_DB: join(T6, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P6}`, PSC_ADMIN_EMAIL: 'operator@example.com' }
     const s6 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env6, stdio: ['ignore', 'pipe', 'pipe'] })
     aux('the platform-admin-address server', P6, s6)
     const hit6 = async (path, body) => {
@@ -4860,11 +4865,11 @@ try {
    *
    * Its own instance, single-tenant, because that is the install the hole is in. */
   {
-    const T8 = mkdtempSync(join(tmpdir(), 'psc-e2e-embed-'))
+    const T8 = createE2eDirectory('embed')
     const P8 = PORT + 14
     const embedSrv = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P8), PSC_DB: join(T8, 'printshop.db'), PSC_SECRET: 'gate' },  // no PSC_AUTH: single-tenant
+      env: { ...E2E_ENV, PORT: String(P8), PSC_DB: join(T8, 'printshop.db'), PSC_SECRET: 'gate' },  // no PSC_AUTH: single-tenant
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the embed server', P8, embedSrv)
@@ -5261,11 +5266,11 @@ try {
    * actually means — before the fix the first byte arrived at 178 ms of a 182 ms transfer.
    * Its own server and its own database, so the main run is not carrying 60k rows around. */
   {
-    const T7 = mkdtempSync(join(tmpdir(), 'psc-e2e-csv-'))
+    const T7 = createE2eDirectory('csv')
     const P7 = PORT + 13
     const csvSrv = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P7), PSC_DB: join(T7, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P7}` },
+      env: { ...E2E_ENV, PORT: String(P7), PSC_DB: join(T7, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P7}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the CSV-import server', P7, csvSrv)
@@ -5361,12 +5366,11 @@ try {
    * ALSO answering on the box's LAN and public addresses — around nginx, and around the TLS nginx
    * was terminating. A documented security posture the code could not take. */
   {
-    const { networkInterfaces } = await import('node:os')
-    const T4 = mkdtempSync(join(tmpdir(), 'psc-e2e-host-'))
+    const T4 = createE2eDirectory('host')
     const P4 = PORT + 9
     const bound = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P4), PSC_HOST: '127.0.0.1', PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P4}` },
+      env: { ...E2E_ENV, PORT: String(P4), PSC_HOST: '127.0.0.1', PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P4}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the PSC_HOST-bound server', P4, bound)
@@ -5384,12 +5388,12 @@ try {
 
       // The half that is the actual point: it must NOT be reachable on any other address of this
       // machine. Skipped rather than faked where the runner has no non-loopback interface.
-      const lan = Object.values(networkInterfaces()).flat()
-        .find((n) => n && n.family === 'IPv4' && !n.internal)?.address
-      if (lan) {
-        chk(`…and is not reachable on this box's own ${lan}, which is the whole point`, String(await reach(lan)), '^0$')
+      const lan = e2eLanAddress()
+      if (lan.address) {
+        chk(`…and is not reachable on this box's own ${lan.address}, which is the whole point`, String(await reach(lan.address)), '^0$')
       } else {
-        say('·', 'no non-loopback interface on this runner — the off-loopback half was not exercised')
+        skips++
+        say('○', `${lan.reason} — the off-loopback bind assertion was not exercised`)
       }
     } finally {
       try { bound.kill('SIGKILL') } catch { /* already gone */ }
@@ -5409,11 +5413,11 @@ try {
    * history before applyMigrations grew its partial UNIQUE index on estimates.source_ref.
    * Its own server, so the main run is untouched. */
   {
-    const T2 = mkdtempSync(join(tmpdir(), 'psc-e2e-health-'))
+    const T2 = createE2eDirectory('health')
     const P2 = PORT + 7
     const boot = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P2), PSC_DB: join(T2, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P2}` },
+      env: { ...E2E_ENV, PORT: String(P2), PSC_DB: join(T2, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P2}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     const hit = async (p) => {
@@ -5481,9 +5485,9 @@ try {
    * The SMTP host here is deliberately unreachable: the send is fire-and-forget, so what is being
    * asserted is the refusal decision, not a delivery. */
   {
-    const T5 = mkdtempSync(join(tmpdir(), 'psc-e2e-smtpreset-'))
+    const T5 = createE2eDirectory('smtpreset')
     const P5 = PORT + 11
-    const env5 = { ...process.env, PORT: String(P5), PSC_DB: join(T5, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P5}`, SMTP_HOST: '127.0.0.1', SMTP_PORT: '1', SMTP_USER: 'shop@example.com', SMTP_PASS: 'hunter2hunter2', SMTP_FROM: 'shop@example.com' }
+    const env5 = { ...E2E_ENV, PORT: String(P5), PSC_DB: join(T5, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P5}`, SMTP_HOST: '127.0.0.1', SMTP_PORT: '1', SMTP_USER: 'shop@example.com', SMTP_PASS: 'hunter2hunter2', SMTP_FROM: 'shop@example.com' }
     for (const k of ['GHL_PIT', 'GHL_LOCATION_ID', 'GHL_EMAIL_FROM', 'PSC_POSTMARK_TOKEN', 'PSC_RESEND_KEY']) delete env5[k]
     const s5 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env5, stdio: ['ignore', 'pipe', 'pipe'] })
     aux('the SMTP-reset server', P5, s5)
@@ -5522,7 +5526,7 @@ try {
    * The assertion reads the email that would really be sent: GHL_BASE points at a stub here, so
    * the platform relay is exercised end to end instead of being mocked out at the callsite. */
   {
-    const T4 = mkdtempSync(join(tmpdir(), 'psc-e2e-origin-'))
+    const T4 = createE2eDirectory('origin')
     const P4 = PORT + 22
     const P4RELAY = PORT + 10
     const sent = []
@@ -5538,7 +5542,7 @@ try {
     })
     await new Promise((r) => relay.listen(P4RELAY, '127.0.0.1', r))
     // PSC_PUBLIC_URL is deliberately absent from this env — that is the whole point of the case.
-    const env4 = { ...process.env, PORT: String(P4), PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', GHL_BASE: `http://127.0.0.1:${P4RELAY}`, GHL_PIT: 'stub-token', GHL_LOCATION_ID: 'stub-loc', GHL_EMAIL_FROM: 'stub@printshopcrm.test' }
+    const env4 = { ...E2E_ENV, PORT: String(P4), PSC_DB: join(T4, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', GHL_BASE: `http://127.0.0.1:${P4RELAY}`, GHL_PIT: 'stub-token', GHL_LOCATION_ID: 'stub-loc', GHL_EMAIL_FROM: 'stub@printshopcrm.test' }
     delete env4.PSC_PUBLIC_URL
     const s4 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], { cwd: ROOT, env: env4, stdio: ['ignore', 'pipe', 'pipe'] })
     aux('the origin/relay server', P4, s4)
@@ -5606,11 +5610,11 @@ try {
    * defrauding people. Its own server, own database, own port, and a heartbeat turned down so the
    * assertion does not take half a minute. */
   {
-    const T9 = mkdtempSync(join(tmpdir(), 'psc-e2e-wsauth-'))
+    const T9 = createE2eDirectory('wsauth')
     const P9 = PORT + 23
     const s9 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P9), PSC_DB: join(T9, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P9}`, PSC_WS_HEARTBEAT_MS: '300' },
+      env: { ...E2E_ENV, PORT: String(P9), PSC_DB: join(T9, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P9}`, PSC_WS_HEARTBEAT_MS: '300' },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the websocket-auth server', P9, s9)
@@ -5657,11 +5661,11 @@ try {
    * port, so the main run is untouched. */
   if (!POSIX) skip('a deploy drains instead of being killed')
   else {
-    const T3 = mkdtempSync(join(tmpdir(), 'psc-e2e-drain-'))
+    const T3 = createE2eDirectory('drain')
     const P3 = PORT + 8
     const s3 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P3), PSC_DB: join(T3, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P3}` },
+      env: { ...E2E_ENV, PORT: String(P3), PSC_DB: join(T3, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P3}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the connection-drain server', P3, s3)
@@ -5723,14 +5727,14 @@ try {
    * being fixed. This also closes `//api/...`, which had been reaching the SPA catch-all and
    * answering 200 + HTML to a caller with no session. */
   {
-    const T10 = mkdtempSync(join(tmpdir(), 'psc-e2e-paths-'))
+    const T10 = createE2eDirectory('paths')
     const P10 = PORT + 15
     const s10 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
       // PSC_OUTBOUND_MAX shrinks the shared customer-mail allowance to 6 so the cap can be proved
       // in a handful of round-trips instead of 300. The PROPERTY under test is that the bucket is
       // one allowance for the whole capability and is keyed per member — not the default number.
-      env: { ...process.env, PORT: String(P10), PSC_DB: join(T10, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_OUTBOUND_MAX: '6', PSC_PUBLIC_URL: `http://127.0.0.1:${P10}` },
+      env: { ...E2E_ENV, PORT: String(P10), PSC_DB: join(T10, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_OUTBOUND_MAX: '6', PSC_PUBLIC_URL: `http://127.0.0.1:${P10}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the virtual-paths server', P10, s10)
@@ -5895,11 +5899,11 @@ try {
    * database now; every other open of a file that is not there is an error that says so and names
    * the tool that fixes it. */
   {
-    const T11 = mkdtempSync(join(tmpdir(), 'psc-e2e-lostdb-'))
+    const T11 = createE2eDirectory('lostdb')
     const P11 = PORT + 16
     const bootServer = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P11), PSC_DB: join(T11, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P11}` },
+      env: { ...E2E_ENV, PORT: String(P11), PSC_DB: join(T11, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P11}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     const waitUp = () => waitForAux(s11)   // `s11` is reassigned on each reboot; the closure follows it
@@ -5984,11 +5988,11 @@ try {
    * file MISSING, names `npm run restore`. Same shop, same remedy, two different experiences
    * depending on whether the file was deleted or damaged. */
   {
-    const T19 = mkdtempSync(join(tmpdir(), 'psc-e2e-corrupt-'))
+    const T19 = createE2eDirectory('corrupt')
     const P19 = PORT + 26
     const boot19 = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P19), PSC_DB: join(T19, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P19}` },
+      env: { ...E2E_ENV, PORT: String(P19), PSC_DB: join(T19, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P19}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     const up19 = () => waitForAux(s19)     // likewise: rebooted twice below
@@ -6047,11 +6051,11 @@ try {
    * to roll a release back, calls it a success. The one tool INSTALL.md names for a lockout then
    * misdiagnoses it, reporting "this is the wrong database" while pointed at the right one. */
   {
-    const T17 = mkdtempSync(join(tmpdir(), 'psc-e2e-registry-'))
+    const T17 = createE2eDirectory('registry')
     const P17 = PORT + 24
     const boot17 = () => spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P17), PSC_DB: join(T17, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P17}` },
+      env: { ...E2E_ENV, PORT: String(P17), PSC_DB: join(T17, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P17}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     let s17 = boot17()
@@ -6099,11 +6103,11 @@ try {
 
   /* ---------- a genuinely new install still creates its own registry ---------- */
   {
-    const T18 = mkdtempSync(join(tmpdir(), 'psc-e2e-firstrun-'))
+    const T18 = createE2eDirectory('firstrun')
     const P18 = PORT + 25
     const s18 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P18), PSC_DB: join(T18, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P18}` },
+      env: { ...E2E_ENV, PORT: String(P18), PSC_DB: join(T18, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P18}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the first-run server', P18, s18)
@@ -6136,11 +6140,11 @@ try {
    *
    * The guard already existed, with the message already written. These two just never called it. */
   {
-    const T12 = mkdtempSync(join(tmpdir(), 'psc-e2e-nomail-'))
+    const T12 = createE2eDirectory('nomail')
     const P12 = PORT + 17
     const s12 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P12), PSC_DB: join(T12, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P12}` },
+      env: { ...E2E_ENV, PORT: String(P12), PSC_DB: join(T12, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P12}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the no-mail server', P12, s12)
@@ -6224,11 +6228,11 @@ try {
    * shop priced it off — matrix names ARE the decoration vocabulary ('Embroidery', 'DTF Transfer',
    * 'Screen Print' are STOCK_SERVICES keys) — before it ever defaults. */
   {
-    const T13 = mkdtempSync(join(tmpdir(), 'psc-e2e-deco-'))
+    const T13 = createE2eDirectory('deco')
     const P13 = PORT + 18
     const s13 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P13), PSC_DB: join(T13, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P13}` },
+      env: { ...E2E_ENV, PORT: String(P13), PSC_DB: join(T13, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P13}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the decoration server', P13, s13)
@@ -6297,11 +6301,11 @@ try {
    * The join now picks exactly one invoice — the newest LIVE one, falling back to the newest void
    * so a fully-voided order still says so rather than quietly reading "paid". */
   {
-    const T14 = mkdtempSync(join(tmpdir(), 'psc-e2e-void-'))
+    const T14 = createE2eDirectory('void')
     const P14 = PORT + 19
     const s14 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P14), PSC_DB: join(T14, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P14}` },
+      env: { ...E2E_ENV, PORT: String(P14), PSC_DB: join(T14, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P14}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the void-invoice server', P14, s14)
@@ -6377,11 +6381,11 @@ try {
    * re-click after a response that never arrived, walk straight past it. Same shape, same escape —
    * a question naming what it matched, and `confirm: true` to mean it. */
   {
-    const T15 = mkdtempSync(join(tmpdir(), 'psc-e2e-recv-'))
+    const T15 = createE2eDirectory('recv')
     const P15 = PORT + 20
     const s15 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P15), PSC_DB: join(T15, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P15}` },
+      env: { ...E2E_ENV, PORT: String(P15), PSC_DB: join(T15, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P15}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the receptionist server', P15, s15)
@@ -6478,11 +6482,11 @@ try {
    * written — its own comment explains why. The recovery worked; the button that calls it was
    * hidden. A service the shop has overridden in ANY way is edited. */
   {
-    const T16 = mkdtempSync(join(tmpdir(), 'psc-e2e-book-'))
+    const T16 = createE2eDirectory('book')
     const P16 = PORT + 21
     const s16 = spawn(process.execPath, ['--no-warnings', 'server.mjs'], {
       cwd: ROOT,
-      env: { ...process.env, PORT: String(P16), PSC_DB: join(T16, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P16}` },
+      env: { ...E2E_ENV, PORT: String(P16), PSC_DB: join(T16, 'printshop.db'), PSC_AUTH: '1', PSC_SECRET: 'gate', PSC_PUBLIC_URL: `http://127.0.0.1:${P16}` },
       stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     })
     aux('the price-book server', P16, s16)
