@@ -19,35 +19,72 @@ export function redact(value, secrets) {
 
 export async function isolateBrowser(context, base, evidence) {
   if (!appRequestAllowed(base, base)) throw Error('Browser smoke requires an exact HTTP 127.0.0.1 origin')
-  await context.route('**/*', async route => {
+  let closing = false, closePromise
+  const pending = new Set()
+  const expectedClose = error => closing && /^(?:[\w.]+: )?(?:Target page, context or browser has been closed|Target closed|Browser has been closed|Route is already handled!)(?:\n|$)/.test(String(error?.message || error))
+  const record = (url, error) => {
+    if (!expectedClose(error)) evidence.networkErrors.push(requestLabel(url) + ': ' + String(error?.message || error))
+  }
+  const track = (url, action) => {
+    // Route callbacks are event handlers: an escaped rejected promise crashes the process
+    // instead of becoming an assertion failure. Record every unexpected error and drain it.
+    const task = (async () => { try { await action() } catch (error) { record(url, error) } })()
+    pending.add(task)
+    void task.then(() => pending.delete(task))
+    return task
+  }
+  const abort = async (route, reason, url) => {
+    try { await route.abort(reason) } catch (error) { record(url, error) }
+  }
+  await context.route('**/*', route => {
     const url = route.request().url()
-    if (!appRequestAllowed(url, base)) {
-      evidence.blockedRequests.push(requestLabel(url))
-      return route.abort('blockedbyclient')
-    }
-    try {
-      // route.continue() can allow redirect chains past a route handler. Fetch one response
-      // at a time, without following redirects, and refuse redirects altogether in this fixture.
-      const response = await route.fetch({ maxRedirects: 0, timeout: 15000 })
-      if (response.status() >= 300 && response.status() < 400 && response.headers().location) {
-        evidence.blockedRequests.push('redirect from ' + requestLabel(url))
-        return route.abort('blockedbyclient')
+    return track(url, async () => {
+      if (!appRequestAllowed(url, base)) {
+        evidence.blockedRequests.push(requestLabel(url))
+        await abort(route, 'blockedbyclient', url)
+        return
       }
-      return route.fulfill({ response })
-    } catch (error) {
-      evidence.networkErrors.push(requestLabel(url) + ': ' + error.message)
-      return route.abort('failed')
-    }
+      if (closing) { await abort(route, 'aborted', url); return }
+      try {
+        // Fetch exactly one response; redirects must never escape the origin guard.
+        const response = await route.fetch({ maxRedirects: 0, timeout: 15000 })
+        if (closing) { await abort(route, 'aborted', url); return }
+        if (response.status() >= 300 && response.status() < 400 && response.headers().location) {
+          evidence.blockedRequests.push('redirect from ' + requestLabel(url))
+          await abort(route, 'blockedbyclient', url)
+          return
+        }
+        await route.fulfill({ response })
+      } catch (error) {
+        record(url, error)
+        if (!expectedClose(error)) await abort(route, 'failed', url)
+      }
+    })
   })
   await context.routeWebSocket('**/*', socket => {
-    if (appRequestAllowed(socket.url(), base, true) && new URL(socket.url()).pathname === '/ws' && !new URL(socket.url()).search) {
-      // The planner does not depend on realtime. Playwright's documented mock mode
-      // opens this socket in-page without a network connection when connectToServer
-      // is omitted. Keep Chrome's local-network checks intact; this is not realtime QA.
-      evidence.mockedWebSockets.push(requestLabel(socket.url()))
-      return
-    }
-    evidence.blockedRequests.push(requestLabel(socket.url()))
-    return socket.close({ code: 1008, reason: 'Synthetic local demo only' })
+    const url = socket.url()
+    return track(url, async () => {
+      if (appRequestAllowed(url, base, true) && new URL(url).pathname === '/ws' && !new URL(url).search) {
+        // Documented mock mode opens only an in-page socket. Realtime is not under test.
+        if (!closing) evidence.mockedWebSockets.push(requestLabel(url))
+        return
+      }
+      evidence.blockedRequests.push(requestLabel(url))
+      await socket.close({ code: 1008, reason: 'Synthetic local demo only' })
+    })
   })
+  return {
+    close() {
+      if (!closePromise) {
+        closing = true
+        closePromise = (async () => {
+          // Keep the guards installed until the context is closed. Unrouting a live page
+          // can expose a final request and race Playwright's own route cancellation.
+          try { await context.close() } catch (error) { record(base, error) }
+          finally { while (pending.size) await Promise.all([...pending]) }
+        })()
+      }
+      return closePromise
+    },
+  }
 }

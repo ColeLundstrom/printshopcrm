@@ -65,6 +65,8 @@ and `/app/third-party/nodable-entities/LICENSE` from it with networking disabled
 Each must be byte-identical to its source file. This catches accidental exclusions
 or changes in the shipped notices. The Dockerfile's existing `COPY . .` includes
 these files; the container entry point and runtime dependencies are unchanged.
+The isolated demo launcher also copies the complete notices, supplemental license and this
+evidence directory; its existing integration test compares all of those files byte-for-byte.
 
 ## When dependencies change
 

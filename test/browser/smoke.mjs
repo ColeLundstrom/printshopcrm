@@ -74,7 +74,7 @@ async function exercise(viewport, cookies) {
   const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height },
     isMobile: viewport.mobile, hasTouch: viewport.mobile, deviceScaleFactor: 1, locale: 'en-US',
     colorScheme: 'light', reducedMotion: 'reduce', serviceWorkers: 'block', acceptDownloads: true })
-  await isolateBrowser(context, server.base, scenario)
+  const isolation = await isolateBrowser(context, server.base, scenario)
   await context.addCookies(cookies)
   const page = await context.newPage()
   page.setDefaultTimeout(15000)
@@ -178,21 +178,21 @@ async function exercise(viewport, cookies) {
       }
       await screenshot(page, scenario, 'returned-fresh')
     })
-    await check(scenario, 'The planner makes no writes, external requests or browser errors', async () => {
-      assert.deepEqual(scenario.unexpectedWrites, [])
-      assert.deepEqual(scenario.blockedRequests, [])
-      assert.deepEqual(scenario.networkErrors, [])
-      assert.deepEqual(scenario.pageErrors, [])
-      assert.deepEqual(scenario.consoleErrors, [])
-      assert(scenario.mockedWebSockets.length > 0, 'The explicitly stubbed realtime connection should be recorded')
-    })
   } catch (error) {
     if (new URL(page.url()).pathname === '/') await screenshot(page, scenario, 'failure').catch(() => {})
     throw error
   } finally {
-    await context.unrouteAll({ behavior: 'wait' })
-    await context.close()
+    await isolation.close()
   }
+  // Assert only after every route callback has settled, including teardown failures.
+  await check(scenario, 'The planner makes no writes, external requests or browser errors', async () => {
+    assert.deepEqual(scenario.unexpectedWrites, [])
+    assert.deepEqual(scenario.blockedRequests, [])
+    assert.deepEqual(scenario.networkErrors, [])
+    assert.deepEqual(scenario.pageErrors, [])
+    assert.deepEqual(scenario.consoleErrors, [])
+    assert(scenario.mockedWebSockets.length > 0, 'The explicitly stubbed realtime connection should be recorded')
+  })
 }
 
 try {

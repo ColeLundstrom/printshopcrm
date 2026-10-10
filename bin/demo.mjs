@@ -17,13 +17,16 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Por
 const dest = resolve(destination)
 mkdirSync(dest, { mode: 0o700 }) // exclusive: an existing install must never be overwritten
 const cleanEnv = Object.fromEntries(['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR'].filter(k => process.env[k]).map(k => [k, process.env[k]]))
-for (const name of ['lib', 'public', 'node_modules']) {
+for (const name of ['lib', 'public', 'node_modules', 'third-party']) {
   cpSync(join(ROOT, name), join(dest, name), {
     recursive: true,
     filter: source => !['uploads', '.DS_Store'].includes(source.split(/[\\/]/).at(-1)),
   })
 }
-for (const name of ['server.mjs', 'seed.mjs', 'package.json', 'package-lock.json', 'LICENSE']) cpSync(join(ROOT, name), join(dest, name))
+for (const name of ['server.mjs', 'seed.mjs', 'package.json', 'package-lock.json', 'LICENSE', 'THIRD_PARTY_NOTICES.md']) cpSync(join(ROOT, name), join(dest, name))
+// Preserve dependency notices and their version/source evidence in this separate install.
+mkdirSync(join(dest, 'docs'))
+cpSync(join(ROOT, 'docs/third-party'), join(dest, 'docs/third-party'), { recursive: true })
 // The usual npm start entry point must keep the outbound guard too.
 const demoPackage = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'))
 demoPackage.scripts = { start: 'node start.mjs' }

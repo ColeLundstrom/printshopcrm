@@ -20,6 +20,14 @@ test('isolated demo keeps private data safe and serves customer proofs from a hi
       env: { ...process.env, PSC_DB: sentinel, PSC_CONTROL_DB: sentinel, PSC_PLATFORM_STRIPE_SECRET: 'do-not-inherit' } })
     assert.equal(r.status, 0, r.error?.message || r.stderr)
     assert.equal(readFileSync(sentinel, 'utf8'), 'existing customer data')
+    // An evaluation install redistributes the same dependencies, so its notices
+    // must travel with them instead of being left behind in the source checkout.
+    for (const path of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'third-party/nodable-entities/LICENSE',
+      'docs/third-party/README.md', 'docs/third-party/dependency-inventory.json',
+      'docs/third-party/nodable-notice-verification.json']) {
+      assert.deepEqual(readFileSync(join(dest, path)), readFileSync(new URL(path, root)),
+        `The isolated demo must preserve ${path} unchanged`)
+    }
     const config = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8'))
     assert.equal(config.PSC_PLATFORM_STRIPE_SECRET, undefined)
     assert.equal(config.PSC_CONTROL_DB, undefined)
