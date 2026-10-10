@@ -17,9 +17,25 @@ GitHub tree creation. The earlier pause is resolved. [Draft PR #14](https://gith
 contains the candidate; check its current head and CI before continuing. The original published
 candidate passed Linux/macOS/Windows/Docker CI. Browser acceptance and verified deployment access,
 backups, rollback and health checks remain release gates; repository publication is not deployment.
-The subsequent request to assess a Rust migration is being reviewed separately. Keep this tested
-candidate intact; merge/stable deployment is on hold until that direction is reconciled. A language
-change does not remove license obligations or establish immunity from legal claims.
+The requested Rust migration remains active as a separate staged project; keep this working
+candidate intact. See [draft Rust experiment PR #15](https://github.com/ColeLundstrom/printshopcrm/pull/15).
+A language change does not remove license obligations or establish immunity from legal claims.
+On October 10 the owner attested that he created the original code and logo. This is an owner
+attestation, not independent ownership verification; preserve AGPL and third-party notices.
+
+## Staged Rust migration
+
+PR #15 is a bounded profit-model experiment, not a replacement server or full rewrite. Its checked
+integer range differs from the current JavaScript BigInt model. Before adopting any port, freeze
+cross-language compatibility fixtures and verify rounding, overflow, input errors and real supported
+ranges. Each next boundary needs a reviewed interface, tests on supported operating systems,
+dependency/source notices and a rollback path. Preserve customer data and existing workflows.
+
+After pure business rules, assess persistence and service boundaries deliberately: transactions,
+schema migrations, tenant isolation, authentication, authorization, network/SSRF rules, uploads,
+idempotent jobs and provider failures require parity and security tests before switching runtime.
+Do not treat passing calculator fixtures as evidence of those capabilities. Record remaining Node
+components and acceptance gates at every stage; continue reliable free installation and updates.
 
 ## Next product milestones, in order
 

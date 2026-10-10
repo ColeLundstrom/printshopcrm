@@ -95,17 +95,6 @@
       "integrity": "sha512-j/O/d7GcZCyNl7/hwZAb606rzqkyvaDctLmckbxLzHvFBzTJHuGEdodATcP3yIRoDrLHkIATJuvzbFlp/ki2cQ=="
     },
     {
-      "path": "node_modules/buffer-from",
-      "name": "buffer-from",
-      "version": "1.1.2",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ=="
-    },
-    {
       "path": "node_modules/busboy",
       "name": "busboy",
       "version": "1.6.0",
@@ -192,17 +181,6 @@
         "LICENSE"
       ],
       "integrity": "sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA=="
-    },
-    {
-      "path": "node_modules/concat-stream",
-      "name": "concat-stream",
-      "version": "2.0.0",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-MWufYdFw53ccGjCA+Ol7XJYpAlW6/prSMzuPOTRnJGcGzuhLn4Scrz7qf6o8bROZ514ltazcIFJZevcfbo0x7A=="
     },
     {
       "path": "node_modules/content-disposition",
@@ -702,13 +680,13 @@
     {
       "path": "node_modules/multer",
       "name": "multer",
-      "version": "2.3.0",
+      "version": "2.4.0",
       "declared_license": "MIT",
       "reviewed_license": "MIT",
       "license_files": [
         "LICENSE"
       ],
-      "integrity": "sha512-cjNbm3sttszgZeGfJR124D+jFEfkXCVAsoPBmFn9X7UxmDSFHWqE2CoEj0vrmSpuAFnqWR1Szcm9QTsiHr60Xw=="
+      "integrity": "sha512-7dqa0ZcFfzbefdTuIkzOSMvZWC0J7FLqBOjJUZvDCXShIURWKxAyTT1wHhnE5q19c7jOJf43IYYKjBmZVZmvhg=="
     },
     {
       "path": "node_modules/multer/node_modules/media-typer",
@@ -768,13 +746,13 @@
     {
       "path": "node_modules/nodemailer",
       "name": "nodemailer",
-      "version": "9.1.1",
+      "version": "10.0.9",
       "declared_license": "MIT-0",
       "reviewed_license": "MIT-0",
       "license_files": [
         "LICENSE"
       ],
-      "integrity": "sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ=="
+      "integrity": "sha512-BF0qcyplCwp+jMk6HCjFykBz/YhhZSsxrARhOldLwFWH+8kGjQsd2WIMIZhqEuyXRoGFi0ONbDeWDMDoL8MhLw=="
     },
     {
       "path": "node_modules/object-inspect",
@@ -900,13 +878,13 @@
     {
       "path": "node_modules/proxy-addr",
       "name": "proxy-addr",
-      "version": "2.0.7",
+      "version": "2.0.8",
       "declared_license": "MIT",
       "reviewed_license": "MIT",
       "license_files": [
         "LICENSE"
       ],
-      "integrity": "sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg=="
+      "integrity": "sha512-5nnx0yGyVUcY6t9RnWcARWtwT9F1D8O9rt08htPvnd49W1IgZtmLkhu9WfMzQj1cFxjHIO6connUNVW5k7AVyQ=="
     },
     {
       "path": "node_modules/qrcode",
@@ -953,17 +931,6 @@
       "integrity": "sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA=="
     },
     {
-      "path": "node_modules/readable-stream",
-      "name": "readable-stream",
-      "version": "3.6.2",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA=="
-    },
-    {
       "path": "node_modules/require-directory",
       "name": "require-directory",
       "version": "2.1.1",
@@ -995,17 +962,6 @@
         "LICENSE"
       ],
       "integrity": "sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ=="
-    },
-    {
-      "path": "node_modules/safe-buffer",
-      "name": "safe-buffer",
-      "version": "5.2.1",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ=="
     },
     {
       "path": "node_modules/safer-buffer",
@@ -1129,17 +1085,6 @@
       "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg=="
     },
     {
-      "path": "node_modules/string_decoder",
-      "name": "string_decoder",
-      "version": "1.3.0",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA=="
-    },
-    {
       "path": "node_modules/string-width",
       "name": "string-width",
       "version": "4.2.3",
@@ -1206,17 +1151,6 @@
       "integrity": "sha512-j/O/d7GcZCyNl7/hwZAb606rzqkyvaDctLmckbxLzHvFBzTJHuGEdodATcP3yIRoDrLHkIATJuvzbFlp/ki2cQ=="
     },
     {
-      "path": "node_modules/typedarray",
-      "name": "typedarray",
-      "version": "0.0.6",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-/aCDEGatGvZ2BIk+HmLf4ifCJFwvKFNb9/JeZPMulfgFracn9QFcAf5GO8B/mweUjSoblS5In0cWhqpfs/5PQA=="
-    },
-    {
       "path": "node_modules/unpipe",
       "name": "unpipe",
       "version": "1.0.0",
@@ -1226,17 +1160,6 @@
         "LICENSE"
       ],
       "integrity": "sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ=="
-    },
-    {
-      "path": "node_modules/util-deprecate",
-      "name": "util-deprecate",
-      "version": "1.0.2",
-      "declared_license": "MIT",
-      "reviewed_license": "MIT",
-      "license_files": [
-        "LICENSE"
-      ],
-      "integrity": "sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw=="
     },
     {
       "path": "node_modules/vary",
@@ -1338,6 +1261,6 @@
       "integrity": "sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ=="
     }
   ],
-  "packaging_verified_commit": "62a232712a3e49f51bfe6a4d0fc903ff1e6185aa",
-  "lockfile_sha256": "69234e0b373485d3dfc38206ab2b665280e4ce608f2ff505dc3d2ac0aed4a143"
+  "packaging_verified_commit": "bdd07202b9dbf5d452f97d2c4b6288dd91082a5e",
+  "lockfile_sha256": "46f37844b5b5ae5752ac213c2195855a6c39dfef4eb6f275fdeb12b9569f3bc5"
 }

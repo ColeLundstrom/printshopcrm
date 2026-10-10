@@ -3,8 +3,11 @@
 Status: published review candidate in [draft PR #14](https://github.com/ColeLundstrom/printshopcrm/pull/14).
 Repository publication was explicitly reauthorized on October 10, 2026 after an earlier cancellation.
 The application candidate passed cross-platform CI and browser acceptance. The later dependency
-notice packaging correction requires fresh CI. Rust/provenance review and production
-access/backup/health checks remain required. Not deployed.
+notice packaging, browser-fixture and dependency-security corrections require fresh exact-current-commit CI. Production
+access/backup/health checks remain required. Not deployed. The owner attested on October 10 that
+he created the original code and logo; this is not independent ownership or legal clearance.
+The requested staged Rust migration remains separate in [draft PR #15](https://github.com/ColeLundstrom/printshopcrm/pull/15)
+and [the adoption backlog](ADOPTION-BACKLOG.md); it does not replace this working candidate.
 
 Base: 41fa29b6d4f064c69c47e880f82b95750071ccf8 (1.35.7).
 
@@ -69,15 +72,48 @@ Production backup/health evidence is required before this document describes the
 
 The locked dependency inventory identified one missing packaged notice: `@nodable/entities 3.0.0`
 declares MIT but its npm archive omits the license text. The candidate now includes the unchanged
-upstream notice and complete collected notices for all 121 locked npm entries in
+upstream notice and complete collected notices for all 114 current locked npm entries in
 `THIRD_PARTY_NOTICES.md`, with source/version evidence and maintenance guidance under
 `docs/third-party/`. Four regression tests verify lockfile/inventory correspondence, complete
 notice text and exact upstream file matches; Docker CI compares the shipped notice bytes.
 
-The application license and dependency set are unchanged. Eight package/runtime files match the
+The application license is unchanged. Targeted security updates described below remove seven unused
+transitive packages from the earlier 121-entry inventory. Eight entities package/runtime files match the
 primary upstream commit; the declaration file matches an earlier source commit with the identical
 MIT license. This qualified source match does not establish ownership or provide legal clearance.
 Non-npm assets, base-image components and any other applicable obligations require their own review.
+
+## Targeted dependency security corrections
+
+The October 10 audit of the previous lockfile identified published advisories in three packages.
+The candidate pins Multer 2.4.0 and Nodemailer 10.0.9 and locks Express's compatible transitive
+proxy-addr at 2.0.8. No authentication, proxy-trust or network-security configuration is changed.
+Seven unused packages disappear with Multer's removed concat-stream dependency. The new locked
+inventory contains 114 entries. A fresh `npm audit --omit=dev` reported zero known advisories on
+October 10; this is a point-in-time registry result, not a comprehensive security guarantee.
+
+- [Multer aborted disk-upload cleanup](https://github.com/advisories/GHSA-3pph-fpjx-jg34): the
+  application uses disk storage for mockups/logos. Authentication normally precedes those routes,
+  but authorized uploaders reach this dependency. Memory-only CSV imports are outside this issue.
+- [proxy-addr subnet trust](https://github.com/advisories/GHSA-jqcg-44mw-7w3h): particular short
+  IPv4-mapped/zero-leading IPv6 trust subnets could trust unrelated addresses. The default numeric
+  one-hop setting does not meet this specific condition; custom `PSC_TRUST_PROXY` settings may.
+- Nodemailer 10.0.9 addresses the affected
+  [TLS cache](https://github.com/advisories/GHSA-6vj9-mwq6-2f5v),
+  [nested arrays](https://github.com/advisories/GHSA-8vvx-rff5-p5rq),
+  [comment-joined parser](https://github.com/advisories/GHSA-prgh-xp8r-p3m5),
+  [regex fallback](https://github.com/advisories/GHSA-v53p-9fqp-m79j), and
+  [quoted local-part](https://github.com/advisories/GHSA-g57g-f23g-4646) advisories.
+  Existing recipient guards reduce exposure, but manager-configured sender fields also enter the
+  parser. The application's transport does not expose the differing `tls.servername` condition
+  needed by that specific cache advisory. No actual unintended-recipient delivery is claimed.
+
+[Nodemailer 10's release](https://github.com/nodemailer/nodemailer/releases/tag/v10.0.0) raises
+its Node minimum to 20, below this application's existing minimum of 22.13, and moves package
+implementation paths. Application imports already use the public package entry; the synthetic
+billing-mail preload must use the package's ESM entry too. Focused regressions cover upload cleanup,
+proxy trust and synthetic mail behavior; aggregate and exact-current-commit CI remain gates.
+No real customer mail or payment was sent. See the PR for the final test results.
 
 ## Deployment and rollback
 

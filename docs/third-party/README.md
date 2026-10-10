@@ -7,15 +7,16 @@ release meets every applicable obligation. The application license is unchanged.
 ## Distributed files and evidence
 
 - [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md) retains the complete
-  license texts for all 121 locked npm dependency entries: 120 packaged notices
+  license texts for all 114 locked npm dependency entries: 113 packaged notices
   and one supplemental upstream notice. The original wording, authors and
   copyright notices are preserved. CRLF line endings are normalized to LF, as
   required by this repository's checkout rules.
 - [dependency-inventory.json](dependency-inventory.json) records each installed
   path, package name, locked version and integrity, license metadata, and license
   file paths. `source_commit` identifies the original inventory snapshot;
-  `packaging_verified_commit` identifies the release checkout against which its
-  121 entries were rechecked. `lockfile_sha256` identifies the exact lockfile.
+  `packaging_verified_commit` identifies the base release checkout used for the
+  latest review, including any dependency updates in its working tree.
+  `lockfile_sha256` identifies the exact reviewed lockfile for all 114 entries.
   The two copies of `content-type` 2.0.0 remain separately attributed by path.
   `busboy` and `streamsearch` lack lockfile license metadata but include the MIT
   texts recorded here.
@@ -73,9 +74,20 @@ evidence directory; its existing integration test compares all of those files by
 1. Install from the updated lockfile and review every added or changed dependency,
    including nested copies. Reconcile removed entries too. Preserve all author,
    copyright and license text; never replace it with the application's license.
-2. Update the inventory and its lockfile digest. Update the corresponding notice
-   sections using the complete installed license texts. Keep the package-path
-   section markers unique even when names and versions repeat.
+2. Regenerate deterministically from those installed files using the offline helper:
+
+   ```sh
+   node bin/update-third-party-notices.mjs --reviewed-at YYYY-MM-DD --source-commit "$(git rev-parse HEAD)"
+   ```
+
+   Use the actual review date. The command updates only the inventory and root
+   notices, normalizing CRLF to LF. It preserves separately verified supplements
+   only when package identity, integrity, installed source hashes and license
+   hash still match. It stops on a new missing notice, unknown license metadata,
+   or mismatched installation. It cannot replace manual source/license review.
+   Review the resulting diff and update current counts in this guide if needed.
+   Run `node --test test/third-party-notice-generator.test.mjs` to check
+   deterministic collection, missing-notice rejection and complete text retention.
 3. For a package missing its notice, verify the specific source version and
    required text before distribution. Retain pinned links, file hashes and any
    mismatches or limits; do not assume the latest upstream license applies.

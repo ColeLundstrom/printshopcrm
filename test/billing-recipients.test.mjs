@@ -44,7 +44,7 @@ test('recipient migration preserves known history and new documents inherit once
 })
 
 test('real sends use saved buyer/AP identities, stale outbox is held, revisions protect edits and money stays with buyer',{timeout:120000},async()=>{
-  const dir=mkdtempSync(join(tmpdir(),'psc-recipients-')),dest=join(dir,'demo'),capture=join(dir,'smtp.jsonl'),hold=join(dir,'hold'),preload=join(dir,'smtp-fixture.mjs')
+  const dir=mkdtempSync(join(tmpdir(),'psc-recipients-')),dest=join(dir,'demo'),capture=join(dir,'smtp.jsonl'),hold=join(dir,'hold'),preload=join(dest,'smtp-fixture.mjs')
   const server=await createHttpTestServer();let db,control
   try {
     const built=spawnSync(process.execPath,['bin/demo.mjs',dest,String(server.port)],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:90000})
@@ -53,7 +53,9 @@ test('real sends use saved buyer/AP identities, stale outbox is held, revisions 
     writeFileSync(capture,'')
     // Replace only the final SMTP transport. The demo's complete network guard stays installed;
     // real sendEmail/template/queue/outbox code runs, without making even a loopback SMTP call.
-    writeFileSync(preload,`import nodemailer from ${JSON.stringify(pathToFileURL(join(dest,'node_modules/nodemailer/lib/nodemailer.js')).href)};
+    // Resolve the public ESM entry from inside the demo, matching lib/notify.mjs. A deep
+    // filesystem import bypasses package exports and broke when Nodemailer moved its builds.
+    writeFileSync(preload,`import nodemailer from 'nodemailer';
       import {appendFileSync,existsSync} from 'node:fs';
       nodemailer.createTransport=()=>({close(){},async sendMail(message){appendFileSync(${JSON.stringify(capture)},JSON.stringify(message)+'\\n');
       while(existsSync(${JSON.stringify(hold)}))await new Promise(r=>setTimeout(r,10)); return {messageId:'fixture-only'};}});`)
