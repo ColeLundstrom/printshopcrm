@@ -11,7 +11,9 @@
       "reviewed_license": "MIT",
       "license_files": [],
       "integrity": "sha512-8L9xFeTYKhm49xfIypoe2W5wV1m/3Z58kT+7kR9A8OyFxcPduI4VmxaUMQyKYrRjUoLLSXv6EKKID5Tvj9cUVw==",
-      "notice_status": "Missing packaged license text; verify exact upstream version and include required notice before distribution."
+      "notice_status": "Packaged license text omitted. Supplemental exact upstream MIT notice obtained; must be included in distribution.",
+      "supplemental_license_file": "nodable-entities-LICENSE.txt",
+      "notice_evidence": "nodable-notice-verification.json"
     },
     {
       "path": "node_modules/accepts",

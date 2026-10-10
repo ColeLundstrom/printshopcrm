@@ -1,12 +1,35 @@
 # Third-party npm notices snapshot
 
-Generated 2026-10-10 from the installed files corresponding to the audited lockfile. This is a review artifact, not a license change or a complete ownership/security clearance. Check distributed contents and all non-npm assets separately. @nodable/entities 3.0.0 has a packaging gap that remains explicitly flagged.
+Generated 2026-10-10 from the installed files corresponding to the audited lockfile. This is a review artifact, not a license change or a complete ownership/security clearance. Check distributed contents and all non-npm assets separately. @nodable/entities 3.0.0 omits the license in its npm package; the supplemental upstream notice is included below and documented separately.
 
 ## @nodable/entities 3.0.0
 
 Declared/reviewed license: MIT
 
-No packaged license text found. Resolve version-matched upstream notice before distribution.
+Supplemental upstream MIT notice: https://github.com/nodable/val-parsers/blob/ac48e7ea591da372be023a481875c747535812b3/LICENSE . Runtime/package files match this revision; the declaration matches prior MIT revision d2070d76a8ba07e6c7fa142caeb51ffd756e47eb. See nodable-notice-verification.json.
+
+MIT License
+
+Copyright (c) 2026 Nodable
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 
 ## accepts 2.0.0
 

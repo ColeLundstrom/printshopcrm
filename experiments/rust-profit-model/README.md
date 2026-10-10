@@ -9,9 +9,11 @@ AGPL-3.0-or-later and explicitly records its derivation from the existing model.
 - The existing JavaScript pricing-model tests passed: 14 tests on 2026-10-10.
 - Generated 1,362 frozen, fictional JavaScript oracle cases: 1,336 successful
   outputs and 26 rejected-input cases.
-- Rust compilation, unit tests and parity tests are **not yet verified locally**.
-  This environment has no Rust compiler/Cargo; the official rustup download timed
-  out. The separate experimental CI workflow is intended to establish those results.
+- Official Rust 1.90.0 CI passed on Linux, Windows and macOS at commit
+  `497381d219260b07939761a63feef16c74a5aace`: seven unit tests, all 1,362 parity
+  cases, debug and optimized profiles, release build and a synthetic CLI check.
+  [Verified run](https://github.com/ColeLundstrom/printshopcrm/actions/runs/38090044043).
+  The local environment still has no compiler/Cargo; local Rust execution is not claimed.
 - No production, customer data, provider, database, HTTP or browser migration is
   included. This is not a full JavaScript-to-Rust conversion.
 

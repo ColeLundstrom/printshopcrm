@@ -44,7 +44,14 @@ convention or arithmetic formula has never existed elsewhere.
   included here. A CycloneDX SBOM records the package-lock dependency graph.
 - **Specific packaging gap:** `@nodable/entities` 3.0.0 declares MIT but the
   installed package has no license text file. The upstream repository has an MIT
-  license; verify the exact version's rights/notice and include it in distribution.
+  license; the supplemental exact upstream notice is included in this report bundle
+  and must be included in distribution. Eight package/runtime files match upstream
+  version-3.0.0 commit `ac48e7ea591da372be023a481875c747535812b3`. The remaining
+  declaration matches earlier commit `d2070d76a8ba07e6c7fa142caeb51ffd756e47eb`
+  exactly; both revisions have identical MIT license text. The package retained
+  older declarations (default export and no `setXmlVersion`) subsequently corrected
+  upstream. This specific content-provenance gap is resolved; ownership is not
+  certified by matching hashes. See `nodable-notice-verification.json`.
   This is a notice-packaging issue to resolve, not evidence of proprietary code.
   `emoji-regex` has its notice in `LICENSE-MIT.txt` and is not a missing-notice case.
 - Nine tracked standalone visual assets: seven PNG app screenshots and two SVG
@@ -117,6 +124,11 @@ requires a source opportunity for users of a modified networked version. The
 precise text, including qualifications, controls. [AGPL v3 text at OSI](https://opensource.org/license/agpl-3.0).
 
 ## Staged migration and stopping gates
+
+The narrow Stage 1 experiment has passed official Rust 1.90.0 CI on Linux,
+Windows and macOS: debug/release tests, all 1,362 frozen cases, build and CLI check.
+This does not satisfy the full-domain/full-output replacement gate below.
+[Verified experiment run](https://github.com/ColeLundstrom/printshopcrm/actions/runs/38090044043).
 
 **Stage 0: provenance and baseline.** Record source SHA, schema snapshots, a complete
 tested backup/restore set, API fixtures and release-test results. Resolve identified
