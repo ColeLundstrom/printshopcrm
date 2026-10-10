@@ -18,6 +18,10 @@
 # There is no Windows-only file in this tree that wants CRLF, so the rule is repo-wide.
 * text=auto eol=lf
 
+# Preserve collected upstream license text, including its original trailing spaces.
+# The notice tests check complete text; only line endings are normalized above.
+THIRD_PARTY_NOTICES.md -whitespace
+
 # Binaries git must never touch. `text=auto` already detects these, but stating them means a
 # corrupted checkout can never depend on that heuristic getting it right.
 *.png binary

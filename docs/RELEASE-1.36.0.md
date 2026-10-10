@@ -2,8 +2,9 @@
 
 Status: published review candidate in [draft PR #14](https://github.com/ColeLundstrom/printshopcrm/pull/14).
 Repository publication was explicitly reauthorized on October 10, 2026 after an earlier cancellation.
-The application candidate passed cross-platform CI; browser evidence is being added before final
-release acceptance. Production access/backup/health checks remain required. Not deployed.
+The application candidate passed cross-platform CI and browser acceptance. The later dependency
+notice packaging correction requires fresh CI. Rust/provenance review and production
+access/backup/health checks remain required. Not deployed.
 
 Base: 41fa29b6d4f064c69c47e880f82b95750071ccf8 (1.35.7).
 
@@ -48,16 +49,35 @@ checks with no skips, and their E2E gates passed without skips. Windows ran 373 
 symlink-test skips, 925 regression checks with 30 POSIX skips, and E2E with two POSIX skips; the
 Linux/macOS jobs cover those platform-specific paths. Stable-image publication correctly skips PRs.
 
-Browser-level visual acceptance remains pending: the cloud browser cannot reach the isolated
-executor localhost, and direct Chromium startup is blocked by the execution sandbox. A normal CI
-browser job supplies synthetic loopback smoke checks and screenshots for review using the runner's
-official Chrome with its sandbox enabled. The fixture explicitly stubs its exact `/ws` socket;
+Commit `62a232712a3e49f51bfe6a4d0fc903ff1e6185aa` passed [all applicable CI jobs, including browser checks](https://github.com/ColeLundstrom/printshopcrm/actions/runs/38089445604).
+Its final local aggregate checks passed 380 unit tests, 955 regression checks and 1,262 E2E checks,
+with the same one explicit local network-interface skip. Sixteen desktop/mobile browser scenario
+groups passed in official Chrome 154.0.8037.97 with its sandbox enabled. The actual screenshots
+were downloaded and inspected: valid calculations, invalid values, forecast losses and fresh
+navigation states. [Screenshots, numeric CSVs and report](https://github.com/ColeLundstrom/printshopcrm/actions/runs/38089445604/artifacts/11683887335).
+
+The cloud browser cannot reach the isolated executor localhost, so the normal CI browser job
+supplies synthetic loopback smoke checks and screenshots. It explicitly stubs its exact `/ws` socket;
 real WebSocket connectivity and message delivery are outside this visual test's scope. Browser
 local-network protections remain enabled. Behavioral VM tests are not represented as a visual/browser
 pass. No real provider payment or outbound email was made.
 
 Any later commit must pass its own CI; the draft PR records the exact current candidate and results.
 Production backup/health evidence is required before this document describes the release as shipped.
+
+## Third-party notice correction
+
+The locked dependency inventory identified one missing packaged notice: `@nodable/entities 3.0.0`
+declares MIT but its npm archive omits the license text. The candidate now includes the unchanged
+upstream notice and complete collected notices for all 121 locked npm entries in
+`THIRD_PARTY_NOTICES.md`, with source/version evidence and maintenance guidance under
+`docs/third-party/`. Four regression tests verify lockfile/inventory correspondence, complete
+notice text and exact upstream file matches; Docker CI compares the shipped notice bytes.
+
+The application license and dependency set are unchanged. Eight package/runtime files match the
+primary upstream commit; the declaration file matches an earlier source commit with the identical
+MIT license. This qualified source match does not establish ownership or provide legal clearance.
+Non-npm assets, base-image components and any other applicable obligations require their own review.
 
 ## Deployment and rollback
 

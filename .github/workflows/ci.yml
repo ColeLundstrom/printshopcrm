@@ -151,6 +151,14 @@ jobs:
       - name: Build image
         run: docker build -t printshopcrm:ci .
 
+      - name: Verify third-party notice bytes in the built image
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint cat printshopcrm:ci \
+            /app/THIRD_PARTY_NOTICES.md | cmp THIRD_PARTY_NOTICES.md -
+          docker run --rm --network none --entrypoint cat printshopcrm:ci \
+            /app/third-party/nodable-entities/LICENSE | cmp third-party/nodable-entities/LICENSE -
+
       - name: Run container and check health
         run: |
           docker run -d --name psc -p 3333:3333 \
