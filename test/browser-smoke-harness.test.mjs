@@ -130,3 +130,43 @@ test('unexpected teardown and abort errors are preserved even after close starts
   assert(evidence.networkErrors.some(error => error.includes('unexpected fixture failure')))
   assert(evidence.networkErrors.some(error => error.includes('unexpected abort failure')))
 })
+
+test('idle wait includes the delayed chrome refresh and a quiet window after it finishes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 })
+  let handler, pendingRefresh, idle = false
+  const response = deferred(), reading = deferred()
+  const evidence = { blockedRequests: [], networkErrors: [], mockedWebSockets: [] }
+  const isolation = await isolateBrowser({ async route(_, fn) { handler = fn }, async routeWebSocket() {}, async close() {} }, 'http://127.0.0.1:4380', evidence)
+  assert.equal(typeof isolation.waitForIdle, 'function')
+  // Match app.js refreshChrome's actual 250 ms debounce without relying on wall-clock timing.
+  setTimeout(() => {
+    pendingRefresh = handler({ request: () => ({ url: () => 'http://127.0.0.1:4380/api/chrome/badges' }),
+      fetch: async () => { reading.resolve(); return await response.promise }, fulfill: async () => {} })
+  }, 250)
+  const waiting = isolation.waitForIdle().then(() => { idle = true })
+  t.mock.timers.tick(250); await reading.promise
+  t.mock.timers.tick(250); await Promise.resolve()
+  assert.equal(idle, false, 'A running refresh is not idle even after the initial quiet window')
+  response.resolve({ status: () => 200 }); await pendingRefresh
+  t.mock.timers.tick(499); await Promise.resolve()
+  assert.equal(idle, false, 'Completed work restarts the full quiet window')
+  t.mock.timers.tick(1); await waiting
+  assert(idle); assert.deepEqual(evidence.networkErrors, [])
+  await isolation.close()
+})
+
+test('idle wait has a fixed deadline and reports a pending refresh instead of closing it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 })
+  let handler, closed = false
+  const response = deferred(), reading = deferred()
+  const evidence = { blockedRequests: [], networkErrors: [], mockedWebSockets: [] }
+  const isolation = await isolateBrowser({ async route(_, fn) { handler = fn }, async routeWebSocket() {}, async close() { closed = true } }, 'http://127.0.0.1:4380', evidence)
+  assert.equal(typeof isolation.waitForIdle, 'function')
+  const pending = handler({ request: () => ({ url: () => 'http://127.0.0.1:4380/api/settings' }),
+    fetch: async () => { reading.resolve(); return await response.promise }, fulfill: async () => {} })
+  await reading.promise
+  const failed = assert.rejects(isolation.waitForIdle({ quietMs: 500, timeoutMs: 1000 }), /did not become idle/)
+  t.mock.timers.tick(1000); await failed
+  assert.equal(closed, false)
+  response.resolve({ status: () => 200 }); await pending; await isolation.close()
+})

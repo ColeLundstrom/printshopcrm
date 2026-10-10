@@ -176,6 +176,7 @@ async function exercise(viewport, cookies) {
         assert.equal(await menu.getAttribute('aria-expanded'), 'false')
         assert(await menu.evaluate(element => document.activeElement === element), 'Escape returns keyboard focus to the menu')
       }
+      await isolation.waitForIdle()
       await screenshot(page, scenario, 'returned-fresh')
     })
   } catch (error) {

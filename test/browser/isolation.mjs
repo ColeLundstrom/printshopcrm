@@ -19,7 +19,7 @@ export function redact(value, secrets) {
 
 export async function isolateBrowser(context, base, evidence) {
   if (!appRequestAllowed(base, base)) throw Error('Browser smoke requires an exact HTTP 127.0.0.1 origin')
-  let closing = false, closePromise
+  let closing = false, closePromise, lastActivity = Date.now()
   const pending = new Set()
   const expectedClose = error => closing && /^(?:[\w.]+: )?(?:Target page, context or browser has been closed|Target closed|Browser has been closed|Route is already handled!)(?:\n|$)/.test(String(error?.message || error))
   const record = (url, error) => {
@@ -28,9 +28,10 @@ export async function isolateBrowser(context, base, evidence) {
   const track = (url, action) => {
     // Route callbacks are event handlers: an escaped rejected promise crashes the process
     // instead of becoming an assertion failure. Record every unexpected error and drain it.
+    lastActivity = Date.now()
     const task = (async () => { try { await action() } catch (error) { record(url, error) } })()
     pending.add(task)
-    void task.then(() => pending.delete(task))
+    void task.then(() => { pending.delete(task); lastActivity = Date.now() })
     return task
   }
   const abort = async (route, reason, url) => {
@@ -74,6 +75,23 @@ export async function isolateBrowser(context, base, evidence) {
     })
   })
   return {
+    waitForIdle({ quietMs = 500, timeoutMs = 5000 } = {}) {
+      if (!Number.isSafeInteger(quietMs) || quietMs <= 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs < quietMs) throw Error('Invalid browser idle deadline')
+      // app.js schedules refreshChrome 250 ms after navigation. A 500 ms quiet window
+      // covers that debounce; each actual start/completion restarts it. The fixed
+      // deadline makes slow or stuck app work fail visibly rather than being aborted.
+      const started = Date.now(), deadline = started + timeoutMs
+      return new Promise((resolve, reject) => {
+        const inspect = () => {
+          if (closing) { reject(Error('Cannot wait for idle after browser shutdown starts')); return }
+          const now = Date.now(), quietRemaining = Math.max(started, lastActivity) + quietMs - now
+          if (!pending.size && quietRemaining <= 0) { resolve(); return }
+          if (now >= deadline) { reject(Error(`Browser did not become idle within ${timeoutMs} ms (${pending.size} pending handlers)`)); return }
+          setTimeout(inspect, Math.max(1, Math.min(deadline - now, pending.size ? quietMs : quietRemaining)))
+        }
+        inspect()
+      })
+    },
     close() {
       if (!closePromise) {
         closing = true
