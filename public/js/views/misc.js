@@ -403,6 +403,13 @@ export async function settingsView() {
           <select class="input" id="fs-locale" name="locale">${[...(LOCALE_CHOICES.some(([t]) => t === loc) ? [] : [[loc, loc]]), ...LOCALE_CHOICES].map(([t, label]) => `<option value="${esc(t)}" ${t === loc ? 'selected' : ''}>${esc(label)} — ${esc(moneyFormatter({ currency: cur, locale: t }).number(1234.5))} · ${esc(new Date(2026, 7, 28, 12).toLocaleDateString(t, { month: 'short', day: 'numeric' }))}</option>`).join('')}</select>
           <div class="dim" style="font-size:11px;margin-top:4px">How thousands, decimals and dates are written. Tax stays the rate above.</div></div>
       </div>
+      <details class="disc"><summary>Quick search visibility</summary><div class="disc-b">
+        <p class="dim">Choose which quote-stage records appear in the search box. They remain on the Estimates and Jobs pages.</p>
+        <div class="grid2"><div class="field"><label for="fs-search_estimates">Estimates in search</label>
+          <select class="input" id="fs-search_estimates" name="search_estimates"><option value="on" ${s.search_estimates !== 'off' ? 'selected' : ''}>Show</option><option value="off" ${s.search_estimates === 'off' ? 'selected' : ''}>Hide</option></select></div>
+        <div class="field"><label for="fs-search_quote_jobs">Jobs linked to open estimates in search</label>
+          <select class="input" id="fs-search_quote_jobs" name="search_quote_jobs"><option value="on" ${s.search_quote_jobs !== 'off' ? 'selected' : ''}>Show</option><option value="off" ${s.search_quote_jobs === 'off' ? 'selected' : ''}>Hide</option></select></div></div>
+      </div></details>
     </div></div>
 
     <div class="card">

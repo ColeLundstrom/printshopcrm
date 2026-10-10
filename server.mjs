@@ -7973,18 +7973,23 @@ app.get('/api/search', wrap((req, res) => {
   if (raw.length < 1) return res.json([])
   const q = `%${raw.toLowerCase()}%`
   const out = []
+  const visibility = getSettings()
 
   for (const c of all(`SELECT id, name, company, email FROM contacts
     WHERE lower(name) LIKE ? OR lower(COALESCE(company,'')) LIKE ? OR lower(COALESCE(email,'')) LIKE ? LIMIT 5`, q, q, q)) {
     out.push({ type: 'customer', icon: '◉', id: c.id, title: c.name, sub: c.company || c.email || '', href: `/contacts/${c.id}` })
   }
   for (const j of all(`SELECT j.id, j.job_number, j.title, j.stage, c.name AS cn FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
-    WHERE lower(j.job_number) LIKE ? OR lower(j.title) LIKE ? OR lower(COALESCE(c.name,'')) LIKE ? LIMIT 6`, q, q, q)) {
+    LEFT JOIN estimates e ON e.id=j.estimate_id
+    WHERE (lower(j.job_number) LIKE ? OR lower(j.title) LIKE ? OR lower(COALESCE(c.name,'')) LIKE ?)
+    ${visibility.search_quote_jobs === 'off' ? "AND (e.id IS NULL OR e.status NOT IN ('draft','sent'))" : ''} LIMIT 6`, q, q, q)) {
     out.push({ type: 'job', icon: '▦', id: j.id, title: j.title, sub: `${j.job_number} · ${j.cn || ''} · ${String(j.stage).replace('_', ' ')}`, href: `/jobs/${j.id}` })
   }
-  for (const e of all(`SELECT e.id, e.estimate_number, e.total, e.status, c.name AS cn FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id
-    WHERE lower(e.estimate_number) LIKE ? OR lower(COALESCE(c.name,'')) LIKE ? LIMIT 5`, q, q)) {
-    out.push({ type: 'estimate', icon: '▤', id: e.id, title: e.estimate_number, sub: `${e.cn || ''} · ${money(e.total)} · ${e.status}`, href: `/estimates/${e.id}` })
+  if (visibility.search_estimates !== 'off') {
+    for (const e of all(`SELECT e.id, e.estimate_number, e.total, e.status, c.name AS cn FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id
+      WHERE lower(e.estimate_number) LIKE ? OR lower(COALESCE(c.name,'')) LIKE ? LIMIT 5`, q, q)) {
+      out.push({ type: 'estimate', icon: '▤', id: e.id, title: e.estimate_number, sub: `${e.cn || ''} · ${money(e.total)} · ${e.status}`, href: `/estimates/${e.id}` })
+    }
   }
   for (const i of all(`SELECT i.id, i.invoice_number, i.amount_due, i.status, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id
     WHERE lower(i.invoice_number) LIKE ? OR lower(COALESCE(c.name,'')) LIKE ? LIMIT 5`, q, q)) {
@@ -8344,6 +8349,9 @@ app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
   if ('anet_environment' in patch && !['sandbox','live'].includes(patch.anet_environment)) return res.status(400).json({error:'Choose sandbox or live.'})
   if ('anet_currency' in patch && !/^[A-Z]{3}$/.test(String(patch.anet_currency))) return res.status(400).json({error:'Use a three-letter merchant currency.'})
   if ('api_access' in patch && !['read','full'].includes(patch.api_access)) return res.status(400).json({error:'API access must be read or full.'})
+  for (const key of ['search_estimates', 'search_quote_jobs']) {
+    if (key in patch && !['on', 'off'].includes(patch[key])) return res.status(400).json({error:'Search visibility must be on or off.'})
+  }
   // The two settings every document is formatted through are checked on the way IN, not folded to
   // a default on the way out. format.js does fall back to USD/en-US on a value it cannot use, so a
   // bad row can never break a PDF — but a 200 for `currency: "US$"` that then invoices in dollars
