@@ -31,11 +31,11 @@ synthetic shops and the existing outbound guard. No real messages, suppliers, pa
 records are exercised.
 
 After the identity and stale-response fixes, the combined local runtime checks passed on
-Node 24.19.0: 449 Node tests, 955 regression checks, and E2E with one explicit off-loopback
-network-interface discovery skip. Later browser-only helper tests and exact-head CI must still
-complete before final acceptance. The final quote identity/HTTP/VM/fault-helper focused run
-passed 18 checks; standalone smoke scripts passed syntax checks. These counts are a recorded
-checkpoint, not a substitute for the current PR checks.
+Node 24.19.0: 454 Node tests, 955 regression checks, and E2E with one explicit off-loopback
+network-interface discovery skip at local checkpoint `6221a5cb8113d4214305d177363030d07bd15d92`.
+This includes the loading-dialog focus regression. Later browser-fixture and label corrections
+add focused checks and must pass the exact current PR checks; these checkpoint counts are not
+a substitute for final-head CI.
 
 Local full checks require the supported SQLite and rsync command-line prerequisites. The cloud
 runner reuses verified official Debian packages through process-local tool/library paths; it does
@@ -44,8 +44,9 @@ skip the documented off-loopback assertion; loopback and other E2E checks must s
 
 The existing CI browser job uses pinned Playwright with official Google Chrome and the sandbox
 enabled. It must exercise the quote, purchasing and Books additions alongside the original planner,
-preserve redacted synthetic reports/screenshots, and complete exact-commit CI. Public proof HTTP
-boundaries are separately covered. Cloud browser startup restrictions are not a visual pass. Inspect
+preserve redacted synthetic reports/screenshots, and complete exact-commit CI. The public-proof
+browser smoke also checks invalid forms, changes requested, replacement approval and replay,
+alongside the separate HTTP boundary tests. Cloud browser startup restrictions are not a visual pass. Inspect
 actual CI pixels at desktop/mobile widths before marking visual acceptance complete. See the PR's
 exact-head checks and attached workflow artifacts for terminal results; a pending run is not a pass.
 

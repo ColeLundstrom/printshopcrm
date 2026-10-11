@@ -44,6 +44,7 @@ async function deadline(promise, ms, message) {
 // can exercise the stale-response fence without replacing application code or faking totals.
 async function holdNextReport(page, scenario) {
   const url = server.base + '/api/reports/ar-aging', ready = deferred(), release = deferred(), pending = new Set()
+  let closePromise
   void ready.promise.catch(() => {})
   const handler = route => {
     const work = (async () => {
@@ -66,7 +67,16 @@ async function holdNextReport(page, scenario) {
   await page.route(url, handler, { times: 1 })
   return {
     ready: () => deadline(ready.promise, 15000, 'The report request did not reach the delay fixture'),
-    async close() { release.resolve(); await page.unroute(url, handler); await Promise.all([...pending]) },
+    close() {
+      if (!closePromise) closePromise = (async () => {
+        release.resolve()
+        // Removing an active Playwright interceptor falls its request through to the next
+        // handler. Finish our own fulfill/abort first so the context guard cannot race it.
+        while (pending.size) await Promise.all([...pending])
+        await page.unroute(url, handler)
+      })()
+      return closePromise
+    },
   }
 }
 
