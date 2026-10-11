@@ -1,0 +1,7 @@
+# 1.36.2 payment-terms release candidate
+
+Status: candidate in [draft PR #17](https://github.com/ColeLundstrom/printshopcrm/pull/17); not yet merged, tagged or deployed. Base is published v1.36.0 at `14183a7a94caed99716c8924a1456b162f2b5467`. Version 1.36.1 has not been published; it identifies a separate private four-feature candidate whose source archive and aggregate test result have not been verified here. None of those four features are part of this release candidate.
+
+This isolated change adds customer payment terms (Due on receipt, Net 15, Net 30 and Net 45) and applies the selected term when an estimate becomes an invoice. A one-invoice date override is available; the production promise remains independent. Existing invoice due dates are not recalculated. The default for existing customers is Net 15, and terms use the server's UTC calendar day. See the [source-backed acceptance map](ACCEPTANCE-MAP-2026-10-11.md) for code evidence, workflow limits and original-code provenance.
+
+Release gates: exact final-head CI, isolated browser smoke, synchronized main/tag/app/site review, a consistent backup of every active control/tenant database and artwork, isolated restore check, rollback pointer, server health and source-offer verification. Do not describe this candidate as live until those gates and the container publication workflow complete. No real provider, customer messaging, purchase or payment acceptance is claimed.
