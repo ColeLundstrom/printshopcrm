@@ -79,6 +79,12 @@ try {
       assert.match(await page.locator('.purchasing-card').first().innerText(), /overdue with outstanding/)
       const missing = await page.locator('#purchasing-filter input,#purchasing-filter select').evaluateAll(fields => fields.filter(field => !field.labels?.length).map(field => field.id))
       assert.deepEqual(missing, [])
+      const labels = await page.locator('#purchasing-filter input,#purchasing-filter select').evaluateAll(fields => fields.map(field => ({ id: field.id, labels: [...field.labels].map(label => label.textContent.replace(/\s+/g, ' ').trim()) })))
+      assert.deepEqual(labels, [
+        { id: 'purchasing-state', labels: ['View'] },
+        { id: 'purchasing-supplier', labels: ['Supplier'] },
+        { id: 'purchasing-search', labels: ['PO or job search'] }
+      ], 'Visible field labels must remain separate from option text')
       await noOverflow(); await capture('attention'); scenario.checks.push('Default attention view, correct totals, literal text and associated labels')
       await page.getByLabel('View', { exact: true }).selectOption('short_closed'); await show()
       assert.match(await page.locator('#purchasing-results').innerText(), /7 closed short/)

@@ -36,9 +36,9 @@ function render(d) {
   $('#view').innerHTML = `<div id="purchasing-page" class="stack production-page">
     <p class="dim">Recorded purchase orders across the shop, including jobs without a workflow and jobs that have ended. Jobs without a PO and manual garment counts are not included. These counts do not establish production readiness or live supplier delivery status.</p>
     <form id="purchasing-filter" class="prod-toolbar">
-      <label class="field" for="purchasing-state">View<select class="input" id="purchasing-state" name="state">${views.map(([value, label]) => `<option value="${value}" ${d.state === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
-      <label class="field" for="purchasing-supplier">Supplier<select class="input" id="purchasing-supplier" name="supplier"><option value="">All suppliers</option>${[...new Set([...d.suppliers, ...(d.supplier ? [d.supplier] : [])])].map(value => `<option value="${esc(value)}" ${d.supplier === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></label>
-      <label class="field" for="purchasing-search">PO or job search<input class="input" id="purchasing-search" name="q" maxlength="120" value="${esc(d.q)}" placeholder="PO, job, title or supplier"></label>
+      <div class="field"><label for="purchasing-state">View</label><select class="input" id="purchasing-state" name="state">${views.map(([value, label]) => `<option value="${value}" ${d.state === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+      <div class="field"><label for="purchasing-supplier">Supplier</label><select class="input" id="purchasing-supplier" name="supplier"><option value="">All suppliers</option>${[...new Set([...d.suppliers, ...(d.supplier ? [d.supplier] : [])])].map(value => `<option value="${esc(value)}" ${d.supplier === value ? 'selected' : ''}>${esc(value)}</option>`).join('')}</select></div>
+      <div class="field"><label for="purchasing-search">PO or job search</label><input class="input" id="purchasing-search" name="q" maxlength="120" value="${esc(d.q)}" placeholder="PO, job, title or supplier"></div>
       <button class="btn">Show purchase orders</button>
     </form>
     <section aria-label="Matching purchase order totals"><p class="dim">Totals for this search and supplier, across all views</p><div class="kpis">

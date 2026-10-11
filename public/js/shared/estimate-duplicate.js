@@ -23,9 +23,9 @@ export function duplicateEstimateModal(estimate, opener) {
   state.mount = mount
   modal({ title: `Duplicate ${estimate.estimate_number}`, body: `
     <p>Reuse these line items and sizes for the same customer or another existing customer.</p>
-    <label class="field" for="duplicate-customer">Customer for the new quote
+    <div class="field"><label for="duplicate-customer">Customer for the new quote</label>
       <select class="input" id="duplicate-customer" aria-describedby="duplicate-review" disabled></select>
-    </label>
+    </div>
     <p class="dim" id="duplicate-review">Saved prices, decoration details, rush tier and notes are copied. Review prior prices and customer-specific notes in the new draft. The chosen customer's current addresses and delivery contacts and the shop's current terms apply. Tax is recalculated for a different customer. Nothing is sent.</p>
     <p id="duplicate-feedback" role="status" aria-live="polite"></p>
     <button class="btn ghost sm" type="button" id="duplicate-reload" hidden>Retry loading customers</button>`,

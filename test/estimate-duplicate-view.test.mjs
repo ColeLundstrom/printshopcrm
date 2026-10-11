@@ -102,3 +102,12 @@ test('customer loading failure can be retried without creating a quote',async()=
   const next=f.setLoad(),retry=f.el('reload').onclick();next.resolve({contacts:f.contacts});await retry
   assert.equal(f.el('create').disabled,false);assert.equal(f.requests.length,0)
 })
+
+test('the quote destination has a stable visible label separate from customer options',async()=>{
+  const f=await loaded()
+  const labels=[...f.root().body.matchAll(/<label\b[^>]*\bfor="duplicate-customer"[^>]*>([\s\S]*?)<\/label>/g)]
+  assert.equal(labels.length,1)
+  assert.equal(labels[0][1].trim(),'Customer for the new quote','Customer choices must not become part of the field label')
+  assert.match(f.root().body,/<select\b[^>]*\bid="duplicate-customer"[^>]*\baria-describedby="duplicate-review"/)
+  assert.match(f.el('customer').innerHTML,/Other &lt;Buyer>/)
+})

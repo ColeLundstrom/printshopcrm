@@ -92,3 +92,13 @@ test('connected purchasing loaders ignore late data and errors after route or id
     assert.equal(f.node('purchasing-results'),undefined)
   }
 })
+
+test('purchasing controls have stable visible labels separate from their option text',async()=>{
+  const f=fixture();await f.show()
+  for(const [id,expected] of [['purchasing-state','View'],['purchasing-supplier','Supplier'],['purchasing-search','PO or job search']]) {
+    const matches=[...f.view.innerHTML.matchAll(new RegExp(`<label\\b[^>]*\\bfor="${id}"[^>]*>([\\s\\S]*?)</label>`, 'g'))]
+    assert.equal(matches.length,1,`One explicit visible label for ${id}`)
+    assert.equal(matches[0][1].trim(),expected,'Labels must not include controls or changing option text')
+    assert.match(f.view.innerHTML,new RegExp(`<(?:select|input)\\b[^>]*\\bid="${id}"`))
+  }
+})

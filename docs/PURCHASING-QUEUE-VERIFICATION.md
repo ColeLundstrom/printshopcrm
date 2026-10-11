@@ -63,3 +63,19 @@ failed before the corrections and passed afterward. The follow-on focused suite 
 syntax and diff checks passed. The aggregate and E2E numbers above describe the initial feature
 commit; combined integration gates remain the integration owner's verification step. These changes
 do not remove the browser-startup limitation or establish a browser rendering pass.
+
+## CI label-matching correction
+
+PR #18 browser run 38143653343, job 114482428628, reached and captured the initial desktop queue,
+then timed out looking up the exact `View` label. Its report contained no page, console, network,
+blocked-request or unexpected-write errors. The wrapped native label also contained the select's
+options. Playwright 1.64.0's [label lookup and text collection](https://github.com/microsoft/playwright/blob/v1.64.0/packages/injected/src/selectorUtils.ts#L61-L125)
+include those descendant texts; the [label selector and exact matcher](https://github.com/microsoft/playwright/blob/v1.64.0/packages/injected/src/injectedScript.ts#L470-L479)
+therefore cannot match that full text to `View` alone.
+
+The filter fields now use sibling labels and controls inside the existing `.field` wrapper. Explicit
+`for`/`id` associations, visible labels and exact label-based browser interactions remain intact.
+A rendered-markup regression failed before this fix and passed afterward. The browser smoke also
+asserts each native label's exact text before interacting, so changing option text cannot pollute it.
+All 14 focused purchasing tests and syntax/diff checks passed. The new head still needs the combined
+CI browser run; the earlier initial-desktop screenshot does not verify this correction or mobile UI.
