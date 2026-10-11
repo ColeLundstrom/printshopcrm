@@ -265,6 +265,11 @@ export function contactForm(c, after) {
         <div class="field"><label>Phone</label><input class="input" name="phone" value="${esc(c?.phone || '')}" placeholder="(714) 555-0142"></div>
       </div>
       <div class="field"><label>Tags (comma separated)</label><input class="input" name="tags" value="${esc((c?.tags || []).join(', '))}" placeholder="school, repeat, net-30"></div>
+      <div class="field"><label for="customer-payment-term">Default payment terms for new invoices</label>
+        <select class="input" id="customer-payment-term" name="payment_term">${[
+          ['due_on_receipt', 'Due on receipt'], ['net_15', 'Net 15'], ['net_30', 'Net 30'], ['net_45', 'Net 45'],
+        ].map(([value, label]) => `<option value="${value}" ${value === (c?.payment_term || 'net_15') ? 'selected' : ''}>${label}</option>`).join('')}</select>
+        <div class="dim" style="font-size:12px;margin-top:4px">Applied when a quote becomes an invoice. Existing invoice due dates stay as saved.</div></div>
       <div class="grid2">
         <div class="field"><label for="customer-billing-address">Billing address</label><textarea class="input" id="customer-billing-address" name="billing_address" rows="4" maxlength="600" placeholder="Street address\nCity, state, postal code\nCountry">${esc(c?.billing_address || '')}</textarea></div>
         <div class="field"><label for="customer-shipping-address">Shipping address</label><textarea class="input" id="customer-shipping-address" name="shipping_address" rows="4" maxlength="600" placeholder="Leave blank to use the billing address">${esc(c?.shipping_address || '')}</textarea></div>
