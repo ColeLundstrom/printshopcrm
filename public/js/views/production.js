@@ -23,7 +23,7 @@ const input = (name, value = '', type = 'text') =>
   `<input class="input" name="${name}" type="${type}" value="${esc(value)}">`
 const collect = (el) => Object.fromEntries(new FormData(el))
 function buttons() {
-  return `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn ghost" id="prod-focus">${document.body.classList.contains('production-focus') ? 'Exit focus' : 'Focus mode'}</button><a class="btn ghost" href="#/scan">Scan / find</a>`
+  return `<a class="btn ghost" href="#/purchasing">Purchasing</a><a class="btn ghost" href="#/calendar">Calendar</a><button class="btn ghost" id="prod-focus">${document.body.classList.contains('production-focus') ? 'Exit focus' : 'Focus mode'}</button><a class="btn ghost" href="#/scan">Scan / find</a>`
 }
 function focus() {
   document.body.classList.toggle('production-focus')
@@ -86,7 +86,7 @@ export async function productionJobView(id) {
     ${next ? `<section class="card card-b prod-next"><span class="dim">NEXT TASK · ${esc(next.department)}</span><h2>${esc(next.title)}</h2><p>${esc(d.members.find((m) => m.id === next.assigned_id)?.name || 'Available to any team member')}</p>${next.can_complete === true ? `<button class="btn primary" data-task-action="complete" data-task-id="${next.id}">Complete task</button>` : `<p role="status">${esc(next.completion_blocked || next.blocked || 'This task is not available to complete. Refresh the job to check its current assignment and status.')}</p>`}</section>` : d.tasks.length ? '<p class="prod-ready">All tasks resolved.</p>' : '<p>No task workflow on this job yet.</p>'}
     ${!d.tasks.length && d.manager ? '<button class="btn" id="prod-apply">Choose workflow</button>' : ''}
     <section class="card"><div class="card-h"><h3>Task sequence</h3>${d.manager ? '<button class="btn ghost" id="prod-add-task">Add task</button>' : ''}</div><div class="card-b">${d.tasks.map((t) => `<div class="prod-task"><div><strong>${esc(t.title)}</strong><div class="dim">${esc(t.department)} · ${esc(d.members.find((m) => m.id === t.assigned_id)?.name || 'Unassigned')} · ${esc(t.status)}${t.planned_due_date ? ' · task due ' + esc(fmtDate(t.planned_due_date)) : ''}${t.completed_by ? ` by ${esc(t.completed_by)}` : ''}</div>${t.note ? `<p>${esc(t.note)}</p>` : ''}</div>${d.manager ? `<div class="prod-actions">${t.status === 'pending' ? `<button class="btn ghost" data-edit-task="${t.id}">Edit</button><button class="btn ghost" data-task-action="skip" data-task-id="${t.id}">Skip</button>` : `<button class="btn ghost" data-task-action="reopen" data-task-id="${t.id}">Reopen</button>`}</div>` : ''}</div>`).join('')}</div></section>
-    <details class="card card-b" ${next?.gate === 'receiving' ? 'open' : ''}><summary>Receiving & garment counts</summary><p>Enter total received so far for each size. Shortages stay open until received or resolved by a manager.</p>${
+    <details class="card card-b" ${next?.gate === 'receiving' || /[?&]receiving=1(?:&|$)/.test(location.hash) ? 'open' : ''}><summary>Receiving & garment counts</summary><p>Enter total received so far for each size. Shortages stay open until received or resolved by a manager.</p>${
       d.pos.length
         ? d.pos
             .map(

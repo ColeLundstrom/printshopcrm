@@ -24,6 +24,9 @@ information or credentials. This application safeguard is not an operating-syste
 
 ## Suggested walkthrough
 
+For a concrete order with expected quantities and balances, follow
+[your first print job](FIRST-JOB.md). It uses only fictional records in this isolated instance.
+
 1. Today: see outstanding work and balances.
 2. Customers: eight fictional businesses with contact and order history.
 3. Estimates: draft, sent, and approved examples. Create another quote using the shop's rates.

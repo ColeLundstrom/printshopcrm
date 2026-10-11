@@ -1,28 +1,46 @@
 import { api, $, esc, money, setPage, on, toast, empty, confirmModal, onOnce } from '../core.js'
 
 /**
- * Books — the bookkeeper page: A/R aging (the report InkSoft users say they can't get) and the
- * QuickBooks reconciliation queue (every push, every failure with its reason, one-click retry —
- * the incumbents' syncs fail silently and someone finds the hole at month close).
+ * Books — receivables, saved collection-review flags and the QuickBooks reconciliation queue.
  */
+let viewRequest = 0
 
 export async function booksView() {
+  const request = ++viewRequest, route = location.hash, identity = window.__me
   setPage('Books', '', '<span class="dim">Money</span>')
-  $('#view').innerHTML = '<div class="dim">Adding it up…</div>'
+  $('#view').innerHTML = '<div id="books-loading" class="dim" role="status">Adding it up…</div>'
+  const loading = $('#books-loading')
+  const current = () => request === viewRequest && loading.isConnected && route === location.hash && identity === window.__me
   /* The A/R aging report is open to every role — /api/reports/ar-aging carries no requireRole —
    * and "Books & A/R" is in every role's sidebar. /api/qbo/queue is manager-only, and this
    * Promise.all was unguarded, so for a STAFF account the 403 rejected the whole thing and the
    * page they were sent to showed an error instead of the receivables report they can read.
    * The QuickBooks half degrades to a line that says who can see it; the report renders. */
-  const [aging, qbo] = await Promise.all([
-    api.get('/api/reports/ar-aging'),
-    api.get('/api/qbo/queue').catch((e) => ({ forbidden: e?.status === 403, error: e?.message || 'unavailable' })),
-  ])
-  render(aging, qbo)
+  try {
+    const [aging, qbo] = await Promise.all([
+      api.get('/api/reports/ar-aging'),
+      api.get('/api/qbo/queue').catch((e) => ({ forbidden: e?.status === 403, error: e?.message || 'unavailable' })),
+    ])
+    if (current()) render(aging, qbo)
+  } catch (error) {
+    if (!current()) return
+    loading.innerHTML = `<p role="alert">${esc(error.message)}</p><button class="btn" id="books-retry">Try again</button>`
+    $('#books-retry').onclick = booksView
+  }
 }
 
 function render(aging, qbo) {
   const t = aging.totals
+  const review = aging.collection_review
+  const invoiceRow = i => `<div class="card card-b" style="margin-top:10px;overflow-wrap:anywhere">
+    <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <a href="#/invoices/${i.id}"><strong>${esc(i.number)}</strong></a>
+      <strong>${i.balance > 0 ? money(i.balance) + ' due' : i.balance < 0 ? 'Credit balance ' + money(-i.balance) : 'No balance due'}</strong>
+    </div>
+    <p class="dim">${esc(i.company || i.contact_name)} · ${i.due_date ? 'Due ' + esc(i.due_date) : 'No due date saved; aging uses invoice date'}</p>
+    <p>Net invoice ${money(i.amount_due)} · Recorded payments ${money(i.amount_paid)} · Active credits ${money(i.credit_total)}</p>
+    ${i.payment_review ? `<p><span class="pill amber">Review before collecting</span> ${esc(i.payment_review)}</p>` : ''}
+  </div>`
   const kpi = (label, v, danger) => `<div class="kpi${danger && v > 0 ? ' bad' : ''}"><div class="lbl">${esc(label)}</div><div class="val${danger && v > 0 ? ' bad' : ''}">${money(v)}</div></div>`
   const custRow = (c) => `
     <tr>
@@ -47,17 +65,28 @@ function render(aging, qbo) {
     </tr>`
 
   $('#view').innerHTML = `
+    <div id="books-page">
     <div class="kpis">
       ${kpi('Current', t.current)} ${kpi('1–30 days', t.d30)} ${kpi('31–60', t.d60, true)} ${kpi('61–90', t.d90, true)} ${kpi('90+', t.d90p, true)}
       <div class="kpi"><div class="kpi-n">${money(t.due)}</div><div class="kpi-l">Total receivable</div></div>
     </div>
 
+    ${review ? `<section class="card card-b" aria-labelledby="collection-review-title">
+      <h2 id="collection-review-title">Collection review</h2>
+      <p><strong>${money(review.due)}</strong> of receivables are on invoices marked for review. <strong>${money(review.unpaused_due)}</strong> have no saved review flag.</p>
+      <p class="dim">The full receivable remains in the aging report. A missing review flag is not a confirmation that a payment request is safe. Credits are already included in net invoice amounts; they do not record a cash refund.</p>
+      ${review.count ? `<details open><summary>Review before collecting · ${review.count} invoice${review.count === 1 ? '' : 's'}</summary>
+        ${review.no_balance_count ? `<p>${review.no_balance_count} flagged invoice${review.no_balance_count === 1 ? ' has' : 's have'} no positive balance.${review.overpaid ? ` Their credit balances total ${money(review.overpaid)} and are not subtracted from other receivables.` : ''}</p>` : ''}
+        ${review.invoices.map(invoiceRow).join('')}</details>` : '<p>No invoices currently have a saved payment-review flag.</p>'}
+    </section>` : ''}
+
     <div class="card">
       <h2>A/R aging by customer <span class="dim" style="font-weight:400;font-size:12px">as of ${esc(aging.as_of)}</span></h2>
-      ${aging.customers.length ? `<table class="tbl">
+      ${aging.customers.length ? `<div style="overflow-x:auto" role="region" aria-label="Receivables aging by customer" tabindex="0"><table class="tbl">
         <tr><th>Customer</th><th class="r">Current</th><th class="r">1–30</th><th class="r">31–60</th><th class="r">61+</th><th class="r">Total</th><th></th></tr>
         ${aging.customers.map(custRow).join('')}
-      </table>` : empty('✅', 'Nothing outstanding', 'Every invoice is paid up.')}
+      </table></div>
+      <div class="card-b"><h3>Invoice details</h3>${aging.customers.map(c => `<details style="margin-top:12px"><summary>${esc(c.company || c.name)} · ${c.invoices.length} invoice${c.invoices.length === 1 ? '' : 's'} · ${money(c.total)}</summary>${c.invoices.map(invoiceRow).join('')}</details>`).join('')}</div>` : empty('✅', 'No positive balances', review?.count ? 'Review the flagged invoices above before closing the books.' : 'No non-void invoices have a positive balance.')}
     </div>
 
     <div class="card" id="qbo-card">
@@ -81,6 +110,7 @@ function render(aging, qbo) {
              <button class="btn ghost sm" type="button" id="qbo-disconnect">Disconnect QuickBooks</button>
              <span class="dim" style="font-size:11.5px">Removes the saved keys and tokens. Nothing already synced is touched.</span>
            </div>`}
+    </div>
     </div>`
 
   // The only way to take QuickBooks back out. Its keys and tokens are all secrets, so blanking

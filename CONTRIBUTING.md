@@ -90,6 +90,22 @@ trace, session file, database, `.env`, or demo credential file is uploaded. CI's
 `browser-smoke-<commit>` artifact contains desktop/mobile screenshots, numeric CSVs, and a JSON
 report including console/page errors. Local output is in the ignored `browser-artifacts/` folder.
 
+The cloud workflow integration adds standalone browser checks using the same pinned tooling,
+sandbox and disposable-demo restrictions:
+
+```bash
+node test/browser/estimate-duplicate-smoke.mjs
+node test/browser/purchasing-smoke.mjs
+node test/browser/receivables-review-smoke.mjs
+node test/browser/proof-decisions-smoke.mjs
+```
+
+These cover selected-customer quote reuse and interrupted retries, recorded purchasing and
+shortages, collection-review balances, and public appearance-proof decisions. Their redacted
+reports and screenshots share `browser-artifacts/`. Public proof form redirects are allowed only
+for a registered synthetic proof's exact local return URL; no arbitrary redirects are allowed.
+All new CI steps are required to pass. Review actual screenshots in addition to assertions.
+
 ### The one hard rule: a bug fix needs a failing test first
 
 Write the test, watch it fail, then fix the code. Every regression test in `bin/gate.mjs` is a bug

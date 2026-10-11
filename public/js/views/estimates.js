@@ -1,3 +1,4 @@
+import { duplicateEstimateModal } from '../shared/estimate-duplicate.js'
 import { locationPricing, normalizeLocationItem, pickedLocation } from '../shared/location-pricing.js'
 import { unsupportedScreenPrintMethods } from '../shared/capacity-scope.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
@@ -766,16 +767,8 @@ export async function estimateDetailView(id) {
     } catch (error) { toast(error.message, true) }
   })
   $('#convert')?.addEventListener('click', () => convertModal(e))
-  // Re-quote a repeat job: same lines, same size grid, fresh draft number.
-  $('#dup')?.addEventListener('click', async () => {
-    const btn = $('#dup'); btn.disabled = true; btn.textContent = 'Copying…'
-    try {
-      const r = await api.post(`/api/estimates/${id}/duplicate`, {})
-      toast(`Created ${r.estimate_number}`)
-      go(`/estimates/${r.id}/edit`)
-    } catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = 'Duplicate' }
-  })
-  // Duplicate eight lines above has always had this; Delete never did. Now that Delete is offered
+  $('#dup')?.addEventListener('click', () => duplicateEstimateModal(e, $('#dup')))
+  // Duplicate has always handled failures; Delete needs the same protection. Now that Delete is offered
   // on a quote that may carry a job, the active-job 409 is a message the shop has to READ — without
   // a catch it throws uncaught inside confirmModal and the dialog just sits there.
   $('#del')?.addEventListener('click', () => confirmModal('Delete estimate?', `${e.estimate_number} will be permanently removed.`, async () => {
