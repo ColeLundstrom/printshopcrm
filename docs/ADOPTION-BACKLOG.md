@@ -1,24 +1,29 @@
 # Self-host adoption and product backlog
 
-Updated October 10, 2026. The goal is broad use of the complete free software on a shop's own
+Updated October 11, 2026. The goal is broad use of the complete free software on a shop's own
 computer or server. Optional managed hosting remains paid and must not be the default path or
 unlock features. Preserve existing hosting agreements and all shop prices/payment history.
 
-## Candidate 1.36.0
+## Current integration checkpoint
 
-See [release evidence](RELEASE-1.36.0.md). Includes atomic database bootstrap, better demo failure
-diagnostics, a free profit planning model, and a self-host installation doctor. Candidate code
-is not a claim of a production deployment or complete competitor parity.
+The October 11 cloud integration starts from main at
+`b925c0d6637c27c01347d7a76255e82d8da8a013` (v1.36.2). It combines five bounded
+workstreams: selected-customer quote duplication with retry receipts, a read-only purchasing
+queue, Books collection-review balances, explicit public-proof decisions, and a safe first-job
+evaluation guide. See [the integration acceptance record](CLOUD-WORKFLOW-INTEGRATION.md).
+This candidate has no release version bump and is not a deployment or full competitor-parity claim.
+The older unpublished four-feature 1.36.1 candidate and preserved desktop branches are excluded.
 
-## Publication status
+## Publication and provenance
 
-Repository publishing was explicitly reauthorized on October 10, 2026 after the earlier cancelled
-GitHub tree creation. The earlier pause is resolved. [Draft PR #14](https://github.com/ColeLundstrom/printshopcrm/pull/14)
-contains the candidate; check its current head and CI before continuing. The original published
-candidate passed Linux/macOS/Windows/Docker CI. Browser acceptance and verified deployment access,
-backups, rollback and health checks remain release gates; repository publication is not deployment.
-The requested Rust migration remains active as a separate staged project; keep this working
-candidate intact. See [draft Rust experiment PR #15](https://github.com/ColeLundstrom/printshopcrm/pull/15).
+The former [PR #14](https://github.com/ColeLundstrom/printshopcrm/pull/14) delivered the 1.36.0
+foundation: atomic bootstrap, demo diagnostics, free profit planning, installation checks and
+dependency corrections. Main has since advanced through the payment-terms release. Start each
+new run by checking the live main ref, open PRs and exact-commit CI instead of assuming old candidate
+status. Repository publication remains distinct from synchronized application/site deployment.
+
+The requested Rust migration remains a separate staged project. See
+[the Rust experiment in PR #15](https://github.com/ColeLundstrom/printshopcrm/pull/15).
 A language change does not remove license obligations or establish immunity from legal claims.
 On October 10 the owner attested that he created the original code and logo. This is an owner
 attestation, not independent ownership verification; preserve AGPL and third-party notices.
@@ -60,7 +65,7 @@ components and acceptance gates at every stage; continue reliable free installat
    customer cohorts and complete cost coverage; test accepted quotes, revisions, cancellations,
    stale inventory, and duplicate inbound requests. Verify the reported duplicate GHL task issue
    against its actual deployment source before editing this repository to address it.
-6. **Workflow coverage.** Method-specific capacity, damaged receiving, payment terms/deposit targets,
+6. **Workflow coverage.** Method-specific capacity, damaged receiving, delivery defaults/deposit targets,
    carrier integrations, storefront/fundraising and designer workflows remain separately scoped
    projects. Each needs a data model, failure recovery and user acceptance before replacement claims.
 

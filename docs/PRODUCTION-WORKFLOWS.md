@@ -53,3 +53,30 @@ Read paths have protocol fixture coverage; production supplier credentials and p
 ## Larger queues and reports
 
 Department queues show ready work before waiting work and page large task lists. Cost comparisons page the job list while keeping totals across every saved job cost record. [Scale verification](SCALE-VERIFICATION.md) records the synthetic fixtures, query bounds, pagination contract and remaining capacity work.
+
+## Shop-wide purchasing review
+
+**Production → Purchasing** lists recorded POs across jobs, even when a job has no task workflow,
+was completed, or was removed. The default **Needs attention** view includes open shortages,
+missing placement evidence, and POs without line quantities. Filter by supplier, search a PO/job/title,
+or switch to outstanding, unconfirmed, short-closed, fully received, or all recorded POs. Search and
+supplier totals cover every matching PO, independently of the selected view or page. Rows are paged,
+ordered by the job's due date (undated last), then rush and PO ID. A job due date is not a supplier ETA.
+
+Receipt counts and placement evidence are separate. Legacy status labels do not establish a supplier
+confirmation. A recorded short close remains visible as a shortage that was closed, never as received;
+reopening it through the existing manager controls puts it back in the outstanding list. Open POs on
+ended jobs stay visible. Missing job links are labeled rather than inventing a replacement destination.
+
+**Open receiving** opens the existing job receiving/counts panel. **Full job & purchasing** opens the
+existing review, correction, close and reopen controls, with their current permission checks. The
+queue is read-only: it never places orders, contacts suppliers, receives goods or changes a job stage.
+Jobs without a PO and customer-supplied/manual garment counts are outside this queue, so an empty
+list does not certify that a shop or job is ready for production.
+
+Authenticated staff can read `GET /api/purchasing`. Optional query parameters are `state` (the values
+`attention`, `outstanding`, `confirmation`, `short_closed`, `received`, `all`), `supplier` (exact match,
+up to 100 characters), `q` (literal substring, up to 120 characters), `page`, and `page_size` (1–100,
+default 25). The response contains bounded `rows`, search/supplier `summary`, `suppliers`, the filters,
+and pagination. It excludes costs, supplier confirmation references, notes and credentials. All reads
+use the authorized shop's database; no new supplier integration or receiving write path is added.

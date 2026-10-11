@@ -129,3 +129,17 @@ body.production-focus .main {
 .agent-permissions label { display:flex; align-items:center; gap:10px; min-height:48px; padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-md); cursor:pointer; }
 .agent-permissions input { flex-shrink:0; }
 @media(max-width:700px) { .agent-permissions { grid-template-columns:1fr; } }
+
+/* A recorded PO is a compact card on both a receiving tablet and a narrow phone. */
+.purchasing-card { min-width: 0; overflow-wrap: anywhere; }
+.purchasing-heading, .purchasing-actions, .purchasing-tags { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.purchasing-heading { justify-content: space-between; align-items: flex-start; }
+.purchasing-heading h2, .purchasing-heading p { margin: 0 0 var(--sp-2); }
+.purchasing-warning { color: var(--txt-2); }
+.purchasing-late { color: var(--red); }
+#purchasing-filter .field { min-width: 0; }
+#purchasing-filter .input { max-width: 100%; }
+@media (max-width: 600px) {
+  #purchasing-filter .field { width: 100%; }
+  .purchasing-actions .btn { white-space: normal; }
+}

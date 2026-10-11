@@ -2,14 +2,15 @@
 
 Three paths:
 
-- **[Try it locally](#try-it-locally)** — about a minute, any laptop (Linux, macOS, or Windows).
-- **[Docker](deploy/DEPLOY.md#docker)** — one command, if you already run containers.
+- **[Try it locally](#try-it-locally)** — an isolated sample shop on Linux, macOS, or Windows.
+- **[Docker](deploy/DEPLOY.md#docker)** — container installation and persistent storage.
 - **[Production install](#production-install)** — a Linux server on your own domain with SSL.
 
 Deploying to Fly.io or Render instead? [deploy/DEPLOY.md](deploy/DEPLOY.md) covers those, and
 compares all the options.
 
-Don't want to run a server at all? See [HOSTING.md](HOSTING.md).
+The complete application is free to self-host. You maintain the computer, updates and backups.
+Optional paid hosting is described in [HOSTING.md](HOSTING.md).
 
 ---
 
@@ -20,8 +21,8 @@ Don't want to run a server at all? See [HOSTING.md](HOSTING.md).
 | **Node.js** | **22.13.0 or newer.** Non-negotiable — the app uses the built-in `node:sqlite` module, which is flagged off before 22.13. |
 | OS | Linux, macOS, or Windows — all three are covered by CI. Production instructions below assume Ubuntu/Debian. |
 | Database | None to install. SQLite is inside Node. |
-| RAM | 512 MB is plenty. The live reference install idles around 80 MB. |
-| Disk | ~150 MB for the app and dependencies, plus your uploads and database. |
+| RAM | Depends on records, concurrent work and artwork. Evaluate with your expected workload. |
+| Disk | Allow room for the application, dependencies, databases, artwork and retained backups. |
 
 Check your version:
 
@@ -36,31 +37,49 @@ If that prints anything below `v22.13.0`, install Node 22 first — see
 
 ## Try it locally
 
+Start with fictional customers in a separate evaluation directory. This path does not open
+your working databases or load your existing `.env`, and its launcher blocks outbound
+application connections. No hosted account, provider key or real customer information is needed.
+
 ```bash
 git clone https://github.com/ColeLundstrom/printshopcrm.git
 cd printshopcrm
-npm install
-npm run seed
-npm start
+npm ci
+npm run doctor
+npm run demo -- ../printshopcrm-evaluation 4380
+node ../printshopcrm-evaluation/start.mjs
 ```
 
-Open **http://localhost:3333**.
+Open **http://127.0.0.1:4380/login**. Read the local username and generated password in
+`../printshopcrm-evaluation/LOGIN.txt`; keep that file and `demo-env.json` private and outside Git.
+The destination must not already exist. If the name is taken, use a different new directory in
+both commands instead of replacing anything.
 
-`npm run seed` loads a demo shop mid-week — eight customers, nine estimates, eight jobs spread
-across the production board — so nothing is empty while you look around. Skip it for a genuinely
-blank shop; the database creates itself on first start either way.
+Follow the [first print-job walkthrough](docs/FIRST-JOB.md) to check a quote, customer approval,
+art proof, production record and fictional partial payments. The [demo guide](docs/DEMO.md)
+explains the isolation and limits. Use its generated `start.mjs` to restart the same evaluation;
+you do not need to seed it again.
 
-`seed` and `reset` are **demo** scripts. They print the database they are about to write to, and
-they refuse to run against any database that has records in it and is not the demo shop — whether
-or not that shop ever filled its name in under Settings. So pointing `PSC_DB` at a live install
-and typing `npm run reset` by mistake stops with a message instead of deleting the shop. If you really do mean to wipe a named shop, back it up and use
-`PSC_SEED_FORCE=1 npm run seed`.
+The demo is local evaluation only. Its application-level network guard is not an operating-system
+sandbox or a production security configuration. Do not expose it publicly or enter real data.
+
+### Start a blank local shop
+
+Use a separate, fresh checkout if you want to begin without sample records. After `npm ci`,
+check the computer and bind the app to loopback:
 
 ```bash
-npm run reset     # wipe and reseed
-npm run dev       # restart on file changes
-npm test          # run the test suite
+npm run doctor
+node --no-warnings --env-file-if-exists=.env --input-type=module -e "process.env.PSC_HOST='127.0.0.1'; await import('./server.mjs')"
 ```
+
+Open **http://127.0.0.1:3333**. The database initializes on first start; no seeding is required.
+This ordinary local app can use configured external services, unlike the isolated demo.
+Complete the [production setup](#production-install) before public access or real shop use.
+
+`seed` and `reset` are **demo** scripts for development, not first-install or recovery steps. They refuse
+a non-demo database containing records, but should never be pointed at a working shop. Use
+[backup and restore](#backups) for recovery, and a new isolated directory for another evaluation.
 
 ---
 

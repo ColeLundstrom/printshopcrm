@@ -4,6 +4,7 @@ import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
 import { paymentTerm, paymentDueDate } from './lib/payment-terms.mjs'
+import { publicProofDecision } from './lib/proof-decision.mjs'
 import * as artProduction from './lib/art-production.mjs'
 import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
 import { saveMockupComposition } from './lib/mockup-compositions.mjs'
@@ -79,6 +80,7 @@ import { nest, priceSheet } from './public/js/shared/gangnest.js'
 import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund, createStripeCollectionClient } from './lib/stripe.mjs'
 import { recordReversal, recentReversals } from './lib/payment-reversals.mjs'
 import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary } from './lib/invoice-credits.mjs'
+import { receivableInvoice, collectionReview } from './lib/receivables-review.mjs'
 import { currencyCode } from './lib/payment-currency.mjs'
 import { billingDefaults, recipientSnapshot, documentRecipient, documentForRecipient, recipientMessageIssue, updateDocumentRecipients } from './lib/billing-recipients.mjs'
 import { authorizeConfigured, createAuthorizeCheckout, retrieveAuthorizeTransaction, verifyAuthorizeWebhook, testAuthorize, createAuthorizeCollectionClient } from './lib/authorizenet.mjs'
@@ -2813,7 +2815,8 @@ app.get('/api/estimates', wrap((req, res) => {
 }))
 
 app.get('/api/estimates/:id', wrap((req, res) => {
-  const e = get(`SELECT e.*, c.name AS contact_name, c.payment_term AS customer_payment_term FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id WHERE e.id=?`, +req.params.id)
+  const e = get(`SELECT e.*, c.name AS contact_name, c.payment_term AS customer_payment_term, ci.identity AS source_identity
+    FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id LEFT JOIN estimate_copy_identities ci ON ci.estimate_id=e.id WHERE e.id=?`, +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   // A VOIDED invoice is not the estimate's invoice. Without this filter, voiding froze the
   // estimate behind it: the editor gates Edit, Send, Mark Approved, Convert and Delete on
@@ -3325,39 +3328,64 @@ app.put('/api/orders/:id/tracking', wrap((req, res) => {
  * and the tax rate; deliberately does NOT copy status, sent/approved timestamps or the invoice link.
  */
 app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
-  const src = get('SELECT * FROM estimates WHERE id = ?', +req.params.id)
-  if (!src) return res.status(404).json({ error: 'Estimate not found' })
-  /* `Number(x) || src.contact_id` turned any non-numeric or zero value into the SOURCE
-   * estimate's customer — so `{"contact_id":"acme-wholesale"}` returned 200 with a fresh estimate
-   * number, silently written on the original buyer at the original rate, which is the exact
-   * opposite of what the parameter is for (see the tax note below). A well-formed id naming a
-   * deleted customer hit the raw foreign key and 500'd. */
-  let contactId = src.contact_id
-  const askedFor = req.body?.contact_id
-  if (askedFor !== undefined && askedFor !== null && askedFor !== '') {
-    contactId = resolveContactId(askedFor, res, 'quote')
-    if (contactId == null) return
-  }
-  const items = freezeUpcharges(parse(src.items, []))
-  // Copying a taxed estimate onto a DIFFERENT buyer must re-derive the rate against that buyer —
-  // otherwise "duplicate this for the wholesale account" carries the taxable rate across.
-  const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null)
-  const t = computeTotals(items, rate, getUpcharges())
-  if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
-  if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
-  const num = nextEstimateNumber()
-  // rush_days travels with the copy: the lines being duplicated carry the rush per-piece the
-  // customer was billed, so the job this converts to has to be produced on that tier too.
-  const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, rush_days, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total,
-    src.notes || '', rate, src.quote_meta || '{}', Math.max(0, Number(src.rush_days) || 0), now()).lastInsertRowid)
-  logActivity('estimate', `${num} created from ${src.estimate_number}`, { contact_id: contactId })
-  // A duplicate is a new quote, so it opens a new deal — the same call every other estimate writer
-  // makes. Without it the copy is invisible on the board and absent from the forecast until it is
-  // approved, and then born already won, which inflates win_rate structurally.
-  syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
-  res.json({ ok: true, id, estimate_number: num })
+  const b = req.body || {}, sourceId = Number(req.params.id)
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return res.status(400).json({ error: 'Duplicate options must be an object.' })
+  const headerKey = req.headers['idempotency-key']
+  if (headerKey !== undefined && b.request_id !== undefined && headerKey !== b.request_id)
+    return res.status(400).json({ error: 'Use the same retry reference in the header and request.', code: 'invalid_idempotency_key' })
+  const key = headerKey ?? b.request_id
+  // Each member's action and each source quote have their own receipt namespace in this shop.
+  // Resolve a receipt before reading the source: later edits must not turn a lost response
+  // into a different draft. Failed writes leave neither a draft nor a successful receipt.
+  const result = createWithRetry(getDb(), {
+    principal: req.member ? `member:${req.member.id}` : 'local',
+    operation: `estimate-duplicate:${sourceId}`, key, body: b,
+  }, () => {
+    const src = get('SELECT * FROM estimates WHERE id = ?', sourceId)
+    if (!src) return createResult(404, { error: 'Estimate not found' })
+    if (b.source_identity !== undefined && (typeof b.source_identity !== 'string' || !/^[a-f0-9]{32}$/.test(b.source_identity)
+      || get('SELECT identity FROM estimate_copy_identities WHERE estimate_id=?',sourceId)?.identity !== b.source_identity))
+      return createResult(409, { error: 'This quote was replaced. Reload it and review the current quote before copying.', code: 'estimate_changed' })
+    // Legacy integrations can omit this additive guard; the review dialog always sends it.
+    if (b.commercial_revision !== undefined && (!Number.isSafeInteger(b.commercial_revision) || b.commercial_revision !== src.commercial_revision))
+      return createResult(409, { error: 'This quote changed. Reload it, review the current details, then duplicate again.', code: 'estimate_changed' })
+    let contactId = src.contact_id
+    const askedFor = b.contact_id
+    if (askedFor !== undefined && askedFor !== null && askedFor !== '') {
+      contactId = Number(askedFor)
+      if (!['number','string'].includes(typeof askedFor) || !Number.isSafeInteger(contactId) || contactId <= 0)
+        return createResult(400, { error: 'Pick a customer to quote for.', code: 'customer_required' })
+    }
+    if (!get('SELECT id FROM contacts WHERE id=?', contactId))
+      return createResult(404, { error: 'That customer no longer exists. Reload and pick again.', code: 'customer_not_found' })
+    const items = freezeUpcharges(parse(src.items, []))
+    // A different buyer gets their own tax treatment. Insert triggers snapshot their current
+    // postal and delivery contacts and current shop terms, never the source buyer's addresses.
+    const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null)
+    const t = computeTotals(items, rate, getUpcharges())
+    if (!representableLines(items) || !representableTotals(t)) return createResult(400, NOT_REPRESENTABLE)
+    if (!nonNegativeTotals(t)) return createResult(400, NEGATIVE_TOTAL)
+    const num = nextEstimateNumber()
+    const id = Number(run(`INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, notes, tax_rate, quote_meta, rush_days, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total,
+      src.notes || '', rate, src.quote_meta || '{}', Math.max(0, Number(src.rush_days) || 0), now()).lastInsertRowid)
+    logActivity('estimate', `${num} created from ${src.estimate_number}`, { contact_id: contactId })
+    // Do not use the best-effort wrapper: an orphan quote must roll back if its deal fails.
+    pipeline.syncFromEstimate(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
+    const identity = get('SELECT identity FROM estimate_copy_identities WHERE estimate_id=?',id)?.identity
+    if (!identity) throw new Error('Estimate creation identity was not recorded')
+    // Keep internal verification metadata in the receipt, never in the public response shape.
+    return createResult(200, { ok: true, id, estimate_number: num, _created_identity: identity })
+  })
+  // Both SQLite id and estimate number can be reused. Only the immutable creation identity
+  // proves this is the original copy; unlike its share key it survives legitimate edits.
+  if (result.replayed && (typeof result.body._created_identity !== 'string' || !get('SELECT estimate_id FROM estimate_copy_identities WHERE estimate_id=? AND identity=?', result.body.id, result.body._created_identity)))
+    return res.status(409).json({ error: 'The previously created quote is no longer available. Check Estimates before creating another copy.', code: 'duplicate_draft_missing' })
+  if (key !== undefined && result.status >= 200 && result.status < 300)
+    res.setHeader('Idempotency-Replayed', result.replayed ? 'true' : 'false')
+  const { _created_identity, ...response } = result.body
+  res.status(result.status).json(response)
 }))
 
 /* ---- mockup / artwork approval on an estimate (the lite edition's proof workflow) ---- */
@@ -6374,6 +6402,15 @@ app.get('/api/reports/ar-aging', wrap((_req, res) => {
   const open = all(`SELECT i.*, c.name AS contact_name, c.company, c.email FROM invoices i
     LEFT JOIN contacts c ON c.id = i.contact_id
     WHERE i.status != 'void' AND (i.amount_due - i.amount_paid) > 0.005 ORDER BY i.due_date IS NULL, i.due_date`)
+  // A credit or reversal can leave no positive balance while the invoice still needs review.
+  // Keep that work visible without subtracting its credit balance from another customer's A/R.
+  const reviewedSettled = all(`SELECT i.*, c.name AS contact_name, c.company FROM invoices i
+    LEFT JOIN contacts c ON c.id = i.contact_id
+    WHERE i.status != 'void' AND (i.amount_due - i.amount_paid) <= 0.005 AND COALESCE(i.payment_review, '') != '' ORDER BY i.id`)
+  const creditTotals = new Map(all(`SELECT invoice_id, SUM(subtotal_cents + tax_cents) AS cents
+    FROM invoice_credits WHERE COALESCE(cancelled_at, '') = '' GROUP BY invoice_id`).map(c => [c.invoice_id, c.cents]))
+  const invoiceDetails = open.map(i => receivableInvoice(i, creditTotals))
+  const review = collectionReview([...invoiceDetails, ...reviewedSettled.map(i => receivableInvoice(i, creditTotals))])
   const daysPast = (i) => {
     const ref = i.due_date || String(i.created_at || '').slice(0, 10)
     return ref ? Math.floor((new Date(`${today}T00:00:00Z`) - new Date(`${ref}T00:00:00Z`)) / 864e5) : 0
@@ -6381,8 +6418,8 @@ app.get('/api/reports/ar-aging', wrap((_req, res) => {
   const bucketOf = (d) => (d <= 0 ? 'current' : d <= 30 ? 'd30' : d <= 60 ? 'd60' : d <= 90 ? 'd90' : 'd90p')
   const totals = { current: 0, d30: 0, d60: 0, d90: 0, d90p: 0 }
   const byContact = new Map()
-  for (const i of open) {
-    const balRaw = round2(i.amount_due - i.amount_paid)
+  for (const [index, i] of open.entries()) {
+    const detail = invoiceDetails[index], balRaw = detail.balance
     const b = bucketOf(daysPast(i))
     totals[b] = round2(totals[b] + balRaw)
     const key = i.contact_id || 0
@@ -6390,10 +6427,10 @@ app.get('/api/reports/ar-aging', wrap((_req, res) => {
     const row = byContact.get(key)
     row[b] = round2(row[b] + balRaw)
     row.total = round2(row.total + balRaw)
-    row.invoices.push({ id: i.id, number: i.invoice_number, due_date: i.due_date, balance: balRaw, days_past: daysPast(i), status: i.status })
+    row.invoices.push({ ...detail, days_past: daysPast(i) })
   }
   const rows = [...byContact.values()].sort((a, b) => b.total - a.total)
-  res.json({ as_of: today, totals: { ...totals, due: round2(totals.current + totals.d30 + totals.d60 + totals.d90 + totals.d90p) }, customers: rows })
+  res.json({ as_of: today, totals: { ...totals, due: round2(totals.current + totals.d30 + totals.d60 + totals.d90 + totals.d90p) }, customers: rows, collection_review: review })
 }))
 
 /**
@@ -9643,11 +9680,10 @@ app.post('/p/art/:id/decide', express.urlencoded({ extended: false }), pPage((re
   const c = owner ? get('SELECT name FROM contacts WHERE id = ?', owner.contact_id) : null
   // Only an explicit decision counts. Anything else is a 400 — never default a proof to
   // "rejected" because a caller used an unexpected field name. (approved=1 accepted as alias.)
-  const b = req.body || {}
-  const approved = b.decision === 'approved' || b.approved === '1' || b.approved === 'true'
-  const rejected = b.decision === 'rejected' || b.approved === '0' || b.approved === 'false'
-  if (!approved && !rejected) return res.status(400).send('Missing decision — post decision=approved or decision=rejected')
-  decideArt(a, approved, b.notes || '', c?.name || 'customer')
+  let choice
+  try { choice = publicProofDecision(req.body) }
+  catch (error) { return res.status(400).send(error.message) }
+  decideArt(a, choice.approved, choice.notes, c?.name || 'customer')
   res.redirect(`/p/art/${id}?k=${req.query.k}${sQ(req)}`)
 }))
 

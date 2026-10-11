@@ -7,7 +7,8 @@
 
 Quoting, estimates, invoicing, a production board, art proofing, purchasing, and per-job
 profitability in one app. Node.js + SQLite. No build step, a small runtime dependency set, and every
-shop's data in a plain SQLite file you can copy.
+shop's records in SQLite, with uploaded artwork stored separately. Use the documented
+[backup and restore tools](INSTALL.md#backups) to protect the complete installation.
 
 [![CI](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeLundstrom/printshopcrm/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
@@ -21,16 +22,22 @@ git clone https://github.com/ColeLundstrom/printshopcrm.git
 cd printshopcrm
 npm ci
 npm run doctor    # check this computer before the first run
-npm start         # → http://localhost:3333
+npm run demo -- ../printshopcrm-evaluation 4380
+node ../printshopcrm-evaluation/start.mjs
 ```
+
+Open http://127.0.0.1:4380/login and use the local credentials in
+`../printshopcrm-evaluation/LOGIN.txt`. Keep that file private. The destination must be a new
+directory; this evaluation keeps fictional data separate and blocks outbound application
+connections. [Run your first quote-to-payment walkthrough](docs/FIRST-JOB.md).
 
 The complete software runs on your own computer or server. No software subscription or hosted
 account is required. No Postgres, no Redis, and no build pipeline. Installation time depends on
 your computer and connection. See the [self-host checks](docs/SELF-HOST-CHECK.md) if anything fails.
 
-Want a sample shop first? Use the [isolated evaluation demo](docs/DEMO.md); it keeps fictional
-orders and payments separate from your working data and blocks outbound services. For a public
-server, follow [INSTALL.md](INSTALL.md) for authentication, HTTPS, persistent artwork and backups.
+For a blank local shop, use the [local installation guide](INSTALL.md#start-a-blank-local-shop).
+The [evaluation details](docs/DEMO.md) explain what the sample can verify. For a public
+server, follow [INSTALL.md](INSTALL.md#production-install) for authentication, HTTPS, persistent artwork and backups.
 Optional managed hosting is a paid service; it does not unlock additional features.
 
 Prefer containers?
@@ -83,15 +90,17 @@ Four more things it does that are unusual:
 - **Per-size pricing is a first-class object.** The size grid carries real per-size upcharges and
   flows estimate → job → work ticket → PDF → export. Quantity is *derived* from the grid, so the two
   can never disagree.
-- **Your data is not the moat.** Customers, quotes, invoices, payments, jobs, artwork history and
-  the timeline each export to CSV — including line items with size breakdowns, which nobody else
-  gives you — and **everything**, every table, exports as one JSON file. No ticket, no fee. The
-  data for each shop is a plain SQLite file you can copy — see INSTALL.md for what a backup has to
-  include, because a multi-tenant install has more than one of them.
+- **Take your records with you.** Supported business records export to CSV, including document
+  line items with size breakdowns. The shop-data JSON export (`/api/export/all.json`) lists its omitted or redacted
+  credentials and cached data. Uploaded artwork and recovery data need the separate
+  [backup procedure](INSTALL.md#backups), including all applicable control and shop databases.
 
 ---
 
 ### Further reading
+
+Start with a working example: [48 shirts, one proof and a reconciled invoice](docs/FIRST-JOB.md).
+The walkthrough uses fictional data in the isolated demo, without connecting providers.
 
 Longer write-ups of the things people ask about most, on the project site:
 

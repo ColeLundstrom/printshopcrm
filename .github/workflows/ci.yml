@@ -68,6 +68,14 @@ jobs:
           node --test test/browser-smoke-harness.test.mjs
       - name: Exercise desktop and mobile UI with Chrome sandbox enabled
         run: node test/browser/smoke.mjs
+      - name: Exercise purchasing desktop and mobile review with Chrome sandbox enabled
+        run: node test/browser/purchasing-smoke.mjs
+      - name: Exercise quote duplication and retry recovery with Chrome sandbox enabled
+        run: node test/browser/estimate-duplicate-smoke.mjs
+      - name: Exercise Books collection review with Chrome sandbox enabled
+        run: node test/browser/receivables-review-smoke.mjs
+      - name: Exercise public proof decisions with Chrome sandbox enabled
+        run: node test/browser/proof-decisions-smoke.mjs
       - name: Preserve synthetic screenshots, quantity exports and error evidence
         if: always()
         uses: actions/upload-artifact@v4

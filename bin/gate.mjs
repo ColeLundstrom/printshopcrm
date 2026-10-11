@@ -6638,8 +6638,11 @@ await t('a mistyped discount is refused rather than stored as a negative quote',
   assert.equal(guard({ subtotal: 875, tax: 67.81, total: 942.81 }), true, 'and an ordinary one obviously is')
   // Every door the app's own screens post through. (The v1 API refuses a negative unit_price
   // outright at server.mjs, so a discount can never reach it.)
-  assert.equal((src.match(/if \(!nonNegativeTotals\(t\)\) return res\.status\(400\)\.json\(NEGATIVE_TOTAL\)/g) || []).length, 4,
-    'create, edit, duplicate and reorder all write estimate totals — all four need the guard')
+  for (const route of ["app.post('/api/estimates',", "app.put('/api/estimates/:id',", "app.post('/api/estimates/:id/duplicate',", "app.post('/api/contacts/:id/reorder',"]) {
+    const start = src.indexOf(route), end = src.indexOf('\napp.', start + route.length)
+    assert.ok(start >= 0, route + ' exists')
+    assert.match(src.slice(start, end), /if \(!nonNegativeTotals\(t\)\) return (?:res\.status\(400\)\.json\(NEGATIVE_TOTAL\)|createResult\(400, NEGATIVE_TOTAL\))/, route + ' refuses negative totals')
+  }
 })
 await t('…and the two receivables screens cannot report different money', async () => {
   const { DatabaseSync } = await import('node:sqlite')

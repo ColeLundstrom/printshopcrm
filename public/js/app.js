@@ -32,6 +32,7 @@ import { roiView } from './views/roi.js'
 import { profitPlannerView } from './views/profit-planner.js'
 import { onboardingView } from './views/onboarding.js'
 import { ordersView } from './views/orders.js'
+import { purchasingView } from './views/purchasing.js'
 import { gangSheetView } from './views/gangsheet.js'
 import { billingView } from './views/billing.js'
 import { projectSupportView } from './views/project-support.js'
@@ -61,6 +62,7 @@ const NAV = [
   { label: 'Production', section: true },
   { href: '/costing', ico:'roi',name:'Machine & job costs',manage:true,advanced:true },
   { href: '/production', ico: 'board', name: 'Department queue' },
+  { href: '/purchasing', ico: 'orders', name: 'Purchasing' },
   { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
   { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
   { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
@@ -115,6 +117,7 @@ route(/^\/dashboard$/, dashboardView)
 route(/^\/autopilot$/, autopilotView)
 route(/^\/receptionist$/, agentView)
 route(/^\/orders$/, ordersView)
+route(/^\/purchasing(?:\?.*)?$/, purchasingView)
 route(/^\/products$/, productsView)
 route(/^\/pricing$/, pricingView)
 // Custom price matrices live under Pricing rather than in the sidebar — the nav was deliberately
