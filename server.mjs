@@ -3,6 +3,7 @@ import { contactSearchFilter } from './lib/contact-filters.mjs'
 import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
+import { paymentTerm, paymentDueDate } from './lib/payment-terms.mjs'
 import * as artProduction from './lib/art-production.mjs'
 import { inspectArtAsset, ART_ASSET_EXTENSIONS, ART_ASSET_LIMIT } from './lib/art-file-validation.mjs'
 import { saveMockupComposition } from './lib/mockup-compositions.mjs'
@@ -2593,6 +2594,7 @@ const contactAddressError = (b) => (
 
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
+  const payment_term = paymentTerm(b.payment_term ?? 'net_15')
   const postal = postalPatch(b)
   const billing = billingDefaults(b)
   const name = str(b.name).trim()
@@ -2600,9 +2602,9 @@ app.post('/api/contacts', wrap((req, res) => {
   const bad = contactAddressError(b)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
   const tags = Array.isArray(b.tags) ? b.tags.join(',') : str(b.tags)
-  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, billing_address, shipping_address, billing_mode,billing_name,billing_email,created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+  const r = run('INSERT INTO contacts (name, email, phone, company, notes, tags, tax_exempt, tax_exempt_id, billing_address, shipping_address, billing_mode,billing_name,billing_email,payment_term,created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     name, str(b.email), str(b.phone), str(b.company), str(b.notes), tags,
-    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email,now(), now())
+    b.tax_exempt ? 1 : 0, str(b.tax_exempt_id), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email,payment_term,now(), now())
   const id = Number(r.lastInsertRowid)
   logActivity('contact', `Contact created — ${name}`, { contact_id: id })
   fireAuto('contact.created', { contact: get('SELECT * FROM contacts WHERE id = ?', id) })
@@ -2628,6 +2630,7 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const id = +req.params.id
   const cur = get('SELECT * FROM contacts WHERE id = ?', id)
   if (!cur) return res.status(404).json({ error: 'Contact not found' })
+  const payment_term = paymentTerm(b.payment_term ?? cur.payment_term)
   const postal = postalPatch(b, cur)
   const billing = billingDefaults(b,cur)
   const sent = (k) => Object.prototype.hasOwnProperty.call(b, k)
@@ -2639,10 +2642,10 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const merged = { ...cur, ...(sent('email') ? { email: str(b.email) } : {}), ...(sent('phone') ? { phone: str(b.phone) } : {}) }
   const bad = contactAddressError(merged)
   if (bad) return res.status(400).json({ error: bad, code: 'bad_recipient' })
-  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, billing_address=?, shipping_address=?,billing_mode=?,billing_name=?,billing_email=?, updated_at=? WHERE id=?',
+  run('UPDATE contacts SET name=?, email=?, phone=?, company=?, notes=?, tags=?, tax_exempt=?, tax_exempt_id=?, billing_address=?, shipping_address=?,billing_mode=?,billing_name=?,billing_email=?,payment_term=?, updated_at=? WHERE id=?',
     name, text('email'), text('phone'), text('company'), text('notes'), tags,
     sent('tax_exempt') ? (b.tax_exempt ? 1 : 0) : (cur.tax_exempt ? 1 : 0),
-    text('tax_exempt_id'), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email, now(), id)
+    text('tax_exempt_id'), postal.billing_address, postal.shipping_address,billing.billing_mode,billing.billing_name,billing.billing_email,payment_term, now(), id)
   logActivity('contact', 'Contact updated', { contact_id: id })
   res.json(get('SELECT * FROM contacts WHERE id = ?', id))
 }))
@@ -2810,7 +2813,7 @@ app.get('/api/estimates', wrap((req, res) => {
 }))
 
 app.get('/api/estimates/:id', wrap((req, res) => {
-  const e = get(`SELECT e.*, c.name AS contact_name FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id WHERE e.id=?`, +req.params.id)
+  const e = get(`SELECT e.*, c.name AS contact_name, c.payment_term AS customer_payment_term FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id WHERE e.id=?`, +req.params.id)
   if (!e) return res.status(404).json({ error: 'Estimate not found' })
   // A VOIDED invoice is not the estimate's invoice. Without this filter, voiding froze the
   // estimate behind it: the editor gates Edit, Send, Mark Approved, Convert and Delete on
@@ -3513,7 +3516,9 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
       return res.status(400).json({ error: `${field === 'payment_due_date' ? 'Payment' : 'Production'} due date must be a real date in YYYY-MM-DD format.`, code: 'invalid_date' })
   }
   const picked = String(req.body?.payment_due_date ?? req.body?.due_date ?? '').trim()
-  const due = /^\d{4}-\d{2}-\d{2}$/.test(picked) ? picked : new Date(Date.now() + 15 * 864e5).toISOString().slice(0, 10)
+  const contactTerm = get('SELECT payment_term FROM contacts WHERE id=?', e.contact_id)?.payment_term || 'net_15'
+  const term = paymentTerm(req.body?.payment_term ?? contactTerm)
+  const due = picked || paymentDueDate(term, todayIso())
   const items = parse(e.items, [])
   const title = req.body?.title || items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
   // Carry the actual size grid onto the job — the press and packing table need

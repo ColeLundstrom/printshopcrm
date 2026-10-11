@@ -789,8 +789,6 @@ export async function estimateDetailView(id) {
 
 function convertModal(e) {
   // Invoice payment terms are separate from the production promise.
-  const d14 = new Date(); d14.setDate(d14.getDate() + 14)
-  const due = localDay(d14)
   // Lite has no production floor. The server still opens a job row (it links the records together),
   // but the shop must never be told about it or — worse — navigated onto the Job Board, which is not
   // in this edition's nav at all. That dead end was the single most jarring thing in the lite flow.
@@ -801,7 +799,11 @@ function convertModal(e) {
         ? `This creates an invoice for <strong>${money(e.total)}</strong> linked to this estimate, ready to send and take payment on.`
         : `This creates invoice for <strong>${money(e.total)}</strong>, opens a production job on the board, and links all three together.`}</p>
       <div class="field"><label>${lite ? 'Order name' : 'Job title'}</label><input class="input" name="title" value="${esc(e.items[0]?.description || 'Custom order')}"></div>
-      <div class="field"><label for="convert-payment-due">Payment due</label><input class="input" id="convert-payment-due" name="payment_due_date" type="date" value="${due}"></div>
+      <div class="field"><label for="convert-payment-term">Payment terms</label><select class="input" id="convert-payment-term" name="payment_term">${[
+        ['due_on_receipt', 'Due on receipt'], ['net_15', 'Net 15'], ['net_30', 'Net 30'], ['net_45', 'Net 45'],
+      ].map(([value, label]) => `<option value="${value}" ${value === (e.customer_payment_term || 'net_15') ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+      <div class="field"><label for="convert-payment-due">Override payment due date (optional)</label><input class="input" id="convert-payment-due" name="payment_due_date" type="date">
+        <div class="dim" style="font-size:12px;margin-top:4px">Terms count calendar days from invoice creation. An override sets this invoice’s due date only.</div></div>
       ${lite ? '' : `<div class="field"><label for="convert-production-due">Production due</label><input class="input" id="convert-production-due" name="production_due_date" type="date">
         <div class="dim" style="font-size:12px;margin-top:4px">Leave blank to use this quote’s turnaround${e.rush_days ? ` (${esc(e.rush_days)} business days)` : ' (10 business days)'}. Payment terms do not change when the job must be ready.</div></div>`}`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">${lite ? 'Create Invoice' : 'Create Invoice + Job'}</button>`,
