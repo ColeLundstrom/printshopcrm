@@ -2594,7 +2594,7 @@ const contactAddressError = (b) => (
 
 app.post('/api/contacts', wrap((req, res) => {
   const b = req.body || {}
-  const payment_term = paymentTerm(b.payment_term ?? 'net_15')
+  const payment_term = paymentTerm(Object.hasOwn(b, 'payment_term') ? b.payment_term : 'net_15')
   const postal = postalPatch(b)
   const billing = billingDefaults(b)
   const name = str(b.name).trim()
@@ -2630,7 +2630,7 @@ app.put('/api/contacts/:id', wrap((req, res) => {
   const id = +req.params.id
   const cur = get('SELECT * FROM contacts WHERE id = ?', id)
   if (!cur) return res.status(404).json({ error: 'Contact not found' })
-  const payment_term = paymentTerm(b.payment_term ?? cur.payment_term)
+  const payment_term = paymentTerm(Object.hasOwn(b, 'payment_term') ? b.payment_term : cur.payment_term)
   const postal = postalPatch(b, cur)
   const billing = billingDefaults(b,cur)
   const sent = (k) => Object.prototype.hasOwnProperty.call(b, k)
@@ -3509,15 +3509,15 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
 
   // Payment terms and the promised production date are independent. Keep the older due_date
   // API's combined meaning for existing callers; the UI now sends two explicit fields.
-  for (const field of ['payment_due_date', 'production_due_date']) {
+  for (const field of ['payment_due_date', 'production_due_date', 'due_date']) {
     if (req.body?.[field] === undefined || req.body[field] === '') continue
     const value = req.body[field]
     if (!realCalendarDate(value))
-      return res.status(400).json({ error: `${field === 'payment_due_date' ? 'Payment' : 'Production'} due date must be a real date in YYYY-MM-DD format.`, code: 'invalid_date' })
+      return res.status(400).json({ error: `${field === 'production_due_date' ? 'Production' : 'Payment'} due date must be a real date in YYYY-MM-DD format.`, code: 'invalid_date' })
   }
   const picked = String(req.body?.payment_due_date ?? req.body?.due_date ?? '').trim()
   const contactTerm = get('SELECT payment_term FROM contacts WHERE id=?', e.contact_id)?.payment_term || 'net_15'
-  const term = paymentTerm(req.body?.payment_term ?? contactTerm)
+  const term = paymentTerm(Object.hasOwn(req.body || {}, 'payment_term') ? req.body.payment_term : contactTerm)
   const due = picked || paymentDueDate(term, todayIso())
   const items = parse(e.items, [])
   const title = req.body?.title || items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
