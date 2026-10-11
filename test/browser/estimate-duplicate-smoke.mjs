@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process'
 import { createHttpTestServer } from '../helpers/http-test-server.mjs'
 import { isolateBrowser, redact, requestLabel } from './isolation.mjs'
 import { duplicateResponseFault } from './duplicate-response-fault.mjs'
+import { leaveQuoteForEstimateList } from './workflow-navigation.mjs'
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..'), artifacts=join(root,'browser-artifacts')
 const report={browser:'Google Chrome with sandbox enabled',data:'Disposable synthetic demo',realtimeCoverage:'Exact local /ws is mocked; real realtime delivery is not covered.',scenarios:[]}
@@ -40,7 +41,7 @@ async function exercise(viewport,cookies) {
   const screenshot=async name=>{
     assert.equal(new URL(page.url()).pathname,'/','Only capture the signed-in app')
     const filename=`quote-duplicate-${viewport.name}-${name}.png`
-    await page.screenshot({path:join(artifacts,filename),fullPage:true,animations:'disabled',mask:[page.locator('input[type="password"]')]})
+    await page.screenshot({path:join(artifacts,filename),fullPage:(await page.getByRole('dialog').count())===0,animations:'disabled',mask:[page.locator('input[type="password"]'),page.locator('#share')]})
     scenario.screenshots.push(filename)
   }
   try {
@@ -112,7 +113,7 @@ async function exercise(viewport,cookies) {
     const delayedCommit=await delayed.committed;assert(!delayedCommit.error,delayedCommit.error)
     await page.keyboard.press('Escape')
     // A normal same-document route change preserves the in-memory pending action.
-    await page.locator('#crumb a[href="#/estimates"]').click()
+    await leaveQuoteForEstimateList(page,viewport.mobile)
     await page.locator('#new').waitFor()
     delayed.release();await delayed.finished
     await isolation.waitForIdle()

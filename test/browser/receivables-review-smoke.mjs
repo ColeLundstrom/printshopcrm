@@ -10,6 +10,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHttpTestServer } from '../helpers/http-test-server.mjs'
 import { isolateBrowser, redact, requestLabel } from './isolation.mjs'
 import { seedReceivablesReview, receivablesSnapshot } from './receivables-fixture.mjs'
+import { switchReadOnlyTenant } from './workflow-navigation.mjs'
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const artifacts = join(root, 'browser-artifacts')
@@ -69,7 +70,7 @@ async function holdNextReport(page, scenario) {
   }
 }
 
-async function exercise(viewport, ownerCookie, neighborCookie) {
+async function exercise(viewport, ownerCookie, neighborCookie, neighborSlug) {
   const scenario = { name: viewport.name, viewport: { width: viewport.width, height: viewport.height },
     checks: [], screenshots: [], consoleErrors: [], pageErrors: [], blockedRequests: [], networkErrors: [], unexpectedWrites: [], mockedWebSockets: [] }
   report.scenarios.push(scenario)
@@ -148,8 +149,8 @@ async function exercise(viewport, ownerCookie, neighborCookie) {
       await screenshot(page, scenario, 'returned-after-navigation')
     })
     await check(scenario, 'A different authenticated tenant sees its own empty report and no prior invoice evidence', async () => {
-      await context.clearCookies(); await context.addCookies([neighborCookie])
-      await page.goto(server.base + '/#/books', { waitUntil: 'domcontentloaded' }); await booksReady()
+      await switchReadOnlyTenant(page, context, neighborCookie, neighborSlug)
+      await booksReady()
       const text = await page.locator('#books-page').innerText()
       assert.match(text, /No positive balances/)
       assert.match(text, /No invoices currently have a saved payment-review flag/)
@@ -194,7 +195,10 @@ try {
     return { name: 'psc_session', value: session, url: server.base, httpOnly: true, sameSite: 'Lax' }
   }
   const ownerCookie = cookieFrom(await post('/api/auth/login', { email: 'dylan@example.test', password }))
-  const neighborCookie = cookieFrom(await post('/api/auth/signup', { shop_name: 'Empty receivables neighbor', owner_name: 'Synthetic neighbor', owner_email: 'ar-browser-neighbor@example.test', password }))
+  const neighborSignup = await post('/api/auth/signup', { shop_name: 'Empty receivables neighbor', owner_name: 'Synthetic neighbor', owner_email: 'ar-browser-neighbor@example.test', password })
+  const neighborSlug = (await neighborSignup.clone().json()).slug
+  const neighborCookie = cookieFrom(neighborSignup)
+  assert.equal(typeof neighborSlug, 'string'); assert(neighborSlug)
   const privateRead = await fetch(server.base + '/api/invoices/' + fixture.ids['AR-BROWSER-OPEN'], { headers: { Cookie: 'psc_session=' + neighborCookie.value }, signal: AbortSignal.timeout(15000) })
   assert.equal(privateRead.status, 404, 'The neighboring tenant must not read the fixture invoice')
   const before = receivablesSnapshot(db)
@@ -207,7 +211,7 @@ try {
   report.browserVersion = browser.version()
   const failures = []
   for (const viewport of [{ name: 'desktop', width: 1440, height: 1000, mobile: false }, { name: 'mobile', width: 390, height: 844, mobile: true }]) {
-    try { await exercise(viewport, ownerCookie, neighborCookie) }
+    try { await exercise(viewport, ownerCookie, neighborCookie, neighborSlug) }
     catch (error) { failures.push(error); console.error(redact(error.stack || error, secrets)) }
   }
   assert.deepEqual(receivablesSnapshot(db), before, 'Browser review must not mutate invoices, credits or recorded payments')
