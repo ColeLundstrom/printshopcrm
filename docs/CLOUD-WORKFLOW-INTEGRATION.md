@@ -1,8 +1,9 @@
 # Cloud workflow integration acceptance
 
 Prepared October 11, 2026. Base: `b925c0d6637c27c01347d7a76255e82d8da8a013`
-(v1.36.2), verified against the repository's main ref before integration. This is a review
-candidate, with no version bump, tag, merge or deployment. It excludes the older unpublished
+(v1.36.2), verified against the repository's main ref before integration. This review originally
+prepared a candidate without a version bump or deployment. PR #18 subsequently merged the
+reviewed source; current release preparation is recorded in [1.36.3](RELEASE-1.36.3.md). It excludes the older unpublished
 four-feature 1.36.1 candidate and the preserved desktop workstreams.
 
 ## Included original work
