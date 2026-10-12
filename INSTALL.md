@@ -441,26 +441,43 @@ cd /opt/printshopcrm
 # bin/snapshot.mjs uses SQLite's own VACUUM INTO, needs no sqlite3 binary, and verifies each file.
 # The snapshot goes UNDER the data root, not into /var/backups: /var/backups is root-owned 0755 on
 # a stock Ubuntu box, and this command runs as the service account, so it could not write there.
-# && between every step on purpose — if the backup fails, the upgrade must not happen.
-sudo -u printshopcrm npm run snapshot -- /var/lib/printshopcrm \
-  /var/lib/printshopcrm/backups/pre-upgrade-$(date +%Y%m%d%H%M%S) \
-  && git pull \
-  && npm ci --omit=dev \
+# Keep this exact path for a restore. Snapshotting databases alone does not save artwork.
+BACKUP_DIR="/var/lib/printshopcrm/backups/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+# && between every step on purpose — if the backup or artwork archive fails, do not upgrade.
+test -d /var/lib/printshopcrm/uploads \
+  && sudo -u printshopcrm npm run snapshot -- /var/lib/printshopcrm "$BACKUP_DIR" \
+  && sudo -u printshopcrm tar czhf "$BACKUP_DIR/uploads.tar.gz" -C /var/lib/printshopcrm uploads \
+  && sudo -u printshopcrm tar tzf "$BACKUP_DIR/uploads.tar.gz" >/dev/null \
+  && printf 'Pre-upgrade backup: %s\n' "$BACKUP_DIR" \
+  && printf 'Previous code: ' \
+  && sudo -u printshopcrm git rev-parse HEAD \
+  && sudo -u printshopcrm git pull --ff-only \
+  && sudo -u printshopcrm npm ci --omit=dev \
   && sudo systemctl restart printshopcrm
 journalctl -u printshopcrm -n 30
 ```
 
-Schema migrations run automatically at startup and are additive — they add columns and tables, they
-don't drop them. Take the snapshot anyway; it is exactly what `bin/restore.mjs` puts back:
+Schema migrations run automatically at startup. Keep the printed backup path and the previous code
+revision; a data restore does not roll back code. The archive includes artwork even when `uploads`
+is a symlink. If the command chain stops, investigate its failed step before restarting the service.
+The database snapshot and artwork archive are on this machine; keep a separate recoverable copy.
+
+To inspect a recovery, replace `<stamp>` with the suffix printed by the upgrade command. The
+first restore command only shows a plan. Review its database and artwork destinations before
+stopping the service and applying it:
 
 ```bash
-sudo systemctl stop printshopcrm
-sudo -u printshopcrm npm run restore -- /var/backups/pre-upgrade-<stamp> \
-  --data-root /var/lib/printshopcrm --yes
-sudo systemctl start printshopcrm
+BACKUP_DIR=/var/lib/printshopcrm/backups/pre-upgrade-<stamp>
+sudo -u printshopcrm npm run restore -- "$BACKUP_DIR" --data-root /var/lib/printshopcrm
+# After reviewing the plan and deciding how to handle work saved since this backup:
+sudo systemctl stop printshopcrm \
+  && sudo -u printshopcrm npm run restore -- "$BACKUP_DIR" \
+       --data-root /var/lib/printshopcrm --yes \
+  && sudo systemctl start printshopcrm
 ```
 
-To verify before restarting, run the tests against the new code:
+Run the repository gate against a separate checkout and synthetic fixtures before upgrading
+production, not against a live customer data directory:
 
 ```bash
 node bin/gate.mjs
