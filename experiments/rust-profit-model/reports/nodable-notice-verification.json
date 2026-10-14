@@ -1,0 +1,76 @@
+{
+  "upstream_commit": "ac48e7ea591da372be023a481875c747535812b3",
+  "upstream_license": "https://github.com/nodable/val-parsers/blob/ac48e7ea591da372be023a481875c747535812b3/LICENSE",
+  "installed_package": "@nodable/entities 3.0.0",
+  "checked_files": [
+    {
+      "path": "README.md",
+      "installed_git_blob_sha": "73717d6ea7d910b9b070ba89ede7cec0655c477f",
+      "upstream_git_blob_sha": "73717d6ea7d910b9b070ba89ede7cec0655c477f",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "package.json",
+      "installed_git_blob_sha": "a45f577462532b13ce4362d33c71d88787bee872",
+      "upstream_git_blob_sha": "a45f577462532b13ce4362d33c71d88787bee872",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "src/EntityDecoder.js",
+      "installed_git_blob_sha": "71f9180d1c9ad2d106ca376b5d734ce30e50b16a",
+      "upstream_git_blob_sha": "71f9180d1c9ad2d106ca376b5d734ce30e50b16a",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "src/EntityEncoder.js",
+      "installed_git_blob_sha": "a9f596f1178e1a5cb297b5c4a4e67e926e4c65fd",
+      "upstream_git_blob_sha": "a9f596f1178e1a5cb297b5c4a4e67e926e4c65fd",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "src/all-entities.js",
+      "installed_git_blob_sha": "2000c46e04f81e3e81e545d65087f2b1c68e62a7",
+      "upstream_git_blob_sha": "2000c46e04f81e3e81e545d65087f2b1c68e62a7",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "src/entities.js",
+      "installed_git_blob_sha": "8c5723d2a77ae09d8b3f53032e1c33ad946f2251",
+      "upstream_git_blob_sha": "8c5723d2a77ae09d8b3f53032e1c33ad946f2251",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "src/entityTries.js",
+      "installed_git_blob_sha": "c8aaeff7dcfddf5908eaef4c447a3e8ab3ec1ccb",
+      "upstream_git_blob_sha": "c8aaeff7dcfddf5908eaef4c447a3e8ab3ec1ccb",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    },
+    {
+      "path": "src/index.d.ts",
+      "installed_git_blob_sha": "c513cf5256a287d739ef6afd056feeb843f34f00",
+      "upstream_git_blob_sha": "668415b69ed3f0e12c214d65d3ddb32ed2681d51",
+      "matches": false,
+      "matching_source_commit": "d2070d76a8ba07e6c7fa142caeb51ffd756e47eb",
+      "older_upstream_git_blob_sha": "c513cf5256a287d739ef6afd056feeb843f34f00",
+      "matches_older_upstream": true
+    },
+    {
+      "path": "src/index.js",
+      "installed_git_blob_sha": "e2b214514adac5a446d6422ca582d143e1cfd583",
+      "upstream_git_blob_sha": "e2b214514adac5a446d6422ca582d143e1cfd583",
+      "matches": true,
+      "matching_source_commit": "ac48e7ea591da372be023a481875c747535812b3"
+    }
+  ],
+  "finding": "Installed package omits MIT notice. Eight runtime/package/README files match upstream version 3.0.0 commit; the declaration matches an earlier upstream commit with identical MIT license text. The package carries stale declarations (default export and no setXmlVersion), not an untraced declaration. Include the supplemental notice. This is technical provenance evidence, not ownership/legal clearance.",
+  "all_installed_files_match_single_snapshot": false,
+  "all_installed_files_traced": true,
+  "license_blob_at_both_revisions": "561468f111a66df52cc0f1934642bb9fdd22a212"
+}

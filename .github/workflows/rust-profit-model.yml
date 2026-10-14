@@ -1,0 +1,43 @@
+name: Rust pricing experiment
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/rust-profit-model/**'
+      - '.github/workflows/rust-profit-model.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-pricing-parity:
+    name: Rust pricing parity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: experiments/rust-profit-model
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
+        with:
+          persist-credentials: false
+      - name: Install official pinned Rust toolchain
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Record compiler and test debug profile
+        run: |
+          rustc +1.90.0 --version
+          cargo +1.90.0 test --offline
+      - name: Test optimized profile and build isolated CLI
+        run: |
+          cargo +1.90.0 test --offline --release
+          cargo +1.90.0 build --offline --release
+      - name: Check CLI contract with synthetic data
+        run: |
+          result="$(printf 'quote\t100\t4\t1\t5\t30\t100\t20\t30\t10\t5\t3\t0.3\t40\n' | cargo +1.90.0 run --offline --quiet --release)"
+          test "$result" = $'OK\t1089\t108900'

@@ -1,0 +1,20 @@
+{
+  "source_commit": "497381d219260b07939761a63feef16c74a5aace",
+  "rust_toolchain": "1.90.0",
+  "run_url": "https://github.com/ColeLundstrom/printshopcrm/actions/runs/38090044043",
+  "os": [
+    "ubuntu-latest",
+    "windows-latest",
+    "macos-latest"
+  ],
+  "verified": [
+    "debug compilation",
+    "7 unit tests",
+    "1 integration test checking 1362 frozen JS cases",
+    "optimized tests",
+    "release CLI build",
+    "synthetic stdin/stdout CLI contract"
+  ],
+  "result": "passed on all three OS targets",
+  "scope": "Isolated experiment only. No full CRM migration, full numerical-domain/API parity or legal clearance."
+}
