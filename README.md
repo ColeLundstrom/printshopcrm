@@ -309,6 +309,9 @@ npm run test:e2e   # 70+ end-to-end checks against a throwaway database
 npm run test:all   # both
 ```
 
+The [self-host release rehearsal](docs/SELF-HOST-RELEASE-REHEARSAL.md) exercises a disposable
+first install, release-directory switch and backup restore across the same candidate commit.
+
 Pure Node, no test framework and no shell dependencies — they run identically on Linux, macOS, and
 Windows. CI runs both on Node 22 and current LTS, on Ubuntu and Windows, plus a Docker build that
 boots the container and checks the data volume survives a container replacement.
