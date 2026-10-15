@@ -3341,6 +3341,16 @@ try {
     await probe
     const body = await up.json().catch(() => ({}))
     const worst = Math.max(...lat)
+    // Keep the checkpoint evidence beside the timing failure. The server captures these events
+    // under PSC_IMPORT_DIAGNOSTICS, but this gate used to print only the importer totals, hiding
+    // whether a slow COMMIT coincided with a worker timeout or restored auto-checkpointing.
+    const checkpointLines = serverLog.split('\n').filter(l => l.startsWith('[import-checkpoints]'))
+    const fallbacks = checkpointLines.filter(l => l.includes('"event":"fallback"'))
+    const slowCheckpoints = checkpointLines.filter(l => {
+      try { const event = JSON.parse(l.slice('[import-checkpoints] '.length)); return event.event === 'checkpoint' && event.durationMs >= 500 }
+      catch { return false }
+    })
+    for (const line of [...fallbacks, ...slowCheckpoints.slice(-8)]) console.log('  '+line)
     for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
 
     chk('a 9,000-order export imports', String(body.imported), '^9000$')
