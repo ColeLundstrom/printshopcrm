@@ -3334,14 +3334,28 @@ try {
 
     const form = new FormData()
     form.append('file', new Blob([big], { type: 'text/csv' }), 'history.csv')
+    const printImportDiagnostics = () => {
+      const checkpointLines = serverLog.split('\n').filter(l => l.startsWith('[import-checkpoints]'))
+      const fallbacks = checkpointLines.filter(l => l.includes('"event":"fallback"'))
+      const slowCheckpoints = checkpointLines.filter(l => {
+        try { const event = JSON.parse(l.slice('[import-checkpoints] '.length)); return event.event === 'checkpoint' && event.durationMs >= 500 }
+        catch { return false }
+      })
+      for (const line of [...fallbacks, ...slowCheckpoints.slice(-8), ...checkpointLines.slice(-3)]) console.log('  '+line)
+      for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-progress]')).slice(-16)) console.log('  '+line)
+      for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
+    }
     const t0 = Date.now()
-    const up = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form })
+    let up
+    try { up = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form }) }
+    catch (error) { polling = false; printImportDiagnostics(); throw error }
     const wall = Date.now() - t0
     polling = false
     await probe
     const body = await up.json().catch(() => ({}))
     const worst = Math.max(...lat)
-    for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
+    // Print even on a timeout above: a stalled import may never reach its summary response.
+    printImportDiagnostics()
 
     chk('a 9,000-order export imports', String(body.imported), '^9000$')
     chk('…and every concurrent health probe succeeds', String(healthFailures), '^0$')
@@ -6664,9 +6678,13 @@ try {
   const causes = []
   for (let c = err?.cause, i = 0; c && i < 4; c = c.cause, i++) causes.push(`${c.code ? `${c.code}: ` : ''}${c.message || c}`)
   say('✗', `harness error: ${err.message}${causes.length ? ` — ${causes.join(' <- ')}` : ''}`)
-  // The frame inside THIS file is the one that names which request died.
-  const frame = String(err?.stack || '').split('\n').map((l) => l.trim()).find((l) => l.includes('gate-e2e.mjs'))
-  if (frame) console.log(`      ${frame.replace(/^at\s+/, 'at ')}`)
+  // The first frame is usually req() itself. Keep the next caller too: it names the actual
+  // request in this long suite. A connection reset may mean the child died, so include its
+  // state and recent output from this synthetic fixture server.
+  const frames = String(err?.stack || '').split('\n').map((l) => l.trim()).filter((l) => l.includes('gate-e2e.mjs')).slice(0, 3)
+  for (const frame of frames) console.log(`      ${frame.replace(/^at\s+/, 'at ')}`)
+  console.log(`      server exit=${server.exitCode ?? 'running'} signal=${server.signalCode ?? 'none'}`)
+  for (const line of serverLog.trim().split('\n').slice(-12)) if (line) console.log(`      server: ${line}`)
   fails++
 }
 
