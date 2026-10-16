@@ -6677,9 +6677,13 @@ try {
   const causes = []
   for (let c = err?.cause, i = 0; c && i < 4; c = c.cause, i++) causes.push(`${c.code ? `${c.code}: ` : ''}${c.message || c}`)
   say('✗', `harness error: ${err.message}${causes.length ? ` — ${causes.join(' <- ')}` : ''}`)
-  // The frame inside THIS file is the one that names which request died.
-  const frame = String(err?.stack || '').split('\n').map((l) => l.trim()).find((l) => l.includes('gate-e2e.mjs'))
-  if (frame) console.log(`      ${frame.replace(/^at\s+/, 'at ')}`)
+  // The first frame is usually req() itself. Keep the next caller too: it names the actual
+  // request in this long suite. A connection reset may mean the child died, so include its
+  // state and recent output from this synthetic fixture server.
+  const frames = String(err?.stack || '').split('\n').map((l) => l.trim()).filter((l) => l.includes('gate-e2e.mjs')).slice(0, 3)
+  for (const frame of frames) console.log(`      ${frame.replace(/^at\s+/, 'at ')}`)
+  console.log(`      server exit=${server.exitCode ?? 'running'} signal=${server.signalCode ?? 'none'}`)
+  for (const line of serverLog.trim().split('\n').slice(-12)) if (line) console.log(`      server: ${line}`)
   fails++
 }
 
