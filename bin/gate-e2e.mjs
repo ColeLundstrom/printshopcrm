@@ -3334,24 +3334,27 @@ try {
 
     const form = new FormData()
     form.append('file', new Blob([big], { type: 'text/csv' }), 'history.csv')
+    const printImportDiagnostics = () => {
+      const checkpointLines = serverLog.split('\n').filter(l => l.startsWith('[import-checkpoints]'))
+      const fallbacks = checkpointLines.filter(l => l.includes('"event":"fallback"'))
+      const slowCheckpoints = checkpointLines.filter(l => {
+        try { const event = JSON.parse(l.slice('[import-checkpoints] '.length)); return event.event === 'checkpoint' && event.durationMs >= 500 }
+        catch { return false }
+      })
+      for (const line of [...fallbacks, ...slowCheckpoints.slice(-8), ...checkpointLines.slice(-3)]) console.log('  '+line)
+      for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
+    }
     const t0 = Date.now()
-    const up = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form })
+    let up
+    try { up = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form }) }
+    catch (error) { polling = false; printImportDiagnostics(); throw error }
     const wall = Date.now() - t0
     polling = false
     await probe
     const body = await up.json().catch(() => ({}))
     const worst = Math.max(...lat)
-    // Keep the checkpoint evidence beside the timing failure. The server captures these events
-    // under PSC_IMPORT_DIAGNOSTICS, but this gate used to print only the importer totals, hiding
-    // whether a slow COMMIT coincided with a worker timeout or restored auto-checkpointing.
-    const checkpointLines = serverLog.split('\n').filter(l => l.startsWith('[import-checkpoints]'))
-    const fallbacks = checkpointLines.filter(l => l.includes('"event":"fallback"'))
-    const slowCheckpoints = checkpointLines.filter(l => {
-      try { const event = JSON.parse(l.slice('[import-checkpoints] '.length)); return event.event === 'checkpoint' && event.durationMs >= 500 }
-      catch { return false }
-    })
-    for (const line of [...fallbacks, ...slowCheckpoints.slice(-8)]) console.log('  '+line)
-    for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
+    // Print even on a timeout above: a stalled import may never reach its summary response.
+    printImportDiagnostics()
 
     chk('a 9,000-order export imports', String(body.imported), '^9000$')
     chk('…and every concurrent health probe succeeds', String(healthFailures), '^0$')
