@@ -2773,7 +2773,9 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
   // skip a row. Email dedupe is checked again inside each transaction because preview can be stale.
   const importDb = getDb()
   const { created, duplicates: newDupes, skipped: rejected, stopped } = await withImportCheckpoints(importDb, checkpoint => writeContactImport(importDb, toAdd, { checkpoint }))
-  if (created) {
+  // After a checkpoint timeout, automatic maintenance has been restored. Do not make one more
+  // synchronous timeline write that could stall the request while reporting saved batches.
+  if (created && stopped?.code !== 'import_checkpoint_timeout') {
     // The contacts are durable even if a full disk prevents writing this final timeline row.
     try { logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {}) }
     catch (error) { console.error('customer import activity:', error.message) }
@@ -6733,7 +6735,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   const traceImport = (stage, index) => {
     if (traceLargeImport) console.log('[import-progress]', JSON.stringify({ stage, index, total: grouped.length }))
   }
-  await withImportCheckpoints(importDb, async checkpoint => {
+  const writeBatches = async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
       traceImport('batch-start', i)
@@ -6769,6 +6771,21 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       }
       if (i < grouped.length) await new Promise((r) => setImmediate(r))
     }
+  }
+  await withImportCheckpoints(importDb, async checkpoint => {
+    if (importDb === db || grouped.length < 1000) return writeBatches(checkpoint)
+    // Fast liveness polling writes to the default control database while this tenant imports.
+    // Thousands of real FULL-durability probes can hit that connection's automatic WAL
+    // checkpoint and make /health itself miss its latency target. Give it the remaining worker
+    // slot during large imports and maintain it off the request thread at a bounded cadence.
+    return withImportCheckpoints(db, async healthCheckpoint => {
+      const timer = setInterval(() => {
+        void healthCheckpoint().catch(error => console.error('health checkpoint maintenance:', error.message))
+      }, 2000)
+      timer.unref?.()
+      try { return await writeBatches(checkpoint) }
+      finally { clearInterval(timer) }
+    })
   })
   if (diagnostic) console.log('[import-diagnostics]', JSON.stringify({ orders: grouped.length, ...Object.fromEntries(Object.entries(metrics).map(([k,v])=>[k,Math.round(v)])) }))
   if (stopped) {
@@ -6779,7 +6796,12 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     // On the shop's own timeline, because the money is on the books either way and nothing else
     // in the product would name where it came from. Best effort: whatever stopped the import may
     // stop this too, and the report still has to reach the screen.
-    try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
+    // A timed-out checkpoint restored ordinary SQLite maintenance; even one more synchronous
+    // timeline write could run the same stalled auto-checkpoint on the request thread. The
+    // response still reports every committed batch and tells the shop to retry the same file.
+    if (stopped.code !== 'import_checkpoint_timeout') {
+      try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
+    }
     return res.status(503).json(report)
   }
   // These orders have committed. A secondary timeline failure must not report that import failed.
