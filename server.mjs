@@ -6735,7 +6735,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   const traceImport = (stage, index) => {
     if (traceLargeImport) console.log('[import-progress]', JSON.stringify({ stage, index, total: grouped.length }))
   }
-  await withImportCheckpoints(importDb, async checkpoint => {
+  const writeBatches = async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
       traceImport('batch-start', i)
@@ -6771,6 +6771,21 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       }
       if (i < grouped.length) await new Promise((r) => setImmediate(r))
     }
+  }
+  await withImportCheckpoints(importDb, async checkpoint => {
+    if (importDb === db || grouped.length < 1000) return writeBatches(checkpoint)
+    // Fast liveness polling writes to the default control database while this tenant imports.
+    // Thousands of real FULL-durability probes can hit that connection's automatic WAL
+    // checkpoint and make /health itself miss its latency target. Give it the remaining worker
+    // slot during large imports and maintain it off the request thread at a bounded cadence.
+    return withImportCheckpoints(db, async healthCheckpoint => {
+      const timer = setInterval(() => {
+        void healthCheckpoint().catch(error => console.error('health checkpoint maintenance:', error.message))
+      }, 2000)
+      timer.unref?.()
+      try { return await writeBatches(checkpoint) }
+      finally { clearInterval(timer) }
+    })
   })
   if (diagnostic) console.log('[import-diagnostics]', JSON.stringify({ orders: grouped.length, ...Object.fromEntries(Object.entries(metrics).map(([k,v])=>[k,Math.round(v)])) }))
   if (stopped) {
