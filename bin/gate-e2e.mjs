@@ -3342,6 +3342,7 @@ try {
         catch { return false }
       })
       for (const line of [...fallbacks, ...slowCheckpoints.slice(-8), ...checkpointLines.slice(-3)]) console.log('  '+line)
+      for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-progress]')).slice(-16)) console.log('  '+line)
       for (const line of serverLog.split('\n').filter(l=>l.startsWith('[import-diagnostics]')).slice(-8)) console.log('  '+line)
     }
     const t0 = Date.now()

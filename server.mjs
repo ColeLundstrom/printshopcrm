@@ -6718,9 +6718,14 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
   let stopped = null
   const importDb = getDb()
+  const traceLargeImport = diagnostic && grouped.length >= 9000
+  const traceImport = (stage, index) => {
+    if (traceLargeImport) console.log('[import-progress]', JSON.stringify({ stage, index, total: grouped.length }))
+  }
   await withImportCheckpoints(importDb, async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
+      traceImport('batch-start', i)
       const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
       let commitAt = started
       try {
@@ -6730,7 +6735,9 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
           do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
           while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
           commitAt = performance.now()
+          traceImport('commit-start', i)
         })
+        traceImport('commit-end', i)
         metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
         metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
       } catch (e) {
@@ -6742,6 +6749,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       // A pinned-WAL limit stops here without undoing the batch's successful accounting.
       const checkpointAt = performance.now()
       try { await checkpoint() } catch (error) { stopped = error; break }
+      traceImport('checkpoint-end', i)
       metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
       if (i < grouped.length) await new Promise((r) => setImmediate(r))
     }
