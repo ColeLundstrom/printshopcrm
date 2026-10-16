@@ -6720,9 +6720,25 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
   let stopped = null
   const importDb = getDb()
+  // PASSIVE maintenance is off the request thread, but syncing it after every small,
+  // latency-limited batch can make a large import spend minutes waiting for storage. Keep the
+  // 25 ms write batches and their event-loop yields; checkpoint after at most 200 more orders.
+  // A growing WAL asks for an earlier pass so the existing 64 MiB pinned-reader guard still
+  // stops an import before it commits its whole file.
+  let walPath = ''
+  try {
+    const dbPath = importDb.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file
+    if (dbPath) walPath = `${dbPath}-wal`
+  } catch { /* the ordinary checkpoint path will report database failures */ }
+  let lastCheckpointAt = 0
+  const traceLargeImport = diagnostic && grouped.length >= 9000
+  const traceImport = (stage, index) => {
+    if (traceLargeImport) console.log('[import-progress]', JSON.stringify({ stage, index, total: grouped.length }))
+  }
   await withImportCheckpoints(importDb, async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
+      traceImport('batch-start', i)
       const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
       let commitAt = started
       try {
@@ -6732,7 +6748,9 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
           do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
           while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
           commitAt = performance.now()
+          traceImport('commit-start', i)
         })
+        traceImport('commit-end', i)
         metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
         metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
       } catch (e) {
@@ -6740,11 +6758,17 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
         ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
         stopped = e; break
       }
-      // Checkpoint maintenance yields the request thread after committed counts are durable.
-      // A pinned-WAL limit stops here without undoing the batch's successful accounting.
-      const checkpointAt = performance.now()
-      try { await checkpoint() } catch (error) { stopped = error; break }
-      metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
+      let walBytes = 0
+      try { if (walPath) walBytes = statSync(walPath).size } catch { /* WAL may not exist yet */ }
+      if (i - lastCheckpointAt >= BATCH || i === grouped.length || walBytes >= 32 * 1024 * 1024) {
+        // The checkpoint still runs after COMMIT, where a pinned-reader limit can report the
+        // exact committed count without rolling a successful batch back.
+        const checkpointAt = performance.now()
+        try { await checkpoint() } catch (error) { stopped = error; break }
+        traceImport('checkpoint-end', i)
+        metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
+        lastCheckpointAt = i
+      }
       if (i < grouped.length) await new Promise((r) => setImmediate(r))
     }
   })
