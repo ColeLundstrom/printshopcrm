@@ -2,6 +2,16 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseCsv, importMapping, applyImportMapping, mapContactRow, mapOrderRows } from '../lib/csv.mjs'
 
+test('duplicate normalized CSV headings are rejected before a column can be overwritten', () => {
+  for (const csv of [
+    'Name,Email,email\nShop,first@example.test,second@example.test',
+    'Customer, Total ,total\nShop,10,100',
+    'Name,"E-mail",e-MAIL\nShop,a@example.test,b@example.test',
+  ]) assert.throws(() => parseCsv(csv), /Duplicate CSV column heading.*Rename or remove one/)
+  assert.deepEqual(parseCsv('Name,Email,Phone\nShop,a@example.test,555-0100'),
+    [{ name: 'Shop', email: 'a@example.test', phone: '555-0100' }])
+})
+
 test('custom customer columns, first/last names and deliberately ignored synonyms', () => {
   const rows = parseCsv('Buyer,Given,Surname,Reply to,Email\nShop,Jamie,Rivera,real@example.test,old@example.test')
   const mapping = { name: null, first: 'given', last: 'surname', email: 'reply to', company: 'buyer' }
