@@ -109,6 +109,12 @@ test(
       const contactMapping = { name: 'buyer', email: 'reply address' }
       const contactCount = () => db.prepare('SELECT count(*) AS n FROM contacts').get().n
       const beforeMapping = contactCount()
+      for (const preview of [true, false]) {
+        const rejected = await req('/api/import/contacts', { text: 'Name,Email, email \nBad,first@example.test,last@example.test', preview })
+        assert.equal(rejected.status, 400)
+        assert.match((await rejected.json()).error, /Duplicate CSV column heading "email"/)
+        assert.equal(contactCount(), beforeMapping, 'Duplicate customer columns must write nothing')
+      }
       const suggested = await json('/api/import/contacts', { text: contactCsv, mapping_only: true })
       assert.deepEqual(suggested.headers, ['buyer', 'reply address'])
       assert.equal(suggested.mapping.name, null)
@@ -123,6 +129,19 @@ test(
       const orderMapping = { customer_name: 'buyer', order_number: 'document', status: 'settlement', total: 'charge' }
       const invoiceCount = () => db.prepare('SELECT count(*) AS n FROM invoices').get().n
       const beforeInvoices = invoiceCount()
+      for (const preview of [true, false]) {
+        const rejected = await req('/api/import/orders', { text: 'Customer,Total,total\nBad,10,100', preview })
+        assert.equal(rejected.status, 400)
+        assert.match((await rejected.json()).error, /Duplicate CSV column heading "total"/)
+        assert.equal(invoiceCount(), beforeInvoices, 'Duplicate order columns must write nothing')
+      }
+      const priceBookBefore = db.prepare("SELECT value FROM settings WHERE key='price_book'").get()?.value
+      const service = (await json('/api/pricebook/matrix', undefined, 'GET')).services[0]
+      const badPriceBook = await req('/api/pricebook/import', { service, text: 'Quantity,1,01\n12-23,4,5' })
+      assert.equal(badPriceBook.status, 400)
+      assert.match((await badPriceBook.json()).error, /Duplicate price-sheet column/)
+      assert.equal(db.prepare("SELECT value FROM settings WHERE key='price_book'").get()?.value, priceBookBefore,
+        'Duplicate price headings must preserve all stored prices')
       const orderPreview = await json('/api/import/orders', { text: orderCsv, mapping: orderMapping, status_policy: 'strict', preview: true })
       assert.equal(orderPreview.sample[0].total, 120)
       assert.equal(orderPreview.payment_states.unpaid, 1)
