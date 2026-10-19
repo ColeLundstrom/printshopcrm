@@ -22,7 +22,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, relative, isAbsolute, sep } from 'node:path'
 import { snapshotName, snapshotCollision } from '../lib/snapshot-name.mjs'
 
 const ROOT = resolve(process.argv[2] || process.env.DATA_ROOT || '/data')
@@ -30,7 +30,13 @@ const OUT = resolve(process.argv[3] || join(ROOT, '_snapshot'))
 const die = (msg) => { console.error(`\n  ✗ ${msg}\n`); process.exit(1) }
 
 try { if (!statSync(ROOT).isDirectory()) die(`${ROOT} is not a directory`) } catch { die(`${ROOT} does not exist`) }
-if (OUT === ROOT) die('the snapshot directory must not be the data root itself')
+// OUT is removed before the new snapshot is written. Refuse not only ROOT itself but any
+// ancestor of ROOT: a mistyped output such as /var/lib would otherwise delete /var/lib's
+// working shop databases while trying to replace an old backup directory.
+const rootFromOut = relative(OUT, ROOT)
+if (!rootFromOut || (!isAbsolute(rootFromOut) && rootFromOut !== '..' && !rootFromOut.startsWith('..' + sep))) {
+  die('the snapshot directory must not contain the data root')
+}
 
 // Never walk into the output directory, or a re-run snapshots its own previous snapshots — the
 // mistake that quietly doubled deploy/backup.sh's archive every night.
