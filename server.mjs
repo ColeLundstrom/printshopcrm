@@ -21,6 +21,7 @@ import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
+import { tvSnapshot } from './lib/tv.mjs'
 import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
@@ -3959,6 +3960,12 @@ registerProductionRoutes(app,{requireRole,hasRole,listMembers,broadcast:rtBroadc
 // board draws — it cannot import this file.
 export const STAGES = JOB_STAGES
 const STAGE_KEYS = JOB_STAGE_KEYS
+
+// Shop TV wallboard. Revenue follows the same manager line as the rest of the app; ?money=0 lets a
+// manager hide it on a screen customers can see.
+app.get('/api/tv', wrap((req, res) => {
+  res.json(tvSnapshot({ includeMoney: hasRole(req, 'manager') && req.query.money !== '0' }))
+}))
 
 app.get('/api/board', wrap((req, res) => {
   const jobs = all(`SELECT j.*, c.name AS contact_name, c.company,

@@ -36,6 +36,7 @@ import { purchasingView } from './views/purchasing.js'
 import { gangSheetView } from './views/gangsheet.js'
 import { billingView } from './views/billing.js'
 import { projectSupportView } from './views/project-support.js'
+import { tvView } from './views/tv.js'
 import { capacityView } from './views/capacity.js'
 import { reorderView } from './views/reorder.js'
 import { paymentsView } from './views/payments.js'
@@ -64,6 +65,7 @@ const NAV = [
   { href: '/production', ico: 'board', name: 'Department queue' },
   { href: '/purchasing', ico: 'orders', name: 'Purchasing' },
   { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
+  { href: '/tv', ico: 'tv', name: 'Shop TV' },
   { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
   { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
   { advanced: true, href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
@@ -133,6 +135,7 @@ route(/^\/costing(?:\?.*)?$/, costingView)
 route(/^\/costing\/settings$/, costingSettingsView)
 route(/^\/costing\/jobs\/(\d+)$/, jobCostingView)
 route(/^\/board$/, boardView)
+route(/^\/tv$/, tvView)
 route(/^\/jobs\/(\d+)\/mockup$/, mockupComposerView)
 route(/^\/calendar$/, calendarView)
 route(/^\/agent-keys$/, agentKeysView)
@@ -571,11 +574,14 @@ function handleRealtime(m) {
     refreshChrome()
   } else if (m.type === 'production') {
     if (/^#\/production(?:\?|$)/.test(location.hash||'') || path === '/calendar') runRouter()
+    else if (path === '/tv') window.__pscTvRefresh?.()
     announce('Production tasks updated. Refresh an open job before continuing.')
   } else if (m.type === 'board') {
     // someone (or the bot) moved a job. Say so: the repaint is silent, so a screen-reader user
     // watching the board is given no reason for the columns having changed under them.
     if (path.startsWith('/board') || path === '/calendar') { runRouter(); announce('The job board was updated.') }
+    // The wallboard repaints in place (it diffs cards so a moved job glows) rather than re-routing.
+    else if (path === '/tv') window.__pscTvRefresh?.()
     refreshChrome()
   } else if (m.type === 'conversation' || m.type === 'chat') {
     // The receptionist screen holds an unsaved form — knowledge base, greeting, persona, FAQ rows
