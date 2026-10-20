@@ -2,8 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = new URL('..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const read = (p) => readFileSync(join(ROOT, p), 'utf8')
 const viewFiles = () => readdirSync(join(ROOT, 'public/js/views')).filter((f) => f.endsWith('.js')).map((f) => `public/js/views/${f}`)
 const clientFiles = () => [...viewFiles(), 'public/js/app.js', 'public/js/core.js', 'public/js/art-production.js',

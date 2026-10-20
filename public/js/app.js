@@ -281,7 +281,6 @@ async function drawChrome() {
     // is live on the next screen without a reload.
     setShopFormat(settings)
     applyShopBranding(settings)
-    chromeSettings = settings
     // In the lite edition the product brand is fixed by the deployment (stamped into the shell), not
     // a per-shop setting — don't let a shop's brand_name override the InkVoice chrome.
     if (window.__EDITION !== 'lite') {
