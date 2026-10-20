@@ -116,14 +116,16 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 **Sales**
 - Customers with billing/shipping addresses, tags, notes, lifetime value, and a timeline fed by other modules
 - Separate buyer and accounts-payable contacts saved on each document. Recipient changes hold older unsent messages for review ([details](docs/BILLING-RECIPIENTS.md))
-- Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link. Commercial revisions expire the old approval link, preserve approval history, and require another review
+- Estimates with a size/color matrix, per-size upcharges, live totals, PDF, and a no-login customer approval link. A live profit meter on every quote shows the margin against your target while you type, and the walk-away price that hits it — one click raises the garment prices to it, with undo. Commercial revisions expire the old approval link, preserve approval history, and require another review
 - Sales pipeline with weighted value and win rate, auto-synced from estimate events
 - Conversation history for outbound email/SMS and connected inbound messages; SMTP alone does not synchronize a mailbox. Unsent drafts stay with their customer while navigating
 - Follow-ups: quotes that went quiet and invoices nobody chased, ranked by value
 - Reorder Radar: customers due for their next run, based on their own history
+- One customer portal link per customer: their quotes to approve, proofs to sign off, invoices to pay and jobs in production on one page, without a login ([details](docs/CUSTOMER-PORTAL.md))
 
 **Production**
 - Drag-to-move job board (pointer-based, works on touch) with rush/late/unpaid/assignee filters
+- Shop TV: a full-screen live wallboard for the screen over the presses — pieces on the floor, due today, late, proofs out, every job by stage — repainting as cards move. Revenue appears only for managers
 - Art & prepress: versioned proofs, customer approve/reject with notes, approval advances the job *and* moves the due date
 - Printable work tickets with a hard "NO APPROVED ART — do not print" block when the proof isn't signed off
 - Screenprinting capacity estimates exclude completed presswork and flag unsupported/mixed work for review. A partial queue does not produce a positive print-date verdict
@@ -136,7 +138,8 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 - Quoting calculator: garment × markup + imprint charge scaled by run length and colors-per-location + one-time screens; tiered rush; dark garments automatically add an underbase
 - Custom price matrices: any number of price sheets with **your own name, rows, and columns** — screen printing by ink colour, mugs by size, engraving by area, rush fees by turnaround. Import a CSV, duplicate a sheet to make a variant, and choose which matrix prices each line of a quote (one estimate can use several). Seven starter templates to edit or ignore
 - Per-cell overrides on the built-in calculator too — type your real price into any cell and it wins
-- Invoices with partial payments, running balance, saved postal addresses, and separate payment/production deadlines
+- Invoices with partial payments, running balance, saved postal addresses, and separate payment/production deadlines. Invoice PDFs with a balance carry a scan-to-pay QR code
+- Shop pulse on Today: twelve weeks of won vs collected, quote win rate, and the margin finished jobs actually kept
 - Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation, refund/void reconciliation and explicit invoice credits ([setup and limits](docs/PAYMENTS.md))
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
@@ -152,13 +155,14 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 - Autopilot: paste a customer email and it becomes a structured draft order — review-first by default
 - AI receptionist for inbound quote requests (bring your own Anthropic or OpenAI key; a deterministic parser runs with no key at all)
 - Public REST API (`/api/v1`) with Bearer keys, plus signed outbound webhooks — see [docs/API.md](docs/API.md)
-- CSV mapping for customers and supported order-history fields, with preview; check unsupported attachments and payment history separately before migrating
+- CSV mapping for customers and supported order-history fields, with preview and auto-detected Printavo and YoPrint customer-export presets; check unsupported attachments and payment history separately before migrating
 
 **The app itself**
 - Light and dark themes, tuned separately rather than inverted
 - ⌘K command palette, full keyboard navigation, undo-instead-of-confirm on reversible actions
 - A sidebar that starts with the daily loop — quote → produce → invoice → get paid — and folds the
-  power tools behind one click, so the first screen isn't 27 destinations deep
+  power tools behind one click
+- Dates follow the shop's own time zone (Settings → Shop), not the server's
 - Multi-tenant mode: one isolated SQLite database per shop, real staff logins with owner/manager/staff roles
 - PWA — installable, works on a shop-floor tablet
 
