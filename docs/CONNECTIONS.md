@@ -10,6 +10,8 @@ Follow your email provider’s SPF, DKIM and DMARC instructions. Do not guess DN
 
 Google’s current guidance: https://support.google.com/a/answer/176600
 
+On a hosted, multi-shop server the SMTP server must be a public mail host: a server name or address that points at a private, loopback or link-local network is refused when you save it and again on every connection. Self-hosters running a single shop can use a relay on their own network without any change; the operator of a multi-shop server whose relay lives on the LAN can allow it with `PSC_SMTP_ALLOW_PRIVATE=1`. When a shop has not finished its own SMTP and mail goes through the server-wide relay, it is sent from the operator’s address with the shop’s address as Reply-To. Connection and sign-in failures are reported in plain words (with a code such as `ECONNECTION` or `EAUTH`), never by repeating the remote server’s reply.
+
 ## Twilio SMS
 
 Save your own Account SID, Auth Token and SMS-capable number (or Messaging Service SID). Test outgoing SMS to your shop phone. Under Setup → Receive texts, copy the exact incoming URL. In Twilio’s number configuration choose **A message comes in → Webhook → HTTP POST**, paste it, and save. For a Messaging Service, use its inbound handling configuration and the correct service SID. Complete Twilio’s applicable account/number registration.
