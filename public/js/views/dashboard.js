@@ -1,9 +1,9 @@
-import { api, $, el, esc, money0, money, fmtDate, relTime, pill, setPage, empty, dueClass, dueLabel, go, onOnce, skeleton, store } from '../core.js'
+import { api, $, el, esc, icon, money0, money, fmtDate, relTime, pill, setPage, empty, dueClass, dueLabel, go, onOnce, skeleton, store } from '../core.js'
 
 const ICON = { estimate: '▤', invoice: '▣', payment: '⊕', job: '▦', stage: '→', art: '◈', contact: '◉', note: '✎' }
 
 export async function dashboardView() {
-  setPage('Dashboard', `<button class="btn" id="new-est">+ New Estimate</button>`)
+  setPage('Dashboard', `<button class="btn primary" id="new-est">+ New Estimate</button>`)
   $('#view').innerHTML = skeleton('dashboard')
   const [d, ob] = await Promise.all([api.get('/api/dashboard'), api.get('/api/onboarding').catch(() => null)])
   const k = d.kpis
@@ -40,7 +40,7 @@ export async function dashboardView() {
     </div>
 
     ${d.at_risk?.length ? `<div class="card riskcard">
-      <div class="card-h"><h3>⚠ Deadlines at risk — waiting on customer approval</h3><div class="spacer"></div>
+      <div class="card-h"><h3>${icon('alert', 'ico ico-inline')} Deadlines at risk — waiting on customer approval</h3><div class="spacer"></div>
         <span class="pill red">${d.at_risk.length}</span></div>
       <table class="tbl"><thead><tr><th>Job</th><th>Customer</th><th>Promised</th><th>Really lands</th><th class="num">Proof sitting</th></tr></thead>
       <tbody>${d.at_risk.map((j) => `<tr class="click" data-job="${j.id}">
@@ -121,7 +121,7 @@ function setupCard(ob) {
   if (!ob?.onboarding || ob.onboarding.pct >= 100) return ''
   if (store.get('psc-setup-dismissed') === '1') return ''
   const steps = ob.onboarding.steps
-  const chips = steps.map((s) => `<span class="setup-chip ${s.done ? 'done' : s.skipped ? 'skipped' : ''}" ${s.done ? '' : 'data-setup="1"'}>${s.done ? '✓' : s.skipped ? '–' : `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`} ${esc(s.title)}</span>`).join('')
+  const chips = steps.map((s) => `<span class="setup-chip ${s.done ? 'done' : s.skipped ? 'skipped' : ''}" ${s.done ? '' : 'data-setup="1"'}>${s.done ? icon('check') : s.skipped ? '–' : `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`} ${esc(s.title)}</span>`).join('')
   return `<div class="setup-card">
     <div class="setup-card-h"><h3>Finish setting up your shop</h3>
       <div class="spacer"></div><span class="dim" style="font-size:12px">${ob.onboarding.done}/${ob.onboarding.total}</span>

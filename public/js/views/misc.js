@@ -1,4 +1,4 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, promptModal, announce, setShopFormat, shopSymbol } from '../core.js'
+import { api, $, $$, esc, icon, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, promptModal, announce, setShopFormat, shopSymbol } from '../core.js'
 import { DEFAULT_UPCHARGES, SIZES } from '../shared/pricing.js'
 import { CURRENCY_CHOICES, LOCALE_CHOICES, moneyFormatter } from '../shared/format.js'
 
@@ -572,7 +572,7 @@ export async function settingsView() {
         <div class="row" style="gap:10px;align-items:center;margin-top:10px">
           <button class="btn sm" type="button" id="gdrive-connect" ${s.gdrive_client_id && s.gdrive_client_secret_set ? '' : 'disabled title="Save your Client ID and secret first"'}>${s.gdrive_connected ? 'Reconnect Drive' : 'Connect Drive'}</button>
           ${s.gdrive_connected ? '<button class="btn ghost sm" type="button" id="gdrive-disconnect">Disconnect</button>' : ''}
-          <span class="dim" id="gdrive-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px">${s.gdrive_connected ? '<span style="color:var(--accent)">✓ Art saves to your Drive</span>' : ''}</span>
+          <span class="dim" id="gdrive-note" role="status" aria-live="polite" aria-atomic="true" style="font-size:11.5px">${s.gdrive_connected ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Art saves to your Drive</span>` : ''}</span>
         </div>
       </div>
     </div>
@@ -798,7 +798,7 @@ export async function settingsView() {
       try {
         const r = await api.post('/api/notify/test', { channel: 'email', to })
         note.innerHTML = r.delivered
-          ? `✓ Sent to ${esc(to)} — check your inbox.`
+          ? `${icon('check', 'ico ico-inline')} Sent to ${esc(to)} — check your inbox.`
           : `Couldn't send: ${esc(r.error || 'check the address and password')}`
         announce(r.delivered ? `Test email sent to ${to}.` : `Could not send. ${r.error || 'check the address and password'}`, !r.delivered)
       } catch (e) { note.textContent = e.message; announce(e.message, true) }
@@ -891,10 +891,10 @@ export async function settingsView() {
     try {
       const r = await api.post('/api/ai/test', { provider, model: $('#ai-model').value, api_key: key, use_saved: !key })
       note.innerHTML = r.available
-        ? `<span style="color:var(--accent)">✓ Connected — ${esc(r.via || '')} · ${esc(r.model || '')}</span>`
-        : `<span style="color:var(--red)">✕ ${esc(r.reason || 'Failed')}</span>`
+        ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Connected — ${esc(r.via || '')} · ${esc(r.model || '')}</span>`
+        : `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(r.reason || 'Failed')}</span>`
       announce(r.available ? `AI connected — ${r.via || ''} ${r.model || ''}` : `AI test failed. ${r.reason || 'Failed'}`, !r.available)
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(e.message)}</span>`; announce(e.message, true) }
   }
 
   // Slack card: fetch the ready-to-paste manifest, and let the owner verify the token themselves.
@@ -923,10 +923,10 @@ export async function settingsView() {
       await api.put('/api/settings', { ...formData($('#slack')) })
       const r = await api.post('/api/slack-test', {})
       note.innerHTML = r.ok
-        ? `<span style="color:var(--accent)">✓ Connected to ${esc(r.team || 'your workspace')} as ${esc(r.bot || 'the bot')}</span>`
-        : `<span style="color:var(--red)">✕ ${esc(r.error || 'Failed')}</span>`
+        ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Connected to ${esc(r.team || 'your workspace')} as ${esc(r.bot || 'the bot')}</span>`
+        : `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(r.error || 'Failed')}</span>`
       announce(r.ok ? `Slack connected to ${r.team || 'your workspace'}.` : `Slack test failed. ${r.error || 'Failed'}`, !r.ok)
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(e.message)}</span>`; announce(e.message, true) }
   }
 
   if ($('#gdrive-connect')) $('#gdrive-connect').onclick = async () => {
@@ -962,10 +962,10 @@ export async function settingsView() {
       await api.put('/api/settings', { ...formData($('#suppliers')) })
       const r = await api.post('/api/suppliers/test', { style: $('#sup-style').value.trim() || 'Gildan 5000' })
       note.innerHTML = r.ok
-        ? `<span style="color:var(--accent)">✓ ${esc(r.label)}</span>`
-        : `<span style="color:var(--red)">✕ ${esc(r.reason || 'No live price came back')}</span>`
+        ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} ${esc(r.label)}</span>`
+        : `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(r.reason || 'No live price came back')}</span>`
       announce(r.ok ? `Distributor connected. ${r.label}` : `Distributor check failed. ${r.reason || 'No live price came back'}`, !r.ok)
-    } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
+    } catch (e) { note.innerHTML = `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(e.message)}</span>`; announce(e.message, true) }
   }
 
   // Delivery: verify + test buttons. These save first so the just-typed credentials are used.
@@ -975,7 +975,7 @@ export async function settingsView() {
   if ($('#verify-email')) $('#verify-email').onclick = async () => {
     $('#email-test-note').textContent = 'Checking…'; await saveDelivery()
     const r = await api.post('/api/notify/verify-email').catch((e) => ({ ok: false, error: e.message }))
-    $('#email-test-note').textContent = r.ok ? 'SMTP connection OK ✓' : `Failed: ${r.error || 'check credentials'}`
+    $('#email-test-note').textContent = r.ok ? 'SMTP connection OK' : `Failed: ${r.error || 'check credentials'}`
     // Spoken as well as shown. These spans sit beside the button they answer for, deliberately —
     // the fix is to make them audible, not to move them into a toast. A refusal interrupts,
     // because "will my customer actually receive this estimate?" has no other answer in the app.
@@ -985,14 +985,14 @@ export async function settingsView() {
     const to = await promptModal({ title: 'Send a test email', label: 'Send it to', type: 'email', value: s.shop_email || me.owner_email || '', okLabel: 'Send test' }); if (!to) return
     $('#email-test-note').textContent = 'Sending…'; await saveDelivery()
     const r = await api.post('/api/notify/test', { to, channel: 'email' }).catch((e) => ({ delivered: false, error: e.message }))
-    $('#email-test-note').textContent = r.delivered ? 'Sent ✓ check the inbox' : `Not sent: ${r.error || 'add SMTP credentials'}`
+    $('#email-test-note').textContent = r.delivered ? 'Sent. Check the inbox' : `Not sent: ${r.error || 'add SMTP credentials'}`
     announce(r.delivered ? 'Test email sent — check the inbox.' : `Test email not sent. ${r.error || 'add SMTP credentials'}`, !r.delivered)
   }
   if ($('#test-sms')) $('#test-sms').onclick = async () => {
     const to = await promptModal({ title: 'Send a test text', label: 'Send it to', type: 'tel', value: s.shop_phone || '', placeholder: '+17145551234', hint: 'Use the full international format, e.g. +17145551234.', okLabel: 'Send test' }); if (!to) return
     $('#sms-test-note').textContent = 'Sending…'; await saveDelivery()
     const r = await api.post('/api/notify/test', { to, channel: 'sms' }).catch((e) => ({ delivered: false, error: e.message }))
-    $('#sms-test-note').textContent = r.delivered ? 'Sent ✓' : `Not sent: ${r.error || 'add Twilio credentials'}`
+    $('#sms-test-note').textContent = r.delivered ? 'Sent' : `Not sent: ${r.error || 'add Twilio credentials'}`
     announce(r.delivered ? 'Test text sent.' : `Test text not sent. ${r.error || 'add Twilio credentials'}`, !r.delivered)
   }
 

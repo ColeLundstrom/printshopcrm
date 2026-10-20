@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, setPage, empty, on, go , onOnce} from '../core.js'
+import { api, $, $$, esc, icon, money, money0, setPage, empty, on, go , onOnce} from '../core.js'
 
 /**
  * Job Profitability: real revenue vs. real cost on every
@@ -30,11 +30,11 @@ export async function roiView() {
 
     ${t.losers || t.thin ? `<div class="card" style="border-color:${t.losers ? 'rgba(255,95,109,.4)' : 'rgba(247,185,85,.4)'};margin-bottom:16px">
       <div class="card-b" style="font-size:13px">
-        ${t.losers ? `<strong style="color:var(--red)">⚠ ${t.losers} job${t.losers === 1 ? '' : 's'} losing money.</strong> ` : ''}
+        ${t.losers ? `<strong style="color:var(--red)">${icon('alert', 'ico ico-inline')} ${t.losers} job${t.losers === 1 ? '' : 's'} losing money.</strong> ` : ''}
         ${t.thin ? `<strong style="color:var(--amber)">${t.thin} under 25% margin.</strong> ` : ''}
         These are priced too low for what they cost you. Raise the price or the quantity next time. Sorted worst-first below.
       </div></div>` : `<div class="card" style="border-color:rgba(16,211,154,.3);margin-bottom:16px"><div class="card-b" style="font-size:13px">
-        <strong style="color:var(--accent)">✓ Every job is profitable.</strong> Nothing under 25% margin.</div></div>`}
+        <strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Every job is profitable.</strong> Nothing under 25% margin.</div></div>`}
 
     <div class="card">
       <div class="card-h"><h3>Every job, costed</h3><div class="spacer"></div>
@@ -59,7 +59,7 @@ export async function roiView() {
     <div class="cols" style="margin-top:16px">
       <div class="card"><div class="card-h"><h3>Most profitable</h3></div>
         ${roiList(d.best)}</div>
-      <div class="card"><div class="card-h"><h3>${t.losers ? '✗' : t.below_target ? '⚠' : '✓'} Below your ${t.target}% target</h3>${d.worst.length ? `<div class="spacer"></div><span class="pill ${t.losers ? 'red' : 'amber'}">${d.worst.length}</span>` : ''}</div>
+      <div class="card"><div class="card-h"><h3>${icon(t.losers ? 'x' : t.below_target ? 'alert' : 'check', 'ico ico-inline')} Below your ${t.target}% target</h3>${d.worst.length ? `<div class="spacer"></div><span class="pill ${t.losers ? 'red' : 'amber'}">${d.worst.length}</span>` : ''}</div>
         ${d.worst.length ? roiList(d.worst) : '<div class="card-b dim" style="font-size:12.5px">Every costed job is at or above your target margin. Nothing to watch.</div>'}</div>
     </div>
 

@@ -1714,3 +1714,6 @@ html, body { overflow-x: clip; }
    page/card headings only, so the existing per-screen rules above still win where they exist. */
 .view h1 { letter-spacing: -.025em; line-height: 1.15; }
 .view h2 { letter-spacing: -.015em; }
+
+/* Onboarding's finished mark is a sprite now; size it like the 52px glyph it replaced. */
+.ob-done-ic svg.ico { width: 1em; height: 1em; color: var(--accent); }

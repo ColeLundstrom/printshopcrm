@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, on, go, toast, announce, empty, confirmModal, promptModal, guardLeave, onOnce } from '../core.js'
+import { api, $, $$, esc, icon, money, setPage, on, go, toast, announce, empty, confirmModal, promptModal, guardLeave, onOnce } from '../core.js'
 import { importContacts, importOrders } from './contacts.js'
 
 /**
@@ -135,7 +135,7 @@ function render() {
     // not a set of toggles. The ✓ was the only signal that a step is done and it is a bare glyph a
     // screen reader reads as "check mark", so it is hidden and given words instead.
     return `<button type="button" class="ob-rail-item ${s.done ? 'done' : ''} ${active ? 'on' : ''}" data-goto="${s.key}"${active ? ' aria-current="step"' : ''}>
-      <span class="ob-rail-ic" aria-hidden="true">${s.done ? '✓' : `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`}</span>
+      <span class="ob-rail-ic" aria-hidden="true">${s.done ? `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-check"></use></svg>` : `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${s.icon}"></use></svg>`}</span>
       <span class="ob-rail-t">${esc(s.title)}${s.required ? '' : ' <span class="ob-opt">optional</span>'}${s.done ? ' <span class="sr-only">— done</span>' : ''}</span></button>`
   }).join('')
 
@@ -291,7 +291,7 @@ function panel(key) {
         <div class="row" style="gap:10px;align-items:center;margin-top:6px">
           <button class="btn ghost sm" id="ob-drive-save" type="button">Save Google keys</button>
           <button class="btn" id="ob-drive-connect" type="button" ${haveCreds ? '' : 'disabled title="Save your Client ID and secret first"'}>${connected ? 'Reconnect Google Drive' : 'Connect Google Drive'}</button>
-          <span class="ob-hint" id="ob-drive-note" role="status" aria-live="polite" aria-atomic="true">${connected ? '<span style="color:var(--accent)">✓ Connected — art saves to your Drive</span>' : ''}</span>
+          <span class="ob-hint" id="ob-drive-note" role="status" aria-live="polite" aria-atomic="true">${connected ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Connected — art saves to your Drive</span>` : ''}</span>
         </div>
         ${connected ? '' : '<div class="ob-note">Until you connect, art uploads fall back to limited local storage on our server. Add your Google keys above and connect so nothing gets capped.</div>'}
       </div>${foot()}`
@@ -335,7 +335,7 @@ function panel(key) {
     const cur = state.ai?.current || {}
     const modelOpts = (pid, sel) => { const p = providers.find((x) => x.id === pid); const list = p?.models || []; return (list.length ? list : ['']).map((m) => `<option value="${esc(m)}" ${m === sel ? 'selected' : ''}>${esc(m || '— pick a provider —')}</option>`).join('') }
     const superOn = !!s.ai_api_key_set || !!cur.key_set
-    return `<div class="ob-head"><h2>◍ Turn on AI (your own key) ${superOn ? '<span class="pill green" style="font-size:10px;padding:2px 8px;vertical-align:middle">Supercharged ✓</span>' : ''}</h2>
+    return `<div class="ob-head"><h2>◍ Turn on AI (your own key) ${superOn ? `<span class="pill green" style="font-size:10px;padding:2px 8px;vertical-align:middle">Supercharged ${icon('check', 'ico ico-inline')}</span>` : ''}</h2>
         <p>Add your Anthropic or OpenAI key to supercharge the receptionist and quoting. Without it everything still works; with it, the front-desk bot answers freeform questions and drafts replies. It runs on <strong>your</strong> account and bills to you.</p></div>
       <div id="ob-form" class="ob-form">
         <div class="grid2">
@@ -377,11 +377,11 @@ function panel(key) {
     ['Payments', s.payment_provider==='authorize_net' ? !!(s.anet_transaction_key_set && s.anet_signature_key_set) : s.payment_provider!=='off' && !!s.stripe_secret_set, 'Deposits and balances into your account'],
   ]
   const essRows = ess.map(([name, ok, why]) => `<div class="ob-ess-row" style="display:flex;align-items:center;gap:10px;padding:7px 0">
-    <span style="font-weight:600;color:${ok ? 'var(--accent)' : 'var(--muted, #999)'}">${ok ? '✓' : '○'}</span>
+    <span style="font-weight:600;color:${ok ? 'var(--accent)' : 'var(--txt-3)'}">${ok ? icon('check', 'ico ico-inline') : '○'}</span>
     <span style="min-width:110px;font-weight:600">${esc(name)}</span>
     <span class="dim" style="font-size:12px">${ok ? esc(why) : 'Not connected yet'}</span></div>`).join('')
   return `<div class="ob-done">
-    <div class="ob-done-ic">${p.pct === 100 ? '✓' : '◔'}</div>
+    <div class="ob-done-ic">${p.pct === 100 ? icon('check', 'ico') : '◔'}</div>
     <h1>${p.pct === 100 ? "You're fully set up" : "You're ready to go"}</h1>
     <p>${p.done} of ${p.total} setup steps done. Here's what's connected:</p>
     <div class="ob-ess" style="text-align:left;max-width:420px;margin:12px auto 20px">${essRows}</div>
@@ -419,7 +419,7 @@ function wire(key) {
         const r = await api.post('/api/onboarding/configure', { description })
         const out = $('#ob-desc-out'); out.hidden = false
         out.innerHTML = r.changed
-          ? `<strong style="color:var(--accent)">✓ Configured ${r.changed} setting${r.changed === 1 ? '' : 's'}${r.methods.length ? ` · ${esc(r.methods.join(', '))}` : ''}</strong><ul>${r.applied.map((a) => `<li>${esc(a)}</li>`).join('')}</ul><div class="ob-hint">Review them in the next step — nothing's locked.</div>`
+          ? `<strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Configured ${r.changed} setting${r.changed === 1 ? '' : 's'}${r.methods.length ? ` · ${esc(r.methods.join(', '))}` : ''}</strong><ul>${r.applied.map((a) => `<li>${esc(a)}</li>`).join('')}</ul><div class="ob-hint">Review them in the next step — nothing's locked.</div>`
           : `<span class="dim">Didn't catch specific numbers — no problem, set them in the next step.</span>`
         state.data = await api.get('/api/onboarding').catch(() => state.data)
         setTimeout(() => { state.i = FLOW.indexOf('quote'); render() }, 1400)
@@ -443,7 +443,7 @@ function wire(key) {
         const secs = el < 950 ? `${Math.max(1, Math.round(el))}ms` : `${(el / 1000).toFixed(1)}s`
         const e = r.estimate || {}, o = r.order || {}
         out.hidden = false
-        out.innerHTML = `<strong style="color:var(--accent)">✓ Quoted in ${secs}</strong>
+        out.innerHTML = `<strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Quoted in ${secs}</strong>
           <ul>
             <li><strong>${esc(e.estimate_number || '')}</strong> — ${money(e.total)} for ${r.pieces || o.total_pieces || ''} × ${esc(o.garment || 'garments')}</li>
             <li>Read by ${o.source === 'model' ? 'your AI model' : 'the built-in reader'}: ${esc(o.decoration || '')}${o.garment_color ? ` · ${esc(o.garment_color)}` : ''}${o.due_hint ? ` · due <strong>${esc(o.due_hint)}</strong>` : ''}</li>
@@ -520,10 +520,10 @@ function wire(key) {
         const r = await api.post('/api/notify/test', { channel, to: to.trim() })
         const failed = !r || r.error || r.delivered === false
         note.innerHTML = !r || r.error
-          ? `<span style="color:var(--red)">✕ ${esc((r && r.error) || 'Send failed')}</span>`
+          ? `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc((r && r.error) || 'Send failed')}</span>`
           : r.delivered === false
             ? `<span style="color:var(--amber)">Saved, but not delivered yet (${esc(r.via || 'no mail transport')}). Finish your ${channel === 'email' ? 'SMTP' : 'Twilio'} details to actually send.</span>`
-            : `<span style="color:var(--accent)">✓ Test ${channel === 'email' ? 'email' : 'text'} sent — check it arrived</span>`
+            : `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Test ${channel === 'email' ? 'email' : 'text'} sent — check it arrived</span>`
         // This is the first screen a new shop ever sees, and this span is the only answer it gives
         // to "will my customers actually receive anything". Say it, and interrupt on a refusal.
         announce(failed
@@ -549,9 +549,9 @@ function wire(key) {
       note.textContent = 'Testing…'
       try {
         const r = await api.post('/api/ai/test', { provider, model: $('#ai-model').value, api_key: $('#ai-key,[name=ai_api_key]', $('#ob-form')).value?.trim?.() || $('[name=ai_api_key]').value.trim(), use_saved: !$('[name=ai_api_key]').value.trim() })
-        note.innerHTML = r.available ? `<span style="color:var(--accent)">✓ Connected — ${esc(r.model || '')}</span>` : `<span style="color:var(--red)">✕ ${esc(r.reason || 'Failed')}</span>`
+        note.innerHTML = r.available ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Connected — ${esc(r.model || '')}</span>` : `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(r.reason || 'Failed')}</span>`
         announce(r.available ? `AI connected — ${r.model || ''}` : `AI test failed. ${r.reason || 'Failed'}`, !r.available)
-      } catch (e) { note.innerHTML = `<span style="color:var(--red)">✕ ${esc(e.message)}</span>`; announce(e.message, true) }
+      } catch (e) { note.innerHTML = `<span style="color:var(--red)">${icon('x', 'ico ico-inline')} ${esc(e.message)}</span>`; announce(e.message, true) }
     }
   }
 
@@ -559,7 +559,7 @@ function wire(key) {
     $('#dist-check').onclick = async () => {
       const note = $('#dist-note'); note.textContent = 'Saving & checking…'
       try { await saveSettings($('#ob-form')); const st = await api.get('/api/suppliers/status')
-        note.innerHTML = st.connected ? `<span style="color:var(--accent)">✓ Connected: ${[st.ss && 'S&S', st.sanmar && 'SanMar', st.alpha && 'AlphaBroder'].filter(Boolean).join(', ')}</span>` : '<span style="color:var(--amber)">No distributor connected yet — check the credentials.</span>'
+        note.innerHTML = st.connected ? `<span style="color:var(--accent)">${icon('check', 'ico ico-inline')} Connected: ${[st.ss && 'S&S', st.sanmar && 'SanMar', st.alpha && 'AlphaBroder'].filter(Boolean).join(', ')}</span>` : '<span style="color:var(--amber)">No distributor connected yet — check the credentials.</span>'
         announce(st.connected
           ? `Distributor connected: ${[st.ss && 'S&S', st.sanmar && 'SanMar', st.alpha && 'AlphaBroder'].filter(Boolean).join(', ')}`
           : 'No distributor connected yet — check the credentials.', !st.connected)
