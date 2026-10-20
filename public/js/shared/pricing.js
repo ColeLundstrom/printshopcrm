@@ -451,6 +451,76 @@ export function marginVerdict(pct) {
   return { level: 'good', label: 'Strong' }
 }
 
+// Round UP to the cent. The 1e4 pass strips float dust first, so 55 / 0.55 (=100.00000000000001)
+// is $100.00 and not $100.01 — a walk-away price must never be a cent higher than it needs to be.
+const ceilCents = (n) => round2(Math.ceil(Math.round(Number(n) * 1e6) / 1e4) / 100)
+
+/**
+ * Walk-away price: the smallest revenue (to the cent) at which `cost` earns `targetPct` margin,
+ * using the same definition margin() reports — profit ÷ revenue — so the price this returns reads
+ * as at least `targetPct` on every screen.
+ *
+ *   priceForMargin(55, 45) → 100      (100 − 55 = 45 kept on 100)
+ *
+ * Returns null whenever no honest number exists: a target of 100% or more (no price keeps every
+ * dollar), a negative or non-numeric cost, or a non-numeric target. A cost of 0 needs no revenue
+ * to hit any achievable target, so it returns 0 and the caller decides what to say about it.
+ * A negative target is arithmetic, not an error: it is the price that loses exactly that much.
+ */
+export function priceForMargin(cost, targetPct) {
+  if (cost == null || targetPct == null || cost === '' || targetPct === '') return null
+  const c = Number(cost), t = Number(targetPct)
+  if (!Number.isFinite(c) || !Number.isFinite(t) || c < 0 || t >= 100) return null
+  if (c === 0) return 0
+  return ceilCents(c / (1 - t / 100))
+}
+
+/**
+ * Plan for raising a quote's subtotal to `target` by scaling garment-line unit prices by one common
+ * factor. Pure: it returns the changes and never touches `items`, so the editor applies them through
+ * its own redraw/totals path and can put back exactly what it changed.
+ *
+ * Only sized garment lines with a positive unit price are scaled. Fees, discounts and size
+ * upcharges keep their amounts (a discount the shop negotiated is not silently shrunk), and a
+ * per-location line's rate is derived from its location prices, so it is left alone. Each new
+ * unit price is rounded UP to the cent, which is what guarantees the new subtotal reaches target.
+ *
+ * Returns null when there is nothing to do (already at or above target) or nothing to scale.
+ */
+export function raiseToSubtotal(items, target, upcharges) {
+  const list = Array.isArray(items) ? items : []
+  const goal = Number(target)
+  if (target == null || !Number.isFinite(goal)) return null
+  let current
+  try { current = computeTotals(list, 0, upcharges).subtotal } catch { return null } // an invalid line: the editor already shows "—"
+  if (current >= goal) return null
+  let base = 0
+  const scalable = []
+  list.forEach((it, index) => {
+    if (!it?.sizes || it.decoration_pricing) return
+    const qty = sizeTotal(it.sizes), price = Number(it.unit_price) || 0
+    if (qty > 0 && price > 0) { scalable.push({ index, price }); base += qty * price }
+  })
+  if (!(base > 0)) return null
+  const factor = 1 + (goal - current) / base
+  return { factor, changes: scalable.map(({ index, price }) => ({ index, from: price, to: ceilCents(price * factor) })) }
+}
+
+/**
+ * Does the estimate know what this line's blank costs? lineBlankCost() answers 0 both for "free"
+ * and for "no idea", and a margin built on an unknown blank is a margin built on a free one.
+ * Known: a stamped garment_cost / blank_cost (including an explicit 0 — the shop said so), a
+ * matrix marked customer-supplied, or a description the garment table recognises.
+ */
+export function lineBlankCostKnown(it) {
+  if (it?.matrix?.customerSupplied === true) return true
+  for (const f of ['garment_cost', 'blank_cost']) {
+    const v = it?.[f]
+    if (v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0) return true
+  }
+  return lineBlankCost(it) > 0
+}
+
 /* ---------- embroidery + DTF price charts ---------- */
 
 /**
