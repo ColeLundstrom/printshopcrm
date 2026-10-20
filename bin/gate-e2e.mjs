@@ -1043,6 +1043,7 @@ try {
     const ticket = await fetch(`${BASE}${tkUrl}`, { headers: { Cookie: cookieHeader() } })
     const tkHtml = await ticket.text()
     chk('the work ticket the press operator holds says RUSH', String(/class="rush"/.test(tkHtml)), '^true$')
+    chk('…and carries a QR code to the staff job page', tkHtml, 'class="tk-qr"><svg [^>]*aria-label="Open this job"')
     /* AGPL §13 — "all users interacting with it remotely through a computer network". The work
      * ticket is the one /p/ route that builds its own <!doctype> rather than going through pPage's
      * renderer, which appends the offer to every other public document, so it never inherited one.

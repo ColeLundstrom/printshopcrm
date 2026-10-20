@@ -64,6 +64,7 @@ import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { estimateTermsIn, commercialEstimateChanged, invalidateEstimateApproval, recordEstimateApproval, estimateApprovalHistory, latestAcceptedEstimate, assertEstimateRevision } from './lib/estimate-approvals.mjs'
+import { qrSvg } from './lib/qr.mjs'
 import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
 import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
@@ -3945,6 +3946,7 @@ app.get('/api/invoices/:id/pdf', wrap((req, res) => {
     contact: savedDocumentContact(i,get('SELECT * FROM contacts WHERE id = ?', i.contact_id),'invoice'),
     settings: getSettings(), items: est ? parse(est.items, []) : [{ description: 'Custom apparel order', qty: 1, unit_price: i.amount_due }],
     payments: all('SELECT * FROM payments WHERE invoice_id = ? ORDER BY id', i.id), upcharges: getUpcharges(),
+    payUrl: publicOrigin(req) + shareUrl('pay', i.id), // QR-to-pay; lib/pdf.mjs draws it only while a balance is owed
   })
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="${i.invoice_number}.pdf"`)
   res.send(pdf)
@@ -9457,6 +9459,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       ${depositBtn}
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>
     </form>
+    <div class="qr-pay" style="text-align:center;margin-top:16px">${qrSvg(publicOrigin(req) + shareUrl('pay', id), { size: 112, label: 'Scan to pay on your phone' })}<div class="tag">Scan to pay on your phone</div></div>
     <div class="terms">Secure payment through ${s.shop_name}'s ${providerName(s)} account. Your card details go directly to the payment provider.</div>
     <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
 }))
@@ -9572,7 +9575,8 @@ app.get('/p/ticket/:id', pPage((req, res) => {
           <div class="cust">${esc(j.contact_name || '')}${j.company ? ` · ${esc(j.company)}` : ''}${j.phone ? ` · ${esc(j.phone)}` : ''}</div></div>
         <div class="tk-r">${j.rush ? '<div class="rush">RUSH</div>' : ''}
           <div class="due"><span>DUE</span><strong>${esc(j.due_date || '—')}</strong></div>
-          <div class="tk-bc">${code128Svg(j.job_number, { height: 44, module: 1.6 })}<div class="tk-bc-num">${esc(j.job_number)} — scan to advance</div></div></div>
+          <div class="tk-bc">${code128Svg(j.job_number, { height: 44, module: 1.6 })}<div class="tk-bc-num">${esc(j.job_number)} — scan to advance</div></div>
+          <div class="tk-qr">${qrSvg(`${publicOrigin(req)}/#/jobs/${j.id}`, { size: 84, label: 'Open this job' })}<div class="tk-bc-num">Scan to open the job (staff sign-in)</div></div></div>
       </div>
       <div class="tk-meta">
         ${[['Decoration', j.decoration], ['Garment', sizeTables.map((b) => b.garment.split('—')[0].trim()).filter(Boolean).join(' + ') || j.garment], ['Stage', String(j.stage || '').replace('_', ' ')],
