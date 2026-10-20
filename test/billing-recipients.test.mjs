@@ -55,7 +55,11 @@ test('real sends use saved buyer/AP identities, stale outbox is held, revisions 
     // real sendEmail/template/queue/outbox code runs, without making even a loopback SMTP call.
     // Resolve the public ESM entry from inside the demo, matching lib/notify.mjs. A deep
     // filesystem import bypasses package exports and broke when Nodemailer moved its builds.
+    // The shop SMTP host is resolved and vetted (lib/notify.mjs) before the transport is built, so
+    // the fixture host resolves to a public documentation address; nothing ever connects to it.
     writeFileSync(preload,`import nodemailer from 'nodemailer';
+      import dns from 'node:dns/promises';
+      const realLookup=dns.lookup;dns.lookup=async(host,...rest)=>host==='fixture.invalid'?[{address:'198.51.100.7',family:4}]:realLookup(host,...rest);
       import {appendFileSync,existsSync} from 'node:fs';
       nodemailer.createTransport=()=>({close(){},async sendMail(message){appendFileSync(${JSON.stringify(capture)},JSON.stringify(message)+'\\n');
       while(existsSync(${JSON.stringify(hold)}))await new Promise(r=>setTimeout(r,10)); return {messageId:'fixture-only'};}});`)

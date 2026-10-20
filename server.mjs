@@ -20,6 +20,7 @@ import * as agentProduction from './lib/production.mjs'
 import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack-operator.mjs'
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
+import { forgetMember } from './lib/member-cleanup.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
 import { tvSnapshot } from './lib/tv.mjs'
 import { shopInsights } from './lib/insights.mjs'
@@ -93,7 +94,7 @@ import { connectReady, createExpressAccount, createAccountLink, getConnectAccoun
 import { initPaymentCollections, collectionSnapshot, collectionSnapshotHash, collectionError, reserveCollection, resumeCollection, checkCollection, paymentCollection, finishCollection, verifyCollectionPayment, receiveCollectionPayment, markCollectionReceipt, holdCollectionReceipt, publicCollection, collectionStatus, invoiceCollectionHold } from './lib/payment-collections.mjs'
 import { parseShopProfile, onboardingChecklist, onboardingSteps, SERVICE_DEFAULTS } from './lib/onboarding.mjs'
 import { initAgent, getBotConfig, saveBotConfig, startSession, sessionByPublicId, sessionMessages, listSessions, respond, agentReply, OFFLINE_REPLY, MESSAGE_CAP, transcriptFor } from './lib/agent.mjs'
-import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable, oneRecipient, oneDestination } from './lib/notify.mjs'
+import { sendEmail, sendSms, notifyStatus, verifyEmail, captureLead, platformEmailDeliverable, oneRecipient, oneDestination, smtpHostProblem } from './lib/notify.mjs'
 import { verifySlackSignature, postMessage as slackPost, testAuth as slackTestAuth, slackToPlain, findEmail, quoteBlocks, needsMoreBlocks, slackConfigured } from './lib/slack.mjs'
 import { quickQuote, priceIntake, priceIntakeLive } from './lib/quickquote.mjs'
 import { resolveBook, serviceMatrix, serviceNames, STOCK_SERVICES, QTY_BANDS, AXIS, AXIS_LABEL, bandMinFor, bandFor } from './lib/pricebook.mjs'
@@ -5670,7 +5671,8 @@ app.post('/api/agent/preview', requireRole('manager'), async (req, res) => {
 
 app.get('/api/notify/status', wrap((_req, res) => res.json(notifyStatus(getSettings()))))
 
-app.post('/api/notify/verify-email', async (_req, res) => {
+// manager: it opens an outbound connection to a host the shop chose (see smtpPrivateAllowed).
+app.post('/api/notify/verify-email', requireRole('manager'), async (_req, res) => {
   try { res.json(await verifyEmail(getSettings())) } catch (e) { res.json({ ok: false, error: e.message }) }
 })
 
@@ -8409,8 +8411,11 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
     error: `Token works \u2014 connected to ${auth.team} \u2014 but we couldn't reach this shop's own web address to complete the check. If this shop isn't on a public https:// address yet, Slack won't be able to reach it either.` })
 }))
 
-app.put('/api/settings', requireRole('manager'), wrap((req, res) => {
+app.put('/api/settings', requireRole('manager'), wrap(async (req, res) => {
   const patch = { ...(req.body || {}) }
+  // A shop's SMTP host must not point into this server's own network (lib/notify.mjs re-checks
+  // and pins the address at every connect; this is so the shop hears it while saving).
+  if ('smtp_host' in patch) { const why = await smtpHostProblem(patch.smtp_host); if (why) return res.status(400).json({ error: why, code: 'smtp_host_blocked' }) }
   for(const key of ['brand_primary','brand_secondary'])if(key in patch){if(!validBrandColor(patch[key]))return res.status(400).json({error:'Choose a six-digit hex color, such as #2563eb, or leave it blank for the default.'});patch[key]=patch[key].toLowerCase()}
   if('brand_theme' in patch && !BRAND_THEMES.includes(patch.brand_theme))return res.status(400).json({error:'Choose a light, dark or system appearance.'})
   if ('payment_provider' in patch && !['stripe','authorize_net','off'].includes(patch.payment_provider)) return res.status(400).json({error:'Choose Stripe, Authorize.net or off.'})
@@ -8586,7 +8591,7 @@ app.delete('/api/members/:id', wrap((req, res) => {
   if (existing.role === 'owner' && !hasRole(req, 'owner')) return res.status(403).json({ error: 'Only an owner can remove an owner.' })
   if (req.member && existing.id === req.member.id) return res.status(400).json({ error: "You can't remove your own account." })
   try {
-    deleteMember(req.tenant.id, +req.params.id)
+    if (deleteMember(req.tenant.id, +req.params.id)) forgetMember(existing.id)
     res.json({ ok: true })
   } catch (e) { res.status(e.code === 'last_owner' ? 409 : 400).json({ error: e.message }) }
 }))
