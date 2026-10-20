@@ -1857,6 +1857,9 @@ app.get('/api/auth/me', wrap((req, res) => {
     // Who's signed in + what they may do — the client hides controls it isn't allowed to use.
     member: req.member ? { name: req.member.name, email: req.member.email, role: req.member.role } : null,
     role: req.role, is_owner: req.role === 'owner', can_manage: hasRole(req, 'manager'),
+    // The department queue this member opens to. Boot used to fetch the whole /api/production
+    // queue on every cold load only to read this one field.
+    preferred_department: req.member ? (get('SELECT department FROM production_preferences WHERE member_id=?', req.member.id)?.department || '') : '',
   })
 }))
 
@@ -9862,7 +9865,16 @@ app.use(express.static(PUBLIC, {
     // The SPA imports its view modules by fixed path (no build hashing), so a stale cached module
     // would silently break new features after a deploy. Force JS/CSS/HTML to always revalidate
     // (a 304 when unchanged keeps it fast); let images/fonts cache for a day.
-    if (/\.(js|mjs|css|html)$/.test(p)) res.setHeader('Cache-Control', 'no-cache')
+    //
+    // The exception is a request carrying the shell's own ?v=<content hash> stamp (index.html's
+    // stylesheets and app.js). That URL names exactly one version of the file — assetVersion()
+    // hashes every file stamped that way — so it can be cached for good and a warm load makes no
+    // revalidation round trips for it. Only the exact current stamp qualifies: a stale or made-up
+    // ?v= still revalidates. Views that app.js imports carry no query and stay on no-cache.
+    const v = res.req?.query?.v
+    const stamped = typeof v === 'string' && v === assetVersion() && /\.(js|css)$/.test(p) && !/[\\/]uploads[\\/]/.test(p)
+    if (stamped) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    else if (/\.(js|mjs|css|html)$/.test(p)) res.setHeader('Cache-Control', 'no-cache')
     else res.setHeader('Cache-Control', 'public, max-age=86400')
     // Uploaded art (customer/attacker-supplied) is served from the app origin. Neutralize any
     // active content — an uploaded SVG with an inline <script> would otherwise run as us.
@@ -9874,16 +9886,25 @@ app.use(express.static(PUBLIC, {
 }))
 
 /**
- * The SPA shell, with a cache-busting version stamped into the CSS/JS URLs. The version is the
- * newest mtime of app.css/app.js, so a deploy that changes either forces every browser to fetch
- * the new file instead of serving a stale cached copy (the "unstyled page" failure). Computed
- * once and cached; a manual edit + restart re-reads it.
+ * The SPA shell, with a cache-busting version stamped into the CSS/JS URLs. The version is a hash
+ * of the CONTENT of every file index.html stamps with ?v=__ASSET_V__ (all its stylesheets and
+ * app.js), so a deploy that changes any of them forces every browser to fetch the new file instead
+ * of serving a stale cached copy (the "unstyled page" failure). It used to be the newest mtime of
+ * app.css and app.js alone, which was fine while those URLs were revalidated on every load; now
+ * that a stamped URL is cached as immutable, a change to calendar.css that left app.css alone
+ * would have been stale for a year. Computed once per process; a manual edit + restart re-reads it.
  */
+let ASSET_VERSION = null
 const assetVersion = () => {
+  if (ASSET_VERSION) return ASSET_VERSION
   try {
-    const mt = (p) => { try { return statSync(join(PUBLIC, p)).mtimeMs } catch { return 0 } }
-    return Math.floor(Math.max(mt('css/app.css'), mt('js/app.js'))).toString(36)
-  } catch { return '1' }
+    const shell = readFileSync(join(PUBLIC, 'index.html'), 'utf8')
+    const files = [...new Set([...shell.matchAll(/["']\/([^"'?]+)\?v=__ASSET_V__/g)].map((m) => m[1]))].sort()
+    const h = crypto.createHash('sha1')
+    for (const f of files) { h.update(f); try { h.update(readFileSync(join(PUBLIC, f))) } catch { h.update('missing') } }
+    ASSET_VERSION = h.digest('hex').slice(0, 12)
+  } catch { ASSET_VERSION = '1' }
+  return ASSET_VERSION
 }
 // Edition: the same codebase ships as 'pro' (full) or 'lite' (a stripped, separately-branded
 // invoice-only product). Everything below is env-driven, so pro is untouched when PSC_EDITION is

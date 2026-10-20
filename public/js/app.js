@@ -63,20 +63,20 @@ const NAV = [
   { label: 'Production', section: true },
   { href: '/costing', ico:'roi',name:'Machine & job costs',manage:true,advanced:true },
   { href: '/production', ico: 'board', name: 'Department queue' },
-  { href: '/purchasing', ico: 'orders', name: 'Purchasing' },
+  { href: '/purchasing', ico: 'cart', name: 'Purchasing' },
   { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
   { href: '/tv', ico: 'tv', name: 'Shop TV' },
   { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
   { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
   { advanced: true, href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
   { advanced: true, href: '/capacity', ico: 'capacity', name: 'Capacity' },
-  { advanced: true, href: '/scan', ico: 'board', name: 'Floor Mode' },
+  { advanced: true, href: '/scan', ico: 'scan', name: 'Floor Mode' },
   { label: 'Money', section: true },
   { href: '/pricing', ico: 'pricing', name: 'Pricing' },
   { href: '/profit-planner', ico: 'roi', name: 'Profit planner', manage: true },
   { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
   { advanced: true, href: '/roi', ico: 'roi', name: 'Profitability' },
-  { advanced: true, href: '/books', ico: 'invoices', name: 'Books & A/R' },
+  { advanced: true, href: '/books', ico: 'ledger', name: 'Books & A/R' },
   { label: 'Customers', section: true },
   { href: '/contacts', ico: 'customers', name: 'Customers' },
   { label: 'Automate', section: true },
@@ -86,7 +86,7 @@ const NAV = [
   { label: 'More', section: true },
   { advanced: true, href: '/products', ico: 'products', name: 'Products' },
   { advanced: true, href: '/activity', ico: 'activity', name: 'Activity' },
-  { advanced: true, href: '/developers', ico: 'settings', name: 'Developers', manage: true },
+  { advanced: true, href: '/developers', ico: 'code', name: 'Developers', manage: true },
   { advanced: true, href: '/outbox', ico: 'outbox', name: 'Outbox' },
   { href: '/billing', ico: 'billing', name: 'Hosting', owner: true },
   { advanced: true, href: '/support', ico: 'customers', name: 'Support the project' },
@@ -308,6 +308,21 @@ async function drawChrome() {
   } catch (e) { console.error('chrome refresh failed', e) }
 }
 
+/* boot() awaits drawChrome() and then calls navigate(), which used to call refreshChrome() and
+ * fetch /api/settings and the badges a second time 250 ms after the first paint. The first
+ * navigation after a full chrome draw skips that; later navigations only refresh the badge
+ * counts. Settings and branding are re-read where they actually change: the realtime 'branding'
+ * event and the psc:settings event Settings, Branding and team-role saves dispatch. */
+let chromeFresh = false
+let badgeTimer = null
+function refreshBadges() {
+  if (badgeTimer || chromeTimer) return   // a full refresh already pending carries the badges too
+  badgeTimer = setTimeout(async () => {
+    badgeTimer = null
+    try { badges = await api.get('/api/chrome/badges'); drawNav() } catch (e) { console.error('badge refresh failed', e) }
+  }, 250)
+}
+
 /**
  * Coalesce the bursts. One drag on the job board broadcasts to every open tab in the shop, and a
  * busy floor produces a stream of them; each event used to start its own round trip, so the tabs
@@ -362,7 +377,8 @@ async function navigate() {
   // Replay the entrance animation on every navigation (force reflow so it re-triggers).
   const v = $('#view')
   v.classList.remove('view-in'); void v.offsetWidth; v.classList.add('view-in')
-  refreshChrome()
+  if (chromeFresh) chromeFresh = false
+  else refreshBadges()
 }
 
 window.addEventListener('hashchange', navigate)
@@ -370,7 +386,7 @@ window.addEventListener('hashchange', navigate)
 /* Setting location.hash to the value it already holds fires no hashchange, so every sidebar link,
  * every tabbar link and every in-view `<a href="#/...">` is inert on the screen it points at. That
  * is invisible when the screen is fine and a trap when it is not: a view that failed to load, a
- * list gone stale behind a lost websocket, the 404 panel's "Back to dashboard" while standing on
+ * list gone stale behind a lost websocket, the 404 panel's "Back to Today" while standing on
  * '#/'. The instinct is always to click the nav item again, so make that mean "repaint this". */
 const sameHash = (e) => {
   if (e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
@@ -569,7 +585,7 @@ function handleRealtime(m) {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
   if (m.type === 'notify') {
     toast(`${m.data?.title || 'Update'}${m.data?.body ? ' — ' + m.data.body : ''}`)
-    refreshChrome()
+    refreshBadges()
   } else if (m.type === 'branding') {
     refreshChrome()
   } else if (m.type === 'production') {
@@ -582,14 +598,14 @@ function handleRealtime(m) {
     if (path.startsWith('/board') || path === '/calendar') { runRouter(); announce('The job board was updated.') }
     // The wallboard repaints in place (it diffs cards so a moved job glows) rather than re-routing.
     else if (path === '/tv') window.__pscTvRefresh?.()
-    refreshChrome()
+    refreshBadges()
   } else if (m.type === 'conversation' || m.type === 'chat') {
     // The receptionist screen holds an unsaved form — knowledge base, greeting, persona, FAQ rows
     // — and rtBroadcast('chat') reaches the WHOLE shop on every takeover reply, so a colleague
     // answering a website chat from their own desk used to wipe whatever this person was writing.
     if (path.startsWith('/receptionist')) { if (!window.__pscAgentDirty?.()) runRouter() }
     else if (path.startsWith('/conversations')) runRouter()
-    refreshChrome()
+    refreshBadges()
   }
 }
 
@@ -608,7 +624,9 @@ async function boot() {
     // (an emailed estimate/proof link, a bookmarked job) is honored, so onboarding never hijacks it.
     const h = (location.hash || '').replace(/^#/, '')
     const atRoot = h === '' || h === '/'
-    if(atRoot && me.onboarding_done !== false){try{const p=await api.get('/api/production');if(p.preferred)history.replaceState(null,'','#/production?department='+encodeURIComponent(p.preferred))}catch{}}
+    // /api/auth/me carries the member's preferred department, so a cold load no longer fetches the
+    // whole production queue just to read it. Single-tenant has no member and never has one.
+    if(atRoot && me.onboarding_done !== false && me.preferred_department)history.replaceState(null,'','#/production?department='+encodeURIComponent(me.preferred_department))
     if (me.authed && me.single_tenant !== true && me.onboarding_done === false && atRoot) {
       location.hash = '#/welcome'
     }
@@ -631,6 +649,7 @@ async function boot() {
   // two small requests in parallel and it also removes the flash of default brand text that used to
   // show for a frame before the debounced repaint replaced it.
   await drawChrome()
+  chromeFresh = true
   drawNav()
   navigate()
   connectRealtime()
