@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createHttpTestServer } from './helpers/http-test-server.mjs'
+import { isoInZone } from '../lib/shop-time.mjs'
 
 test('Today reports complete tenant counts and truthful overdue work without changing records', { timeout: 120000 }, async () => {
   const temp = mkdtempSync(join(tmpdir(), 'psc-today-')), dest = join(temp, 'demo'), server = await createHttpTestServer()
@@ -19,7 +20,8 @@ test('Today reports complete tenant counts and truthful overdue work without cha
     db = new DatabaseSync(join(dest, 'data/tenants', readdirSync(join(dest, 'data/tenants'))[0], 'printshop.db'))
     db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON')
     db.exec("UPDATE jobs SET status='complete'; UPDATE invoices SET status='void'")
-    const today = new Date().toISOString().slice(0,10)
+    // Shop-local (the server's zone for a shop with no timezone set), as /api/today counts it.
+    const today = isoInZone('')
     const date = n => new Date(Date.parse(today + 'T12:00:00Z') + n * 86400000).toISOString().slice(0,10)
     const job = db.prepare("INSERT INTO jobs(job_number,title,stage,status,due_date,approval_gated) VALUES(?,?,'production','active',?,0)")
     job.run('TODAY-LATE', 'Late job', date(-3)); job.run('TODAY-NOW', 'Current job', today)

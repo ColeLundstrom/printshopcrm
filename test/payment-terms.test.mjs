@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { createHttpTestServer } from './helpers/http-test-server.mjs'
 import { paymentDueDate } from '../lib/payment-terms.mjs'
+import { isoInZone } from '../lib/shop-time.mjs'
 
 test('date-only terms cross leap days, year end and daylight-saving boundaries without local-clock drift', () => {
   assert.equal(paymentDueDate('due_on_receipt', '2028-02-29'), '2028-02-29')
@@ -62,7 +63,9 @@ test('customer payment terms set invoice due dates while production dates and ol
     assert.equal((await req('/api/estimates/' + estimate.id + '/convert', { commercial_revision: detail.commercial_revision, payment_due_date: '2027-02-30' })).status, 400)
     assert.equal((await req('/api/estimates/' + estimate.id + '/convert', { commercial_revision: detail.commercial_revision, due_date: 'not-a-date' })).status, 400)
     assert.equal((await ok('/api/estimates/' + estimate.id)).invoice, undefined)
-    const before = new Date().toISOString().slice(0, 10)
+    // The shop's date (no timezone set = the server's zone), not the UTC one: net terms count
+    // from the day it is in the shop, which in a California evening is not the UTC date.
+    const before = isoInZone('')
     const converted = await ok('/api/estimates/' + estimate.id + '/convert', { commercial_revision: detail.commercial_revision, production_due_date: '2027-02-12' })
     const due = (await ok('/api/invoices/' + converted.invoice_id)).due_date
     const expected = new Date(Date.parse(before + 'T00:00:00Z') + 30 * 864e5).toISOString().slice(0, 10)

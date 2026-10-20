@@ -265,6 +265,10 @@ Visit `https://shop.example.com`. With `PSC_AUTH=1` you'll get a signup screen; 
 you create is the shop owner. Then go to **Settings** and set your shop name, address, tax rate,
 hourly rate, and utilization — the costing engine needs those to tell you the truth about margin.
 
+Set the shop's time zone in **Settings → Shop** (or `PSC_TIMEZONE` in `.env`) if the server does
+not run in the shop's own zone — most servers run in UTC. It decides when "today" rolls over for due
+dates, overdue invoices and ship dates. See [docs/TIMEZONE.md](docs/TIMEZONE.md).
+
 ---
 
 ## Backups

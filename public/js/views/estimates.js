@@ -7,6 +7,7 @@ import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount,
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
 import { matrixPickerModal } from './matrices.js'
+import { takeEstimatePrefill } from './assistant.js'
 
 let listFilter = 'all'
 
@@ -83,6 +84,7 @@ export async function estimateEditor(id) {
   let est = isNew
     ? { contact_id: +params.get('contact') || 0, items: [blankItem()], notes: '' } // never preselect, avoids quoting the wrong customer
     : await api.get(`/api/estimates/${id}`)
+  if (isNew) Object.assign(est, takeEstimatePrefill(est)) // the assistant's "prefilled with this" draft, if any
   let items = est.items.length ? est.items : [blankItem()]
   const selectedCustomer = contacts.find(c => c.id === est.contact_id)
   const initialBilling = isNew ? selectedCustomer?.billing_address || '' : est.billing_address || ''

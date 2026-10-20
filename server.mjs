@@ -38,9 +38,9 @@ import { gzip } from 'node:zlib'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, shopFormat, logActivity, computeTotals, getUpcharges,
   freezeUpcharges,
-  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
+  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, isoDaysFrom, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
-  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, onOpportunityStage, canWrite, SECRET_KEYS,
+  scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, onOpportunityStage, onJobStage, statusForStage, canWrite, SECRET_KEYS,
   stampShipDate,
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
@@ -73,6 +73,7 @@ import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, 
 import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
+import { canonicalTimezone } from './lib/shop-time.mjs'
 import { ask } from './lib/assistant.mjs'
 import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent, purchaseOrderReview, confirmManualPurchaseOrder } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
@@ -786,9 +787,21 @@ const str = (v, fallback = '') =>
 // five screens that render fmtDate() unescaped. The formatter no longer emits markup either; this
 // closes the source so the value cannot exist in the column at all. Refuse rather than silently
 // drop, because a date the shop typed and the app quietly discarded is worse than an error.
-const badDate = (v) => v !== undefined && v !== null && String(v).trim() !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(String(v).trim())
-const BAD_DATE = { error: 'Due date must be a calendar date, as YYYY-MM-DD', code: 'bad_due_date' }
 const realCalendarDate = value => typeof value==='string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value+'T00:00:00Z')) && new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value
+// A real day, not just the shape of one: the regex alone stored 2026-02-30, which sorts between
+// real dates, never equals today, and prints as March 2 on every screen that parses it.
+const badDate = (v) => v !== undefined && v !== null && String(v).trim() !== '' && !realCalendarDate(String(v).trim())
+const BAD_DATE = { error: 'Due date must be a calendar date, as YYYY-MM-DD', code: 'bad_due_date' }
+/**
+ * A body field that must be text but arrived as an object or array. node:sqlite reads a bare
+ * object as a named-parameter bag and `{}.trim` is not a function, so these were 500s. Numbers and
+ * booleans are allowed — str() turns them into text, the way a form would have.
+ */
+const notText = (v) => v != null && typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean'
+const textFieldError = (b, fields) => {
+  const bad = fields.find((f) => notText(b?.[f]))
+  return bad ? { error: `${bad} must be text`, code: 'invalid_field', field: bad } : null
+}
 /**
  * Resolve the customer a document is being raised for, or answer why not.
  *
@@ -1107,6 +1120,17 @@ onPaymentRecorded(({ invoice_id, before_status }) => {
     fireAuto('invoice.paid', { invoice: inv, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: inv.amount_due })
   }
   enqueueQbo(inv.id)
+})
+/* Stage moves made from lib/ (the assistant, workflow task completion) get the same three side
+ * effects the board drag does: the job_scans timeline row, `job.stage` automations + webhooks, and
+ * the realtime board push. Re-read, so a move that was rolled back (or already superseded) is
+ * not announced. */
+onJobStage(({ job_id, from, to, source, actor }) => {
+  const job = get('SELECT * FROM jobs WHERE id = ?', job_id)
+  if (!job || job.stage !== to) return
+  run('INSERT INTO job_scans (job_id, from_stage, to_stage, actor, source, created_at) VALUES (?,?,?,?,?,?)', job_id, from, to, actor || source, source, now())
+  fireAuto('job.stage', { job, contact: get('SELECT * FROM contacts WHERE id = ?', job.contact_id) })
+  rtBroadcast('board', { job_id, stage: to, from, actor: source })
 })
 
 /* ================= AUTH & MULTI-TENANCY =================
@@ -2265,7 +2289,7 @@ async function stripeWebhook(req, res) {
  * changes — but the value is now the truth rather than a page size.
  */
 app.get('/api/chrome/badges', wrap((_req, res) => {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayIso()
   const n = (sql, ...p) => get(sql, ...p).c
   res.json({
     active_jobs: n(`SELECT COUNT(*) AS c FROM jobs WHERE status = 'active'`),
@@ -2281,7 +2305,7 @@ app.get('/api/chrome/badges', wrap((_req, res) => {
 }))
 
 app.get('/api/dashboard', wrap((_req, res) => {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayIso()
   const monthStart = today.slice(0, 8) + '01'
 
   const revenue_mtd = round2(get(
@@ -2308,7 +2332,7 @@ app.get('/api/dashboard', wrap((_req, res) => {
   res.json({
     kpis: { revenue_mtd, outstanding, overdue, open_estimates,
       active_jobs: get(`SELECT COUNT(*) AS c FROM jobs WHERE status = 'active'`).c,
-      due_this_week: get(`SELECT COUNT(*) AS c FROM jobs WHERE status='active' AND due_date <= date('now','+7 day')`).c },
+      due_this_week: get(`SELECT COUNT(*) AS c FROM jobs WHERE status='active' AND due_date <= ?`, isoDaysFrom(7)).c },
     jobs_by_stage: jobsByStage,
     due_today: all(`SELECT j.*, c.name AS contact_name FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.due_date = ? ORDER BY j.rush DESC`, today),
@@ -2424,7 +2448,7 @@ app.put('/api/capacity/settings', requireRole('manager'), wrap((req, res) => {
  * prioritized by financial/production risk and shaped to the signed-in person's role, so the one
  * thing that matters most is obvious instead of every counter competing at the same weight. */
 app.get('/api/today', wrap((req, res) => {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayIso()
   const role = req.role || 'owner'
   const production = role === 'staff' // staff get a floor-first ordering; owners/managers money-first
   const actions = []
@@ -3001,6 +3025,8 @@ app.post('/api/estimates', wrap((req, res) => {
   const b = req.body || {}
   const contactId = resolveContactId(b.contact_id, res, 'quote')
   if (contactId == null) return
+  const notesError = textFieldError(b, ['notes'])
+  if (notesError) return res.status(400).json(notesError)
   const addresses = postalPatch(b, postalDefaults(get('SELECT * FROM contacts WHERE id=?', contactId)))
   const s = getSettings()
   // A non-array here (a bare object, a string, or a duplicated JSON key collapsing to one value)
@@ -3036,7 +3062,7 @@ app.post('/api/estimates', wrap((req, res) => {
    * editor has never sent the field — so refusing it costs the product nothing. */
   const terms = estimateTermsIn(b.terms_snapshot, s.estimate_terms)
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at, billing_address, shipping_address, terms_snapshot, terms_snapshot_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes || '', rushDaysIn(b.rush_days), now(), addresses.billing_address, addresses.shipping_address, terms, b.terms_snapshot === undefined ? 'created' : 'edited')
+    contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, str(b.notes), rushDaysIn(b.rush_days), now(), addresses.billing_address, addresses.shipping_address, terms, b.terms_snapshot === undefined ? 'created' : 'edited')
   const id = Number(r.lastInsertRowid)
   logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
@@ -3054,6 +3080,8 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — edit the invoice, not the estimate.` })
   const b = req.body || {}
+  const notesError = textFieldError(b, ['notes'])
+  if (notesError) return res.status(400).json(notesError)
   const s = getSettings()
   if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
   const badSizes = []
@@ -3100,7 +3128,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   // release as editing the job. Ignore prices, notes and size-key ordering in this comparison.
   const linesChanged = JSON.stringify(artProduction.productionGarmentLines(parse(e.items,[]))) !== JSON.stringify(artProduction.productionGarmentLines(items))
   const next = { ...e, ...addresses, ...t, contact_id: contactId, items, tax_rate: rate,
-    notes: b.notes ?? e.notes, rush_days: rushDaysIn(b.rush_days ?? e.rush_days),
+    notes: str(b.notes, e.notes), rush_days: rushDaysIn(b.rush_days ?? e.rush_days),
     terms_snapshot: estimateTermsIn(b.terms_snapshot, e.terms_snapshot) }
   const revised = commercialEstimateChanged(e, next)
   const termsChanged = commercialEstimateChanged(e, { ...e, terms_snapshot: next.terms_snapshot })
@@ -3108,7 +3136,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const artChangedJobs = tx(() => {
     invalidateEstimateApproval(e, next, { actor: req.member?.name })
     run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=? WHERE id=?',
-      contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, b.notes ?? e.notes,
+      contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, str(b.notes, e.notes),
       next.rush_days, addresses.billing_address, addresses.shipping_address, next.terms_snapshot,
       termsChanged ? 'edited' : e.terms_snapshot_source, id)
     // Repricing and reopening the linked sale belong to this same revision transaction.
@@ -3559,6 +3587,8 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   catch (error) { if (error.code === 'estimate_changed') return res.status(409).json({ error: error.message, code: error.code }); throw error }
   const existing = get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (existing) return res.status(409).json({ error: `Already invoiced as ${existing.invoice_number}` })
+  const titleError = textFieldError(req.body, ['title'])
+  if (titleError) return res.status(400).json(titleError)
 
   // Payment terms and the promised production date are independent. Keep the older due_date
   // API's combined meaning for existing callers; the UI now sends two explicit fields.
@@ -3573,7 +3603,7 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   const term = paymentTerm(Object.hasOwn(req.body || {}, 'payment_term') ? req.body.payment_term : contactTerm)
   const due = picked || paymentDueDate(term, todayIso())
   const items = parse(e.items, [])
-  const title = req.body?.title || items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
+  const title = str(req.body?.title) || items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
   // Carry the actual size grid onto the job — the press and packing table need
   // "40 S / 90 M / 110 L", not a piece count.
   const sizes = rollupSizes(items)
@@ -3595,16 +3625,20 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   // PSC-JOB-1004, which are different idempotency keys, so BOTH submit: 240 blanks bought at $768
   // against a job needing $384 of them.
   //
-  // Deliberately narrow: only a job that is still active and carries NO invoice, which is exactly
-  // the Autopilot/quick-quote shape. A job left behind by a voided-and-reissued invoice has an
-  // invoice_id and is a separate question. Adoption binds the invoice and refreshes the schedule
-  // — which is what converting decides — and does not overwrite the size split, because a shop may
-  // have corrected it on the job while waiting for the customer, and that is the newer truth.
+  // Any job for this estimate that carries NO invoice is adopted, whatever its status: the
+  // Autopilot/quick-quote shape (active, never invoiced) and the job a void left behind — voiding
+  // unhooks the job (invoice_id = NULL) but it may already be printed and complete. Filtering on
+  // status='active' made a void + re-convert of a finished order open a duplicate ACTIVE job: the
+  // same order back on the board, its press time re-booked in Capacity. An active job is preferred
+  // when there are several. Adoption binds the invoice; an active job also has its schedule
+  // refreshed — which is what converting decides — while a finished job keeps its status and dates.
+  // The size split is never overwritten, because a shop may have corrected it on the job while
+  // waiting for the customer, and that is the newer truth.
   // Captured BEFORE the transaction stamps status='approved' below. Converting an estimate that
   // the customer had already approved must not fire estimate.approved a second time — that is the
   // automation engine and the webhook dispatcher both, and /approve guards it the same way.
   const wasApproved = e.status === 'approved' || e.status === 'invoiced'
-  const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL AND status = 'active' ORDER BY id LIMIT 1", id)
+  const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL ORDER BY (status = 'active') DESC, id LIMIT 1", id)
   if (prior && prior.contact_id !== e.contact_id)
     return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `${prior.job_number} belongs to a different customer from this quote. Correct the quote/customer association before creating an invoice; no invoice was created.` })
   if (prior && postalAddress(prior.shipping_address ?? '') !== postalAddress(e.shipping_address ?? ''))
@@ -3617,8 +3651,9 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
     recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: wasApproved ? 'legacy_record' : 'staff_conversion', actor: req.member?.name })
     if (prior) {
-      run('UPDATE jobs SET invoice_id=?, due_date=?, turnaround_days=?, rush=?, updated_at=? WHERE id=?',
+      if (prior.status === 'active') run('UPDATE jobs SET invoice_id=?, due_date=?, turnaround_days=?, rush=?, updated_at=? WHERE id=?',
         invId, sched.due_date, sched.turnaround_days, sched.rush, now(), prior.id)
+      else run('UPDATE jobs SET invoice_id=?, updated_at=? WHERE id=?', invId, now(), prior.id)
       return { invId, jobId: prior.id, invNum, jobNum: prior.job_number }
     }
     const jobNum = nextJobNumber()
@@ -3731,7 +3766,8 @@ app.put('/api/invoices/:id', requireRole('manager'), wrap((req, res) => {
   const b = req.body || {}
   const due = String(b.due_date || '').trim()
   const addresses = postalPatch(b, inv)
-  if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return res.status(400).json({ error: 'Due date must be YYYY-MM-DD' })
+  // A real calendar day — the shape alone let 2026-13-45 through, which then never reads overdue.
+  if (due && !realCalendarDate(due)) return res.status(400).json({ error: 'Due date must be a real date, as YYYY-MM-DD', code: 'invalid_date' })
   tx(() => {
     run('UPDATE invoices SET due_date=?, po_number=?, billing_address=?, shipping_address=? WHERE id=?',
       due || inv.due_date, b.po_number === undefined ? inv.po_number : String(b.po_number || '').slice(0, 60), addresses.billing_address, addresses.shipping_address, id)
@@ -4003,12 +4039,12 @@ app.get('/api/board', wrap((req, res) => {
 
   // Filters are applied server-side so the counts in the column headers stay honest.
   const { assignee, filter } = req.query
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayIso()
   let shown = jobs
   if (assignee && assignee !== 'all') shown = shown.filter((j) => (j.assigned_to || '') === assignee)
   if (filter === 'rush') shown = shown.filter((j) => j.rush)
   if (filter === 'late') shown = shown.filter((j) => j.due_date && j.due_date < today)
-  if (filter === 'week') shown = shown.filter((j) => j.due_date && j.due_date <= new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10))
+  if (filter === 'week') { const weekOut = isoDaysFrom(7); shown = shown.filter((j) => j.due_date && j.due_date <= weekOut) }
   if (filter === 'unpaid') shown = shown.filter((j) => j.invoice_status && j.invoice_status !== 'paid')
 
   const columns = STAGES.map((s) => {
@@ -4057,17 +4093,37 @@ app.post('/api/jobs', wrap((req, res) => {
   if (contactId == null) return
   const addresses = postalPatch(b, {}, ['shipping_address'])
   if (badDate(b.due_date)) return res.status(400).json(BAD_DATE)
+  const textError = textFieldError(b, ['title', 'notes', 'quantities', 'assigned_to', 'decoration', 'garment'])
+  if (textError) return res.status(400).json(textError)
+  // estimate_id / invoice_id are foreign keys: a dangling id was a bare 500 (FOREIGN KEY constraint
+  // failed), and another customer's quote was accepted — so the job, its tickets and its PO carried
+  // one customer's name and another's order. Resolve both and hold them to this job's customer.
+  const links = {}
+  for (const [field, table, label] of [['estimate_id', 'estimates', 'estimate'], ['invoice_id', 'invoices', 'invoice']]) {
+    const raw = b[field]
+    if (raw == null || raw === '' || raw === 0 || raw === false) { links[field] = null; continue }
+    const ref = Number(raw)
+    if (!Number.isInteger(ref) || ref <= 0) return res.status(400).json({ error: `${field} must be an id`, code: 'invalid_reference', field })
+    const row = get(`SELECT id, contact_id FROM ${table} WHERE id = ?`, ref)
+    if (!row) return res.status(404).json({ error: `That ${label} does not exist.`, code: `${label}_not_found`, field })
+    if (row.contact_id !== contactId) return res.status(409).json({ error: `That ${label} belongs to a different customer.`, code: 'customer_mismatch', field })
+    links[field] = ref
+  }
+  // Status follows the column, as on every other stage-writer: a job created straight into
+  // Complete was stored 'active' and sat on the floor, booking press time, forever.
+  const stage = STAGE_KEYS.includes(b.stage) ? b.stage : 'new'
   const num = nextJobNumber()
-  const grid = gridFromQuantities(b.quantities)
+  const grid = gridFromQuantities(str(b.quantities))
   // `garment` is what costFor() reads to pick the SKU the purchase order spends money on. A job
   // typed onto the board never had a way to carry one — the column existed and no route bound it —
   // so its PO came back sku:null, est_cost 0, and submitting it said "set the exact style first"
   // with no field anywhere in the product to do that in. 17 columns, 17 placeholders, 17 values.
   const id = Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, quantities, sizes, due_date, notes, assigned_to, rush, created_at, updated_at, shipping_address) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    contactId, b.estimate_id || null, b.invoice_id || null, num, b.title || 'Untitled job', 'active',
-    STAGE_KEYS.includes(b.stage) ? b.stage : 'new', b.decoration || 'Screen Print', str(b.garment).trim() || null, b.quantities || '',
-    grid || '{}', String(b.due_date || '').trim() || null, b.notes || '', b.assigned_to || '', b.rush ? 1 : 0, now(), now(), Object.hasOwn(b,'shipping_address') ? addresses.shipping_address : null).lastInsertRowid)
-  logActivity('job', `Job ${num} created — ${b.title || 'Untitled job'}`, { contact_id: contactId, job_id: id })
+    contactId, links.estimate_id, links.invoice_id, num, str(b.title) || 'Untitled job', statusForStage(stage),
+    stage, str(b.decoration) || 'Screen Print', str(b.garment).trim() || null, str(b.quantities),
+    grid || '{}', String(b.due_date || '').trim() || null, str(b.notes), str(b.assigned_to), b.rush ? 1 : 0, now(), now(), Object.hasOwn(b,'shipping_address') ? addresses.shipping_address : null).lastInsertRowid)
+  stampShipDate({ id, ship_date: null }, stage)
+  logActivity('job', `Job ${num} created — ${str(b.title) || 'Untitled job'}`, { contact_id: contactId, job_id: id })
   res.json(get('SELECT * FROM jobs WHERE id = ?', id))
 }))
 
@@ -4858,7 +4914,7 @@ function decideArt(a, approved, notes, by) {
  * quiet and invoices nobody chased. This is what a bolted-on CRM is supposed to earn.
  */
 app.get('/api/followups', wrap((_req, res) => {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayIso()
   const days = ageInDays
 
   // Quotes sent but never answered — ranked by value, because $6k deserves the call first.
@@ -4883,7 +4939,7 @@ app.get('/api/followups', wrap((_req, res) => {
       MAX(j.created_at) AS last_job, COUNT(j.id) AS jobs,
       (SELECT COALESCE(SUM(amount_paid),0) FROM invoices WHERE contact_id = c.id) AS lifetime
     FROM contacts c JOIN jobs j ON j.contact_id = c.id
-    GROUP BY c.id HAVING jobs >= 1 AND last_job < date('now','-25 day') ORDER BY lifetime DESC LIMIT 8`)
+    GROUP BY c.id HAVING jobs >= 1 AND last_job < ? ORDER BY lifetime DESC LIMIT 8`, isoDaysFrom(-25))
     .map((c) => ({ ...c, age: days(c.last_job) }))
 
   res.json({
@@ -5122,7 +5178,8 @@ const missingTriggerParam = (trigger, params) => {
 
 app.post('/api/automations', requireRole('manager'), wrap(async (req, res) => {
   const b = req.body || {}
-  if (!b.name?.trim()) return res.status(400).json({ error: 'Give the automation a name' })
+  // typeof first: `b.name?.trim` on a number or object is not a function, which was a 500.
+  if (typeof b.name !== 'string' || !b.name.trim()) return res.status(400).json({ error: 'Give the automation a name', code: 'invalid_field', field: 'name' })
   if (!TRIGGERS.some((t) => t.key === b.trigger)) return res.status(400).json({ error: 'Pick a trigger' })
   const missing = missingTriggerParam(b.trigger, b.params)
   if (missing) return res.status(400).json({ error: `Choose which ${String(missing.label).toLowerCase()} this rule fires on.`, code: 'missing_param' })
@@ -5402,12 +5459,12 @@ app.post('/api/autopilot', outboundLimit, async (req, res) => {
     // over their "by the 8th" is how a shop misses a deadline it already agreed to. parseIntake
     // hands back due_hint already normalised to ISO (and never in the past), so it drops straight
     // in. With no stated date we fall back to the standard clock exactly as before.
-    const autoDue = addBusinessDays(new Date().toISOString().slice(0, 10), order.rush ? 3 : 10)
+    const autoDue = addBusinessDays(todayIso(), order.rush ? 3 : 10)
     const dueDate = order.due_hint || autoDue
     // Keep the turnaround figure honest about the date we just committed to, so the schedule and
     // the at-risk warnings are measured against the real deadline rather than a default.
     const turnaroundDays = order.due_hint
-      ? Math.max(1, businessDaysBetween(new Date().toISOString().slice(0, 10), dueDate))
+      ? Math.max(1, businessDaysBetween(todayIso(), dueDate))
       : (order.rush ? 3 : 10)
     const jobId = Number(run('INSERT INTO jobs (contact_id, estimate_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, approval_gated, rush, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       contact.id, estId, jobNum, `${pieces} ${order.garment}`, 'active', 'new', order.decoration, order.garment,
@@ -5440,7 +5497,7 @@ app.post('/api/autopilot', outboundLimit, async (req, res) => {
     }
 
     res.json({
-      order, steps, isNew, mode, committed: !!committed,
+      order, steps, isNew, mode, committed: !!committed && !committed.blocked, send_blocked: committed?.blocked ? committed.code : null,
       held_for_review: held, ai_note: order.ai_note || '',
       contact, estimate: get('SELECT * FROM estimates WHERE id = ?', estId),
       invoice: committed?.invoice || null, job: get('SELECT * FROM jobs WHERE id = ?', jobId),
@@ -5489,10 +5546,23 @@ function commitAutopilot(estId, contact, { steps, jobId } = {}) {
   // an order that might never come. The customer's approval is a real event — they click Approve
   // on the estimate page (/p/estimate/:id/approve), which fires estimate.approved and is where the
   // conversion belongs. Autopilot's job ends at a sent estimate and a visible "waiting on them".
-  run(`UPDATE estimates SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), estId)
+  //
+  // Same recipient rule as POST /api/estimates/:id/send, checked BEFORE anything is written. This
+  // marked the quote 'sent' and moved the deal first, then queueEmail threw for a customer with no
+  // address: the estimate stayed 'sent' with nothing mailed, every retry answered "Already sent",
+  // and full-auto mode returned a 500 after those partial writes.
+  const recipient = documentRecipient(e, 'estimate')
+  if (recipient.blocked) {
+    mark('sent', 'Not sent', `${recipient.blocked} Add an email address to the customer, then send it.`, { estimate_id: estId, code: 'no_email' })
+    return { invoice: null, job: jobId ? get('SELECT * FROM jobs WHERE id = ?', jobId) : get('SELECT * FROM jobs WHERE estimate_id = ?', estId), sent: false, blocked: true, code: 'no_email', error: recipient.blocked }
+  }
+  // Status and the outbox row together: a quote is 'sent' exactly when its email was queued.
+  tx(() => {
+    run(`UPDATE estimates SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), estId)
+    queueEmail({ contact,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
+      vars: { estimate_number: e.estimate_number, total: money(e.total) } })
+  })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', estId), 'sent')
-  queueEmail({ contact,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`, template: s.email_template_estimate,
-    vars: { estimate_number: e.estimate_number, total: money(e.total) } })
   logActivity('estimate', `Estimate ${e.estimate_number} sent to ${contact.name} by autopilot`, { contact_id: contact.id })
   // The same event the manual Send fires. Without it the shop's own rules never saw an autopilot
   // quote go out — the shipped default "Flag big quotes for a personal call" is dead on exactly
@@ -5512,6 +5582,7 @@ app.post('/api/autopilot/commit', wrap((req, res) => {
   const contact = get('SELECT * FROM contacts WHERE id = ?', e.contact_id)
   const steps = []
   const r = commitAutopilot(estId, contact, { steps })
+  if (r?.blocked) return res.status(400).json({ error: `${r.error} Open Delivery contacts on this document to update it.`, code: r.code, steps, estimate: get('SELECT * FROM estimates WHERE id = ?', estId) })
   res.json({ ok: true, steps, already: !!r?.already, sent: !!r?.sent, invoice: r?.invoice || null, job: r?.job || null,
     estimate: get('SELECT * FROM estimates WHERE id = ?', estId) })
 }))
@@ -5603,7 +5674,13 @@ app.get('/api/agent/config', async (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
-app.put('/api/agent/config', requireRole('manager'), wrap((req, res) => res.json({ config: saveBotConfig(req.body || {}) })))
+app.put('/api/agent/config', requireRole('manager'), wrap((req, res) => {
+  const b = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
+  // These bind straight into TEXT columns; an object there was a node:sqlite named-parameter 500.
+  const bad = textFieldError(b, ['name', 'greeting', 'persona', 'mode', 'knowledge', 'accent'])
+  if (bad) return res.status(400).json(bad)
+  res.json({ config: saveBotConfig(b) })
+}))
 
 app.get('/api/agent/sessions', wrap((_req, res) => res.json({
   sessions: listSessions(),
@@ -6429,7 +6506,7 @@ app.get('/api/jobs/:id/print-package', wrap((req, res) => {
  * The report InkSoft/Deco users say they can't get; here it's an endpoint plus a view.
  */
 app.get('/api/reports/ar-aging', wrap((_req, res) => {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayIso()
   // `status != 'void'` is load-bearing: without it this report chased invoices the shop had already
   // cancelled, and disagreed with the dashboard about the same money.
   const open = all(`SELECT i.*, c.name AS contact_name, c.company, c.email FROM invoices i
@@ -6483,10 +6560,10 @@ app.get('/api/contacts/:id/statement.pdf', wrap((req, res) => {
   const open = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? AND i.status != 'void' AND (i.amount_due - i.amount_paid) > 0.005
     ORDER BY COALESCE(i.due_date, date(i.created_at)) ASC, i.id ASC`, today, c.id)
   const settled = all(`SELECT i.*, ${EFFECTIVE_STATUS_SQL} AS status FROM invoices i WHERE i.contact_id = ? AND i.status != 'void' AND (i.amount_due - i.amount_paid) <= 0.005
-    AND i.created_at >= date('now', '-365 days')
-    ORDER BY COALESCE(i.due_date, date(i.created_at)) DESC, i.id DESC LIMIT 60`, today, c.id)
+    AND i.created_at >= ?
+    ORDER BY COALESCE(i.due_date, date(i.created_at)) DESC, i.id DESC LIMIT 60`, today, c.id, isoDaysFrom(-365))
   const invoices = [...open, ...settled]
-  const buf = customerStatement({ contact: c, settings: getSettings(), invoices })
+  const buf = customerStatement({ contact: c, settings: getSettings(), invoices, asOf: today })
   res.type('application/pdf').setHeader('Content-Disposition', `inline; filename="statement-${(c.company || c.name || 'customer').replace(/[^\w-]+/g, '-').toLowerCase()}.pdf"`)
   res.send(buf)
 }))
@@ -8438,6 +8515,18 @@ app.put('/api/settings', requireRole('manager'), wrap(async (req, res) => {
     if (!l) patch.locale = 'en-US'
     else if (!isLocale(l)) return res.status(400).json({ error: `"${patch.locale}" is not a locale this server can format — use a tag like en-GB, fr-CA, de-DE`, code: 'locale_invalid' })
   }
+  // The zone decides what "today" is for due dates, overdue and ship dates (lib/shop-time.mjs), so
+  // a name the runtime cannot use is refused rather than silently falling back to the server zone.
+  // Stored canonical (america/los_angeles → America/Los_Angeles); blank = the server's zone.
+  if ('timezone' in patch) {
+    const raw = typeof patch.timezone === 'string' ? patch.timezone.trim() : patch.timezone
+    if (raw === '' || raw === null || raw === undefined) patch.timezone = ''
+    else {
+      const zone = canonicalTimezone(raw)
+      if (!zone) return res.status(400).json({ error: `"${String(raw).slice(0, 64)}" is not a time zone this server knows — use an IANA name like America/Los_Angeles or Europe/London`, code: 'timezone_invalid' })
+      patch.timezone = zone
+    }
+  }
   // applySettingsPatch preserves a stored secret when its field comes back empty (unchanged),
   // and erases it for the one sentinel value that means erase — see CLEAR_SECRET.
   const slackBefore=getSettings()
@@ -9662,7 +9751,7 @@ app.get('/p/ticket/:id', pPage((req, res) => {
         <div><span>QC pass</span><div class="ln"></div></div>
         <div><span>Date</span><div class="ln"></div></div>
       </div>
-      <div class="tk-f">${esc(s.shop_name)} · ${esc(j.job_number)} · printed ${new Date().toISOString().slice(0, 10)}</div>
+      <div class="tk-f">${esc(s.shop_name)} · ${esc(j.job_number)} · printed ${todayIso()}</div>
     </div>${sourceFooterHtml()}</body></html>`)
 }))
 

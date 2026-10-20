@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, go, on, toast, announce, focusKeeper } from '../core.js'
+import { api, $, $$, el, esc, go, on, toast, announce, focusKeeper, store } from '../core.js'
 
 /**
  * The Assistant panel — a slide-over you can open from any page to just say what you need.
@@ -7,6 +7,27 @@ import { api, $, $$, el, esc, go, on, toast, announce, focusKeeper } from '../co
  * into the app so the human can take over — AI-first, manual-always.
  */
 let panel = null
+// Shared with views/estimates.js, which reads and clears it when a new estimate opens.
+export const ESTIMATE_PREFILL_KEY = 'psc:estimate-prefill'
+/**
+ * The assistant's draft for a NEW estimate, taken exactly once (so a later blank estimate is
+ * blank). Only the fields the editor seeds — line items, and the customer when the URL did not
+ * already pick one. Anything malformed reads as no prefill.
+ */
+export function takeEstimatePrefill(est) {
+  // core.js's guarded store: storage may be switched off, and then this is simply a blank estimate.
+  const raw = store.get(ESTIMATE_PREFILL_KEY)
+  if (!raw) return {}
+  store.set(ESTIMATE_PREFILL_KEY, '')
+  let p = null
+  try { p = JSON.parse(raw || 'null') } catch { return {} }
+  if (!p || typeof p !== 'object') return {}
+  const out = {}
+  const items = Array.isArray(p.items) ? p.items.filter((it) => it && typeof it === 'object' && !Array.isArray(it)).slice(0, 100) : []
+  if (items.length) out.items = items
+  if (!est?.contact_id && Number.isInteger(p.contact_id) && p.contact_id > 0) out.contact_id = p.contact_id
+  return out
+}
 // Where focus goes when the panel closes. closeAssistant() used to drop it on <body>, and render()
 // destroys the chip or button that was focused on every reply, so a keyboard user was thrown to
 // the top of the document mid-conversation.
@@ -64,7 +85,15 @@ export function openAssistant(seed) {
   // human can take over" — and they were `<a>` with no href, so they were not links: not
   // focusable, not reachable by Tab, not activatable by Enter, and announced as nothing. The href
   // makes them real links; the handler still owns the click so the panel closes with them.
-  on(log, '[data-href]', (e, t) => { e.preventDefault(); closeAssistant(); go(t.dataset.href) })
+  on(log, '[data-href]', (e, t) => {
+    e.preventDefault()
+    // "Open a blank estimate — prefilled with this" opened an empty editor: the reply carries the
+    // priced lines as `prefill` and nothing ever read them. Hand them to the editor, which takes
+    // them once (takeEstimatePrefill above, called by estimates.js).
+    const prefill = history[+t.dataset.msg]?.prefill
+    if (prefill && t.dataset.href === '/estimates/new') store.set(ESTIMATE_PREFILL_KEY, JSON.stringify(prefill))
+    closeAssistant(); go(t.dataset.href)
+  })
   on(log, '[data-chip]', (_e, t) => send(t.dataset.chip))
   on(log, '[data-undo]', async (_e, t) => {
     const m = history[+t.dataset.undo]; const u = m?.action?.undo
@@ -111,7 +140,7 @@ function render() {
     ? `<div class="asst-msg user"><div class="asst-bub">${fmt(m.reply)}</div></div>`
     : `<div class="asst-msg bot">
         <div class="asst-bub">${m.thinking ? '<span class="asst-dots"><i></i><i></i><i></i></span>' : fmt(m.reply)}${m.model ? ' <span class="asst-ai">AI</span>' : ''}</div>
-        ${(m.cards || []).map((c) => `<a class="asst-card" href="#${esc(c.href)}" data-href="${esc(c.href)}"><span class="asst-card-ic" aria-hidden="true">${c.icon || '→'}</span>
+        ${(m.cards || []).map((c) => `<a class="asst-card" href="#${esc(c.href)}" data-href="${esc(c.href)}" data-msg="${i}"><span class="asst-card-ic" aria-hidden="true">${c.icon || '→'}</span>
           <span><span class="asst-card-t">${esc(c.title)}</span>${c.sub ? `<span class="asst-card-s">${esc(c.sub)}</span>` : ''}</span></a>`).join('')}
         ${m.action?.undo ? `<button class="asst-undo" data-undo="${i}">Undo that</button>` : ''}
         ${(m.followups || []).length ? `<div class="asst-chips">${m.followups.map((f) => `<button class="asst-chip" data-chip="${esc(f)}">${esc(f)}</button>`).join('')}</div>` : ''}
