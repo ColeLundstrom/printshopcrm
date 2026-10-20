@@ -449,29 +449,36 @@ const publicOrigin = (req) => String(process.env.PSC_PUBLIC_URL || '').replace(/
  * brand-new install where nobody has signed in yet this falls straight through to today's
  * behaviour, because refusing to send a new shop its welcome email is the worse failure.
  */
-let learnedOrigins = null // slug -> origin; null = not read from the control db yet
+let learnedOrigins = null // tenant id -> origin; null = not read from the control db yet
 const ORIGIN_RE = /^https?:\/\/[a-z0-9.-]+(:\d{1,5})?$/i
-const learnedOriginFor = (slug) => {
+/* Keyed by tenant ID, never by slug. A slug is freed when its shop is deleted and handed to the
+ * next signup with the same name, and the origin used to go with it: an owner could teach the
+ * server a Host they control, delete the shop, and every reset or welcome link for the stranger
+ * who registered that name next was built on their domain — an account takeover one signup away.
+ * Tenant ids come from a sequence and are never reused. The old `origin:<slug>` rows are ignored
+ * rather than migrated, because nothing can tell a live shop's row from a dead one's; an owner's
+ * next signed-in page view relearns it, and PSC_PUBLIC_URL (set on any real install) wins anyway. */
+const learnedOriginFor = (tenant) => {
   if (learnedOrigins === null) {
     learnedOrigins = new Map()
     try {
       for (const [k, v] of Object.entries(getPlatformConfig())) {
-        if (k.startsWith('origin:')) learnedOrigins.set(k.slice(7), String(v || ''))
+        if (/^origin:t\d+$/.test(k)) learnedOrigins.set(Number(k.slice(8)), String(v || ''))
       }
     } catch { /* start empty — the PSC_PUBLIC_URL and Host fallbacks below still work */ }
   }
-  return (slug && learnedOrigins.get(slug)) || ''
+  return (tenant?.id && learnedOrigins.get(Number(tenant.id))) || ''
 }
 const rememberPublicOrigin = (req) => {
-  const slug = req.tenant?.slug || ''
+  const id = Number(req.tenant?.id) || 0
   const o = `${req.protocol}://${req.get('host') || ''}`
-  if (!slug || !ORIGIN_RE.test(o) || o === learnedOriginFor(slug)) return
-  try { setPlatformConfig({ [`origin:${slug}`]: o }); learnedOrigins.set(slug, o) } catch (e) { console.error('learn origin:', e.message) }
+  if (!id || !ORIGIN_RE.test(o) || o === learnedOriginFor(req.tenant)) return
+  try { setPlatformConfig({ [`origin:t${id}`]: o }); learnedOrigins.set(id, o) } catch (e) { console.error('learn origin:', e.message) }
 }
 // `tenant` is the shop the LINK is for, which on /api/auth/forgot is not the shop that sent the
 // request — an unauthenticated request has no shop at all. createPasswordReset() returns it.
 const trustedOrigin = (req, tenant = req.tenant) =>
-  String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || learnedOriginFor(tenant?.slug) || publicOrigin(req)
+  String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || learnedOriginFor(tenant) || publicOrigin(req)
 
 const slackRaw = express.raw({ type: '*/*', limit: '256kb' }) // Slack payloads are far under this
 
@@ -646,7 +653,7 @@ app.post('/api/sms/:key/incoming', slackLimit, express.urlencoded({extended:fals
     return withTenant(tenant.slug, () => {
       const s=getSettings(), p=req.body || {}
       // No Host-header fallback: use exactly the trusted URL shown in this shop's setup.
-      const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(tenant.slug)
+      const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(tenant)
       const url=origin+`/api/sms/${tenant.embed_key}/incoming`
       if (!origin || req.originalUrl.includes('?') || !verifyTwilio({token:s.twilio_token,url,params:p,signature:req.get('x-twilio-signature')})) return res.status(401).send('Invalid signature')
       if (!s.twilio_sid || p.AccountSid !== s.twilio_sid) return res.status(403).send('Wrong account')
@@ -1861,8 +1868,18 @@ app.get('/api/auth/me', wrap((req, res) => {
   })
 }))
 
-app.post('/api/auth/onboarding', wrap((req, res) => {
-  if (req.tenant) saveOnboarding(req.tenant.id, { ...(req.body || {}), done: true })
+// Owner-only and shape-limited: this row lives in the control db every shop shares, and it used to
+// take any staff member's whole request body (900 KB was accepted) and replace the owner's answers.
+app.post('/api/auth/onboarding', requireRole('owner'), wrap((req, res) => {
+  const b = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
+  const kept = {}
+  for (const [k, v] of Object.entries(b).slice(0, 40)) {
+    if (!/^[a-z0-9_]{1,40}$/i.test(k)) continue
+    if (v === null || typeof v === 'boolean' || typeof v === 'number') kept[k] = v
+    else if (typeof v === 'string') kept[k] = v.slice(0, 2000)
+  }
+  if (JSON.stringify(kept).length > 16384) return res.status(413).json({ error: 'Onboarding answers are too large.' })
+  if (req.tenant) saveOnboarding(req.tenant.id, { ...kept, done: true })
   res.json({ ok: true })
 }))
 
@@ -8254,7 +8271,7 @@ app.post('/api/invoices/:id/payment-review',requireRole('manager'),wrap((req,res
 
 app.get('/api/sms-setup', requireRole('manager'), wrap((req,res) => {
   if (!req.tenant) return res.json({reason:'Incoming SMS needs a signed-in shop. Enable multi-tenant accounts on your self-hosted installation.'})
-  const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(req.tenant.slug)
+  const origin=String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/,'') || learnedOriginFor(req.tenant)
   if (!origin) return res.json({reason:'Set PSC_PUBLIC_URL to the public HTTPS address, then reload setup.'})
   res.json({url:`${origin}/api/sms/${req.tenant.embed_key}/incoming`,public_https:origin.startsWith('https://')})
 }))
