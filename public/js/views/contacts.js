@@ -16,15 +16,34 @@ function mappingEditor(bg, prefix, kind) {
       for (const [key, value] of fd) probe.append(key, value)
       probe.set('mapping_only', 'true')
       const info = await api.req('POST', '/api/import/' + kind, probe)
-      mapping = info.mapping
-      box.innerHTML = `<details open style="margin-top:12px"><summary>Match your columns</summary><p class="dim">Choose where each field comes from. Changes require another preview. Size columns on orders are detected automatically.</p><div class="grid2">${info.fields.map((field, i) => `<div class="field"><label for="${prefix}-map-${i}">${esc(({first:'first name',last:'last name'})[field] || field.replaceAll('_', ' '))}</label><select class="input" id="${prefix}-map-${i}"><option value="">Do not import</option>${info.headers.map((h, n) => `<option value="${n + 1}" ${mapping[field] === h ? 'selected' : ''}>${esc(h)}${info.examples[h] ? ' — ' + esc(info.examples[h]) : ''}</option>`).join('')}</select></div>`).join('')}</div></details>`
+      mapping = { ...info.mapping }
+      const presets = info.presets || []
+      const detected = presets.find(p => p.id === info.preset)
+      const label = field => ({first:'first name',last:'last name'})[field] || field.replaceAll('_', ' ')
+      const stale = () => {
+        $('#' + prefix + '-go', bg).disabled = true
+        $('#' + prefix + '-out', bg).textContent = 'Preview the updated column mapping before importing.'
+      }
+      const presetPicker = presets.length > 1 ? `<div class="field"><label for="${prefix}-preset">Export format</label><select class="input" id="${prefix}-preset">${presets.map(p => `<option value="${esc(p.id)}" ${p.id === info.preset ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select></div>` : ''
+      const detectedNote = detected && detected.id !== 'generic' ? `<p class="dim" id="${prefix}-detected"><strong>Detected: ${esc(info.detected?.short || detected.label)}</strong> — columns were pre-selected for that format. Every choice below is still editable.</p>` : ''
+      box.innerHTML = `<details open style="margin-top:12px"><summary>Match your columns</summary><p class="dim">Choose where each field comes from. Changes require another preview. Size columns on orders are detected automatically.</p>${detectedNote}${presetPicker}<div class="grid2">${info.fields.map((field, i) => `<div class="field"><label for="${prefix}-map-${i}">${esc(label(field))}</label><select class="input" id="${prefix}-map-${i}"><option value="">Do not import</option>${info.headers.map((h, n) => `<option value="${n + 1}" ${mapping[field] === h ? 'selected' : ''}>${esc(h)}${info.examples[h] ? ' — ' + esc(info.examples[h]) : ''}</option>`).join('')}</select></div>`).join('')}</div></details>`
       info.fields.forEach((field, i) => {
         $('#' + prefix + '-map-' + i, bg).onchange = e => {
           mapping[field] = e.target.value ? info.headers[Number(e.target.value) - 1] : null
-          $('#' + prefix + '-go', bg).disabled = true
-          $('#' + prefix + '-out', bg).textContent = 'Preview the updated column mapping before importing.'
+          stale()
         }
       })
+      const picker = $('#' + prefix + '-preset', bg)
+      if (picker) picker.onchange = e => {
+        const chosen = presets.find(p => p.id === e.target.value)
+        if (!chosen) return
+        mapping = { ...chosen.mapping }
+        info.fields.forEach((field, i) => {
+          const n = info.headers.indexOf(mapping[field])
+          $('#' + prefix + '-map-' + i, bg).value = n >= 0 ? String(n + 1) : ''
+        })
+        stale()
+      }
     },
     reviewed() { const details = box.querySelector('details'); if (details) details.open = false },
     lock(value) { box.querySelectorAll('select').forEach(el => { el.disabled = value }) }

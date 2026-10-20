@@ -76,6 +76,9 @@ h2 { font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; margin: 
 .tk-bc svg { max-width: 180px; height: 44px; }
 .tk-bc-num { font: 700 9px/1.4 ui-monospace, monospace; color: #555; letter-spacing: .04em; }
 @media print { .tk-bc svg { max-width: 200px; } }
+/* QR to the staff job page — opens the job on a phone after sign-in. */
+.tk-qr { margin-top: 8px; text-align: right; }
+.tk-qr svg { width: 84px; height: 84px; display: inline-block; }
 
 /* Imprint block + fill-in specs (v1.5) — shown when there is no formal separation, so the
    press operator still knows what prints where and has a place to record the run specs. */

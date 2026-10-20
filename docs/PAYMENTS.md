@@ -80,3 +80,9 @@ Invoice PDFs show credits and returned payments. QuickBooks sync explicitly stop
 ## Adding an adapter
 
 Use a hosted/tokenized checkout with no card data passing through the app. Integrate with the persisted payment-attempt flow. Implement provider authentication, callback verification, authoritative transaction retrieval, amount/currency/reference checks, and test-mode isolation. Add local HTTP fixtures covering duplicate delivery, a forged signature, another shop, wrong amounts/currency, delayed payments, decline/hold, rollback, and test payments before enabling the adapter. Do not treat a browser redirect or a submitted “paid” flag as proof of payment.
+
+## QR-to-pay
+
+The invoice PDF prints a **Scan to pay** QR code beside the totals when the invoice is not void and still has a balance due. The code opens the invoice's existing customer pay link (`/p/pay/:id` with its share token, and the shop slug on multi-tenant installs), so it carries no extra access. A paid, overpaid or void invoice prints no code. The code is drawn as vector rectangles from the `qrcode` module's matrix; the PDF writer embeds no image. The absolute link uses `PSC_PUBLIC_URL` when set, otherwise the host the PDF was requested from. Set `PSC_PUBLIC_URL` so printed codes do not point at a LAN address.
+
+The online pay page also shows the same code under the pay buttons, so a customer viewing it on a computer can pay from a phone. It is hidden when online payments are not configured. The staff work ticket (`/p/ticket/:id`) includes a QR code for the staff job page (`/#/jobs/:id`). Opening it requires a staff sign-in.
