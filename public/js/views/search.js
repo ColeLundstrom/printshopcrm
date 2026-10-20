@@ -21,7 +21,9 @@ const themeToggle = () => $('#theme-toggle')?.click()
 /** The static command set. `run` fires the action; `hint` shows the keyboard equivalent. */
 const COMMANDS = [
   { icon: '◍', title: 'Ask the assistant', kw: 'ask assistant ai help chat message', run: () => window.dispatchEvent(new Event('psc:assistant')), hint: 'a' },
-  { icon: '▤', title: 'New estimate', kw: 'create quote new estimate', run: () => go('/estimates/new'), hint: 'n' },
+  { icon: '▤', title: 'Make an estimate', kw: 'create quote new estimate price', run: () => go('/do/estimate'), hint: 'n' },
+  { icon: '◈', title: 'Make a mockup', kw: 'mockup proof artwork logo shirt photo preview', run: () => go('/do/mockup') },
+  { icon: '⟳', title: 'Automatic follow-ups', kw: 'follow up chase nudge reminder automatic email quote invoice', run: () => go('/auto-follow-ups') },
   { icon: '▦', title: 'New job', kw: 'create job board production', run: () => go('/board?new=1') },
   { icon: '◉', title: 'New customer', kw: 'create contact customer add', run: () => go('/contacts?new=1') },
   { icon: '◱', title: 'New opportunity', kw: 'create deal pipeline lead', run: () => go('/pipeline?new=1') },
@@ -33,7 +35,7 @@ const COMMANDS = [
   { icon: '◐', title: 'Toggle light / dark', kw: 'theme dark light mode toggle', run: themeToggle, hint: 't' },
   { icon: '⌨', title: 'Keyboard shortcuts', kw: 'help shortcuts keys cheatsheet', run: () => window.dispatchEvent(new Event('psc:help')), hint: '?' },
   // Navigation — same targets as `g <key>`.
-  { icon: '◧', title: 'Go to Dashboard', kw: 'dashboard home', run: () => go('/'), hint: 'g d' },
+  { icon: '◧', title: 'Go to Home', kw: 'dashboard home today', run: () => go('/'), hint: 'g d' },
   { icon: '▦', title: 'Go to Job Board', kw: 'board jobs production kanban', run: () => go('/board'), hint: 'g b' },
   { icon: '▤', title: 'Go to Estimates', kw: 'estimates quotes', run: () => go('/estimates'), hint: 'g e' },
   { icon: '▣', title: 'Go to Invoices', kw: 'invoices money billing', run: () => go('/invoices'), hint: 'g v' },

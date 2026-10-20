@@ -53,7 +53,7 @@ Writes: POST /customers, /estimates, /jobs/:id/stage</pre>
       <div class="setup-actions"><button class="btn ghost" id="agent-access-save">Save API access</button>${!dev.api_key_set ? '<button class="btn" id="agent-create">Create read-only key</button>' : '<a class="btn ghost" href="#/developers">Manage existing key</a>'}<button class="btn ghost" id="agent-copy">Copy connection guide</button><a class="btn ghost" href="/docs-api.html" target="_blank" rel="noopener noreferrer">API documentation</a></div><div id="agent-new-key" role="status"></div>
       <p class="setup-status">Read-and-write keys can create customers and draft estimates and move jobs. Your external agent must implement its own Slack permissions and approval policy. This does not install an agent or connect it automatically.</p></details>
     </section>
-    <section class="setup-section"><h2>Ready for your first job</h2><p>Add a customer, make an estimate, review the price, and move the approved work into production.</p><div class="setup-actions"><a class="btn" href="#/estimates/new">New estimate</a><a class="btn ghost" href="#/settings">All settings</a><a class="btn ghost" href="#/board">Job board</a></div></section>
+    <section class="setup-section"><h2>Ready for your first job</h2><p>Add a customer, make an estimate, review the price, and move the approved work into production.</p><div class="setup-actions"><a class="btn" href="#/do/estimate">Make an estimate</a><a class="btn ghost" href="#/settings">All settings</a><a class="btn ghost" href="#/board">Job board</a></div></section>
   </div>`
   $('#setup-customers').onclick = () => importContacts()
   $('#setup-orders').onclick = () => importOrders()

@@ -65,7 +65,7 @@ import {
   PLANS, createBillingPortal, verifyWebhook, webhookSecret,
   billingLive, setPlatformCredentials, LITE_PLAN_ORDER, PLAN_ORDER, litePlanAllows, isFreePlan,
 } from './lib/billing.mjs'
-import { initAutomations, seedAutomations, listAutomations, needsSetup, fire, tick, TRIGGERS, ACTIONS, CONDITIONS } from './lib/automations.mjs'
+import { initAutomations, seedAutomations, listAutomations, needsSetup, fire, tick, TRIGGERS, ACTIONS, CONDITIONS, STARTER_AUTOMATIONS } from './lib/automations.mjs'
 import { parseIntake, aiStatus, draftReply, testAi, AI_PROVIDERS, DEFAULT_MODELS, parseSizeRun } from './lib/ai.mjs'
 import * as pipeline from './lib/pipeline.mjs'
 import { capacityReport, promise as capacityPromise, colorsFromItems } from './lib/capacity.mjs'
@@ -5135,6 +5135,9 @@ app.get('/api/automations', wrap((_req, res) => {
     // that quietly does nothing is only better than one that mails everybody if you can SEE it.
     automations: listAutomations().map((a) => ({ ...a, params: parse(a.params, {}), needs_setup: needsSetup(a) })),
     triggers: TRIGGERS, actions: ACTIONS, conditions: CONDITIONS,
+    // The shipped rule set, so the plain-English Automatic follow-ups screen can switch one back on
+    // (re-created from its template) after a shop deleted it, without a builder in sight.
+    starters: STARTER_AUTOMATIONS,
     // Failures first, then the rest of the window. This is the rule GET /api/qbo/queue already
     // sorts by, and the defect the Outbox's `?needs=1` filter closed: the ONE button that releases
     // a permanently latched failure is drawn per row, so a failure that falls off a newest-first
@@ -5752,6 +5755,38 @@ app.post('/api/ai/intake', async (req, res) => {
     res.json({ ...order, assumed_pieces: assumed || null, priced: priced ? { pieces: priced.pieces, items: priced.items, quote: priced.quote } : null })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
+
+/**
+ * Price an order the guided "Make an estimate" screen built from plain choices — garment, sizes,
+ * decoration, print locations — with the same engine every automated path uses (priceIntakeLive).
+ * Nothing is written. The screen shows the figure while the shop is still choosing, then creates
+ * the estimate through POST /api/estimates with the lines this returned.
+ */
+app.post('/api/quick-price', wrap(async (req, res) => {
+  const b = req.body?.order
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return res.status(400).json({ error: 'Describe the order first', code: 'invalid_order' })
+  const text = (v, max = 120) => String(v ?? '').trim().slice(0, max)
+  const count = (v) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? Math.min(n, 100000) : 0 }
+  const sizes = {}
+  if (b.sizes && typeof b.sizes === 'object' && !Array.isArray(b.sizes)) {
+    for (const k of SIZES) { const n = count(b.sizes[k]); if (n) sizes[k] = n }
+  }
+  const locations = (Array.isArray(b.locations) ? b.locations : []).slice(0, 8)
+    .map((l) => ({ name: text(l?.name, 40) || 'Front', colors: Math.min(12, Math.max(1, count(l?.colors) || 1)) }))
+  const order = {
+    garment: text(b.garment) || 'Garment', garment_color: text(b.garment_color, 40),
+    sizes, total_pieces: count(b.total_pieces), decoration: text(b.decoration, 40) || 'Screen Print',
+    locations: locations.length ? locations : [{ name: 'Front', colors: 1 }],
+    dark_garment: b.dark_garment === true,
+  }
+  // A tax-exempt buyer is quoted untaxed here exactly as POST /api/estimates will store it.
+  const contactId = Number(req.body?.contact_id)
+  const taxRate = Number.isInteger(contactId) && contactId > 0 ? taxRateFor(contactId) : null
+  const priced = await priceIntakeLive(order, getSettings(), { timeoutMs: 4000, taxRate })
+  if (!priced) return res.json({ priced: null, reason: 'no_quantity' })
+  res.json({ priced: { pieces: priced.pieces, items: priced.items, totals: priced.totals, tax_rate: priced.taxRate,
+    per_piece: priced.quote.perPiece, blank: priced.quote.blank, service: priced.quote.service } })
+}))
 
 app.post('/api/ai/draft', async (req, res) => {
   try {

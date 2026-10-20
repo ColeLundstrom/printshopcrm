@@ -409,7 +409,7 @@ export async function contactDetailView(id) {
   $('#portal-copy').onclick = async () => {
     try { await copyText(await portalLink, 'Customer portal link copied') } catch (e) { toast(e.message, true) }
   }
-  $('#new-est').onclick = () => go(`/estimates/new?contact=${id}`)
+  $('#new-est').onclick = () => go(`/do/estimate?contact=${id}`)
   /* DELETE /api/contacts/:id has been fully built and carefully guarded since v10 — it refuses a
    * customer with a live invoice, with a recorded payment, or with a purchase order still out, and
    * each refusal is a 409 written in words a shop owner can act on. No screen had ever called it,

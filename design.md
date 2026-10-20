@@ -6,7 +6,14 @@ Modern-minimal workbench. Existing routes and workflows stay intact. A new shop 
 Use the light and dark palettes in public/css/app.css: --bg, --bg-2, --panel, --panel-2, --txt, --txt-2, --txt-3, --line, --accent, --accent-ink. Use --mono for code and the existing system sans-serif stack for UI. No external font dependency. Body --fs-md, labels --fs-sm, section titles --fs-lg, page titles --fs-2xl. Use the existing --sp-1 through --sp-11 four-point spacing ramp and --r-sm/--r-md radii.
 
 ## Layout
-App pages: persistent workflow navigation and one work area. Tables for records; ordered rows for setup. Today prioritizes actual work, with one obvious new-estimate action. Setup leads with shop details, importing, email and SMS. Optional agent connections follow. Settings retain every existing control with section navigation. More tools reveals specialist routes; direct links remain valid.
+Task-first. A shop arrives wanting to do one thing ("make a mockup"), so the product leads with verbs, not a feature map.
+- Home opens on "What do you want to do?": big tiles for Make an estimate, Make a mockup, Automatic follow-ups, then smaller ones (public/js/shared/tasks.js). The "Needs you today" queue follows; the numbers come last.
+- The top bar's New button opens the same tiles on every screen.
+- Each tile lands on a guided screen that asks one question at a time (#/do/estimate, #/do/mockup, #/auto-follow-ups), never on a blank form. Power editors stay one click away ("Use the full editor", "Custom rules").
+- The sidebar shows only the everyday screens: Home, Customers, Estimates, Jobs, Invoices, Messages, Auto follow-ups. Every other route sits under "All tools"; Setup and Settings are pinned at the foot. Name things the way a shop talks ("Who owes you", not "Follow-ups"; "Sent mail", not "Outbox").
+- Adding a screen: put it under All tools unless a shop uses it every day. Adding a task: add it to TASKS with a guided landing page.
+
+Tables for records; ordered rows for setup. Setup leads with shop details, importing, email and SMS. Optional agent connections follow. Settings retain every existing control with section navigation. Direct links to every route remain valid.
 
 ## Interaction
 Primary action uses the existing filled accent button, secondary actions use borders. Clear verbs, visible labels, no novelty icons or decorative art. Saved credentials never imply verified delivery. Empty states explain the next action. Advanced controls disclose without losing entered values. Keyboard focus uses --ring, touch targets --tap. No reveal animations; respect reduced motion. Never animate financial values.
@@ -39,7 +46,10 @@ One column on phones; min-width:0 and minmax(0,1fr) on flexible grids. Tables sc
 - conversations: existing conversations workflow.
 - admin: existing admin workflow.
 - automations: existing automations workflow.
-- today: existing today workflow.
+- today: Home — task tiles, then the needs-you queue, then the pulse.
+- do-estimate: guided estimate (customer → what they want, priced live → send).
+- do-mockup: pick or start an order, then the mockup composer.
+- auto-followups: plain-English switches over the starter automation rules.
 - dashboard: existing dashboard workflow.
 - search: existing search workflow.
 - scan: existing scan workflow.

@@ -7,7 +7,7 @@ import { applyShopBranding,toggleShopTheme } from './shop-branding.js'
 import {suppliersView} from './views/suppliers.js'
 import {costingView,costingSettingsView,jobCostingView} from './views/costing.js'
 import { productionView,productionJobView,workflowsView } from './views/production.js'
-import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, closeModal, store, setShopFormat } from './core.js'
+import { api, $, $$, esc, route, runRouter, initials, on, toast, announce, acceptRoute, modal, closeModal, store, setShopFormat } from './core.js'
 import { dashboardView } from './views/dashboard.js'
 import { agentView } from './views/agent.js'
 import { productsView } from './views/products.js'
@@ -46,62 +46,78 @@ import { dtfResizeView } from './views/dtfresize.js'
 import { scanView } from './views/scan.js'
 import { booksView } from './views/books.js'
 import { developersView } from './views/developers.js'
+import { doEstimateView } from './views/do-estimate.js'
+import { doMockupView } from './views/do-mockup.js'
+import { autoFollowupsView } from './views/auto-followups.js'
+import { taskTiles } from './shared/tasks.js'
 
-// Workflow-first IA (Today / Sales / Production / Money / Customers / Automate / More): grouped by
-// what someone is trying to DO, not by feature inventory. Rarely-touched tools live under "More".
+// Task-first IA. The sidebar used to be a map of every feature — 39 destinations under Sales /
+// Production / Money / Customers / Automate / More, with names that overlapped (Conversations,
+// Pipeline, Follow-ups, Reorder Radar; Department queue, Job Board, Shop TV). Now the everyday
+// screens are the only ones shown, named the way a shop talks, and everything else is one click
+// away under "All tools". The verbs themselves ("Make a mockup") live on Home and behind the
+// top bar's New button — see shared/tasks.js.
 const NAV = [
-  { href: '/', ico: 'today', name: 'Today' },
-  { href: '/setup', ico: 'settings', name: 'Setup & connections', manage: true },
-
-  { label: 'Sales', section: true },
-  { href: '/conversations', ico: 'conversations', name: 'Conversations', badge: 'unread' },
-  { advanced: true, href: '/pipeline', ico: 'pipeline', name: 'Pipeline' },
+  { href: '/', ico: 'today', name: 'Home' },
+  { href: '/contacts', ico: 'customers', name: 'Customers' },
   { href: '/estimates', ico: 'estimates', name: 'Estimates' },
+  { href: '/board', ico: 'board', name: 'Jobs', badge: 'active_jobs' },
+  { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
+  { href: '/conversations', ico: 'conversations', name: 'Messages', badge: 'unread' },
+  { href: '/auto-follow-ups', ico: 'followups', name: 'Auto follow-ups', manage: true },
+  { label: 'Admin', section: true, admin: true },
+  { href: '/admin', ico: 'admin', name: 'Control Room', admin: true },
+]
+
+// Everything else, folded under "All tools" until asked for. Nothing is removed: every route is one
+// click, ⌘K or a URL away.
+const TOOLS = [
+  { label: 'Sales', section: true },
   { href: '/orders', ico: 'orders', name: 'Orders' },
-  { advanced: true, href: '/followups', ico: 'followups', name: 'Follow-ups', badge: 'followups' },
-  { advanced: true, href: '/reorders', ico: 'reorders', name: 'Reorder Radar' },
+  { href: '/followups', ico: 'followups', name: 'Who owes you', badge: 'followups' },
+  { href: '/pipeline', ico: 'pipeline', name: 'Deals pipeline' },
+  { href: '/reorders', ico: 'reorders', name: 'Repeat customers' },
+  { href: '/autopilot', ico: 'autopilot', name: 'Email to estimate' },
   { label: 'Production', section: true },
-  { href: '/costing', ico:'roi',name:'Machine & job costs',manage:true,advanced:true },
+  { href: '/art', ico: 'art', name: 'Art & proofs', badge: 'art_pending' },
   { href: '/production', ico: 'board', name: 'Department queue' },
   { href: '/purchasing', ico: 'cart', name: 'Purchasing' },
-  { href: '/board', ico: 'board', name: 'Job Board', badge: 'active_jobs' },
-  { href: '/tv', ico: 'tv', name: 'Shop TV' },
-  { href: '/art', ico: 'art', name: 'Art & Prepress', badge: 'art_pending' },
-  { advanced: true, href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
-  { advanced: true, href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
-  { advanced: true, href: '/capacity', ico: 'capacity', name: 'Capacity' },
-  { advanced: true, href: '/scan', ico: 'scan', name: 'Floor Mode' },
+  { href: '/capacity', ico: 'capacity', name: 'Capacity' },
+  { href: '/scan', ico: 'scan', name: 'Floor Mode' },
+  { href: '/dtf', ico: 'dtf', name: 'DTF Resize' },
+  { href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
+  { href: '/costing', ico: 'roi', name: 'Machine & job costs', manage: true },
   { label: 'Money', section: true },
   { href: '/pricing', ico: 'pricing', name: 'Pricing' },
   { href: '/profit-planner', ico: 'roi', name: 'Profit planner', manage: true },
-  { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
-  { advanced: true, href: '/roi', ico: 'roi', name: 'Profitability' },
-  { advanced: true, href: '/books', ico: 'ledger', name: 'Books & A/R' },
-  { label: 'Customers', section: true },
-  { href: '/contacts', ico: 'customers', name: 'Customers' },
+  { href: '/roi', ico: 'roi', name: 'Profitability' },
+  { href: '/books', ico: 'ledger', name: 'Books & A/R' },
   { label: 'Automate', section: true },
-  { advanced: true, href: '/autopilot', ico: 'autopilot', name: 'Autopilot' },
-  { advanced: true, href: '/receptionist', ico: 'receptionist', name: 'AI Receptionist' },
-  { advanced: true, href: '/automations', ico: 'automations', name: 'Automations', badge: 'automations' },
-  { label: 'More', section: true },
-  { advanced: true, href: '/products', ico: 'products', name: 'Products' },
-  { advanced: true, href: '/activity', ico: 'activity', name: 'Activity' },
-  { advanced: true, href: '/developers', ico: 'code', name: 'Developers', manage: true },
-  { advanced: true, href: '/outbox', ico: 'outbox', name: 'Outbox' },
+  { href: '/automations', ico: 'automations', name: 'Custom rules', badge: 'automations' },
+  { href: '/receptionist', ico: 'receptionist', name: 'AI Receptionist' },
+  { label: 'Shop', section: true },
+  { href: '/tv', ico: 'tv', name: 'Shop TV' },
+  { href: '/products', ico: 'products', name: 'Products' },
+  { href: '/activity', ico: 'activity', name: 'Activity' },
+  { href: '/outbox', ico: 'outbox', name: 'Sent mail' },
+  { href: '/developers', ico: 'code', name: 'Developers', manage: true },
   { href: '/billing', ico: 'billing', name: 'Hosting', owner: true },
-  { advanced: true, href: '/support', ico: 'customers', name: 'Support the project' },
+  { href: '/support', ico: 'customers', name: 'Support the project' },
+]
+
+// Pinned to the foot of the sidebar, under the tools: where a shop goes to change how things work.
+const FOOT_NAV = [
+  { href: '/setup', ico: 'settings', name: 'Setup & connections', manage: true },
   { href: '/settings', ico: 'settings', name: 'Settings' },
-  { label: 'Admin', section: true, admin: true },
-  { href: '/admin', ico: 'admin', name: 'Control Room', admin: true },
 ]
 
 /** Hide nav entries a role can't use (Billing is owner-only, Control Room is platform-admin) and
  *  then drop any now-empty section header. Nothing is hidden by plan — there is one product and
  *  every shop has all of it (2026-08-21; see lib/billing.mjs). */
-function visibleNav() {
+function visibleNav(list = NAV) {
   const me = window.__me || {}
   const owner = me.single_tenant || me.is_owner
-  const items = NAV.filter((n) =>
+  const items = list.filter((n) =>
     !(n.owner && !owner) &&
     // `manage` is the third gate, and it was missing. Developers carried no role flag at all, so
     // staff saw it; developers.js then fetches /api/developers, which is requireRole('manager'),
@@ -115,6 +131,10 @@ function visibleNav() {
 
 /* routes — order matters, first match wins */
 route(/^\/$/, todayView)
+// The guided front doors: one question at a time, from Home's tiles and the top bar's New button.
+route(/^\/do\/estimate(?:\?.*)?$/, doEstimateView)
+route(/^\/do\/mockup$/, doMockupView)
+route(/^\/auto-follow-ups$/, autoFollowupsView)
 route(/^\/dashboard$/, dashboardView)
 route(/^\/autopilot$/, autopilotView)
 route(/^\/receptionist$/, agentView)
@@ -186,20 +206,20 @@ let badges = {}
  */
 const TABBAR_PREF = {
   pro: [
-    { href: '/', ico: 'today', name: 'Today' },
-    { href: '/board', ico: 'board', name: 'Board', badge: 'active_jobs' },
-    { href: '/conversations', ico: 'conversations', name: 'Inbox', badge: 'unread' },
-    { href: '/pricing', ico: 'pricing', name: 'Pricing' },
+    { href: '/', ico: 'today', name: 'Home' },
+    { href: '/estimates', ico: 'estimates', name: 'Estimates' },
+    { href: '/board', ico: 'board', name: 'Jobs', badge: 'active_jobs' },
+    { href: '/conversations', ico: 'conversations', name: 'Messages', badge: 'unread' },
   ],
   lite: [
-    { href: '/', ico: 'today', name: 'Today' },
+    { href: '/', ico: 'today', name: 'Home' },
     { href: '/orders', ico: 'orders', name: 'Orders' },
     { href: '/estimates', ico: 'estimates', name: 'Estimates' },
     { href: '/invoices', ico: 'invoices', name: 'Invoices', badge: 'open_invoices' },
   ],
 }
 function tabbarItems() {
-  const allowed = new Set(visibleNav().filter((n) => !n.section).map((n) => n.href))
+  const allowed = new Set([...visibleNav(NAV), ...visibleNav(TOOLS)].filter((n) => !n.section).map((n) => n.href))
   const pref = TABBAR_PREF[window.__EDITION === 'lite' ? 'lite' : 'pro']
   return [...pref.filter((t) => allowed.has(t.href)).slice(0, 4), { more: true, ico: 'menu', name: 'More' }]
 }
@@ -219,38 +239,37 @@ function isActive(href, path) {
 /**
  * Power tools stay folded away until asked for.
  *
- * The full nav is 27 destinations. A shop owner opening this for the first time has to read all of
- * them to work out "where do I write a quote", and most of what they read is a tool they may never
- * use. Nothing is removed — every item is one click, ⌘K, or a URL away — but the sidebar leads with
- * the daily loop: quote → produce → invoice → get paid.
+ * A shop owner opening this for the first time used to have to read every destination to work out
+ * "where do I write a quote", and most of what they read was a tool they may never use. Nothing is
+ * removed — every item is one click, ⌘K, or a URL away — but the sidebar leads with the everyday
+ * screens and the tools sit under one "All tools" button.
  */
 const MORE_KEY = 'psc-nav-more'
 const moreOpen = () => store.get(MORE_KEY) === '1'
 
 function drawNav() {
   const path = location.hash.replace(/^#/, '').split('?')[0] || '/'
-  const all = visibleNav()
-  // Never hide the page you are standing on: arriving at an advanced route from a link, a search
-  // result or a bookmark must not produce a sidebar with no current item in it.
-  const onAdvanced = all.some((n) => !n.section && n.advanced && isActive(n.href, path))
-  const expanded = moreOpen() || onAdvanced
-  const shown = expanded ? all : all.filter((n) => !n.advanced)
-  const hiddenCount = all.filter((n) => !n.section && n.advanced).length
+  const tools = visibleNav(TOOLS)
+  const toolCount = tools.filter((n) => !n.section).length
+  // Never hide the page you are standing on: arriving at a tool from a link, a search result or a
+  // bookmark must not produce a sidebar with no current item in it.
+  const onTool = tools.some((n) => !n.section && isActive(n.href, path))
+  const expanded = moreOpen() || onTool
 
   const link = (n) => {
     const on = isActive(n.href, path)
     const c = badges[n.badge]
     return `<a href="#${n.href}" class="${on ? 'on' : ''} ${n.hot ? 'hot' : ''}"${on ? ' aria-current="page"' : ''}>${icon(n.ico, 'ico')}${n.name}${n.hot ? '<span class="hotdot"></span>' : ''}${c ? `<span class="count">${c}</span>` : ''}</a>`
   }
+  const paint = (list) => list.map((n) => (n.section ? `<div class="nav-label">${n.label}</div>` : link(n))).join('')
 
-  // Drop any section header left with nothing beneath it once the advanced items are filtered out.
-  const pruned = shown.filter((n, i) => !n.section || shown.slice(i + 1).some((x) => !x.section) && !shown[i + 1]?.section)
-
-  $('#nav').innerHTML = pruned.map((n) => (n.section ? `<div class="nav-label">${n.label}</div>` : link(n))).join('')
-    + (hiddenCount
-      ? `<button type="button" class="nav-more" id="nav-more" aria-expanded="${expanded}">${
-          expanded ? 'Show fewer tools' : `More tools <span class="count">${hiddenCount}</span>`}</button>`
+  $('#nav').innerHTML = paint(visibleNav(NAV))
+    + (toolCount
+      ? `<button type="button" class="nav-more" id="nav-more" aria-expanded="${expanded}" aria-controls="nav-tools">${
+          expanded ? 'Hide extra tools' : 'All tools'}</button>
+         <div id="nav-tools"${expanded ? '' : ' hidden'}>${expanded ? paint(tools) : ''}</div>`
       : '')
+    + `<div class="nav-foot">${paint(visibleNav(FOOT_NAV))}</div>`
 
   const btn = $('#nav-more')
   if (btn) {
@@ -498,6 +517,17 @@ if (viewEl && !document.querySelector('.skip-link')) {
 }
 
 $('#asst-trigger').onclick = () => openAssistant()
+
+/** The top bar's New button: the same list of verbs as Home, from any screen. */
+function openTaskMenu() {
+  modal({
+    title: 'What do you want to do?', wide: true,
+    body: taskTiles(window.__me || {}, window.__EDITION === 'lite' ? 'lite' : 'pro'),
+    // A tile is a plain link; the hash change closes the dialog through navigate().
+  })
+}
+$('#new-trigger')?.addEventListener('click', openTaskMenu)
+window.addEventListener('psc:tasks', openTaskMenu)
 window.addEventListener('psc:assistant', (e) => openAssistant(e.detail))
 wireSearchHotkey()
 wireKeys()

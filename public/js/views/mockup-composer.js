@@ -61,10 +61,10 @@ export async function mockupComposerView(jobId) {
   loadStyles()
   const id = String(jobId)
   if (!/^\d+$/.test(id)) throw new Error('Choose a job before creating a mockup.')
-  setPage('Create appearance mockup', `<a class="btn ghost" href="#/jobs/${id}">Back to job</a>`, '<a href="#/board">Board</a> /')
+  setPage('Make a mockup', `<a class="btn ghost" href="#/jobs/${id}">Open the order</a>`, '<a href="#/do/mockup">Pick another order</a> /')
   $('#view').innerHTML = `<section class="mockup-composer" aria-labelledby="mc-title">
-    <header class="mc-intro"><div><h2 id="mc-title">Place original artwork on a product photo</h2><p id="mc-job-context" class="mc-muted" role="status">Loading job…</p></div><span class="mc-local-label">Made on your device · No AI</span></header>
-    <p class="mc-explanation">Move and resize your artwork without redrawing it. Placement is visual; photo perspective and print dimensions are not calibrated. Saving uploads a draft proof and private originals for this job.</p>
+    <header class="mc-intro"><div><h2 id="mc-title">Put the artwork on a product photo</h2><p id="mc-job-context" class="mc-muted" role="status">Loading job…</p></div><span class="mc-local-label">Made on your device · No AI</span></header>
+    <p class="mc-explanation">1. Pick a photo of the shirt. 2. Add their artwork. 3. Drag it where it goes, then save. It is saved on this order as a draft proof. This is a visual preview: it does not measure print size or follow the fabric’s folds.</p>
     <div id="mc-job-error" class="mc-error" role="alert" hidden></div>
     <button type="button" class="btn ghost" id="mc-retry-job" hidden>Retry loading job, keep this draft</button>
     <div class="mc-workspace">

@@ -113,7 +113,7 @@ export async function dashboardView() {
     if (e.target.closest('[data-setup]')) return go('/welcome')
     if (e.target.closest('#setup-dismiss')) { store.set('psc-setup-dismissed', '1'); $('.setup-card')?.remove() }
   })
-  $('#new-est').onclick = () => go('/estimates/new')
+  $('#new-est').onclick = () => go('/do/estimate')
 }
 
 /** A resumable "finish setting up" card — shows remaining steps as chips until setup is complete. */

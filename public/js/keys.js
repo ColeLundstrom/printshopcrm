@@ -13,19 +13,19 @@ import { openSearch } from './views/search.js'
 // Per-page "new" action, so `n` always does the obvious thing where you are. URL-driven
 // (?new=1) so it's also linkable and each view opens its own create form on load.
 export const NEW_HREF = {
-  '/estimates': '/estimates/new',
-  '/invoices': '/estimates/new',
+  '/estimates': '/do/estimate',
+  '/invoices': '/do/estimate',
   '/board': '/board?new=1',
   '/jobs': '/board?new=1',
   '/contacts': '/contacts?new=1',
   '/pipeline': '/pipeline?new=1',
   '/automations': '/automations?new=1',
-  '*': '/estimates/new',
+  '*': '/do/estimate',
 }
 export const newHrefFor = (p) => NEW_HREF[Object.keys(NEW_HREF).find((k) => k !== '*' && p.startsWith(k))] || NEW_HREF['*']
 
 export const GOTO = [
-  ['d', '/', 'Dashboard'],
+  ['d', '/', 'Home'],
   ['a', '/autopilot', 'Autopilot'],
   ['b', '/board', 'Job Board'],
   ['y', '/capacity', 'Screen print capacity'],

@@ -1,9 +1,11 @@
 import { api, $, esc, money0, setPage, empty, skeleton, shopLocale } from '../core.js'
+import { taskTiles } from '../shared/tasks.js'
 
 /**
- * Today: the role-aware action center that replaces the flat dashboard. One ranked "do this next"
- * queue instead of a wall of equally-weighted counters: the highest-risk money and production items
- * float to the top, shaped to who's signed in. Owners/managers see money first; staff see the floor first.
+ * Home. It leads with the question a shop actually arrives with — "what do you want to do?" — as a
+ * set of big, plainly-worded tiles (shared/tasks.js), then the ranked "needs you" queue, then the
+ * numbers. It used to open on four KPI tiles and a twelve-week chart, which answer "how is the
+ * shop doing?" — a fine question, and never the first one.
  */
 
 const KIND_TINT = { collect: 'var(--red)', risk: 'var(--amber)', approval: 'var(--violet)', floor: 'var(--blue)', reply: 'var(--accent)', followup: 'var(--accent)' }
@@ -28,32 +30,12 @@ const litePulse = (p, c) => `<div class="tdy-pulse">
   <a class="tdy-stat" href="#/contacts"><div class="tdy-stat-v">${c ? c.contacts : 0}</div><div class="tdy-stat-l">Customers</div></a>
 </div>`
 
-/** The first thing a brand-new shop should see: three things it can actually do, right now. */
-const startCard = (lite) => `<div class="card">
-  <div class="card-h"><h3>Let's get your first job in</h3></div>
-  <div class="card-b">
-    <p class="dim" style="font-size:13.5px;margin:0 0 16px;line-height:1.6">Your pricing is already set up, so there's nothing to configure first. Start wherever you like. Most shops start by adding the customer.</p>
-    <div class="tdy-start">
-      ${(lite ? [
-        ['/contacts', '◉', 'Add a customer', 'Name and email is enough to start.'],
-        ['/estimates', '▤', 'Send an estimate', 'Quote a job and email it as a link.'],
-        ['/invoices', '▣', 'Create an invoice', 'Bill a job and take card payment.'],
-      ] : [
-        ['/contacts', '◉', 'Add a customer', 'Name and email is enough to start.'],
-        ['/estimates', '▤', 'Quote a job', 'Per-size pricing, sent as a link they approve.'],
-        ['/pricing', '⊞', 'Check your pricing', 'See the margin on every quantity and colour.'],
-      ]).map(([href, ico, title, sub]) => `<a class="tdy-start-a" href="#${href}">
-        <span class="tdy-start-ic">${ico}</span>
-        <span class="tdy-start-t">${title}</span>
-        <span class="tdy-start-s">${sub}</span>
-        <span class="tdy-start-go">Start →</span></a>`).join('')}
-    </div>
-    <p class="dim" style="font-size:12.5px;margin:16px 0 0">Want your logo and shop details on what you send? <a href="#/settings">Finish your shop profile →</a></p>
-  </div>
-</div>`
+/** A brand-new shop: the tiles above are the way in; this only says where to begin. */
+const startNote = () => `<p class="home-first">Your pricing is already set up, so there’s nothing to configure first. Most shops start with an estimate.
+  <a href="#/settings">Add your logo and shop details →</a></p>`
 
 export async function todayView() {
-  setPage('Today', '<a class="btn primary" href="#/estimates/new">New estimate</a>')
+  setPage('Home')
   // The router paints this on entry too; a direct re-run must not leave a stale "caught up" on
   // screen while it fetches (or after the fetch fails).
   $('#view').innerHTML = skeleton('cards')
@@ -73,28 +55,38 @@ export async function todayView() {
     <span class="tdy-txt"><span class="tdy-t">${esc(a.title)}</span><span class="tdy-s">${esc(a.sub)}</span></span>
     <span class="tdy-go">→</span></a>`
 
+  const first = isFirstRun(lite, counts)
+  const pulse = lite ? litePulse(p, counts) : `<div class="tdy-pulse">
+      <a class="tdy-stat ${p.money_at_risk > 0 ? 'bad' : ''}" href="#/invoices"><div class="tdy-stat-v">${money0(p.money_at_risk)}</div><div class="tdy-stat-l">Money at risk</div></a>
+      <a class="tdy-stat ${p.jobs_at_risk ? 'warn' : ''}" href="#/capacity"><div class="tdy-stat-v">${p.jobs_at_risk}</div><div class="tdy-stat-l">Deadlines slipping</div></a>
+      <a class="tdy-stat ${p.approvals ? 'warn' : ''}" href="#/art"><div class="tdy-stat-v">${p.approvals}</div><div class="tdy-stat-l">Proofs waiting</div></a>
+      <a class="tdy-stat" href="#/board"><div class="tdy-stat-v">${p.due_week}</div><div class="tdy-stat-l">Due in 7 days${p.overdue_jobs ? ` · ${p.overdue_jobs} overdue` : ''}</div></a>
+    </div>`
+
   $('#view').innerHTML = `
     <div class="tdy-head">
       <h1>${greet}${name ? ', ' + esc(name) : ''}</h1>
       <p class="tdy-date">${new Date(`${d.date}T12:00:00`).toLocaleDateString(shopLocale(), { weekday: 'long', month: 'long', day: 'numeric' })}${d.role !== 'owner' ? ` · <span class="dim">${esc(d.role)}</span>` : ''}</p>
     </div>
 
-    ${lite ? litePulse(p, counts) : `<div class="tdy-pulse">
-      <a class="tdy-stat ${p.money_at_risk > 0 ? 'bad' : ''}" href="#/invoices"><div class="tdy-stat-v">${money0(p.money_at_risk)}</div><div class="tdy-stat-l">Money at risk</div></a>
-      <a class="tdy-stat ${p.jobs_at_risk ? 'warn' : ''}" href="#/capacity"><div class="tdy-stat-v">${p.jobs_at_risk}</div><div class="tdy-stat-l">Deadlines slipping</div></a>
-      <a class="tdy-stat ${p.approvals ? 'warn' : ''}" href="#/art"><div class="tdy-stat-v">${p.approvals}</div><div class="tdy-stat-l">Proofs waiting</div></a>
-      <a class="tdy-stat" href="#/board"><div class="tdy-stat-v">${p.due_week}</div><div class="tdy-stat-l">Due in 7 days${p.overdue_jobs ? ` · ${p.overdue_jobs} overdue` : ''}</div></a>
-    </div>`}
-    ${!lite && me.can_manage !== false && !isFirstRun(lite, counts) ? '<div id="tdy-insights"></div>' : ''}
+    <section class="home-launch" aria-labelledby="home-q">
+      <h2 id="home-q" class="home-q">${first ? 'Let\'s get your first job in' : 'What do you want to do?'}</h2>
+      ${taskTiles(me, lite ? 'lite' : 'pro')}
+      ${first ? startNote() : ''}
+    </section>
 
-    ${isFirstRun(lite, counts) ? startCard(lite) : `<div class="card">
-      <div class="card-h"><h3>Do this next</h3><div class="spacer"></div>
-        <span class="dim" style="font-size:12px">ranked by what's most at stake</span></div>
+    ${first ? '' : `<div class="card">
+      <div class="card-h"><h3>Needs you today</h3><div class="spacer"></div>
+        <span class="dim" style="font-size:12px">most urgent first</span></div>
       <div class="card-b">
         ${d.actions.length ? `<div class="tdy-list">${d.actions.map(row).join('')}</div>`
           : empty('check', "You're all caught up", lite ? 'No overdue invoices and no estimates waiting. Nice.' : 'No overdue money, no slipping deadlines, no proofs waiting. Nice.')}
       </div>
-    </div>`}`
+    </div>`}
+
+    <h2 class="home-sub">How the shop is doing</h2>
+    ${pulse}
+    ${!lite && me.can_manage !== false && !first ? '<div id="tdy-insights"></div>' : ''}`
   // Action items are plain <a href="#/…"> links; the hash router handles them, no JS click handler needed.
   // The trend card loads after the queue paints: the queue is the job, the trends are context.
   if ($('#tdy-insights')) api.get('/api/insights').then((i) => { const m = $('#tdy-insights'); if (m) m.innerHTML = insightsCard(i) }).catch(() => $('#tdy-insights')?.remove())

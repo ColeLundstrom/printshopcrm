@@ -43,7 +43,7 @@ export async function estimatesView() {
     $$('#tabs button').forEach((b) => { const on = b.dataset.s === listFilter; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
     render()
   })
-  $('#new').onclick = () => go('/estimates/new')
+  $('#new').onclick = () => go('/do/estimate')
   await render()
 }
 
