@@ -2,8 +2,8 @@ import { duplicateEstimateModal } from '../shared/estimate-duplicate.js'
 import { locationPricing, normalizeLocationItem, pickedLocation } from '../shared/location-pricing.js'
 import { unsupportedScreenPrintMethods } from '../shared/capacity-scope.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
-import { api, $, $$, el, esc, money, moneyShort, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
-import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, guessColors } from '../shared/pricing.js'
+import { api, $, $$, el, esc, money, money0, moneyShort, undoable, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
+import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, lineBlankCostKnown, guessColors, priceForMargin, raiseToSubtotal, valuePerHour } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { intakeModal } from './intake.js'
 import { matrixPickerModal } from './matrices.js'
@@ -128,7 +128,7 @@ export async function estimateEditor(id) {
           <div><span>Tax</span><span id="taxv">$0.00</span></div>
           <div class="g"><span>Total</span><span id="tot">$0.00</span></div>
         </div>
-        <div class="margin-guard" id="margin-guard" hidden></div>
+        <div class="profit-meter" id="margin-guard" role="region" aria-label="Profit meter" hidden></div>
       </div>
 
       <details style="margin-bottom:18px" ${initialBilling || initialShipping ? 'open' : ''}><summary>Billing and shipping addresses</summary>
@@ -223,20 +223,33 @@ export async function estimateEditor(id) {
   }
 
   /**
-   * Live margin guard: the profit-floor check while you build the quote (Print Life's core idea).
-   * Estimates the real cost of the run from the shop's costing settings and flags Strong / Tight /
-   * Losing money before you send it. Uses fast client-side guesses; the ROI page is authoritative.
+   * Live profit meter: the profit-floor check while you build the quote (Print Life's core idea).
+   * Estimates the real cost of the run from the shop's costing settings and shows, on a gauge that
+   * stays in view while the line items scroll, whether the quote is Strong / Tight / Losing money
+   * against the shop's own target margin — plus the walk-away price that would hit that target.
+   * Uses fast client-side estimates; the ROI page and Job costing are authoritative.
+   *
+   * Three honest non-answers come before any number:
+   *   - a method this preview cannot cost (DTF, embroidery, per-location lines) → "Use Job costing";
+   *   - a garment line whose blank cost is unknown → name the line, never a margin built on a free
+   *     blank (it would read high, which is the dangerous direction);
+   *   - nothing priced yet → the meter stays hidden.
    */
   const marginGuard = (revenue) => {
     const g = $('#margin-guard'); if (!g) return
+    meterState = null
+    const floor = Number(settings.target_margin_pct) || 45
     const unsupported = unsupportedScreenPrintMethods(items)
     if (unsupported.length) {
-      g.hidden = false; g.className = 'margin-guard'
-      g.innerHTML = `<div class="mg-sub">Use Job costing for ${esc(unsupported.join(', '))} labor and machine costs. This quick preview supports screen printing only.</div>`
+      paintMeter(g, 'off', floor, null,
+        '<span class="pm-pct">—</span><span class="pm-verdict">Screen print only</span>',
+        `<div class="pm-label">Profit meter</div><div class="mg-sub">Use Job costing for ${esc(unsupported.join(', '))} labor and machine costs. This quick preview supports screen printing only.</div>`)
       return
     }
-    let cost = 0, priced = false
-    for (const it of items) {
+    let cost = 0, priced = false, minutes = 0, pieces = 0
+    const unknown = []
+    for (let n = 0; n < items.length; n++) {
+      const it = items[n]
       /* A production line has a size grid. A fee, a flat charge and a DISCOUNT do not.
        *
        * The skip used to be `it.taxable === false`, which catches fee lines because blankFee()
@@ -257,6 +270,8 @@ export async function estimateEditor(id) {
       const qty = sizeTotal(it.sizes)
       if (qty <= 0) continue // Sales-tax treatment does not remove production costs.
       priced = true
+      pieces += qty
+      if (!lineBlankCostKnown(it)) unknown.push(`line ${n + 1}${String(it.description || '').trim() ? ` (“${String(it.description).trim()}”)` : ''}`)
       const colors = guessColors(`${it.description} ${it.detail || ''}`)
       // The line usually KNOWS what its blank costs, and guessing from the description throws that
       // away. The Price Calculator — this editor's own primary door — stamps garment_cost on every
@@ -264,32 +279,129 @@ export async function estimateEditor(id) {
       // price. Both were being re-derived from text like "Garment — 2/0 Front", which matches
       // nothing in GARMENT_COSTS, so guessGarmentCost returned 0 and the whole blank was free.
       // lib/roi.mjs:184 already prefers the field; this was the one costing screen that did not.
-      cost += jobCost({
+      const run = jobCost({
         qty,
         colors,
         garmentCost: lineBlankCost(it),
         press: settings.press_type || 'auto', shopRate: Number(settings.shop_hourly_rate) || 75,
         utilization: (Number(settings.utilization_pct) || 30) / 100, spoilage: Number(settings.spoilage_pct) || 2,
         screenCost: 8, screens: colors,
-      }).total
+      })
+      cost += run.total
+      minutes += run.minutes
     }
     if (!priced || revenue <= 0) { g.hidden = true; return }
     const m = margin(revenue, cost)
+    if (unknown.length) {
+      // Labor and screens are real; the blank is not known. Report what IS known as a ceiling.
+      paintMeter(g, 'unknown', floor, null,
+        '<span class="pm-pct">—</span><span class="pm-verdict">No garment cost</span>',
+        `<div class="pm-label">Est. margin unavailable</div>
+        <div class="pm-walk">No blank cost for ${esc(unknown.join(', '))}. Name the garment (for example “Gildan 5000”) or add the line with the Price calculator so its blank cost is known.</div>
+        <div class="mg-sub">Labor and screens alone come to ~${money(m.cost)}, so this quote keeps at most ${m.margin}% before garments.</div>`)
+      return
+    }
     const v = marginVerdict(m.margin)
-    const floor = Number(settings.target_margin_pct) || 45
     const below = m.margin < floor
-    g.hidden = false
-    g.className = `margin-guard ${v.level}${below ? ' below' : ''}`
-    g.innerHTML = `<div class="mg-row"><span class="mg-label">Est. margin</span>
-        <span class="mg-pct">${m.margin}%</span>
-        <span class="mg-verdict">${below && m.margin >= 0 ? 'Below target' : v.label}</span></div>
-      <div class="mg-sub">~${money(m.profit)} profit on ~${money(cost)} cost${below ? ` · under your ${floor}% floor` : ''}. Review actual costs in Job costing.</div>`
+    // Below the shop's own target is never shown in the healthy colour, whatever the generic scale says.
+    const tone = below && v.level === 'good' ? 'warn' : v.label === 'Strong' ? 'strong' : v.level
+    const walk = priceForMargin(m.cost, floor)
+    meterState = { cost: m.cost, floor, walk }
+    const perHour = valuePerHour(m.profit, minutes)
+    const scalable = items.some((it) => it.sizes && !it.decoration_pricing && sizeTotal(it.sizes) > 0 && Number(it.unit_price) > 0)
+    const raised = lastRaise && lastRaise.changes.every((c) => items[c.index] && items[c.index].unit_price === c.to)
+    const walkHtml = walk === null
+      ? `<div class="pm-walk">Your ${esc(floor)}% target cannot be reached at any price. Set a target under 100% in Settings.</div>`
+      : below
+        ? `<div class="pm-walk pm-raise"><span><strong>Raise to ${money(walk)}</strong> (${money(walk / pieces)}/pc) to hit your ${esc(floor)}% target.</span>
+          ${scalable ? `<button type="button" class="btn sm pm-apply" data-pm-apply title="Scales every garment line's unit price by the same factor. Fees, discounts and size upcharges keep their amounts.">Apply ${money(walk)}</button>` : ''}</div>`
+        : `<div class="pm-walk">Walk-away price at your ${esc(floor)}% target: <strong>${money(walk)}</strong> (${money(walk / pieces)}/pc)${revenue - walk >= 0.01 ? ` · ${money(revenue - walk)} of room` : ''}.</div>`
+    paintMeter(g, tone, floor, m.margin,
+      `<span class="pm-pct">${m.margin}%</span><span class="pm-verdict">${below && m.margin >= 0 ? 'Below target' : esc(v.label)}</span>`,
+      `<div class="pm-label">Est. margin</div>
+      <dl class="pm-stats">
+        <div class="pm-stat pm-profit"><dt>Profit</dt><dd>~${money(m.profit)}</dd></div>
+        <div class="pm-stat"><dt>Cost</dt><dd>~${money(m.cost)}</dd></div>
+        <div class="pm-stat"><dt>Revenue</dt><dd>${money(m.revenue)}</dd></div>
+        ${minutes > 0 ? `<div class="pm-stat"><dt>Profit / press hr</dt><dd>${money0(perHour)}</dd></div>` : ''}
+      </dl>
+      ${walkHtml}
+      ${raised ? '<button type="button" class="btn ghost sm pm-revert" data-pm-revert>Undo price raise</button>' : ''}
+      <div class="mg-sub">~${money(m.profit)} profit on ~${money(m.cost)} cost${below ? ` · under your ${esc(floor)}% floor` : ''}. Review actual costs in Job costing.</div>`)
   }
+  // What the Apply button acts on: the cost and walk-away price the meter is SHOWING right now.
+  let meterState = null
+  // The last Apply, kept so it can be put back exactly (and only while nobody has edited since).
+  let lastRaise = null
 
+  /* The gauge. -20%…80% across the half circle, which keeps every realistic quote on the dial and
+   * a loss visibly left of zero. Colours come from CSS custom properties only (both themes). The
+   * SVG is painted once and then only its needle and value arc move, so the change animates. */
+  const GAUGE_MIN = -20, GAUGE_MAX = 80
+  const gaugeFrac = (pct) => Math.min(1, Math.max(0, (Number(pct) - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN)))
+  const gaugeXY = (f, r) => [+(100 - r * Math.cos(Math.PI * f)).toFixed(2), +(104 - r * Math.sin(Math.PI * f)).toFixed(2)]
+  const gaugeArc = (f1, f2, r) => `M ${gaugeXY(f1, r).join(' ')} A ${r} ${r} 0 0 1 ${gaugeXY(f2, r).join(' ')}`
+  const gaugeSvg = (floor) => {
+    const bands = [[GAUGE_MIN, 25, 'bad'], [25, 40, 'warn'], [40, 55, 'good'], [55, GAUGE_MAX, 'strong']]
+    const ft = gaugeFrac(floor), [x1, y1] = gaugeXY(ft, 62), [x2, y2] = gaugeXY(ft, 92), [lx, ly] = gaugeXY(Math.min(.94, Math.max(.06, ft)), 101)
+    return `<svg viewBox="0 0 200 112" aria-hidden="true" focusable="false">
+      ${bands.map(([a, b, k]) => `<path class="pm-band b-${k}" d="${gaugeArc(gaugeFrac(a) + .006, gaugeFrac(b) - .006, 86)}"/>`).join('')}
+      <path class="pm-track" d="${gaugeArc(0, 1, 72)}"/>
+      <path class="pm-value" pathLength="100" d="${gaugeArc(0, 1, 72)}" style="stroke-dashoffset:100"/>
+      ${floor < 100 ? `<line class="pm-tick" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/><text class="pm-tick-l" x="${lx}" y="${ly}">${esc(floor)}%</text>` : ''}
+      <polygon class="pm-needle" points="100,23 94,9 106,9" style="transform:rotate(-90deg)"/>
+    </svg>`
+  }
+  const paintMeter = (g, tone, floor, pct, readoutHtml, bodyHtml) => {
+    g.hidden = false
+    g.className = `profit-meter pm-${tone}`
+    const svg = g.querySelector?.('.pm-gauge svg'), readout = g.querySelector?.('.pm-readout'), body = g.querySelector?.('.pm-body')
+    const fresh = !(svg && readout && body)
+    if (fresh) g.innerHTML = `<div class="pm-gauge">${gaugeSvg(floor)}<div class="pm-readout">${readoutHtml}</div></div><div class="pm-body">${bodyHtml}</div>`
+    else { readout.innerHTML = readoutHtml; body.innerHTML = bodyHtml }
+    const needle = g.querySelector?.('.pm-needle'), arc = g.querySelector?.('.pm-value')
+    if (!needle || !arc) return
+    const f = pct === null ? 0 : gaugeFrac(pct)
+    const move = () => { needle.style.transform = `rotate(${(-90 + 180 * f).toFixed(1)}deg)`; arc.style.strokeDashoffset = String(+(100 - 100 * f).toFixed(2)) }
+    // A freshly painted gauge sweeps up from zero; two frames so the start position is committed.
+    if (fresh && typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(move))
+    else move()
+  }
   const draw = () => {
     $('#rows').innerHTML = items.map(rowHtml).join('')
     totals()
   }
+
+  /* Walk-away Apply: one click, never silent. The raise goes through the same draw() → totals() →
+   * computeTotals path as a typed price, so subtotal, tax and total stay consistent; the toast says
+   * what changed and offers Undo, and the meter keeps an "Undo price raise" button until the shop
+   * edits one of those prices by hand. */
+  const rowsRoot = $('#rows')
+  const revertRaise = () => {
+    const plan = lastRaise
+    if (!plan || !rowsRoot.isConnected) return
+    lastRaise = null
+    if (!plan.changes.every((c) => items[c.index] && items[c.index].unit_price === c.to)) {
+      draw()
+      return toast('Those prices were edited after the raise, so they were left as they are.', true)
+    }
+    for (const c of plan.changes) items[c.index].unit_price = c.from
+    markEditorDirty(); draw()
+    toast('Prices put back')
+  }
+  on($('#margin-guard'), '[data-pm-apply]', () => {
+    const s = meterState
+    if (!s || !(s.walk > 0)) return
+    const plan = raiseToSubtotal(items, s.walk, up)
+    if (!plan) return toast('Add a unit price to a garment line first, then Apply can scale it.', true)
+    for (const c of plan.changes) items[c.index].unit_price = c.to
+    lastRaise = plan
+    markEditorDirty(); draw()
+    const lines = plan.changes.length === 1 ? 'the garment price' : `${plan.changes.length} garment prices`
+    undoable(`Raised ${lines} ${Math.round((plan.factor - 1) * 1000) / 10}% to hit your ${s.floor}% target`,
+      { commit: () => {}, undo: revertRaise, delay: 8000 })
+  })
+  on($('#margin-guard'), '[data-pm-revert]', revertRaise)
 
   // Wholesale accounts are tax exempt. Picking one zeroes the rate and says why, so nobody has to
   // remember; it stays editable in case a particular order really is taxable.

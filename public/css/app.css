@@ -1658,3 +1658,107 @@ html, body { overflow-x: clip; }
 #payment-form [hidden] { display:none; }
 #payment-form .field { margin:16px 0; }
 @media(max-width:600px) { .payment-attempt { grid-template-columns:1fr; } }
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   Profit meter — estimate editor (#margin-guard, built by marginGuard() in
+   public/js/views/estimates.js). Replaces the old one-line .margin-guard row.
+   Sticks to the bottom of the viewport while the line-item table scrolls (its
+   sticky range is the "Line items" field), and collapses to a compact bar above
+   the mobile tab bar at ≤640px. Colours are theme tokens only, so it follows
+   [data-theme="dark"] and light alike. Tone classes: pm-bad / pm-warn /
+   pm-good / pm-strong (marginVerdict level; below target never reads good),
+   plus pm-unknown (missing garment cost) and pm-off (unsupported method).
+   ═════════════════════════════════════════════════════════════════════════════ */
+.profit-meter {
+  --pm-tone: var(--txt-3);
+  position: sticky; bottom: var(--sp-4); z-index: 6;
+  display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: var(--sp-7); align-items: center;
+  margin-top: var(--sp-6); padding: var(--sp-5) var(--sp-7) var(--sp-5) var(--sp-6);
+  border: 1px solid color-mix(in srgb, var(--pm-tone) 45%, var(--line-2)); border-radius: var(--r-lg);
+  background:
+    radial-gradient(120% 140% at 0% 100%, color-mix(in srgb, var(--pm-tone) 16%, transparent), transparent 60%),
+    color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: saturate(1.3) blur(14px);
+  box-shadow: var(--shadow), inset 0 3px 0 var(--pm-tone);
+  transition: border-color .3s ease, box-shadow .3s ease;
+}
+.profit-meter[hidden] { display: none; }
+.profit-meter.pm-bad { --pm-tone: var(--red); }
+.profit-meter.pm-warn { --pm-tone: var(--amber); }
+.profit-meter.pm-good { --pm-tone: var(--accent); }
+.profit-meter.pm-strong { --pm-tone: var(--violet); }
+.profit-meter.pm-unknown, .profit-meter.pm-off { --pm-tone: var(--txt-3); }
+
+.pm-gauge { position: relative; width: 100%; }
+.pm-gauge svg { display: block; width: 100%; height: auto; overflow: visible; }
+.pm-track { fill: none; stroke: var(--line); stroke-width: 14; stroke-linecap: round; }
+.pm-value {
+  fill: none; stroke: var(--pm-tone); stroke-width: 14; stroke-linecap: round; stroke-dasharray: 100 200;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--pm-tone) 55%, transparent));
+  transition: stroke-dashoffset .7s cubic-bezier(.2, .8, .2, 1), stroke .3s ease;
+}
+.pm-band { fill: none; stroke-width: 3; opacity: .7; }
+.pm-band.b-bad { stroke: var(--red); }
+.pm-band.b-warn { stroke: var(--amber); }
+.pm-band.b-good { stroke: var(--accent); }
+.pm-band.b-strong { stroke: var(--violet); }
+.pm-tick { stroke: var(--txt); stroke-width: 2.5; stroke-linecap: round; }
+.pm-tick-l { fill: var(--txt-2); font-size: 10px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; font-variant-numeric: tabular-nums; }
+.pm-needle {
+  fill: var(--txt); stroke: var(--panel); stroke-width: 1.5; stroke-linejoin: round;
+  transform-box: view-box; transform-origin: 100px 104px;
+  transition: transform .8s cubic-bezier(.34, 1.45, .64, 1);
+}
+.pm-unknown .pm-value, .pm-off .pm-value, .pm-unknown .pm-needle, .pm-off .pm-needle { opacity: 0; }
+
+.pm-readout {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; align-items: center; line-height: 1.05; pointer-events: none;
+}
+.pm-readout .pm-pct { font-size: var(--fs-2xl); font-weight: 800; letter-spacing: -.5px; font-variant-numeric: tabular-nums; color: var(--pm-tone); }
+.pm-readout .pm-verdict { margin-top: var(--sp-1); font-size: var(--fs-3xs); font-weight: 800; text-transform: uppercase; letter-spacing: .7px; color: var(--pm-tone); text-align: center; }
+.pm-unknown .pm-readout .pm-pct, .pm-off .pm-readout .pm-pct { color: var(--txt-3); }
+
+.pm-body { min-width: 0; display: flex; flex-direction: column; gap: var(--sp-4); }
+.pm-label { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: .5px; color: var(--txt-3); font-weight: 700; }
+.pm-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--sp-4) var(--sp-6); }
+.pm-stat dt { font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .6px; color: var(--txt-3); font-weight: 650; }
+.pm-stat dd { font-size: var(--fs-lg); font-weight: 750; font-variant-numeric: tabular-nums; color: var(--txt); white-space: nowrap; }
+.pm-stat.pm-profit dd { font-size: var(--fs-xl); color: var(--pm-tone); }
+.pm-walk { font-size: var(--fs-sm); color: var(--txt-2); line-height: 1.45; }
+.pm-walk strong { color: var(--txt); font-variant-numeric: tabular-nums; }
+.pm-walk.pm-raise {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4) var(--sp-5);
+  padding: var(--sp-4) var(--sp-5); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--pm-tone) 12%, transparent); border: 1px dashed color-mix(in srgb, var(--pm-tone) 50%, transparent);
+}
+.pm-walk.pm-raise > span { flex: 1 1 220px; }
+.pm-apply { flex: none; }
+.pm-revert { align-self: flex-start; }
+.profit-meter .mg-sub { font-size: var(--fs-2xs); color: var(--txt-3); line-height: 1.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pm-needle, .pm-value, .profit-meter { transition: none; }
+}
+/* Tablets and phones: the fixed tab bar owns the bottom 64px. */
+@media (max-width: 900px) {
+  .profit-meter { bottom: calc(64px + env(safe-area-inset-bottom, 0px) + var(--sp-4)); }
+}
+/* Phones: a compact bar — mini gauge + %, profit, and the walk-away line with Apply. */
+@media (max-width: 640px) {
+  .profit-meter {
+    grid-template-columns: 92px minmax(0, 1fr); gap: var(--sp-5);
+    padding: var(--sp-3) var(--sp-5) var(--sp-3) var(--sp-4); border-radius: var(--r-md);
+  }
+  .pm-readout .pm-pct { font-size: var(--fs-md); letter-spacing: 0; }
+  .pm-readout .pm-verdict, .pm-tick-l, .pm-band { display: none; }
+  .pm-body { gap: var(--sp-2); }
+  .pm-body > .pm-label, .profit-meter .mg-sub, .pm-stat:not(.pm-profit) { display: none; }
+  .pm-stats { display: block; }
+  .pm-stat.pm-profit { display: flex; align-items: baseline; gap: var(--sp-3); }
+  .pm-stat.pm-profit dd { font-size: var(--fs-lg); }
+  .pm-walk { font-size: var(--fs-2xs); }
+  .pm-walk.pm-raise { padding: 0; background: none; border: 0; gap: var(--sp-3); }
+  .pm-walk.pm-raise > span { flex-basis: 140px; }
+  .pm-apply { min-height: 32px; }
+}
