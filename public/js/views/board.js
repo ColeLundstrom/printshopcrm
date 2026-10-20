@@ -31,7 +31,7 @@ const decoOptions = (cur) => {
 const boardState = { filter: 'all', assignee: 'all' }
 
 export async function boardView() {
-  setPage('Job Board', `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn" id="new-job">+ New Job</button>`)
+  setPage('Job Board', `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn primary" id="new-job">+ New Job</button>`)
   // The Job Board is the shared screen. A realtime 'board' event re-runs this whole function
   // (app.js handleRealtime), and so does every filter chip and the assignee select — and the
   // render below is `#view`.innerHTML, which destroys whatever had focus. A keyboard user tabbing
@@ -207,7 +207,7 @@ function wireDnd() {
 /* After a drag (or its undo) the columns are edited in place, so the count AND the empty-column
  * placeholder have to follow the cards: a column that just lost its last job showed a bare dashed
  * nothing, and the column a job landed in kept "Drop a job here" above the card. */
-const recount = () => $$('.col').forEach((c) => {
+export const recount = () => $$('.col').forEach((c) => {
   const n = c.querySelectorAll('.jcard').length
   c.querySelector('.ct').textContent = n
   const body = c.querySelector('.col-b'), hint = body?.querySelector('.col-empty')

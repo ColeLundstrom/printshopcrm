@@ -6,7 +6,7 @@ import { api, $, esc, money, fmtDate, setPage, on, modal, closeModal, confirmMod
  * spin up a client's shop, sign in to set it up for them, suspend/reactivate, and remove accounts.
  */
 export async function adminView() {
-  setPage('Control Room', '<button class="btn" id="ad-new">+ New client shop</button>')
+  setPage('Control Room', '<button class="btn primary" id="ad-new">+ New client shop</button>')
   let data
   try { data = await api.get('/api/admin/shops') } catch (e) {
     // A shop owner who types #/admin, or a deployment with no PSC_ADMIN_EMAIL, lands here. Say what

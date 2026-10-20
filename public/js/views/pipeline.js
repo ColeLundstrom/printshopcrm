@@ -20,7 +20,7 @@ let dragEndedAt = 0
 let st = null
 
 export async function pipelineView() {
-  setPage('Pipeline', `<button class="btn" id="new-opp">+ New Opportunity</button>`)
+  setPage('Pipeline', `<button class="btn primary" id="new-opp">+ New Opportunity</button>`)
   const d = await api.get('/api/pipeline')
 
   $('#view').innerHTML = `

@@ -53,7 +53,7 @@ const startCard = (lite) => `<div class="card">
 </div>`
 
 export async function todayView() {
-  setPage('Today', '<a class="btn" href="#/estimates/new">New estimate</a>')
+  setPage('Today', '<a class="btn primary" href="#/estimates/new">New estimate</a>')
   // The router paints this on entry too; a direct re-run must not leave a stale "caught up" on
   // screen while it fetches (or after the fetch fails).
   $('#view').innerHTML = skeleton('cards')

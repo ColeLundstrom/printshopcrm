@@ -12,7 +12,7 @@ import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, 
 let cache = null   // last /api/matrices payload — templates and limits don't change mid-session
 
 export async function matricesView() {
-  setPage('Price matrices', `<button class="btn ghost" id="mx-new-blank">+ Blank matrix</button><button class="btn" id="mx-new">＋ New matrix</button>`,
+  setPage('Price matrices', `<button class="btn ghost" id="mx-new-blank">+ Blank matrix</button><button class="btn primary" id="mx-new">＋ New matrix</button>`,
     `<a href="#/pricing">Pricing</a> /`)
   $('#view').innerHTML = `<div class="stack" id="mx-list"><div class="card"><div class="card-b dim">Loading your price matrices…</div></div></div>`
   await drawList()
@@ -196,7 +196,7 @@ export async function matrixEditor(id) {
   try { m = (await api.get(`/api/matrices/${id}`)).matrix }
   catch { setPage('Price matrix'); $('#view').innerHTML = empty('pricing', 'Matrix not found', 'It may have been deleted.', '<a class="btn" href="#/matrices">Back to matrices</a>'); return }
   dirty = false; importing = false
-  setPage(m.name, `<button class="btn ghost" id="mx-back">Back</button><button class="btn" id="mx-save">Save matrix</button>`,
+  setPage(m.name, `<button class="btn ghost" id="mx-back">Back</button><button class="btn primary" id="mx-save">Save matrix</button>`,
     `<a href="#/pricing">Pricing</a> / <a href="#/matrices">Price matrices</a> /`)
   drawEditor()
 }

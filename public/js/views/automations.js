@@ -9,7 +9,7 @@ import { api, $, $$, el, esc, relTime, setPage, empty, toast, on, modal, closeMo
 let cfg = null
 
 export async function automationsView() {
-  setPage('Automations', `<button class="btn ghost" id="run-tick">Run timed rules now</button><button class="btn" id="new-auto">+ New Automation</button>`)
+  setPage('Automations', `<button class="btn ghost" id="run-tick">Run timed rules now</button><button class="btn primary" id="new-auto">+ New Automation</button>`)
   const d = await api.get('/api/automations')
   cfg = d
 
