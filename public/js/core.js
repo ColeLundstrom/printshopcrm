@@ -77,13 +77,16 @@ export const api = {
 /* ---------- formatting ---------- */
 
 import { moneyFormatter } from './shared/format.js'
+import { setMoneyDigits, currencyDigits } from './shared/pricing.js'
 
 // The shop's currency and locale. app.js sets this from /api/settings before the first screen
 // renders, and again whenever Settings is saved; until then it is the app's historical default
 // (USD, en-US), so nothing a shop already sees changes. Every view formats money through these
 // three and never spells a currency symbol itself — the gate holds that.
 let fmt = moneyFormatter({})
-export const setShopFormat = ({ currency, locale } = {}) => { fmt = moneyFormatter({ currency, locale }) }
+// The editor's totals round to the same minor unit the server stores (pricing.js roundMoney), so a
+// yen quote reads ¥16,109 in the editor and on the invoice, never ¥16,108.63 behind the display.
+export const setShopFormat = ({ currency, locale } = {}) => { fmt = moneyFormatter({ currency, locale }); setMoneyDigits(currencyDigits(fmt.currency)) }
 export const shopLocale = () => fmt.locale
 export const shopSymbol = () => fmt.symbol
 

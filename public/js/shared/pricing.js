@@ -55,6 +55,58 @@ export const round2 = (n) => {
   return Number.isFinite(w) ? w : 0
 }
 
+/**
+ * Decimal places money is kept to in a currency: 2 for USD, EUR, GBP; 0 for JPY, KRW, ISK.
+ *
+ * Every total used to be rounded to hundredths whatever the shop's currency. A yen shop's 7.75%
+ * tax on 13 × ¥1,150 came to ¥16,108.63 — printed ¥16,109 everywhere, stored with its sen — so the
+ * customer could never settle it: recording ¥16,109 was "more than the balance", ¥16,108 left it
+ * partial with ¥0.63 nobody can pay, and the card checkout refused a fractional yen outright.
+ * Money is now kept to the currency's own minor unit, the one Intl prints.
+ *
+ * Never MORE than 2, deliberately. Three-decimal currencies (KWD, BHD) have always been kept to
+ * hundredths here and the card gateways are fed whole hundredths; that stays exactly as it was.
+ * An unrecognised code answers 2, the same way format.js falls back to dollars.
+ */
+const DIGITS = new Map()
+export function currencyDigits(currency) {
+  const c = String(currency || '')
+  if (!/^[A-Z]{3}$/.test(c)) return 2
+  if (DIGITS.has(c)) return DIGITS.get(c)
+  let d = 2
+  try { d = Math.max(0, Math.min(2, new Intl.NumberFormat('en', { style: 'currency', currency: c }).resolvedOptions().maximumFractionDigits)) } catch { d = 2 }
+  DIGITS.set(c, d)
+  return d
+}
+
+/**
+ * Where the current shop's money precision comes from. The browser sets it from the shop's
+ * currency (core.js setShopFormat); the server points it at the current tenant's settings
+ * (lib/db.mjs), so one process serving many shops answers per request. Unset, it is 2 — the
+ * historical behaviour, byte for byte.
+ */
+let digitsSource = () => 2
+export function setMoneyDigits(source) {
+  digitsSource = typeof source === 'function' ? source : () => source
+}
+export function moneyDigits() {
+  let d
+  try { d = Number(digitsSource()) } catch { d = 2 }
+  return d === 0 || d === 1 ? d : 2
+}
+
+/**
+ * Round an amount to the shop currency's minor unit. At 2 digits this IS round2 — same function,
+ * same answers — so a dollar shop's arithmetic is untouched.
+ */
+export const roundMoney = (n, digits = moneyDigits()) => {
+  if (digits !== 0 && digits !== 1) return round2(n)
+  n = Number(n) || 0
+  const v = Number(Math.round(n + 'e' + digits) + 'e-' + digits)
+  const out = Number.isFinite(v) ? v : (Number.isFinite(Math.round(n * 10 ** digits) / 10 ** digits) ? Math.round(n * 10 ** digits) / 10 ** digits : 0)
+  return Object.is(out, -0) ? 0 : out
+}
+
 export const upchargeFor = (size, upcharges) => Number((upcharges || DEFAULT_UPCHARGES)[size]) || 0
 
 /**
@@ -157,9 +209,9 @@ export function lineAmount(item, upcharges) {
       const qty = Number(n) || 0
       if (qty > 0) total += qty * (price + upchargeFor(s, up))
     }
-    return round2(total + (locations?.flat || 0))
+    return roundMoney(total + (locations?.flat || 0))
   }
-  return round2(posQty(item?.qty ?? item?.quantity) * price + (locations?.flat || 0))
+  return roundMoney(posQty(item?.qty ?? item?.quantity) * price + (locations?.flat || 0))
 }
 
 /** Sum of upcharges on a line — surfaced so the customer sees why the math isn't qty × rate. */
@@ -168,7 +220,7 @@ export function lineUpcharge(item, upcharges) {
   const up = lineUpcharges(item, upcharges)
   let total = 0
   for (const [s, n] of Object.entries(item.sizes)) total += (Number(n) || 0) * upchargeFor(s, up)
-  return round2(total)
+  return roundMoney(total)
 }
 
 /**
@@ -193,10 +245,11 @@ export function lineUpcharge(item, upcharges) {
  * invoice may charge negative tax.
  */
 export function computeTotals(items, taxRate, upcharges) {
-  const subtotal = round2((items || []).reduce((s, i) => s + lineAmount(i, upcharges), 0))
-  const taxable = Math.max(0, round2((items || []).reduce((s, i) => (i.taxable === false ? s : s + lineAmount(i, upcharges)), 0)))
-  const tax = round2(taxable * (Number(taxRate) || 0) / 100)
-  return { subtotal, tax, total: round2(subtotal + tax) }
+  const digits = moneyDigits()
+  const subtotal = roundMoney((items || []).reduce((s, i) => s + lineAmount(i, upcharges), 0), digits)
+  const taxable = Math.max(0, roundMoney((items || []).reduce((s, i) => (i.taxable === false ? s : s + lineAmount(i, upcharges)), 0), digits))
+  const tax = roundMoney(taxable * (Number(taxRate) || 0) / 100, digits)
+  return { subtotal, tax, total: roundMoney(subtotal + tax, digits) }
 }
 
 /* ---------- quoting ---------- */

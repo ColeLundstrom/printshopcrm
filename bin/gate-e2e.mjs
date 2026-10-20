@@ -2415,6 +2415,10 @@ try {
     r = await req('POST', `/api/estimates/${lateEst}/convert`, { body: { due_date: '2026-01-05' } })
     const lateInv = r.json?.invoice_id
     chk('an invoice can be raised already past its due date', String(r.status), '^200$')
+    // Convert now derives the status it stores (syncInvoiceStatus — a $0 order was being stored
+    // 'unpaid' and chased). The everyday stale shape is a row written while current whose due date
+    // has since passed with nothing touching it; put the column back to what that row would hold.
+    shopDb('gate-shop', (d) => d.prepare("UPDATE invoices SET status = 'unpaid' WHERE id = ?").run(lateInv))
     // The stored COLUMN really is stale — read straight off the table through the raw export, so
     // this is the precondition and not a restatement of the bug.
     const rawRows = JSON.parse((await req('GET', '/api/export/all.json')).text || '{}')
