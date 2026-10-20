@@ -11,24 +11,23 @@ const fnSource = (src, name) => {
   return src.slice(start, src.indexOf('\n}\n', start) + 2)
 }
 
-test('boot hands the server this browser zone once, only for a manager of a shop with none', async () => {
-  const src = fnSource(read('../public/js/app.js'), 'claimShopTimezone')
-  const run = (settings, me) => {
-    const puts = []
-    const ctx = vm.createContext({ chromeSettings: settings, window: { __me: me }, Intl,
-      api: { put: (url, body) => { puts.push([url, body]); return Promise.resolve({ ...settings, ...body }) } } })
-    vm.runInContext(src + '\nclaimShopTimezone()', ctx)
-    return JSON.parse(JSON.stringify(puts)) // the body object was built in the vm's realm
-  }
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-  assert.deepEqual(run({ timezone: '' }, { can_manage: true }), [['/api/settings', { timezone: zone }]])
-  assert.deepEqual(run({ timezone: 'Europe/London' }, { can_manage: true }), [], 'a chosen zone is never overwritten')
-  assert.deepEqual(run({ timezone: '' }, { can_manage: false }), [], 'staff cannot change settings')
-  assert.deepEqual(run(null, { can_manage: true }), [], 'no settings loaded, nothing to claim')
-  // A refusal must never surface — boot carries on.
-  const ctx = vm.createContext({ chromeSettings: { timezone: '' }, window: { __me: {} }, Intl, api: { put: () => Promise.reject(new Error('403')) } })
-  vm.runInContext(src + '\nclaimShopTimezone()', ctx)
-  await new Promise((r) => setImmediate(r))
+test('the browser names its zone on every request and boot never writes settings', async () => {
+  const core = read('../public/js/core.js'), app = read('../public/js/app.js')
+  assert.match(core, /opts\.headers\['X-PSC-Timezone'\] = tz/)
+  // Opening a page must not change the shop's data (the browser smoke suites assert no writes).
+  assert.doesNotMatch(app, /api\.put\('\/api\/settings', \{ timezone/)
+  const server = read('../server.mjs')
+  assert.match(server, /requestZone\.run\(canonicalTimezone\(String\(req\.get\('x-psc-timezone'\)/)
+})
+
+test('a saved shop zone beats the request hint, and the hint beats the server zone', async () => {
+  const { requestZone, isoInZone } = await import('../lib/shop-time.mjs')
+  const db = read('../lib/db.mjs')
+  assert.match(db, /return saved \|\| requestZoneHint\(\)/)
+  // Kiritimati (UTC+14) and Pago Pago (UTC-11) never share a calendar date.
+  const far = requestZone.run('Pacific/Kiritimati', () => isoInZone((requestZone.getStore())))
+  const near = requestZone.run('Pacific/Pago_Pago', () => isoInZone((requestZone.getStore())))
+  assert.notEqual(far, near)
 })
 
 test('Settings → Shop offers a time zone, prefilled from the browser when the shop has none', () => {

@@ -76,7 +76,7 @@ import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, 
 import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
-import { canonicalTimezone } from './lib/shop-time.mjs'
+import { canonicalTimezone, requestZone } from './lib/shop-time.mjs'
 import { ask } from './lib/assistant.mjs'
 import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent, purchaseOrderReview, confirmManualPurchaseOrder } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
@@ -172,6 +172,9 @@ app.set('trust proxy', /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_P
 // mangled-case path can never match a route, and (belt + suspenders) the gate normalises too.
 app.set('case sensitive routing', true)
 // Hosting responses contain private payment state, including validation and auth failures.
+// The viewer's own zone as a fallback "today" for a shop that has not saved one (see shop-time.mjs).
+// Validated and canonicalised, so the header can only ever name a real IANA zone.
+app.use((req, _res, next) => requestZone.run(canonicalTimezone(String(req.get('x-psc-timezone') || '')) || '', next))
 app.use('/api/billing', (_req,res,next) => { res.setHeader('Cache-Control','private, no-store'); next() })
 app.use('/api/admin', (_req,res,next) => { res.setHeader('Cache-Control','private, no-store'); next() })
 

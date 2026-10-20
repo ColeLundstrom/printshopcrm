@@ -273,30 +273,6 @@ function drawTabbar(path) {
   const more = el.querySelector('[data-more]')
   if (more) more.onclick = (e) => { e.preventDefault(); toggleDrawer(more) }
 }
-
-/**
- * Redraw the sidebar: the shop's name, and the six dots.
- *
- * This runs at the end of every navigate() and on every realtime notify/board/conversation event,
- * so it is the hottest client path in the app — and it used to fetch six full list endpoints
- * (/api/dashboard, /api/art, /api/followups, /api/automations, /api/conversations) to read six
- * integers out of them: 48 MB and 1.6 s of server event loop per sidebar click on a shop with a
- * few years of proofs, multiplied by every tab open on the floor whenever anyone moved a job.
- * GET /api/chrome/badges returns exactly those six numbers and nothing else.
- */
-let chromeSettings = null
-/**
- * A shop that never chose a time zone runs on the server's (often UTC), so "today" — due dates,
- * overdue, ship dates — rolled over at 5pm in California. The first manager to open the app hands
- * the server this browser's zone, once. Silent and best-effort: Settings → Shop can change it.
- */
-function claimShopTimezone() {
-  try {
-    if (!chromeSettings || chromeSettings.timezone || window.__me?.can_manage === false) return
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-    if (zone) api.put('/api/settings', { timezone: zone }).then((saved) => { chromeSettings = saved }).catch(() => {})
-  } catch { /* never block boot */ }
-}
 async function drawChrome() {
   try {
     const [{ settings, role }, b] = await Promise.all([api.get('/api/settings'), api.get('/api/chrome/badges')])
@@ -663,7 +639,6 @@ async function boot() {
   // two small requests in parallel and it also removes the flash of default brand text that used to
   // show for a frame before the debounced repaint replaced it.
   await drawChrome()
-  claimShopTimezone()
   chromeFresh = true
   drawNav()
   navigate()

@@ -7,8 +7,10 @@ the shop's time zone.
 ## Where it is set
 
 - **Settings → Shop → Time zone.** An IANA zone name such as `America/Los_Angeles`,
-  `America/Chicago` or `Europe/London`. The first time an owner or manager opens the app, a shop
-  that has never chosen one is set to the browser's zone automatically; change it here at any time.
+  `America/Chicago` or `Europe/London`, prefilled with the browser's zone when the shop has none —
+  saving Settings stores it. Until a zone is saved, each screen uses the zone of the browser viewing
+  it (sent as an `X-PSC-Timezone` request header; opening a page never writes settings), and
+  background work such as timed automations uses the server's zone below.
 - **API:** `PUT /api/settings` with `{"timezone": "America/Denver"}`. A name the server cannot use
   is refused with `400` and `code: "timezone_invalid"`; the stored value is the canonical spelling.
   An empty string clears it.

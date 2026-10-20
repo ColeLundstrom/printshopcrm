@@ -40,6 +40,9 @@ export const store = {
 export const api = {
   async req(method, url, body) {
     const opts = { method, headers: {} }
+    // The browser's zone, so a shop that has not saved one in Settings still sees its own "today".
+    // A header, not a settings write: opening a page must never change the shop's data.
+    try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz) opts.headers['X-PSC-Timezone'] = tz } catch { /* no Intl zone */ }
     if (body instanceof FormData) opts.body = body
     else if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body) }
     const r = await fetch(url, opts)

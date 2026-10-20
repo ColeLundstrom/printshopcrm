@@ -1,6 +1,6 @@
 # Third-party npm notices
 
-Reviewed 2026-10-10 against the locked npm dependencies. This file preserves the
+Reviewed 2026-10-19 against the locked npm dependencies. This file preserves the
 full packaged license texts for 113 dependency entries and the source-attributed
 supplemental notices for 1 dependency entries, covering all 114 lockfile
 entries. Duplicate package versions installed at different paths retain their

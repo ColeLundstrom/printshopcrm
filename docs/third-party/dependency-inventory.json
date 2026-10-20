@@ -1,5 +1,5 @@
 {
-  "reviewed_at": "2026-10-10",
+  "reviewed_at": "2026-10-19",
   "source_commit": "7b3d654ada5f94e224269c11701424612425ba62",
   "scope": "Locked npm dependency metadata and full license-notice packaging; not legal clearance, ownership verification, non-npm asset provenance, or a security audit.",
   "entries": [
@@ -1261,6 +1261,6 @@
       "integrity": "sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ=="
     }
   ],
-  "packaging_verified_commit": "bdd07202b9dbf5d452f97d2c4b6288dd91082a5e",
-  "lockfile_sha256": "134af0b1f21e39faf0d6bde093ebc5905c49870ce4d02b6f777527ea728c8ed9"
+  "packaging_verified_commit": "90d1cc5aa63864f266e5accf956884008d517ead",
+  "lockfile_sha256": "29295a6e793761aa5cf9687ffde8f99dc44cc1194d3a8722b420ebd900ff8c71"
 }
