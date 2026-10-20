@@ -6,7 +6,7 @@ import { mountCollections } from '../shared/payment-collections.js'
 let filter = 'all'
 
 export async function invoicesView() {
-  setPage('Invoices')
+  setPage('Invoices', '<a class="btn primary" href="#/do/invoice">＋ Bill a customer</a>')
   const render = async () => {
     const rows = await api.get(`/api/invoices?status=${filter}`)
     // A voided invoice is a cancelled demand, not money owed — and the void dialog's own copy

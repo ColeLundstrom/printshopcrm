@@ -19,6 +19,7 @@ test('the task list says what a shop can do, and only what this edition and role
   const { tasksFor, taskTiles } = await import('../public/js/shared/tasks.js')
   const keys = (list) => list.map((t) => t.key)
   assert.deepEqual(keys(tasksFor({}, 'pro')).slice(0, 3), ['estimate', 'mockup', 'followups'], 'the three named jobs lead')
+  assert.ok(keys(tasksFor({}, 'lite')).includes('invoice') && !keys(tasksFor({}, 'lite')).includes('newjob'), 'lite can bill, and has no board to start a job on')
   assert.ok(!keys(tasksFor({}, 'lite')).includes('mockup'), 'lite has no jobs to put a mockup on')
   assert.doesNotMatch(taskTiles({}, 'lite'), /href="#\/board"/, 'lite never links to the job board')
   assert.ok(!keys(tasksFor({ can_manage: false }, 'pro')).includes('followups'), 'staff cannot author automations, so are not offered them')
@@ -27,7 +28,7 @@ test('the task list says what a shop can do, and only what this edition and role
 
 test('every guided screen is routed, and Home and the New button both use the task list', () => {
   const app = read('public/js/app.js')
-  for (const [re, view] of [['do\\/estimate', 'doEstimateView'], ['do\\/mockup', 'doMockupView'], ['auto-follow-ups', 'autoFollowupsView']]) {
+  for (const [re, view] of [['do\\/estimate', 'doEstimateView'], ['do\\/mockup', 'doMockupView'], ['auto-follow-ups', 'autoFollowupsView'], ['do\\/invoice', 'doInvoiceView'], ['do\\/job', 'doJobView']]) {
     assert.ok(app.includes(re) && app.includes(view), `${view} is routed`)
   }
   assert.match(app, /taskTiles\(/, 'the New menu draws the same tiles as Home')
@@ -43,6 +44,11 @@ test('the sidebar leads with the everyday screens and folds the rest under All t
   assert.ok(names.length <= 8, `the always-visible list stays short (${names.join(', ')})`)
   assert.ok(names.includes('Estimates'), 'Estimates keeps its exact name for the workflow tests')
   assert.match(app, /'All tools'/)
+})
+
+test('"ready to bill" leaves out estimates that already carry a live invoice', () => {
+  assert.match(read('server.mjs'), /AS invoice_id\s+FROM estimates e/, 'the estimate list says which are billed')
+  assert.match(read('public/js/views/do-invoice.js'), /approved\.filter\(\(e\) => !e\.invoice_id\)/)
 })
 
 test('every way to start an estimate lands on the guided screen, with the full editor one click away', () => {

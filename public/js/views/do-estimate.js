@@ -128,6 +128,7 @@ function drawWhat() {
       ${colorAxis ? `<label class="guide-check"><input type="checkbox" id="g-dark"${o.dark_garment ? ' checked' : ''}> Dark shirt (adds a white underbase)</label>` : ''}
     </section>
 
+    <div class="price-dock" id="g-dock" hidden><span class="price-dock-v" id="g-dock-v"></span><button type="button" class="btn primary" id="g-dock-go">Create →</button></div>
     <aside class="guide-card price-card" aria-live="polite">
       <h2 class="guide-q">Price</h2>
       <div id="g-price"></div>
@@ -156,6 +157,7 @@ function drawWhat() {
   $('#g-dark')?.addEventListener('change', (e) => { o.dark_garment = e.target.checked; reprice() })
   $('#g-paste-go').onclick = () => fillFromText($('#g-paste-text').value)
   $('#g-create').onclick = create
+  $('#g-dock-go').onclick = create
   reprice(true)
 }
 
@@ -221,6 +223,9 @@ function paintPrice() {
     }).join('')}</ul>
     ${p.blank?.source === 'default' ? '<p class="guide-hint">Blank cost is your shop default. Connect a supplier in Setup for live prices.</p>' : ''}`
   $('#g-create').disabled = false
+  // On a phone the price card is below the whole form; the dock keeps the total in sight.
+  $('#g-dock').hidden = false
+  $('#g-dock-v').textContent = `${money(p.totals.total)} · ${p.pieces} pcs`
 }
 
 async function create() {

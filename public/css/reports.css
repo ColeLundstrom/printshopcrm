@@ -1,0 +1,81 @@
+/* Reports: date-range chips, KPI tiles, the monthly chart, customer / decoration / aging / tax tables.
+   Built only from the app.css tokens, so both themes and the lite skin follow without overrides. */
+
+.rpt { display: grid; gap: var(--sp-6); max-width: 1280px; }
+.rpt > .kpis { margin-bottom: 0; }
+
+/* ---------- range bar ---------- */
+.rpt-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-5) var(--sp-6); }
+.rpt-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); background: var(--bg-2); padding: var(--sp-2); border-radius: var(--r-full); border: 1px solid var(--line); }
+.rpt-chip { padding: var(--sp-3) var(--sp-6); border-radius: var(--r-full); font-size: var(--fs-xs); font-weight: 600; color: var(--txt-2); text-decoration: none; transition: background .12s, color .12s; }
+.rpt-chip:hover { color: var(--txt); }
+.rpt-chip:focus-visible { outline: 0; box-shadow: var(--ring); }
+.rpt-chip.on { background: var(--panel); color: var(--txt); box-shadow: var(--shadow-sm); }
+.rpt-custom { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-4); }
+.rpt-custom[hidden] { display: none; }
+.rpt-custom label { font-size: var(--fs-2xs); color: var(--txt-3); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+.rpt-custom .input { width: auto; min-width: 150px; }
+.rpt-range { margin: 0 0 0 auto; font-size: var(--fs-sm); color: var(--txt-2); font-weight: 550; }
+
+/* ---------- cards ---------- */
+.rpt-card { margin: 0; }
+.rpt-card .card-h { flex-wrap: wrap; gap: var(--sp-4); }
+.rpt-card .card-h .btn { margin-left: var(--sp-3); }
+.rpt-cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--sp-6); align-items: start; }
+.rpt-sub { font-size: var(--fs-2xs); color: var(--txt-3); margin-top: var(--sp-1); }
+.rpt-asof { margin: 0 0 0 var(--sp-4); }
+.rpt-none { margin: 0; padding: var(--sp-8) var(--sp-6); color: var(--txt-2); font-size: var(--fs-sm); text-align: center; }
+.rpt-note { margin: 0; padding: var(--sp-5) var(--sp-6); font-size: var(--fs-2xs); color: var(--txt-3); border-top: 1px solid var(--line); line-height: 1.5; }
+.rpt .tbl th.num, .rpt .tbl td.num { text-align: right; white-space: nowrap; }
+.rpt .tbl td a { color: var(--txt); font-weight: 600; text-decoration: none; }
+.rpt .tbl td a:hover { color: var(--accent); }
+
+/* ---------- chart ---------- */
+.rpt-chart { width: 100%; height: auto; max-height: 260px; overflow: visible; display: block; }
+.rpt-chart text { fill: var(--txt-3); font-size: 10px; }
+.rpt-chart .rpt-max { font-size: 10px; }
+.rpt-chart .rpt-axis { stroke: var(--line-2); stroke-width: 1; }
+.rpt-chart rect.rpt-inv { fill: color-mix(in srgb, var(--violet) 55%, transparent); }
+.rpt-chart rect.rpt-col { fill: color-mix(in srgb, var(--accent) 70%, transparent); }
+.rpt-chart rect.rpt-col.now { fill: var(--accent); }
+.rpt-chart g:hover rect { filter: brightness(1.15); }
+.rpt-key { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-2xs); color: var(--txt-2); margin-left: var(--sp-5); }
+.rpt-key i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.rpt-key i.rpt-inv { background: color-mix(in srgb, var(--violet) 55%, transparent); }
+.rpt-key i.rpt-col { background: var(--accent); }
+
+/* ---------- decoration meters ---------- */
+.rpt-deco { display: grid; gap: var(--sp-6); }
+.rpt-deco-t { display: flex; justify-content: space-between; gap: var(--sp-5); font-size: var(--fs-sm); font-weight: 600; margin-bottom: var(--sp-3); }
+.rpt-meter { height: 8px; background: var(--panel-2); border-radius: var(--r-full); overflow: hidden; }
+.rpt-meter i { display: block; height: 100%; background: var(--grad); border-radius: var(--r-full); }
+
+/* ---------- aging ---------- */
+.rpt-aging { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--sp-4); padding: var(--sp-6); }
+.rpt-bucket { --tone: var(--accent); padding: var(--sp-5); border: 1px solid var(--line); border-top: 2px solid var(--tone); border-radius: var(--r-md); background: var(--panel-2); min-width: 0; }
+.rpt-bucket.warn { --tone: var(--amber); }
+.rpt-bucket.bad { --tone: var(--red); }
+.rpt-bucket-l { font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .8px; color: var(--txt-3); font-weight: 650; }
+.rpt-bucket-v { font-size: var(--fs-xl); font-weight: 750; letter-spacing: -.02em; margin-top: var(--sp-3); font-variant-numeric: tabular-nums; }
+.rpt-bucket.warn .rpt-bucket-v { color: var(--amber); }
+.rpt-bucket.bad .rpt-bucket-v { color: var(--red); }
+.rpt-aging-lists { border-top: 1px solid var(--line); }
+.rpt-details { border-bottom: 1px solid var(--line); }
+.rpt-details:last-child { border-bottom: 0; }
+.rpt-details summary { display: flex; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-5) var(--sp-6); cursor: pointer; font-size: var(--fs-sm); font-weight: 650; list-style: none; }
+.rpt-details summary::-webkit-details-marker { display: none; }
+.rpt-details summary::before { content: '▸'; color: var(--txt-3); margin-right: var(--sp-4); transition: transform .12s; display: inline-block; }
+.rpt-details[open] summary::before { transform: rotate(90deg); }
+.rpt-details summary span:first-child { margin-right: auto; }
+.rpt-details summary:hover { background: var(--panel-2); }
+.rpt-details summary:focus-visible { outline: 0; box-shadow: inset var(--ring); }
+
+@media (max-width: 960px) {
+  .rpt-cols { grid-template-columns: minmax(0, 1fr); }
+  .rpt-aging { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rpt-range { margin-left: 0; width: 100%; }
+}
+@media (max-width: 520px) {
+  .rpt-aging { grid-template-columns: minmax(0, 1fr); }
+  .rpt-chip { padding: var(--sp-3) var(--sp-5); }
+}

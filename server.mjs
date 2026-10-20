@@ -25,6 +25,8 @@ import { registerProductionRoutes } from './lib/production-routes.mjs'
 import { tvSnapshot } from './lib/tv.mjs'
 import { shopInsights } from './lib/insights.mjs'
 import { registerPortalRoutes } from './lib/portal-routes.mjs'
+import { registerMerchRoutes } from './lib/merch-stores.mjs'
+import { registerReportRoutes } from './lib/reports.mjs'
 import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
@@ -2891,7 +2893,11 @@ const rushDaysIn = (v) => Math.max(0, Math.min(30, Math.trunc(Number(v) || 0)))
 
 app.get('/api/estimates', wrap((req, res) => {
   const status = String(req.query.status ?? '') // a repeated ?status= is an array, and node:sqlite refuses to bind one
-  let sql = `SELECT e.*, c.name AS contact_name, c.company FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id`
+  // invoice_id: an approved estimate keeps status 'approved' after it is billed, so "ready to bill"
+  // (views/do-invoice.js) needs to know which ones already have a live invoice.
+  let sql = `SELECT e.*, c.name AS contact_name, c.company,
+      (SELECT i.id FROM invoices i WHERE i.estimate_id = e.id AND i.status != 'void' ORDER BY i.id DESC LIMIT 1) AS invoice_id
+    FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id`
   const params = []
   if (status && status !== 'all') { sql += ' WHERE e.status = ?'; params.push(status) }
   sql += ' ORDER BY e.id DESC'
@@ -9328,6 +9334,8 @@ const pPage = (fn) => (req, res) => {
 
 // One customer-portal link per customer, indexing the /p/ links below — see lib/portal-routes.mjs.
 const portal = registerPortalRoutes(app,{pPage,page,esc,logoImg,joinDot,token,shareUrl,paymentsReady:(s)=>paymentsReady(s),proofIsCurrent,publicOrigin,wrap})
+registerMerchRoutes(app,{pPage,page,esc,logoImg,joinDot,publicOrigin,wrap,requireRole,orderLimit:ipLimit(60),authEnabled:AUTH_ENABLED,syncPipeline})
+registerReportRoutes(app,{requireRole,wrap})
 
 app.get('/p/estimate/:id', pPage((req, res) => {
   const id = +req.params.id

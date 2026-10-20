@@ -45,10 +45,14 @@ import { todayView } from './views/today.js'
 import { dtfResizeView } from './views/dtfresize.js'
 import { scanView } from './views/scan.js'
 import { booksView } from './views/books.js'
+import { reportsView } from './views/reports.js'
 import { developersView } from './views/developers.js'
+import { storesView, storeDetailView } from './views/stores.js'
 import { doEstimateView } from './views/do-estimate.js'
 import { doMockupView } from './views/do-mockup.js'
 import { autoFollowupsView } from './views/auto-followups.js'
+import { doInvoiceView } from './views/do-invoice.js'
+import { doJobView } from './views/do-job.js'
 import { taskTiles } from './shared/tasks.js'
 
 // Task-first IA. The sidebar used to be a map of every feature — 39 destinations under Sales /
@@ -74,6 +78,7 @@ const NAV = [
 const TOOLS = [
   { label: 'Sales', section: true },
   { href: '/orders', ico: 'orders', name: 'Orders' },
+  { href: '/stores', ico: 'products', name: 'Merch stores' },
   { href: '/followups', ico: 'followups', name: 'Who owes you', badge: 'followups' },
   { href: '/pipeline', ico: 'pipeline', name: 'Deals pipeline' },
   { href: '/reorders', ico: 'reorders', name: 'Repeat customers' },
@@ -88,6 +93,7 @@ const TOOLS = [
   { href: '/gangsheet', ico: 'gangsheet', name: 'Gang Sheet Builder' },
   { href: '/costing', ico: 'roi', name: 'Machine & job costs', manage: true },
   { label: 'Money', section: true },
+  { href: '/reports', ico: 'roi', name: 'Reports', manage: true },
   { href: '/pricing', ico: 'pricing', name: 'Pricing' },
   { href: '/profit-planner', ico: 'roi', name: 'Profit planner', manage: true },
   { href: '/roi', ico: 'roi', name: 'Profitability' },
@@ -135,6 +141,8 @@ route(/^\/$/, todayView)
 route(/^\/do\/estimate(?:\?.*)?$/, doEstimateView)
 route(/^\/do\/mockup$/, doMockupView)
 route(/^\/auto-follow-ups$/, autoFollowupsView)
+route(/^\/do\/invoice$/, doInvoiceView)
+route(/^\/do\/job$/, doJobView)
 route(/^\/dashboard$/, dashboardView)
 route(/^\/autopilot$/, autopilotView)
 route(/^\/receptionist$/, agentView)
@@ -169,12 +177,15 @@ route(/^\/estimates$/, estimatesView)
 route(/^\/estimates\/new/, () => estimateEditor('new'))
 route(/^\/estimates\/(\d+)\/edit$/, estimateEditor)
 route(/^\/estimates\/(\d+)$/, estimateDetailView)
+route(/^\/stores$/, storesView)
+route(/^\/stores\/(\d+)$/, storeDetailView)
 route(/^\/invoices$/, invoicesView)
 route(/^\/invoices\/(\d+)$/, invoiceDetailView)
 route(/^\/roi$/, roiView)
 route(/^\/profit-planner$/, profitPlannerView)
 route(/^\/scan$/, scanView)
 route(/^\/books$/, booksView)
+route(/^\/reports(?:\?.*)?$/, reportsView)
 route(/^\/developers$/, developersView)
 route(/^\/welcome$/, onboardingView)
 route(/^\/setup$/, setupView)

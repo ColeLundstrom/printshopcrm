@@ -1,0 +1,56 @@
+/* Merch stores (public/js/views/stores.js): the store list, the "open a team store" form and the
+   store detail screen. Built only from the app.css tokens, like guided.css, so both themes and the
+   lite skin follow without overrides. The customer-facing store page styles itself (lib/merch-stores.mjs). */
+
+/* ---------- list ---------- */
+.st-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--sp-5); }
+.st-card {
+  display: grid; gap: var(--sp-3); padding: var(--sp-7); min-height: var(--tap);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md);
+  color: var(--txt); text-decoration: none; transition: border-color .12s, background .12s;
+}
+.st-card:hover { border-color: var(--accent); background: var(--panel-2); }
+.st-card:focus-visible { outline: 0; border-color: var(--accent); box-shadow: var(--ring); }
+.st-card-top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
+.st-name { font-size: var(--fs-lg); font-weight: 700; letter-spacing: -.01em; min-width: 0; overflow-wrap: anywhere; }
+.st-for { font-size: var(--fs-sm); color: var(--txt-2); }
+.st-for a { color: var(--accent); font-weight: 600; }
+.st-stats { display: flex; flex-wrap: wrap; gap: var(--sp-3) var(--sp-6); margin-top: var(--sp-3); font-size: var(--fs-xs); color: var(--txt-2); }
+.st-stats strong { color: var(--txt); font-variant-numeric: tabular-nums; }
+.st-hero { max-width: 640px; margin: var(--sp-9) auto 0; }
+.st-hero .btn.big { width: auto; }
+
+/* ---------- new store ---------- */
+.st-new { display: grid; gap: var(--sp-6); max-width: 860px; }
+.st-products { display: grid; gap: var(--sp-5); margin-bottom: var(--sp-5); }
+.st-prod { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-6); background: var(--bg-2); display: grid; gap: var(--sp-5); }
+.st-prod-h { display: flex; align-items: center; gap: var(--sp-4); }
+.st-num { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-glow); color: var(--accent); font-size: var(--fs-xs); font-weight: 700; }
+.st-prod-h .st-pname { flex: 1; min-width: 0; font-weight: 600; }
+.st-price-in { flex: none; width: 120px; }
+.st-del { flex: none; background: 0; border: 0; color: var(--txt-3); font-size: var(--fs-xl); cursor: pointer; min-width: var(--tap); min-height: var(--tap); }
+.st-del:hover { color: var(--red); }
+.st-sizes { align-items: center; }
+.st-sizes .choice { min-width: 56px; padding: var(--sp-3) var(--sp-5); }
+.st-extra summary { cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--txt-2); }
+.st-extra .grid2 { margin-top: var(--sp-4); }
+
+/* ---------- detail ---------- */
+.st-detail { display: grid; gap: var(--sp-6); }
+.st-share { padding: var(--sp-7); border-color: var(--accent); background: var(--grad-soft), var(--panel); }
+.st-share-h { display: flex; align-items: center; gap: var(--sp-4); font-size: var(--fs-lg); font-weight: 700; margin-bottom: var(--sp-2); }
+.st-copy { max-width: none; margin: var(--sp-6) 0 0; }
+.st-message { margin: var(--sp-5) 0 0; font-size: var(--fs-sm); color: var(--txt-2); white-space: pre-wrap; }
+.st-kpis { margin: 0; }
+.st-sec { overflow: hidden; }
+.st-scroll { overflow-x: auto; }
+.st-matrix th.num, .st-matrix td.num { text-align: right; white-space: nowrap; }
+.st-orders td { vertical-align: top; }
+.st-line { display: block; font-size: var(--fs-sm); }
+.st-note { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--txt-2); font-style: italic; }
+
+@media (max-width: 640px) {
+  .st-prod-h { flex-wrap: wrap; }
+  .st-price-in { width: 100px; }
+  .st-copy { flex-wrap: wrap; }
+}
