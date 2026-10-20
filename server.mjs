@@ -45,6 +45,9 @@ import {
 } from './lib/db.mjs'
 import { renderDocument, packingSlip, pickTicket, customerStatement } from './lib/pdf.mjs'
 import { db, tenantStore, getDb } from './lib/db.mjs'
+// Money rounded to the shop currency's minor unit (pricing.js) — ¥ whole, $ cents.
+import { roundMoney } from './lib/db.mjs'
+import { lineUpcharges, upchargeFor } from './public/js/shared/pricing.js'
 import {
   createTenant, authMember, createSession, getSession, getSessionTenant, deleteSession,
   openTenantDb, withTenant, getTenantByEmbedKey, getTenantBySlug, tenantOpen, saveOnboarding, tenantPublic,
@@ -69,7 +72,7 @@ import { capacityReport, promise as capacityPromise, colorsFromItems } from './l
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { estimateTermsIn, commercialEstimateChanged, invalidateEstimateApproval, recordEstimateApproval, estimateApprovalHistory, latestAcceptedEstimate, assertEstimateRevision } from './lib/estimate-approvals.mjs'
 import { qrSvg } from './lib/qr.mjs'
-import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
+import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importOrderStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
 import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
@@ -85,7 +88,7 @@ import { code128Svg } from './lib/barcode.mjs'
 import { nest, priceSheet } from './public/js/shared/gangnest.js'
 import { createCheckout, stripeConfigured, retrieveSession, retrieveStripeRefund, createStripeCollectionClient } from './lib/stripe.mjs'
 import { recordReversal, recentReversals } from './lib/payment-reversals.mjs'
-import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary } from './lib/invoice-credits.mjs'
+import { addInvoiceCredit, cancelInvoiceCredit, invoiceCreditSummary, creditRemaining } from './lib/invoice-credits.mjs'
 import { receivableInvoice, collectionReview } from './lib/receivables-review.mjs'
 import { currencyCode } from './lib/payment-currency.mjs'
 import { billingDefaults, recipientSnapshot, documentRecipient, documentForRecipient, recipientMessageIssue, updateDocumentRecipients } from './lib/billing-recipients.mjs'
@@ -1107,18 +1110,27 @@ onOpportunityStage(({ opportunity, stage }) => {
     })
   } catch (e) { console.error(`opportunity.${stage}:`, e && e.message) }
 })
+/**
+ * The one way invoice.paid is announced: the order card walks to Paid and the shop's automations
+ * and webhook subscribers hear about it — once per time the invoice becomes paid.
+ *
+ * Every payment door used to fire it inline on `status flipped to paid AND no payment review`.
+ * A review (a credit, a reversal, money that arrived after the checkout changed) is cleared later
+ * by a manager, and nothing ran then — so an invoice settled under review stayed silent forever:
+ * no thank-you, no webhook, and its order card never reached Paid. paid_notified_at is the latch:
+ * stamped here atomically, cleared by syncInvoiceStatus when the invoice stops being paid, so the
+ * review clearing announces a held-back payment and never repeats one that already went out.
+ */
 /* The other half of POST /api/invoices/:id/payments, for the doors that live in lib/ and cannot
  * import this file. Everything below the INSERT there happens here too, so a payment is the same
  * payment whichever door it came through: the order card walks forward, the shop's own
  * "Thank the customer when they pay" rule and every invoice.paid webhook subscriber fire once, and
  * the books are queued without anyone clicking. */
-onPaymentRecorded(({ invoice_id, before_status }) => {
+onPaymentRecorded(({ invoice_id }) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', invoice_id)
   if (!inv || inv.payment_review) return
   advanceOrder(inv.estimate_id, 'paid')   // money in — never backward; see advanceOrder
-  if (inv.status === 'paid' && before_status !== 'paid') {
-    fireAuto('invoice.paid', { invoice: inv, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: inv.amount_due })
-  }
+  announceInvoicePaid(inv.id)
   enqueueQbo(inv.id)
 })
 /* Stage moves made from lib/ (the assistant, workflow task completion) get the same three side
@@ -1132,6 +1144,17 @@ onJobStage(({ job_id, from, to, source, actor }) => {
   fireAuto('job.stage', { job, contact: get('SELECT * FROM contacts WHERE id = ?', job.contact_id) })
   rtBroadcast('board', { job_id, stage: to, from, actor: source })
 })
+
+// announceInvoicePaid: see the note above onPaymentRecorded.
+function announceInvoicePaid(invoiceId, effects = null) {
+  const inv = get('SELECT * FROM invoices WHERE id = ?', invoiceId)
+  if (!inv || inv.payment_review || inv.status !== 'paid') return false
+  advanceOrder(inv.estimate_id, 'paid')
+  if (!run('UPDATE invoices SET paid_notified_at = ? WHERE id = ? AND paid_notified_at IS NULL', now(), inv.id).changes) return false
+  const announce = () => fireAuto('invoice.paid', { invoice: inv, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: inv.amount_due })
+  if (effects) effects.push(announce); else announce()
+  return true
+}
 
 /* ================= AUTH & MULTI-TENANCY =================
  * When PSC_AUTH=1, every request is resolved to a logged-in shop and run inside that shop's
@@ -2808,9 +2831,15 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
   const seen = new Set()
   const toAdd = []
   let skippedNoName = 0, dupes = 0
-  for (const row of rows) {
+  const invalid = []
+  for (const [index, row] of rows.entries()) {
     const c = mapContactRow(row)
     if (!c) { skippedNoName++; continue }
+    // The same one-recipient rule POST /api/contacts enforces. "a@x.com, b@y.com" stored as one
+    // address is a customer no invoice, receipt or reminder can ever be delivered to — and the
+    // whole string became the dedupe key. Refused per row, with the reason, rather than guessed.
+    const bad = contactAddressError(c)
+    if (bad) { invalid.push({ row: index + 2, name: String(c.name || '').slice(0, 80), reason: bad }); continue }
     if (c.email && (existing.has(c.email) || seen.has(c.email))) { dupes++; continue }
     if (c.email) seen.add(c.email)
     toAdd.push(c)
@@ -2818,7 +2847,7 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
 
   const preview = req.body?.preview === 'true' || req.body?.preview === true
   if (preview) {
-    return res.json({ preview: true, columns, total_rows: rows.length, to_import: toAdd.length, duplicates: dupes, skipped: skippedNoName, sample: toAdd.slice(0, 8) })
+    return res.json({ preview: true, columns, total_rows: rows.length, to_import: toAdd.length, duplicates: dupes, skipped: skippedNoName + invalid.length, rejected: invalid.slice(0, 50), sample: toAdd.slice(0, 8) })
   }
 
   // Only committed batches count. Storage failures stop the import; constraint failures may
@@ -2836,7 +2865,7 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
       resume: 'Fix that, then upload the SAME file again — anyone whose email address is already in your customer list is skipped. Rows with no email address cannot be matched, so check those for duplicates afterwards.',
     }))
   }
-  res.json({ preview: false, created, duplicates: dupes + newDupes, skipped: skippedNoName + rejected, total_rows: rows.length })
+  res.json({ preview: false, created, duplicates: dupes + newDupes, skipped: skippedNoName + rejected + invalid.length, rejected: invalid.slice(0, 50), total_rows: rows.length })
 }))
 
 app.post('/api/contacts/:id/note', wrap((req, res) => {
@@ -2907,6 +2936,41 @@ const unknownSizes = (keys) => ({
   code: 'unknown_size',
 })
 
+/** A refusal sanitizeEstimateItems raises; the error handler answers it as a 400 with this text. */
+const lineRefusal = (message, code) => Object.assign(new Error(message), { status: 400, expose: true, code, lineRefusal: true })
+/** sanitizeEstimateItems for a route: a refusal is answered 400 with its code; null means answered. */
+const sanitizeEstimateItemsOr400 = (items, res, rejected) => {
+  try { return sanitizeEstimateItems(items, rejected) }
+  catch (e) { if (!e?.lineRefusal) throw e; res.status(400).json({ error: e.message, code: e.code }); return null }
+}
+// No shop charges more than this EXTRA per piece for a size. Far above any real 6XL upcharge,
+// and small enough that a size grid at MAX_PIECES still multiplies out to a storable amount.
+const MAX_UPCHARGE = 100_000
+
+/**
+ * The per-line upcharge table a caller sent, checked before anything is priced with it.
+ *
+ * freezeUpcharges keeps whatever table a line arrives with — that is how a document keeps adding
+ * up after the shop changes its rates — so the table is client input on every save. It was trusted
+ * outright: {M: 1e306} overflowed into a stored $0 total (representableLines only looked at
+ * qty × unit_price), and {M: -9.99} on 50 tees at $10 stored $0.54. An upcharge is an extra
+ * charge for a size: a real size key, a finite amount, never negative, never absurd.
+ */
+function sanitizeUpcharges(table) {
+  if (table == null) return undefined
+  if (typeof table !== 'object' || Array.isArray(table)) throw lineRefusal('Size upcharges must be a table like {"2XL": 2}.', 'invalid_upcharges')
+  const out = {}
+  for (const [k, v] of Object.entries(table)) {
+    const key = String(k).trim().toUpperCase()
+    if (!SIZE_KEY.test(key)) throw lineRefusal(`Size upcharge "${String(k).slice(0, 24)}" is not a size.`, 'invalid_upcharges')
+    if (Object.hasOwn(out, key)) throw lineRefusal(`Size upcharge "${key}" is listed twice.`, 'invalid_upcharges')
+    const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN)
+    if (!Number.isFinite(n) || n < 0 || n > MAX_UPCHARGE) throw lineRefusal(`Size upcharge for ${key} must be an amount from 0 to ${MAX_UPCHARGE}.`, 'invalid_upcharges')
+    out[key] = n
+  }
+  return out
+}
+
 function sanitizeEstimateItems(items, rejected = []) {
   // Freeze the upcharge table these lines are priced with (lib/db.mjs freezeUpcharges), so the
   // document keeps adding up after the shop changes its rates. Every writer of an estimate does
@@ -2914,6 +2978,20 @@ function sanitizeEstimateItems(items, rejected = []) {
   return freezeUpcharges(items.map((it) => {
     if (!it || typeof it !== 'object' || Array.isArray(it)) return {}
     const out = { ...it }
+    if (out.size_upcharges != null) out.size_upcharges = sanitizeUpcharges(out.size_upcharges)
+    // `taxable: "false"` — a form post, a spreadsheet column — is a no, and it was being taxed:
+    // computeTotals exempts only the boolean false. The v1 API has always read the strings; the
+    // routes the app's own screens and most integrations use now read them the same way.
+    if (out.taxable !== undefined && out.taxable !== null && typeof out.taxable !== 'boolean') {
+      if (typeof out.taxable === 'string' && /^(true|false)$/i.test(out.taxable.trim())) out.taxable = out.taxable.trim().toLowerCase() === 'true'
+      else throw lineRefusal('Taxable must be true or false.', 'invalid_taxable')
+    }
+    // A flat line's quantity was uncapped: qty 1e12 at $5 stored a five-trillion-dollar quote the
+    // capacity planner then tried to schedule. The size grid has been clamped to MAX_PIECES all
+    // along; a flat quantity above it is refused rather than silently changed.
+    for (const f of ['qty', 'quantity']) {
+      if (out[f] != null && out[f] !== '' && Number(out[f]) > MAX_PIECES) throw lineRefusal(`A line quantity can be at most ${MAX_PIECES} — check the quantities and prices.`, 'invalid_total')
+    }
     if (out.sizes != null) {
       const sizes = {}
       if (typeof out.sizes === 'object' && !Array.isArray(out.sizes)) {
@@ -2933,7 +3011,11 @@ function sanitizeEstimateItems(items, rejected = []) {
           // Capacity page walk business days one at a time forever — 100% CPU on the shared
           // process, every tenant on the box down, on every visit to that page. MAX_PIECES is
           // three orders of magnitude past any real screen-print run.
-          if (Number.isFinite(n) && n >= 0) sizes[key] = Math.min(n, MAX_PIECES)
+          //
+          // Summed, not assigned: {m: 10, M: 5} is fifteen mediums. Both keys upper-case to "M",
+          // and the second used to overwrite the first — a $150 order stored as $50. Truncated,
+          // as the editor's size field truncates (estimates.js), so 10.5 is 10 on both sides.
+          if (Number.isFinite(n) && n >= 0) sizes[key] = Math.min((sizes[key] || 0) + n, MAX_PIECES)
           else if (Number(v) > 0 || (v != null && v !== '' && !Number.isFinite(n))) rejected.push(String(k).slice(0, 24))
         }
       }
@@ -2991,7 +3073,15 @@ const representableLines = (items) => {
     const qty = lineQty(it)
     const price = Number(it.unit_price ?? 0)
     if (!Number.isFinite(qty) || !Number.isFinite(price)) return false
-    const amount = qty * price
+    let amount = qty * price
+    // …and the size upcharges, which are part of what the line bills (lineAmount). Measured raw,
+    // before rounding, because lineAmount's rounding floors an overflow to 0 — {M: 1e306} came
+    // back as a perfectly "representable" $0.
+    if (it.sizes && typeof it.sizes === 'object' && lineQty(it) > 0) {
+      const up = lineUpcharges(it, getUpcharges())
+      amount = 0
+      for (const [size, n] of Object.entries(it.sizes)) if (Number(n) > 0) amount += Number(n) * (price + upchargeFor(size, up))
+    }
     if (!representable(amount)) return false
     sum += amount
   }
@@ -3036,14 +3126,16 @@ app.post('/api/estimates', wrap((req, res) => {
   // reached computeTotals and threw a 500 on the app's main create path.
   if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
   const badSizes = []
-  const items = sanitizeEstimateItems(b.items || [], badSizes)
+  const items = sanitizeEstimateItemsOr400(b.items || [], res, badSizes)
+  if (!items) return
   if (badSizes.length) return res.status(400).json(unknownSizes(badSizes))
   // A wholesale/resale account is tax exempt, so every quote for it is untaxed unless the caller
   // says, in as many words, that this particular order really is taxable. Merely carrying a
   // `tax_rate` is not saying so — the editor's field always carries the shop's default, which is
   // how every quote written from a wholesale customer's own page came out taxed.
   // Derive the rate BEFORE computing totals, or the stored rate and the stored tax dollars disagree.
-  const rate = taxRateFor(contactId, b.tax_rate, { allowExemptOverride: b.tax_exempt_override === true })
+  const exemptOverride = b.tax_exempt_override === true
+  const rate = taxRateFor(contactId, b.tax_rate, { allowExemptOverride: exemptOverride })
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
   if (!nonNegativeTotals(t)) return res.status(400).json(NEGATIVE_TOTAL)
@@ -3067,6 +3159,8 @@ app.post('/api/estimates', wrap((req, res) => {
   const r = run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, rush_days, created_at, billing_address, shipping_address, terms_snapshot, terms_snapshot_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total, rate, str(b.notes), rushDaysIn(b.rush_days), now(), addresses.billing_address, addresses.shipping_address, terms, b.terms_snapshot === undefined ? 'created' : 'edited')
   const id = Number(r.lastInsertRowid)
+  // Remember a deliberate "tax this exempt buyer" (see PUT): it is part of how the quote was priced.
+  if (exemptOverride) run('UPDATE estimates SET tax_exempt_override = 1 WHERE id = ?', id)
   logActivity('estimate', `Estimate ${num} created — ${money(t.total)}`, { contact_id: contactId })
   syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
   res.json(estimateView(get('SELECT * FROM estimates WHERE id = ?', id)))
@@ -3088,7 +3182,8 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const s = getSettings()
   if (b.items !== undefined && !Array.isArray(b.items)) return res.status(400).json({ error: 'items must be a list of line items', code: 'invalid_items' })
   const badSizes = []
-  const items = sanitizeEstimateItems(b.items ?? parse(e.items, []), badSizes)
+  const items = sanitizeEstimateItemsOr400(b.items ?? parse(e.items, []), res, badSizes)
+  if (!items) return
   if (badSizes.length) return res.status(400).json(unknownSizes(badSizes))
   // Fall back to the estimate's OWN stored rate before the shop's current setting — otherwise
   // editing a note on last quarter's resale-exempt quote silently re-taxes it at today's rate.
@@ -3118,8 +3213,16 @@ app.put('/api/estimates/:id', wrap((req, res) => {
     const linked = get('SELECT job_number FROM jobs WHERE estimate_id=? AND contact_id IS NOT ? ORDER BY id LIMIT 1', id, contactId)
     if (linked) return res.status(409).json({ code: 'quote_job_customer_mismatch', error: `This quote already has ${linked.job_number} for another customer. Keep its customer or create a separate quote for the new customer.` })
   }
+  // The shop's deliberate decision to tax an exempt buyer on THIS quote is stored with it. It was
+  // read from the request only, so any edit that did not resend it — an API caller fixing a note
+  // or a date — silently untaxed the quote, changed its total, and revoked the customer's
+  // approval over an edit that had nothing to do with price. Omitted means "unchanged"; a quote
+  // moved to a different buyer starts from that buyer's own treatment.
+  const exemptOverride = b.tax_exempt_override !== undefined
+    ? b.tax_exempt_override === true
+    : contactId === e.contact_id && !!e.tax_exempt_override
   const rate = taxRateFor(contactId, b.tax_rate ?? e.tax_rate ?? s.tax_rate,
-    { allowExemptOverride: b.tax_exempt_override === true })
+    { allowExemptOverride: exemptOverride })
   const addresses = postalPatch(b, contactId === e.contact_id ? e : postalDefaults(get('SELECT * FROM contacts WHERE id=?', contactId)))
   const t = computeTotals(items, rate, getUpcharges())
   if (!representableLines(items) || !representableTotals(t)) return res.status(400).json(NOT_REPRESENTABLE)
@@ -3138,10 +3241,10 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const approvalInvalidated = revised && (!!e.approved_at || ['approved','invoiced'].includes(e.status))
   const artChangedJobs = tx(() => {
     invalidateEstimateApproval(e, next, { actor: req.member?.name })
-    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=? WHERE id=?',
+    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=?, tax_exempt_override=? WHERE id=?',
       contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, str(b.notes, e.notes),
       next.rush_days, addresses.billing_address, addresses.shipping_address, next.terms_snapshot,
-      termsChanged ? 'edited' : e.terms_snapshot_source, id)
+      termsChanged ? 'edited' : e.terms_snapshot_source, exemptOverride ? 1 : 0, id)
     // Repricing and reopening the linked sale belong to this same revision transaction.
     pipeline.syncFromEstimate(get('SELECT * FROM estimates WHERE id=?',id), revised ? 'revised' : 'updated')
     if (!linesChanged) return []
@@ -3417,7 +3520,10 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
     const items = freezeUpcharges(parse(src.items, []))
     // A different buyer gets their own tax treatment. Insert triggers snapshot their current
     // postal and delivery contacts and current shop terms, never the source buyer's addresses.
-    const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null)
+    // The same buyer keeps a deliberate exempt-buyer override the source quote carried; without it
+    // the copy of a taxed quote for a resale account came out untaxed.
+    const keepOverride = contactId === src.contact_id && !!src.tax_exempt_override
+    const rate = taxRateFor(contactId, contactId === src.contact_id ? src.tax_rate : null, { allowExemptOverride: keepOverride })
     const t = computeTotals(items, rate, getUpcharges())
     if (!representableLines(items) || !representableTotals(t)) return createResult(400, NOT_REPRESENTABLE)
     if (!nonNegativeTotals(t)) return createResult(400, NEGATIVE_TOTAL)
@@ -3426,6 +3532,7 @@ app.post('/api/estimates/:id/duplicate', wrap((req, res) => {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       contactId, num, 'draft', JSON.stringify(items), t.subtotal, t.tax, t.total,
       src.notes || '', rate, src.quote_meta || '{}', Math.max(0, Number(src.rush_days) || 0), now()).lastInsertRowid)
+    if (keepOverride) run('UPDATE estimates SET tax_exempt_override = 1 WHERE id = ?', id)
     logActivity('estimate', `${num} created from ${src.estimate_number}`, { contact_id: contactId })
     // Do not use the best-effort wrapper: an orphan quote must roll back if its deal fails.
     pipeline.syncFromEstimate(get('SELECT * FROM estimates WHERE id = ?', id), 'created')
@@ -3650,6 +3757,9 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
     const invNum = nextInvoiceNumber()
     const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, created_at) VALUES (?,?,?,?,?,?,?,?)',
       id, e.contact_id, invNum, 'unpaid', e.total, 0, due, now()).lastInsertRowid)
+    // Status is derived, never assumed: a fully-discounted ($0) order owes nothing, and stored as
+    // 'unpaid' it was listed overdue and chased by the dunning automation for money nobody owes.
+    syncInvoiceStatus(invId)
     const sched = jobScheduleFromEstimate(e, req.body)
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
     recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',id), { source: wasApproved ? 'legacy_record' : 'staff_conversion', actor: req.member?.name })
@@ -3818,6 +3928,9 @@ app.post('/api/invoices/:id/void', requireRole('manager'), wrap((req, res) => {
   // leave two jobs fighting over one invoice, and say so on the timeline.
   const freed = run('UPDATE jobs SET invoice_id = NULL WHERE invoice_id = ?', id).changes
   logActivity('invoice', `${inv.invoice_number} voided${reason ? ` — ${reason}` : ''}${freed ? ' · its job is no longer billed to it' : ''}`, { contact_id: inv.contact_id })
+  // An invoice already in QuickBooks has to be voided there too, or it stays live A/R in the books
+  // (syncInvoiceToQboInner handles the void; one never pushed is simply left alone).
+  if (inv.qbo_id) enqueueQbo(id)
   res.json({ ok: true, invoice: get('SELECT * FROM invoices WHERE id = ?', id) })
 }))
 
@@ -3867,10 +3980,12 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
   if (typeof rawAmount !== 'number' && !(typeof rawAmount === 'string' && rawAmount.trim() !== '')) {
     return res.status(400).json({ error: 'Payment amount must be a number', code: 'invalid_amount' })
   }
-  const amount = round2(rawAmount)
+  // To the currency's minor unit, not always cents: a yen balance is whole yen, and comparing a
+  // ¥16,109 payment against a ¥16,108.63 balance is what made a yen invoice unpayable.
+  const amount = roundMoney(rawAmount)
   if (!Number.isFinite(Number(rawAmount)) || !(amount > 0)) return res.status(400).json({ error: 'Payment amount must be greater than zero', code: 'invalid_amount' })
   // Guard fat-finger over-payment: a manual entry can't exceed the remaining balance.
-  const bal = round2(inv.amount_due - inv.amount_paid)
+  const bal = roundMoney(inv.amount_due - inv.amount_paid)
   if (amount > bal + 0.01) return res.status(400).json({ error: `That's more than the ${money(bal)} balance due.` })
   // Clamp to the balance so the accepted-within-tolerance cent can't push amount_paid past
   // amount_due into a negative balance (matches what recordStripePayment already does).
@@ -3909,12 +4024,9 @@ app.post('/api/invoices/:id/payments', wrap((req, res) => {
   run('INSERT INTO payments (invoice_id, amount, method, note, created_at) VALUES (?,?,?,?,?)',
     id, recorded, method, note, now())
   const updated = syncInvoiceStatus(id)
-  // Money in — walk the order card forward (never backward; see advanceOrder).
-  if(!inv.payment_review && updated.status==='paid') advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Payment ${money(recorded)} on ${inv.invoice_number} (${method})`, { contact_id: inv.contact_id })
-  if (updated.status === 'paid' && inv.status !== 'paid' && !inv.payment_review) {
-    fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due })
-  }
+  // Money in — walk the order card forward (never backward) and announce a payoff once.
+  announceInvoicePaid(id)
   enqueueQbo(id) // money moved — the books should hear about it without anyone clicking
   res.json(updated)
 }))
@@ -3934,9 +4046,14 @@ app.delete('/api/payments/:id', requireRole('manager'), wrap((req, res) => {
   const p = get('SELECT * FROM payments WHERE id = ?', +req.params.id)
   if (!p) return res.status(404).json({ error: 'Payment not found', code: 'not_found' })
   if(p.stripe_session) return res.status(409).json({error:'Verified processor entries cannot be deleted. Reconcile refunds through Payment connections.',code:'processor_payment'})
+  // Already in QuickBooks: deleting it here alone leaves the books holding a payment the app no
+  // longer has — and the invoice re-syncs as unpaid against it. Nothing here can delete a QBO
+  // payment, so the reversal has to start there; once it has, the caller says so explicitly.
+  if (p.qbo_id && req.body?.qbo_reversed !== true) return res.status(409).json({ error: 'This payment was already synced to QuickBooks. Delete or void it in QuickBooks first — removing it only here would leave your books and this invoice disagreeing. Then remove it here, confirming it was reversed in QuickBooks.', code: 'qbo_synced_payment' })
   const inv = get('SELECT invoice_number, contact_id FROM invoices WHERE id = ?', p.invoice_id)
   run('DELETE FROM payments WHERE id = ?', p.id)
   const out = syncInvoiceStatus(p.invoice_id)
+  if (p.qbo_id) enqueueQbo(p.invoice_id) // the invoice's balance in QuickBooks moves with it
   logActivity('payment', `Payment ${money(p.amount)} REMOVED from ${inv?.invoice_number || `invoice #${p.invoice_id}`} (${p.method || 'other'})${p.note ? ` — ${String(p.note).slice(0, 100)}` : ''}`,
     { contact_id: inv?.contact_id ?? null })
   res.json(out)
@@ -4925,12 +5042,20 @@ app.get('/api/followups', wrap((_req, res) => {
   // Quotes sent but never answered — ranked by value, because $6k deserves the call first.
   const stale = all(`SELECT e.*, c.name AS contact_name, c.email, c.phone, c.company
     FROM estimates e LEFT JOIN contacts c ON c.id = e.contact_id
-    WHERE e.status = 'sent' ORDER BY e.total DESC`)
+    WHERE e.status = 'sent'
+      -- A quote that already has a live invoice is not waiting on an answer: a website gang-sheet
+      -- order is invoiced and PAID while its estimate still reads 'sent', and it was listed here,
+      -- for a call to a customer who has already paid.
+      AND NOT EXISTS (SELECT 1 FROM invoices inv WHERE inv.estimate_id = e.id AND inv.status != 'void')
+    ORDER BY e.total DESC`)
     .map((e) => ({ ...e, age: days(e.sent_at), items: undefined }))
 
   const overdue = all(`SELECT i.*, c.name AS contact_name, c.email, c.phone
     FROM invoices i LEFT JOIN contacts c ON c.id = i.contact_id
-    WHERE i.status NOT IN ('paid','void') AND i.due_date < ? ORDER BY (i.amount_due - i.amount_paid) DESC`, today)
+    WHERE i.status NOT IN ('paid','void') AND i.due_date < ?
+      -- A stored status is not a balance. Nothing is overdue on an invoice that owes nothing.
+      AND i.amount_due - i.amount_paid > 0.005
+    ORDER BY (i.amount_due - i.amount_paid) DESC`, today)
     .map((i) => ({ ...i, age: days(i.due_date), balance: round2(i.amount_due - i.amount_paid) }))
 
   // Proofs sitting with the customer — these block production, so they cost days.
@@ -6673,6 +6798,31 @@ function groupImportedOrders(orders) {
   return grouped
 }
 
+/**
+ * What stops an order import before anything is written, and how the file's statuses read.
+ *
+ *  · A quantity no order has ever had. Uncapped, one row of 99,999,999 tees at $5 wrote a
+ *    $499,999,995 PAID invoice and payment into the shop's history, Revenue and lifetime value.
+ *    The editor and the API both stop at MAX_PIECES; the importer refuses the file instead.
+ *  · A status the importer cannot read as paid, unpaid, a quote or cancelled (lib/csv.mjs
+ *    importOrderStatus). It used to call all of those paid — Cancelled, Refunded, Open, Payment Due.
+ *
+ * (Imported lines are also stamped `size_upcharges: {}`: historical lines were billed at the old
+ * system's price, which the file's unit price already carries. Freezing TODAY'S extended-size
+ * upcharges onto them added +$2/+$3 per 2XL/3XL that was never charged, so a paid import read as
+ * underpaid and an unpaid one as owing more than the customer was ever invoiced.)
+ */
+function importOrderRefusal(grouped, kindOf, strict) {
+  const payment_states = grouped.reduce((counts,o) => { const k=kindOf(o) || 'needs_review'; counts[k]=(counts[k] || 0)+1; return counts },{})
+  const oversized = grouped.filter(o => o._lines.some(l => (Number(l.quantity) || 0) > MAX_PIECES || sizeTotal(l.sizes || {}) > MAX_PIECES))
+  if (oversized.length) return { payment_states, refusal: { error: `${oversized.length} order(s) have a quantity above ${MAX_PIECES} pieces (${oversized.slice(0, 5).map(o => o.order_number || o.customer_name || 'unnamed').join(', ')}). Check the quantity column. No orders were imported.`, code: 'import_quantity' } }
+  const unresolved = grouped.filter(o => !kindOf(o))
+  if (!unresolved.length) return { payment_states, refusal: null }
+  if (strict) return { payment_states, refusal: {error:`${unresolved.length} order(s) need payment status review. Use paid, unpaid or quote. Completed jobs do not prove payment; partial payments need a separate balance reconciliation. No orders were imported.`,code:'import_status_review'} }
+  const seen = [...new Set(unresolved.map(o => String(o.status || '').trim()))].slice(0, 6).map(v => `"${v.slice(0, 40)}"`).join(', ')
+  return { payment_states, refusal: { error: `${unresolved.length} order(s) have a status this import cannot read as paid, unpaid, a quote or cancelled: ${seen}. Change those to paid, unpaid or quote and upload again. No orders were imported.`, code: 'import_status_review' } }
+}
+
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const diagnostic = process.env.PSC_IMPORT_DIAGNOSTICS === '1'
   const metrics = { parse_ms: 0, map_ms: 0, prepare_ms: 0, max_order_ms: 0, max_batch_ms: 0, max_commit_ms: 0, max_checkpoint_ms: 0 }
@@ -6697,17 +6847,18 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // copy away, which on a 60,000-row export is a second full pass for nothing.
   const grouped = groupImportedOrders(mapped.orders)
   const strict = req.body?.status_policy === 'strict'
-  const unresolved = strict ? grouped.filter(o => !strictImportStatus(o.status)) : []
-  const payment_states = strict ? grouped.reduce((counts,o) => { const k=strictImportStatus(o.status) || 'needs_review'; counts[k]=(counts[k] || 0)+1; return counts },{}) : null
+  // The export's own status decides how much of the graph gets written (importOrderStatus).
+  const kindOf = (o) => strict ? strictImportStatus(o.status) : importOrderStatus(o.status)
+  const { refusal, payment_states } = importOrderRefusal(grouped, kindOf, strict)
 
   const preview = req.body?.preview === 'true' || req.body?.preview === true
   if (preview) {
     const summary = summarizeImport({ orders: grouped, warnings: mapped.warnings })
-    return res.json({ preview: true, ...summary, blocked:unresolved.length > 0, payment_states, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+    return res.json({ preview: true, ...summary, blocked:!!refusal, payment_states, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
   }
 
-  if (unresolved.length) return res.status(400).json({error:`${unresolved.length} order(s) need payment status review. Use paid, unpaid or quote. Completed jobs do not prove payment; partial payments need a separate balance reconciliation. No orders were imported.`,code:'import_status_review'})
-  let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0
+  if (refusal) return res.status(400).json(refusal)
+  let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0, skippedCancelled = 0
   const findContact = (name, email) => {
     let c = email ? get('SELECT * FROM contacts WHERE lower(email) = lower(?)', email) : null
     if (!c && name) c = get('SELECT * FROM contacts WHERE lower(name) = lower(?)', name)
@@ -6720,13 +6871,6 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
 
   // (`grouped` is folded once, above the preview branch: many exports are one row PER LINE ITEM
   // with the order number repeated, and a 4-line order must not become 4 one-line orders.)
-  // The export's own status decides how much of the graph gets written.
-  const classify = (status) => {
-    const s = String(status || '').toLowerCase()
-    if (/quote|estimate|draft|pending approval/.test(s)) return 'quote'
-    if (/unpaid|invoiced|awaiting payment|balance|overdue|partial/.test(s)) return 'unpaid'
-    return 'paid' // complete/delivered/shipped/closed/paid/blank — treat as settled history
-  }
   const stamp = now()
   // Every imported order needs a stable identity, and plenty of real exports have no order-number
   // column at all — customer, date, product, qty, price is a perfectly ordinary shape. Those rows
@@ -6768,6 +6912,9 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     // discarded the whole order as a "duplicate".)
     const ref = o.order_number ? String(o.order_number).slice(0, 120) : `csv:${fileTag}:${rowIndex}`
     if (get('SELECT id FROM estimates WHERE source_ref = ?', ref)) { skippedDupes++; return }
+    const kind = kindOf(o)
+    // A cancelled, voided or refunded order is not money the shop received, nor money it is owed.
+    if (kind === 'cancelled') { skippedCancelled++; return }
 
     const c = findContact(o.customer_name, o.customer_email)
     const when = o.date ? `${o.date} 12:00:00` : now()
@@ -6780,10 +6927,11 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
         unit_price: Number(ln.unit_price) || (ln.total && qty ? Number(ln.total) / qty : 0),
         decoration: ln.decoration || 'Screen Print',
         taxable: true,
+        size_upcharges: {}, // billed at the file's price — never today's 2XL+ upcharges (importOrderRefusal)
       }
     })
     const allSizes = rollupSizes(items)
-    freezeUpcharges(items).forEach((it, i) => { items[i] = it })
+    freezeUpcharges(items).forEach((it, i) => { items[i] = it }) // keeps the stamped {} above
     const t = computeTotals(items, 0, getUpcharges())
     // A document must never hide money between its subtotal and its total — 8e9239e. The file's
     // total is authoritative, because it is what the shop actually billed; the reconstructed
@@ -6800,7 +6948,6 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     }
     const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
     const total = filed != null ? doc.total : t.total
-    const kind = strict ? strictImportStatus(o.status) : classify(o.status)
     // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
     const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
 
@@ -6836,7 +6983,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   await withImportCheckpoints(importDb, async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
-      const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled]
+      const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled]
       let commitAt = started
       try {
         tx(() => {
@@ -6850,7 +6997,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
         metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
       } catch (e) {
         // SQLite rolled back this whole batch; the partial-import report must do the same.
-        ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled] = countsBefore
+        ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled] = countsBefore
         stopped = e; break
       }
       // Checkpoint maintenance yields the request thread after committed counts are durable.
@@ -6874,8 +7021,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     return res.status(503).json(report)
   }
   // These orders have committed. A secondary timeline failure must not report that import failed.
-  try { logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {}) } catch { /* preserve the durable import result */ }
-  res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
+  try { logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${skippedCancelled ? `, ${skippedCancelled} cancelled/refunded skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {}) } catch { /* preserve the durable import result */ }
+  res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, skipped_cancelled: skippedCancelled, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
 }))
 
 /* ================= PUBLIC REST API v1 =================
@@ -7649,6 +7796,23 @@ async function syncInvoiceToQboInner(invoiceId) {
     op: async (accessToken = s.qbo_access_token) => {
       const inv = get('SELECT * FROM invoices WHERE id = ?', Number(invoiceId))
       if (!inv) return { ok: false, error: 'Invoice not found' }
+      /* A voided invoice is a cancelled demand and must never be pushed as live A/R. The push below
+       * creates or re-sends the invoice with its full lines, so a void (or a card payment arriving
+       * on one, which enqueues a sync) put the cancelled amount on the books as money owed.
+       *  · never pushed: nothing to tell QuickBooks — done.
+       *  · pushed, no money on it: void it there too.
+       *  · money recorded on it: that is a refund the shop owes, and QBO cannot hold a payment
+       *    against a voided invoice — park it for a human rather than invent a document. */
+      if (inv.status === 'void') {
+        if (get('SELECT 1 FROM payments WHERE invoice_id = ?', inv.id)) {
+          return { ok: false, error: `${inv.invoice_number} is voided but has money recorded on it — refund it at the processor and reconcile it in QuickBooks by hand; a voided invoice is never pushed as open A/R.` }
+        }
+        if (!inv.qbo_id) return { ok: true, qbo_id: '', skipped: 'void' }
+        const voided = await qbo.voidInvoice({ realmId: s.qbo_realm_id, accessToken, qboId: inv.qbo_id, syncToken: inv.qbo_sync_token ?? '0' })
+        if (!voided.ok) return voided
+        run('UPDATE invoices SET qbo_sync_token = ? WHERE id = ?', String(voided.syncToken ?? inv.qbo_sync_token ?? ''), inv.id)
+        return { ok: true, qbo_id: inv.qbo_id }
+      }
       const contact = contactOf(inv.contact_id)
       const est = inv.estimate_id ? get('SELECT items FROM estimates WHERE id = ?', inv.estimate_id) : null
       const items = est ? parse(est.items, []) : []
@@ -8337,8 +8501,10 @@ app.post('/api/payments/reversals/:provider/:id/recheck',requireRole('manager'),
   catch(e) { res.status(400).json({error:e.message}) }
 }))
 app.get('/api/invoices/:id/credit-reference',requireRole('manager'),wrap((req,res)=>{
-  if(!get('SELECT 1 FROM invoices WHERE id=?',Number(req.params.id))) return res.status(404).json({error:'Invoice not found'})
-  res.setHeader('Cache-Control','no-store');res.json({reference:crypto.randomBytes(16).toString('hex')})
+  const inv=get('SELECT * FROM invoices WHERE id=?',Number(req.params.id))
+  if(!inv) return res.status(404).json({error:'Invoice not found'})
+  // `remaining` is what the credit dialog pre-fills: the creditable amount BEFORE tax, and the tax.
+  res.setHeader('Cache-Control','no-store');res.json({reference:crypto.randomBytes(16).toString('hex'),remaining:creditRemaining(inv)})
 }))
 app.post('/api/invoices/:id/credits',requireRole('manager'),wrap((req,res)=>{
   try { res.json(addInvoiceCredit(Number(req.params.id),req.body || {})) }
@@ -8356,6 +8522,10 @@ app.post('/api/invoices/:id/payment-review',requireRole('manager'),wrap((req,res
   if(get("SELECT 1 FROM payment_reversals WHERE invoice_id=? AND status IN ('pending','requires_action','refundPendingSettlement')",id)) return res.status(409).json({error:'A refund is still pending. Recheck it with the provider before resuming collections.'})
   if(invoiceCollectionHold(id)) return res.status(409).json({error:'An existing checkout or verified payment still needs reconciliation. Verify or close it before clearing this review.',code:'collection_review'})
   tx(()=>{run("UPDATE payment_collection_receipts SET state='reviewed',updated_at=? WHERE invoice_id=? AND state='applied_review'",now(),id);run("UPDATE invoices SET payment_review='' WHERE id=?",id);logActivity('payment',`Payment review completed on ${inv.invoice_number}: ${note}`,{contact_id:inv.contact_id})})
+  // A payment that settled the invoice while it was under review was never announced and never
+  // moved the order card. Clearing the review is the moment it counts (announceInvoicePaid).
+  syncInvoiceStatus(id)
+  announceInvoicePaid(id)
   res.json({ok:true})
 }))
 
@@ -9260,6 +9430,7 @@ function invoiceForAttempt(attempt) {
     inv=get("SELECT * FROM invoices WHERE estimate_id=? ORDER BY (status='void'),id DESC LIMIT 1",e.id)
     if(!inv) {
     const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,created_at) VALUES (?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,now()).lastInsertRowid)
+    syncInvoiceStatus(id) // derived, like every invoice status: a $0 order is not 'unpaid'
     inv=get('SELECT * FROM invoices WHERE id=?',id)
     }
   }
@@ -9307,7 +9478,7 @@ function reconcileCheckout(attempt,session,transactionId,account) {
         } else changed=c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:attempt.invoice_id,estimateId:attempt.estimate_id,currency:attempt.currency}))
       }
       const inv=invoiceForAttempt(attempt)
-      const review=extra || changed || inv.status==='void' || session.amountCents>Math.round((inv.amount_due-inv.amount_paid)*100)
+      const review=extra || changed || inv.status==='void' || session.amountCents>Math.round(roundMoney(inv.amount_due-inv.amount_paid)*100)
       if(review) {
         run('UPDATE invoices SET payment_review=? WHERE id=?','Verified money arrived after the invoice or checkout changed. Review all receipts and the remaining balance before collecting again.',inv.id)
         run('UPDATE email_log SET payment_stale=1 WHERE invoice_id=? AND delivered=0',inv.id)
@@ -9396,7 +9567,7 @@ function recordStripePayment(inv, session, sessionId, kind, effects=null) {
   }
   const paid = round2((Number(session.amountCents) || 0) / 100)
   const fresh = get('SELECT amount_due, amount_paid FROM invoices WHERE id = ?', inv.id)
-  const bal = round2((fresh?.amount_due || 0) - (fresh?.amount_paid || 0))
+  const bal = roundMoney((fresh?.amount_due || 0) - (fresh?.amount_paid || 0))
   // This used to clamp to the remaining balance and DROP the difference: `Math.min(paid, bal)`,
   // then `if (!(amount > 0)) return` — so a customer with the deposit link open in one tab and the
   // balance link in another paid $9,450 on a $6,300 invoice, the shop recorded $6,300, and the
@@ -9415,16 +9586,13 @@ function recordStripePayment(inv, session, sessionId, kind, effects=null) {
     inv.id, paid, 'card', over > 0.005 ? `${label} — ${money(over)} MORE than the balance owed; refund the difference at ${gateway}` : label, sessionId, now())
   const amount = paid
   const updated = syncInvoiceStatus(inv.id)
-  if(!inv.payment_review && updated.status==='paid') advanceOrder(inv.estimate_id, 'paid')
   logActivity('payment', `Online ${money(amount)} on ${inv.invoice_number} (card)`, { contact_id: inv.contact_id })
   if (over > 0.005) {
     // Loud, and on the customer's own timeline, because the shop has to act on it at Stripe.
     logActivity('payment', `${money(over)} OVERPAID on ${inv.invoice_number} — refund the difference at ${gateway}`, { contact_id: inv.contact_id })
     effects.push(() => rtBroadcast('notify', { title: 'Overpayment — refund needed', body: `${money(over)} more than owed on ${inv.invoice_number}` }))
   }
-  if (updated.status === 'paid' && inv.status !== 'paid' && !inv.payment_review) {
-    effects.push(() => fireAuto('invoice.paid', { invoice: updated, contact: get('SELECT * FROM contacts WHERE id = ?', inv.contact_id), total: updated.amount_due }))
-  }
+  announceInvoicePaid(inv.id, effects)
   enqueueQbo(inv.id) // online money in — queue the books update alongside the manual path
   effects.push(() => rtBroadcast('notify', { title: 'Payment received', body: `${money(amount)} on ${inv.invoice_number}` }))
   return updated
@@ -9539,7 +9707,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       logActivity('payment', `Could not confirm a card payment on ${inv.invoice_number} — check Stripe for session ${String(req.query.session_id).slice(0, 40)}`, { contact_id: inv.contact_id })
     }
     const fresh = get('SELECT * FROM invoices WHERE id = ?', id)
-    const bal = round2(fresh.amount_due - fresh.amount_paid)
+    const bal = roundMoney(fresh.amount_due - fresh.amount_paid)
     const headline = outcome === 'paid'
       ? '<div class="ok">✓ Thank you — your payment went through.</div>'
       : outcome === 'not_paid'
@@ -9558,7 +9726,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
     </div><div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>`))
   }
 
-  const balance = round2(inv.amount_due - inv.amount_paid)
+  const balance = roundMoney(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">${inv.credit_base ? 'This invoice is settled, including credit adjustments.' : '✓ This invoice is paid in full. Thank you!'}</div>${invoiceTotals(inv,balance,s,c)}</div>${portal.allOrdersLink(inv.contact_id)}</div>`))
 
   if (!paymentsReady(s)) {
@@ -9576,7 +9744,9 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
   }
 
-  const deposit = round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid)))
+  // Half of ¥16,109 is ¥8,054.5, which no card gateway can charge — round the deposit to the
+  // currency's minor unit, the same way the checkout below does.
+  const deposit = roundMoney(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid)))
   const depositBtn = (deposit > 0 && deposit < balance)
     ? `<button class="btn" name="kind" value="deposit">Pay ${inv.amount_paid > 0 ? 'remaining ' : ''}50% deposit — ${money(deposit)}</button>`
     : ''
@@ -9605,10 +9775,10 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   if(inv.payment_review) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The shop is reviewing a refund or payment change. Do not pay again; contact the shop for the updated invoice.</p></div></div>'))
   if(!validPaymentChoice(req.body?.choice,inv,getSettings())) return res.status(409).send(page('Payment changed','<div class="wrap"><div class="card"><h1>Refresh this invoice</h1><p>The amount or checkout details changed. Reopen the invoice and confirm its current amount before paying.</p></div></div>'))
   const s = getSettings()
-  const balance = round2(inv.amount_due - inv.amount_paid)
+  const balance = roundMoney(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const kind = req.body?.kind === 'deposit' ? 'deposit' : 'balance'
-  const amount = kind === 'deposit' ? round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid))) : balance
+  const amount = kind === 'deposit' ? roundMoney(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid))) : balance
   if (!(amount > 0)) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
   const origin = trustedOrigin(req)

@@ -485,7 +485,7 @@ export async function estimateEditor(id) {
 
   on($('#rows'), '[data-size]', (_e, t) => {
     const i = +t.dataset.i
-    const n = Math.max(0, +t.value || 0)
+    const n = Math.max(0, Math.trunc(+t.value) || 0) // whole pieces, as the server stores them
     items[i].sizes = { ...items[i].sizes, [t.dataset.size]: n }
     refreshLocation(i)
     t.closest('.sz').classList.toggle('on', n > 0)
