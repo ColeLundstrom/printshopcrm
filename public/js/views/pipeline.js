@@ -7,7 +7,8 @@ import { contactForm } from './contacts.js'
  * loses the sales view. Opportunities auto-sync from estimate events, so it stays honest
  * without the shop maintaining a second list.
  */
-const STAGE_COLOR = { lead: '#5f6b7d', quoted: '#7c6cff', sent: '#4aa8ff', negotiation: '#f7b955', won: '#10d39a', lost: '#ff5f6d' }
+// Theme tokens, so the stage dots follow the light theme instead of staying dark-palette neon.
+const STAGE_COLOR = { lead: 'var(--txt-3)', quoted: 'var(--violet)', sent: 'var(--blue)', negotiation: 'var(--amber)', won: 'var(--accent)', lost: 'var(--red)' }
 // Mirrors lib/pipeline.mjs STAGES. The board's only way to change a stage was to DRAG a card, so a
 // deal could never be marked Won or Lost without a mouse: no keyboard path, and after the touch
 // fix in wireDnd() no finger path either. The stage was printed in the deal as dead text.
@@ -20,7 +21,6 @@ let st = null
 
 export async function pipelineView() {
   setPage('Pipeline', `<button class="btn" id="new-opp">+ New Opportunity</button>`)
-  if (!$('#pipe')) $('#view').innerHTML = '<div class="dim">Loading…</div>'
   const d = await api.get('/api/pipeline')
 
   $('#view').innerHTML = `

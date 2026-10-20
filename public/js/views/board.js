@@ -1,9 +1,10 @@
-import { api, $, $$, el, esc, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
+import { api, $, $$, el, esc, icon, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
 import { mountArtProduction } from '../art-production.js'
 
-const STAGE_COLOR = { new: '#5f6b7d', art_approval: '#f7b955', prepress: '#7c6cff', production: '#4aa8ff', qc: '#10d39a', shipping: '#10d39a', complete: '#333b49' }
+// Theme tokens, not dark-palette hex: the light theme redefines every one of these.
+const STAGE_COLOR = { new: 'var(--txt-3)', art_approval: 'var(--amber)', prepress: 'var(--violet)', production: 'var(--blue)', qc: 'var(--accent)', shipping: 'var(--accent)', complete: 'var(--line-2)' }
 const DECORATIONS = ['Screen Print', 'DTF Transfer', 'Embroidery', 'UV DTF', 'Vinyl', 'Patch', 'Laser', 'Promo']
 
 /**
@@ -42,7 +43,7 @@ export async function boardView() {
   const keep = a && $('#view')?.contains(a)
     ? (a.id ? `#${a.id}` : a.dataset?.id ? `.jcard[data-id="${a.dataset.id}"]` : a.dataset?.f ? `[data-f="${a.dataset.f}"]` : null)
     : null
-  if (!$('#board')) $('#view').innerHTML = '<div class="dim">Loading…</div>'
+  // runRouter() paints the loading skeleton on entry; a realtime re-run keeps #board on screen.
   const d = await api.get(`/api/board?filter=${boardState.filter}&assignee=${encodeURIComponent(boardState.assignee)}`)
 
   const chip = (k, label, n) => `<button type="button" data-f="${k}" class="${boardState.filter === k ? 'on' : ''}" aria-pressed="${boardState.filter === k}">${label}${n != null ? ` <span>${n}</span>` : ''}</button>`
@@ -95,7 +96,7 @@ function card(j) {
     <div class="cn"><div class="avatar" style="width:17px;height:17px;font-size:8px;border-radius:5px">${esc(initials(j.contact_name))}</div>${esc(j.contact_name || '—')}</div>
     ${j.pieces ? `<div class="jpc"><strong>${j.pieces}</strong> pc${j.garment ? ` · ${esc(String(j.garment).split('—')[0].trim())}` : ''}</div>` : ''}
     <div class="ft">
-      <span class="due ${dueClass(j.due_date)}">${late ? '⚠ ' : ''}${esc(dueLabel(j.due_date))}</span>
+      <span class="due ${dueClass(j.due_date)}">${late ? `${icon('alert', 'ico ico-inline')} ` : ''}${esc(dueLabel(j.due_date))}</span>
       <div class="sp"></div>
       ${artPill}
       ${j.invoice_status === 'paid' ? '<span class="pill green">paid</span>' : j.invoice_status === 'partial' ? '<span class="pill blue">part</span>' : j.invoice_status ? '<span class="pill gray">unpaid</span>' : ''}
@@ -203,7 +204,16 @@ function wireDnd() {
   })
 }
 
-const recount = () => $$('.col').forEach((c) => c.querySelector('.ct').textContent = c.querySelectorAll('.jcard').length)
+/* After a drag (or its undo) the columns are edited in place, so the count AND the empty-column
+ * placeholder have to follow the cards: a column that just lost its last job showed a bare dashed
+ * nothing, and the column a job landed in kept "Drop a job here" above the card. */
+const recount = () => $$('.col').forEach((c) => {
+  const n = c.querySelectorAll('.jcard').length
+  c.querySelector('.ct').textContent = n
+  const body = c.querySelector('.col-b'), hint = body?.querySelector('.col-empty')
+  if (n && hint) hint.remove()
+  else if (!n && body && !hint) body.insertAdjacentHTML('beforeend', '<div class="col-empty">Drop a job here</div>')
+})
 
 /* ---------- job form ---------- */
 
@@ -653,7 +663,7 @@ function renderReceiving(jobId, pos) {
         // the "cancelled" balance a week later. Reopening puts the order back in the state it was
         // in before, which is what /receive would have done on its own; the shop just had nothing
         // that reached it.
-        ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Short-closed — ${po.short} never arrived</div>
+        ? `<div class="dim" style="font-size:11.5px;margin-top:7px">${icon('check', 'ico ico-inline')} Short-closed — ${po.short} never arrived</div>
            <button class="btn ghost sm" data-reopenpo="${po.id}" style="margin-top:7px">Reopen order</button>`
         : po.fully_received
           // "✓ Fully received" used to be the whole branch, and it was a one-way door. The dialog
@@ -661,7 +671,7 @@ function renderReceiving(jobId, pos) {
           // no button here to reopen it, short-close 409s `po_fully_received`, re-submit answers
           // already:true, and there is no DELETE. Correcting it is what the server has always
           // supported; this is the control that reaches it.
-          ? `<div class="dim" style="font-size:11.5px;margin-top:7px">✓ Fully received</div>
+          ? `<div class="dim" style="font-size:11.5px;margin-top:7px">${icon('check', 'ico ico-inline')} Fully received</div>
              <button class="btn ghost sm" data-recv="${po.id}" style="margin-top:7px">Correct receipt</button>`
           // Short-close is the way out when the distributor cancels the balance. Without it the
           // only way to clear the job was to record blanks as received that never arrived.
