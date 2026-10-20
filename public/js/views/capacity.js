@@ -123,7 +123,7 @@ function render(d, draft = {}) {
         <tbody>${[...d.jobs].sort(byDue).map(jobRow).join('')}</tbody></table>
         <div class="card-b" style="border-top:1px solid var(--line);font-size:11.5px">
           <span class="dim">Sooner-due modeled jobs claim the press first. Finishing or skipping production removes its load; QC and shipping do not reserve the press again. Custom workflows with unresolved production steps require manual review. The calendar remains your independent plan.</span></div>`
-        : empty('▦', 'No active jobs', 'Jobs with known screenprinting work appear in this model.')}
+        : empty('capacity', 'No active jobs', 'Jobs with known screenprinting work appear in this model.')}
     </div></div>`
 
   wire(d)

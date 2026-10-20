@@ -60,7 +60,7 @@ export async function dashboardView() {
         <div class="card">
           <div class="card-h"><h3>Due Today</h3><div class="spacer"></div><a class="btn ghost sm" href="#/board">Open board</a></div>
           ${d.due_today.length ? `<table class="tbl"><tbody>${d.due_today.map(jobRow).join('')}</tbody></table>`
-            : empty('◎', 'Nothing due today', 'The floor is clear. Check upcoming work below.')}
+            : empty('today', 'Nothing due today', 'The floor is clear. Check upcoming work below.')}
         </div>
 
         <div class="card">
@@ -68,7 +68,7 @@ export async function dashboardView() {
           ${d.upcoming.length ? `<table class="tbl">
             <thead><tr><th>Job</th><th>Customer</th><th>Stage</th><th class="num">Due</th></tr></thead>
             <tbody>${d.upcoming.map(jobRow).join('')}</tbody></table>`
-            : empty('▦', 'No scheduled work', 'Approve an estimate to put a job on the board.')}
+            : empty('board', 'No scheduled work', 'Approve an estimate to put a job on the board.')}
         </div>
 
         ${d.awaiting_art.length ? `<div class="card">
@@ -85,7 +85,7 @@ export async function dashboardView() {
               <td>${pill(i.status)}</td>
               <td class="num"><strong>${money(i.amount_due - i.amount_paid)}</strong><div class="dim" style="font-size:11px">due ${fmtDate(i.due_date)}</div></td>
             </tr>`).join('')}</tbody></table>`
-            : empty('✓', 'All paid up', 'No open balances.')}
+            : empty('check', 'All paid up', 'No open balances.')}
         </div>
 
         <div class="card">

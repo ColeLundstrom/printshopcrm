@@ -37,7 +37,7 @@ async function drawList() {
         <thead><tr><th>Name</th><th>Grid</th><th>Prices</th><th>Updated</th><th></th></tr></thead>
         <tbody>${list.map(rowHtml).join('')}</tbody>
       </table></div>`
-      : empty('▦', 'No price matrices yet',
+      : empty('pricing', 'No price matrices yet',
         'Start from a template that matches something you already sell, then change every number on it — or build one from scratch.', '')}
 
     <div class="card"><div class="card-h"><h3>Start from a template</h3></div>
@@ -194,7 +194,7 @@ let importing = false
 
 export async function matrixEditor(id) {
   try { m = (await api.get(`/api/matrices/${id}`)).matrix }
-  catch { setPage('Price matrix'); $('#view').innerHTML = empty('▦', 'Matrix not found', 'It may have been deleted.', '<a class="btn" href="#/matrices">Back to matrices</a>'); return }
+  catch { setPage('Price matrix'); $('#view').innerHTML = empty('pricing', 'Matrix not found', 'It may have been deleted.', '<a class="btn" href="#/matrices">Back to matrices</a>'); return }
   dirty = false; importing = false
   setPage(m.name, `<button class="btn ghost" id="mx-back">Back</button><button class="btn" id="mx-save">Save matrix</button>`,
     `<a href="#/pricing">Pricing</a> / <a href="#/matrices">Price matrices</a> /`)

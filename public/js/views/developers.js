@@ -7,7 +7,6 @@ import { api, $, esc, setPage, on, toast, modal, closeModal, formData, fmtDate, 
 
 export async function developersView() {
   setPage('Developers', '', '<span class="dim">More</span>')
-  $('#view').innerHTML = '<div class="dim">Loading…</div>'
   /* Belt to the nav's braces. The sidebar no longer offers this to staff, but a bookmark, a
    * pasted link or a demotion mid-session all still land here, and an uncaught 403 falls to the
    * router boundary — which paints "Something broke" over a Try again button that re-issues the

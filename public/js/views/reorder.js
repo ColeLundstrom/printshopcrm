@@ -64,7 +64,7 @@ function render(d) {
       <div class="card-b" id="ro-body">
         ${d.candidates.length
           ? `<div class="ro-list">${d.candidates.map(card).join('')}</div>`
-          : empty('⊛', 'Nobody\'s due just yet', 'As customers build up order history, the ones due for a reorder surface here automatically, ranked by what they\'re worth. Nothing to chase today.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
+          : empty('reorders', 'Nobody\'s due just yet', 'As customers build up order history, the ones due for a reorder surface here automatically, ranked by what they\'re worth. Nothing to chase today.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
       </div>
     </div>
     ${d.snoozed?.length ? `<div class="card" style="margin-top:16px">

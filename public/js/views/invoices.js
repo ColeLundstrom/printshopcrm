@@ -32,7 +32,7 @@ export async function invoicesView() {
           <td class="num" data-label="Balance"><strong style="${bal > 0 ? 'color:var(--amber)' : 'color:var(--txt-3)'}">${money(bal)}</strong></td>
           <td class="num" data-label="Due" style="font-size:12px"><span class="${late ? '' : 'dim'}" style="${late ? 'color:var(--red);font-weight:600' : ''}">${fmtDate(i.due_date)}</span></td>
         </tr>`
-      }).join('')}</tbody></table>` : empty('▣', 'No invoices', 'Approve an estimate and convert it to create one.', '<a class="btn" href="#/estimates">Go to estimates</a>')
+      }).join('')}</tbody></table>` : empty('invoices', 'No invoices', 'Approve an estimate and convert it to create one.', '<a class="btn" href="#/estimates">Go to estimates</a>')
   }
 
   $('#view').innerHTML = `<div class="searchbar">

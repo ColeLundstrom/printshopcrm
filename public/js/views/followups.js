@@ -9,7 +9,6 @@ import { api, $, esc, money, money0, fmtDate, setPage, empty, toast, go, on, con
  */
 export async function followupsView() {
   setPage('Follow-ups')
-  $('#view').innerHTML = '<div class="dim">Loading…</div>'
   const d = await api.get('/api/followups')
 
   const age = (n, unit = 'd') => (n == null ? '—' : `${n}${unit}`)
@@ -43,7 +42,7 @@ export async function followupsView() {
               <td class="num"><span style="color:${e.age >= 5 ? 'var(--amber)' : 'var(--txt-2)'}">${age(e.age)}</span></td>
               <td class="num"><button class="btn ghost sm" data-nudge-est="${e.id}" data-recipient-revision="${e.recipient_revision || 0}" data-who="${esc(e.recipient?.email || 'no saved email')}">Nudge</button></td>
             </tr>`).join('')}</tbody></table>`
-            : empty('✓', 'No quotes hanging', 'Every estimate you sent has been answered.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
+            : empty('check', 'No quotes hanging', 'Every estimate you sent has been answered.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
         </div>
 
         <div class="card">
@@ -58,7 +57,7 @@ export async function followupsView() {
               <td class="num"><span style="color:var(--red);font-weight:600">${age(i.age)}</span></td>
               <td class="num"><button class="btn ghost sm" data-nudge-inv="${i.id}" data-recipient-revision="${i.recipient_revision || 0}" data-who="${esc(i.recipient?.email || 'no saved email')}">Remind</button></td>
             </tr>`).join('')}</tbody></table>`
-            : empty('▣', 'Nothing overdue', 'Everyone has paid on time.', '<a class="btn" href="#/invoices">View invoices</a>')}
+            : empty('invoices', 'Nothing overdue', 'Everyone has paid on time.', '<a class="btn" href="#/invoices">View invoices</a>')}
         </div>
       </div>
 

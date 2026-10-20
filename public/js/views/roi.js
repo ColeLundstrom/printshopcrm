@@ -53,7 +53,7 @@ export async function roiView() {
           <td class="num"><strong style="color:${r.profit >= 0 ? 'var(--txt)' : 'var(--red)'}">${money(r.profit)}</strong></td>
           <td class="num">${verdictPill(r)}</td>
         </tr>`).join('')}</tbody></table>`
-        : empty('◲', 'No costed jobs yet', 'Convert an estimate to a job and its profitability shows here.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
+        : empty('roi', 'No costed jobs yet', 'Convert an estimate to a job and its profitability shows here.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
     </div>
 
     <div class="cols" style="margin-top:16px">
