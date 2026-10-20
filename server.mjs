@@ -20,6 +20,7 @@ import * as agentProduction from './lib/production.mjs'
 import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack-operator.mjs'
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
+import { forgetMember } from './lib/member-cleanup.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
 import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
@@ -8559,7 +8560,7 @@ app.delete('/api/members/:id', wrap((req, res) => {
   if (existing.role === 'owner' && !hasRole(req, 'owner')) return res.status(403).json({ error: 'Only an owner can remove an owner.' })
   if (req.member && existing.id === req.member.id) return res.status(400).json({ error: "You can't remove your own account." })
   try {
-    deleteMember(req.tenant.id, +req.params.id)
+    if (deleteMember(req.tenant.id, +req.params.id)) forgetMember(existing.id)
     res.json({ ok: true })
   } catch (e) { res.status(e.code === 'last_owner' ? 409 : 400).json({ error: e.message }) }
 }))
