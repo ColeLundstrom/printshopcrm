@@ -245,7 +245,9 @@ export async function invoiceDetailView(id) {
   onceClick($('#send'), 'Sending…', async () => {
     try {
       const out = await api.post(`/api/invoices/${id}/send`,{recipient_revision:i.recipient_revision})
-      toast(out?.emailed_to ? `Invoice emailed to ${out.emailed_to}. Check the Outbox` : 'Invoice queued. Check the Outbox')
+      // email_live is false with no SMTP connected: the message sits in the Outbox and nothing left
+      // the building, so say so and point at the link instead of claiming a delivery.
+      toast(out?.email_live && out?.emailed_to ? `Invoice emailed to ${out.emailed_to}. Check the Outbox` : 'Saved to the Outbox. No email connected yet, copy the pay link to send it')
     } catch (e) { toast(e.message, true) }
   })
   // The way back from an invoice raised against the wrong customer or for the wrong amount. Until
@@ -262,7 +264,9 @@ export async function invoiceDetailView(id) {
   $('#reqpay')?.addEventListener('click', async () => {
     try {
       const r = await api.post(`/api/invoices/${id}/request-payment`,{recipient_revision:i.recipient_revision})
-      toast(r.delivered ? 'Payment link emailed to the customer' : 'Payment email drafted to Outbox (Manual mode)')
+      toast(!r.delivered ? 'Payment email drafted to Outbox (Manual mode)'
+        : r.email_live ? `Payment link emailed to ${r.emailed_to || 'the customer'}`
+        : 'Marked sent. No email connected yet, copy the pay link to send it')
       if (!r.stripe_ready) toast('Connect a provider in Setup & connections to accept online card payments', true)
     } catch (e) { toast(e.message, true) }
   })

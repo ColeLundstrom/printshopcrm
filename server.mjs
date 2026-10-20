@@ -3688,6 +3688,8 @@ app.get('/api/invoices/:id', wrap((req, res) => {
     // was converted from, and this is the only route that can reach them.
     subtotal: est ? est.subtotal : null, tax: est ? est.tax : null, tax_rate: est ? est.tax_rate : null,
     pay_link: shareUrl('pay', i.id), payment_provider_label:providerName(getSettings()), stripe_ready: paymentsReady(getSettings()),
+    // The detail screen's "From estimate EST-1042 →" link printed an empty number without this.
+    estimate_number: est ? est.estimate_number : null,
   })
 }))
 
@@ -3774,7 +3776,7 @@ app.post('/api/invoices/:id/request-payment', outboundLimit, wrap((req, res) => 
     template: `Hi {{first_name}},\n\nYou can pay invoice ${inv.invoice_number} (balance ${money(balance)}) securely online here:\n\n${link}\n\nThank you,\n{{shop_name}}`,
     vars: { shop_name: s.shop_name }, deliver })
   logActivity('note', `Payment link ${deliver ? 'sent' : 'drafted'} for ${inv.invoice_number}`, { contact_id: inv.contact_id })
-  res.json({ ok: true, delivered: deliver, link, emailed_to:documentRecipient(inv).email,stripe_ready: paymentsReady(s) })
+  res.json({ ok: true, delivered: deliver, link, emailed_to:documentRecipient(inv).email,email_live: notifyStatus(s).shop_email,stripe_ready: paymentsReady(s) })
 }))
 
 app.post('/api/invoices/:id/payments', wrap((req, res) => {
@@ -5416,7 +5418,7 @@ app.post('/api/autopilot', outboundLimit, async (req, res) => {
 
     res.json({
       order, steps, isNew, mode, committed: !!committed,
-      held_for_review: held, ai_note: order.ai_note || '',
+      held_for_review: held, ai_note: order.ai_note || '', email_live: notifyStatus(s).shop_email,
       contact, estimate: get('SELECT * FROM estimates WHERE id = ?', estId),
       invoice: committed?.invoice || null, job: get('SELECT * FROM jobs WHERE id = ?', jobId),
       art_hint: order, // the client uses this to synthesize/extract the artwork + mockup
@@ -5488,7 +5490,7 @@ app.post('/api/autopilot/commit', wrap((req, res) => {
   const steps = []
   const r = commitAutopilot(estId, contact, { steps })
   res.json({ ok: true, steps, already: !!r?.already, sent: !!r?.sent, invoice: r?.invoice || null, job: r?.job || null,
-    estimate: get('SELECT * FROM estimates WHERE id = ?', estId) })
+    email_live: notifyStatus(getSettings()).shop_email, estimate: get('SELECT * FROM estimates WHERE id = ?', estId) })
 }))
 
 /* ================= AI ================= */

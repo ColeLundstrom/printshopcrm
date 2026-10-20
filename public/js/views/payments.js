@@ -69,13 +69,17 @@ export async function paymentsView() {
   }
   paymentForm.onsubmit=event=>{event.preventDefault();return save()}
   testButton.onclick=()=>save(true)
-  $('#remove-payment-keys').onclick=async()=>{
+  // confirmModal takes a callback, not a promise: awaiting it resolved to undefined at once, the
+  // early return fired, and the confirm button then called `undefined` ("onYes is not a function"),
+  // so the disconnect was never sent.
+  $('#remove-payment-keys').onclick=()=>{
     if(saving || !formCurrent())return
-    if(!await confirmModal('Remove payment credentials?','This disconnects both providers and clears their saved keys. Resolve pending checkouts first: without the keys, their callbacks cannot be verified. Existing payment records stay in place.'))return
-    if(saving || !formCurrent())return
-    saving=true
-    try {await api.post('/api/settings/disconnect/payments',{});if(formCurrent())await paymentsView()}
-    catch(e){if(formCurrent())toast(e.message,true)}finally{saving=false}
+    confirmModal('Remove payment credentials?','This disconnects both providers and clears their saved keys. Resolve pending checkouts first: without the keys, their callbacks cannot be verified. Existing payment records stay in place.',async()=>{
+      if(saving || !formCurrent())return
+      saving=true
+      try {await api.post('/api/settings/disconnect/payments',{});toast('Payment credentials removed');if(formCurrent())await paymentsView()}
+      catch(e){if(formCurrent())toast(e.message,true)}finally{saving=false}
+    },'Remove credentials')
   }
   $$('[data-reversal-id]').forEach(button=>button.onclick=async()=>{
     if(button.disabled || !formCurrent())return
