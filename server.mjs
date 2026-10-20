@@ -21,6 +21,7 @@ import { operatorConfig, saveOperatorConfig, operatorMessage } from './lib/slack
 import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
+import { registerPortalRoutes } from './lib/portal-routes.mjs'
 import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
@@ -8988,6 +8989,9 @@ const pPage = (fn) => (req, res) => {
   return withTenant(t.slug, go)
 }
 
+// One customer-portal link per customer, indexing the /p/ links below — see lib/portal-routes.mjs.
+const portal = registerPortalRoutes(app,{pPage,page,esc,logoImg,joinDot,token,shareUrl,paymentsReady:(s)=>paymentsReady(s),proofIsCurrent,publicOrigin,wrap})
+
 app.get('/p/estimate/:id', pPage((req, res) => {
   const id = +req.params.id
   if (!checkToken('estimate', id, req.query.k)) return res.status(403).send(page('Not found', '<div class="card"><h1>Link expired</h1><p>Ask the shop to resend this estimate.</p></div>'))
@@ -9026,7 +9030,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
              <button class="btn">Approve this estimate</button>
              <button type="button" class="btn ghost" onclick="window.print()">Print / Save PDF</button>
            </form>`}
-    </div><div class="foot">${joinDot(esc(s.shop_name), esc(s.shop_phone), esc(s.shop_email))}</div></div>`))
+    </div><div class="foot">${joinDot(esc(s.shop_name), esc(s.shop_phone), esc(s.shop_email))}</div>${portal.allOrdersLink(e.contact_id)}</div>`))
 }))
 
 app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPage((req, res) => {
@@ -9426,7 +9430,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
   }
 
   const balance = round2(inv.amount_due - inv.amount_paid)
-  if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">${inv.credit_base ? 'This invoice is settled, including credit adjustments.' : '✓ This invoice is paid in full. Thank you!'}</div>${invoiceTotals(inv,balance,s,c)}</div></div>`))
+  if (balance <= 0) return res.send(page('Paid', `<div class="wrap"><div class="card"><div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div></div><div class="right"><div class="doc">RECEIPT</div><div class="num2">${inv.invoice_number}</div></div></div><div class="ok">${inv.credit_base ? 'This invoice is settled, including credit adjustments.' : '✓ This invoice is paid in full. Thank you!'}</div>${invoiceTotals(inv,balance,s,c)}</div>${portal.allOrdersLink(inv.contact_id)}</div>`))
 
   if (!paymentsReady(s)) {
     // Until the shop connects Stripe this IS the invoice its customers receive, so it has to be a
@@ -9440,7 +9444,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       ${invoiceTotals(inv, balance, s, c)}
       <div class="notes"><strong>How to pay</strong><p>Card payment isn't switched on for this shop yet — please contact ${s.shop_name} to settle this invoice.</p></div>
       <div class="terms">${esc(getSettings().invoice_terms || '')}</div>
-      <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
+      <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
   }
 
   const deposit = round2(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid)))
@@ -9458,7 +9462,7 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>
     </form>
     <div class="terms">Secure payment through ${s.shop_name}'s ${providerName(s)} account. Your card details go directly to the payment provider.</div>
-    <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div></div>`))
+    <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
 }))
 
 app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(async (req, res) => {
@@ -9659,7 +9663,7 @@ app.get('/p/art/:id', pPage((req, res) => {
           <textarea name="notes" placeholder="Changes needed? Tell us here (optional if approving)"></textarea>
           <div class="row"><button class="btn" name="decision" value="approved">Approve proof</button>
           <button class="btn ghost" name="decision" value="rejected">Request changes</button></div></form>`}
-  </div><div class="foot">${joinDot(esc(s.shop_name), esc(s.shop_phone))}</div></div>`))
+  </div><div class="foot">${joinDot(esc(s.shop_name), esc(s.shop_phone))}</div>${portal.allOrdersLink(j ? j.contact_id : e.contact_id)}</div>`))
 }))
 
 app.post('/p/art/:id/decide', express.urlencoded({ extended: false }), pPage((req, res) => {

@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick, copyText } from '../core.js'
 import { billingFields, bindBillingFields } from '../shared/billing-recipients.js'
 
 
@@ -313,7 +313,7 @@ export function contactForm(c, after) {
 export async function contactDetailView(id) {
   const d = await api.get(`/api/contacts/${id}`)
   const c = d.contact
-  setPage(c.name, `<a class="btn ghost" href="/api/contacts/${id}/statement.pdf" target="_blank">Statement</a><button class="btn ghost" id="edit">Edit</button>${d.jobs.length || d.estimates.length ? '<button class="btn ghost" id="same-again">↻ Same as last time</button>' : ''}<button class="btn" id="new-est">+ New Estimate</button><button class="btn danger" id="del-contact">Delete</button>`,
+  setPage(c.name, `<a class="btn ghost" href="/api/contacts/${id}/statement.pdf" target="_blank">Statement</a><button class="btn ghost" id="portal-copy" title="Copy this customer's portal link: every estimate, proof, invoice and job in one place">Customer portal</button><a class="btn ghost" id="portal-open" target="_blank" rel="noopener" aria-disabled="true">Open</a><button class="btn ghost" id="edit">Edit</button>${d.jobs.length || d.estimates.length ? '<button class="btn ghost" id="same-again">↻ Same as last time</button>' : ''}<button class="btn" id="new-est">+ New Estimate</button><button class="btn danger" id="del-contact">Delete</button>`,
     `<a href="#/contacts">Customers</a> /`)
 
   const docRow = (rows, kind) => rows.length ? `<table class="tbl"><tbody>${rows.map((r) => `
@@ -382,6 +382,14 @@ export async function contactDetailView(id) {
 
   onOnce($('#view'), '[data-go]', (_e, t) => go(t.dataset.go))
   $('#edit').onclick = () => contactForm(c, () => contactDetailView(id))
+  /* One link for everything this customer holds — estimates, proofs, invoices, jobs — instead of a
+   * separate /p/ link per document. Fetched once per view so Copy and Open hand out the same URL;
+   * a failure leaves Open inert and Copy says why rather than copying nothing. */
+  const portalLink = api.get(`/api/contacts/${id}/portal-link`).then((r) => r.url)
+  portalLink.then((url) => { const a = $('#portal-open'); if (a) { a.href = url; a.removeAttribute('aria-disabled') } }, () => {})
+  $('#portal-copy').onclick = async () => {
+    try { await copyText(await portalLink, 'Customer portal link copied') } catch (e) { toast(e.message, true) }
+  }
   $('#new-est').onclick = () => go(`/estimates/new?contact=${id}`)
   /* DELETE /api/contacts/:id has been fully built and carefully guarded since v10 — it refuses a
    * customer with a live invoice, with a recorded payment, or with a purchase order still out, and
