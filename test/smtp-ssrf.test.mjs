@@ -66,9 +66,10 @@ test('verify and real sends never open a socket to a blocked shop host on a mult
     // Only an env SMTP_HOST is trusted: with operator credentials but no operator host, the host in
     // the fallback set is still the shop's, and is still checked.
     await withEnv({ ...MULTI, SMTP_USER: 'op', SMTP_PASS: 'op-pass' }, async () => {
+      // …and the operator's credentials never travel to it, so it is not even a configured relay.
       const half = await notify.verifyEmail({ smtp_host: '127.0.0.1', smtp_port: srv.port })
       assert.equal(half.ok, false)
-      assert.match(half.error, /private or internal network/)
+      assert.match(half.error, /private or internal network|not configured/)
     })
     assert.equal(srv.seen.connections, 0, 'the guard must refuse before connecting')
   } finally { await srv.close() }
@@ -144,4 +145,19 @@ test('the operator relay sends From the operator address, with the shop address 
       assert.match(sent.at(-1).from, /<ceo@bank\.test>$/)
     })
   } finally { nodemailer.createTransport = real }
+})
+
+test('operator SMTP credentials are never paired with a host a shop typed', async () => {
+  const saved = { h: process.env.SMTP_HOST, u: process.env.SMTP_USER, p: process.env.SMTP_PASS }
+  try {
+    delete process.env.SMTP_HOST
+    process.env.SMTP_USER = 'operator-user'; process.env.SMTP_PASS = 'operator-secret'
+    const { smtpCreds } = await import('../lib/notify.mjs')
+    const c = smtpCreds({ smtp_host: 'mail.shop-controlled.example', smtp_port: '587' })
+    assert.equal(c.host, 'mail.shop-controlled.example')
+    assert.notEqual(c.user, 'operator-user')
+    assert.notEqual(c.pass, 'operator-secret')
+  } finally {
+    for (const [k, v] of [['SMTP_HOST', saved.h], ['SMTP_USER', saved.u], ['SMTP_PASS', saved.p]]) v === undefined ? delete process.env[k] : (process.env[k] = v)
+  }
 })
