@@ -346,6 +346,12 @@ export async function settingsView() {
   // The shop's money settings, for the currency picker and for every "($/hr)" style label below —
   // a shop that invoices in pounds should not be told its screen fee is in dollars.
   const cur = String(s.currency || 'USD'), loc = String(s.locale || 'en-US')
+  // "Today" on the server is the shop's date in this zone. Blank (never chosen) prefills from this
+  // browser, which is almost always sitting in the shop; the current value is kept even if this
+  // browser's list lacks it, so saving an unrelated field never silently changes the zone.
+  const browserZone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || '' } catch { return '' } })()
+  const zone = String(s.timezone || browserZone || 'UTC')
+  const zoneChoices = (() => { let list = []; try { list = Intl.supportedValuesOf('timeZone') } catch { /* older browser */ } return [...new Set([zone, ...list])].sort() })()
   const sym = shopSymbol()
   const f = (name, label, hint = '', type = 'text') => `<div class="field"><label for="fs-${name}">${label}</label>
     <input class="input" id="fs-${name}" name="${name}" type="${type}" value="${esc(s[name] || '')}">${hint ? `<div class="dim" style="font-size:11px;margin-top:4px">${hint}</div>` : ''}</div>`
@@ -403,6 +409,9 @@ export async function settingsView() {
           <select class="input" id="fs-locale" name="locale">${[...(LOCALE_CHOICES.some(([t]) => t === loc) ? [] : [[loc, loc]]), ...LOCALE_CHOICES].map(([t, label]) => `<option value="${esc(t)}" ${t === loc ? 'selected' : ''}>${esc(label)} — ${esc(moneyFormatter({ currency: cur, locale: t }).number(1234.5))} · ${esc(new Date(2026, 7, 28, 12).toLocaleDateString(t, { month: 'short', day: 'numeric' }))}</option>`).join('')}</select>
           <div class="dim" style="font-size:11px;margin-top:4px">How thousands, decimals and dates are written. Tax stays the rate above.</div></div>
       </div>
+      <div class="field"><label for="fs-timezone">Time zone</label>
+        <select class="input" id="fs-timezone" name="timezone">${zoneChoices.map((z) => `<option value="${esc(z)}" ${z === zone ? 'selected' : ''}>${esc(z.replace(/_/g, ' '))}</option>`).join('')}</select>
+        <div class="dim" style="font-size:11px;margin-top:4px">Decides when "today" rolls over — due dates, overdue invoices, ship dates and payment terms.</div></div>
     </div></div>
 
     <div class="card">
