@@ -59,7 +59,7 @@ test('the meter shows margin on a gauge with the shop target as a tick, plus pro
   assert.match(result.innerHTML,/class="pm-tick-l"[^>]*>45%</)
   assert.match(result.innerHTML,/class="pm-needle"/)
   assert.match(result.innerHTML,new RegExp(`<span class="pm-pct">${m.margin}%</span>`))
-  assert.ok(result.innerHTML.includes(`<dt>Profit</dt><dd>~${fmt(m.profit)}</dd>`))
+  assert.ok(result.innerHTML.includes(`<dt>Profit</dt><dd>${fmt(m.profit)}</dd>`))
   assert.ok(result.innerHTML.includes(`<dt>Cost</dt><dd>~${fmt(COST)}</dd>`))
   assert.ok(result.innerHTML.includes(`<dt>Revenue</dt><dd>${fmt(400)}</dd>`))
   assert.ok(result.innerHTML.includes(`<dt>Profit / press hr</dt><dd>$${valuePerHour(m.profit,15.6)}</dd>`))

@@ -320,14 +320,14 @@ export async function estimateEditor(id) {
       `<span class="pm-pct">${m.margin}%</span><span class="pm-verdict">${below && m.margin >= 0 ? 'Below target' : esc(v.label)}</span>`,
       `<div class="pm-label">Est. margin</div>
       <dl class="pm-stats">
-        <div class="pm-stat pm-profit"><dt>Profit</dt><dd>~${money(m.profit)}</dd></div>
-        <div class="pm-stat"><dt>Cost</dt><dd>~${money(m.cost)}</dd></div>
+        <div class="pm-stat pm-profit"><dt>Profit</dt><dd>${money(m.profit)}</dd></div>
+        <div class="pm-stat"><dt>Cost</dt><dd>${money(m.cost)}</dd></div>
         <div class="pm-stat"><dt>Revenue</dt><dd>${money(m.revenue)}</dd></div>
         ${minutes > 0 ? `<div class="pm-stat"><dt>Profit / press hr</dt><dd>${money0(perHour)}</dd></div>` : ''}
       </dl>
       ${walkHtml}
       ${raised ? '<button type="button" class="btn ghost sm pm-revert" data-pm-revert>Undo price raise</button>' : ''}
-      <div class="mg-sub">~${money(m.profit)} profit on ~${money(m.cost)} cost${below ? ` · under your ${esc(floor)}% floor` : ''}. Review actual costs in Job costing.</div>`)
+      <div class="mg-sub">Estimated ${money(m.profit)} profit on ${money(m.cost)} cost${below ? ` · under your ${esc(floor)}% floor` : ''}. Review actual costs in Job costing.</div>`)
   }
   // What the Apply button acts on: the cost and walk-away price the meter is SHOWING right now.
   let meterState = null
