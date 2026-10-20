@@ -36,6 +36,7 @@
     "test:e2e": "node bin/gate-e2e.mjs",
     "test:all": "npm test && npm run test:e2e",
     "demo": "node bin/demo.mjs",
+    "showcase": "npm run seed && node --no-warnings --env-file-if-exists=.env bin/showcase.mjs",
     "doctor": "node --no-warnings bin/doctor.mjs"
   },
   "engines": {
