@@ -10052,7 +10052,7 @@ section('a purchase order received by mistake is fixable from the screen')
     const { fileURLToPath } = await import('node:url')
     const root = join(dirname(fileURLToPath(import.meta.url)), '..')
     const src = readFileSync(join(root, 'public/js/views/board.js'), 'utf8')
-    assert.match(src, /✓ Fully received[\s\S]{0,300}?Correct receipt/,
+    assert.match(src, /(?:✓|icon\('check'[^)]*\)\}) Fully received[\s\S]{0,300}?Correct receipt/,
       'a fully-received order offers no control at all, so a mis-receipt is permanent')
   })
 

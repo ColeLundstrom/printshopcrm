@@ -487,6 +487,41 @@ export function confirmModal(title, msg, onYes, yesLabel = 'Delete') {
   })
 }
 
+/**
+ * The app's own replacement for window.prompt(): one labelled field in a dialog, resolving to the
+ * trimmed value, or null when the person cancels, presses Escape or clicks off it. The native
+ * prompt is unstyled, cannot be themed, blocks the whole tab and is suppressed outright inside
+ * some embedded browsers, where it returns null without ever being shown.
+ */
+export function promptModal({ title, label, value = '', type = 'text', placeholder = '', okLabel = 'OK', hint = '' }) {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (v) => { if (settled) return; settled = true; obs?.disconnect(); resolve(v) }
+    let obs = null
+    const bg = modal({
+      title,
+      body: `<div class="field"><label for="prompt-modal-in">${esc(label)}</label>
+        <input class="input" id="prompt-modal-in" type="${esc(type)}" placeholder="${esc(placeholder)}" autocomplete="off"></div>
+        ${hint ? `<p class="dim" style="font-size:12px;margin-top:8px">${esc(hint)}</p>` : ''}`,
+      footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="prompt-modal-ok">${esc(okLabel)}</button>`,
+      onMount: (root) => {
+        const input = $('#prompt-modal-in', root)
+        input.value = String(value ?? '')
+        const ok = () => { const v = input.value.trim(); if (!v) { input.focus(); return } done(v); closeModal() }
+        $('#prompt-modal-ok', root).onclick = ok
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok() } })
+      },
+    })
+    // Every way out of modal() — Cancel, ×, Escape, a click on the backdrop, another dialog
+    // replacing this one — ends with the node leaving #modal-root. Watch for that, once.
+    if (typeof MutationObserver === 'function' && bg?.parentNode) {
+      obs = new MutationObserver(() => { if (!bg.isConnected) done(null) })
+      obs.observe(bg.parentNode, { childList: true })
+    }
+    $('#prompt-modal-in', bg)?.select?.()
+  })
+}
+
 /** Reads every [name] control inside a container into a plain object. */
 /**
  * A button whose handler cannot be run twice at once.
@@ -529,8 +564,23 @@ export function formData(root) {
   return out
 }
 
-export const empty = (icon, title, msg, action = '') =>
-  `<div class="empty"><div class="big">${icon}</div><h3 style="font-size:14px;margin-bottom:5px">${esc(title)}</h3><p>${esc(msg)}</p>${action}</div>`
+/** One sprite icon from index.html's <symbol> set, decorative by default (the label is beside it). */
+export const icon = (name, cls = 'ico') =>
+  `<svg class="${esc(cls)}" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><use href="#i-${esc(name)}"></use></svg>`
+
+/**
+ * An empty / error state. The first argument is a sprite icon name (see index.html), drawn in a
+ * tinted circle. The old text glyphs callers used to pass are mapped to their sprite, and anything
+ * else still renders as text, so a caller that was missed degrades instead of drawing a broken <use>.
+ */
+const EMPTY_GLYPHS = { '⚠': 'alert', '✓': 'check', '✅': 'check', '⌕': 'search', '▤': 'estimates', '▣': 'invoices', '◉': 'customers',
+  '▭': 'conversations', '◈': 'art', '✉': 'outbox', '◎': 'today', '⊛': 'reorders', '⟳': 'automations', '◲': 'roi', '▦': 'board' }
+export const empty = (glyph, title, msg, action = '') => {
+  const name = EMPTY_GLYPHS[glyph] || glyph
+  const sprite = /^[a-z][a-z0-9-]*$/.test(String(name || ''))
+  const mark = sprite ? icon(name) : esc(name)
+  return `<div class="empty"><div class="big${sprite ? ` ic-${esc(name)}` : ''}" aria-hidden="true">${mark}</div><h3>${esc(title)}</h3><p>${esc(msg)}</p>${action}</div>`
+}
 
 /**
  * A layout-matched loading skeleton — shown instantly on a route so the content area is never
@@ -550,6 +600,7 @@ export function skeleton(kind = 'list') {
 /* ---------- router ---------- */
 
 const routes = []
+let lastHandler = null
 export const route = (re, handler) => routes.push({ re, handler })
 export const go = (hash) => { location.hash = hash }
 
@@ -572,7 +623,16 @@ export async function runRouter() {
   for (const r of routes) {
     const m = path.match(r.re)
     if (m) {
+      // Every screen gets an instant loading state, so #view never shows the previous screen (or
+      // nothing) while the new one fetches. Only on ENTERING a view: a realtime re-run of the
+      // view already on screen (the job board, the pipeline, Conversations moving between
+      // threads) must repaint in place without a flash, which is why those views keep their own
+      // "only when my container is missing" guard and why this compares handlers, not paths.
+      const view = $('#view')
+      if (view && r.handler !== lastHandler) view.innerHTML = skeleton(path === '/' || path === '/dashboard' ? 'cards' : 'list')
+      lastHandler = r.handler
       try { await r.handler(...m.slice(1)) } catch (e) {
+        lastHandler = null   // the error panel replaced the view, so Try again starts it afresh
         console.error(e)
         // Twelve views call setPage(title, actions) before their first await, so a throw halfway
         // through a render used to leave the previous screen's header buttons above this panel —
@@ -581,7 +641,7 @@ export async function runRouter() {
         // shop off it: the sidebar link for the screen you are already standing on fires no
         // hashchange, so without this button a transient 500 is a dead end.
         setPage('Something broke')
-        $('#view').innerHTML = empty('⚠', 'Something broke', e.message,
+        $('#view').innerHTML = empty('alert', 'Something broke', e.message,
           '<button class="btn" type="button" id="route-retry">Try again</button>')
         // …and say it. #view is a plain <main>, not a live region, so this whole panel appeared
         // in total silence: the screen a shop asked for did not load and nothing said so.
@@ -596,8 +656,9 @@ export async function runRouter() {
       return
     }
   }
+  lastHandler = null
   setPage('Not found')
-  $('#view').innerHTML = empty('⌕', 'Page not found', path, '<a class="btn ghost" href="#/">Back to dashboard</a>')
+  $('#view').innerHTML = empty('search', 'Page not found', path, '<a class="btn ghost" href="#/">Back to Today</a>')
   announce(`Page not found: ${path}`, true)
   $('#view').querySelector('a.btn')?.focus?.()
 }

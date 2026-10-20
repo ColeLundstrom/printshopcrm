@@ -7,7 +7,11 @@ export function mountDesktopNavigation({ root, sidebar, button, media, read, wri
     const hidingFocusedNav = media.matches && collapsed && sidebar.contains(root.ownerDocument.activeElement)
     root.dataset.navigation = collapsed ? 'collapsed' : 'expanded'
     button.setAttribute('aria-expanded', String(!collapsed))
-    button.textContent = collapsed ? 'Show navigation' : 'Hide navigation'
+    // An icon button: the accessible name lives in aria-label (and title, for the mouse tooltip),
+    // so the sprite inside it is never replaced.
+    const label = collapsed ? 'Show navigation' : 'Hide navigation'
+    button.setAttribute('aria-label', label)
+    button.setAttribute('title', label)
     if (hidingFocusedNav) button.focus()
   }
   button.addEventListener('click', () => {

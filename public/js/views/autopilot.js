@@ -246,7 +246,7 @@ function reviewReveal(r, mockUrl) {
     const btn = $('#ap-commit'); btn.disabled = true; btn.textContent = 'Sending…'
     try {
       const c = await api.post('/api/autopilot/commit', { estimate_id: r.estimate.id })
-      doneReveal({ ...r, estimate: c.estimate, invoice: c.invoice, job: c.job || r.job }, mockUrl)
+      doneReveal({ ...r, estimate: c.estimate, invoice: c.invoice, job: c.job || r.job, email_live: c.email_live }, mockUrl)
     } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Send it to the customer →' }
   }
 }
@@ -265,10 +265,15 @@ function reviewReveal(r, mockUrl) {
 function doneReveal(r, mockUrl) {
   const approved = r.estimate?.status === 'approved'
   const paid = Number(r.invoice?.amount_paid) || 0
+  // With no email connected the estimate is marked sent but sits in the Outbox; the customer has
+  // not received anything until the shop copies the link to them. `false` only — an older server
+  // that does not report it keeps the old wording rather than a false alarm.
+  const unsent = !approved && r.email_live === false
   $('#ap-stage').innerHTML = `<div class="ap-reveal">
     ${mockUrl ? `<div class="ap-mockup"><img src="${mockUrl}" alt="Generic T-shirt concept using the supplied artwork; not the ordered garment"></div>
       <p class="ap-review-note">Generic T-shirt concept only. Garment, color and placement are approximate. This preview stays on this device and is not attached as a proof. Add the actual proof on the job.</p>` : '<p class="ap-review-note">Artwork still needed. Open the job to upload the actual proof when it is ready.</p>'}
-    <div class="ap-done-h">${approved ? 'Estimate approved.' : 'Sent. Waiting on the customer.'}</div>
+    <div class="ap-done-h">${approved ? 'Estimate approved.' : unsent ? 'Marked sent. No email connected yet.' : 'Sent. Waiting on the customer.'}</div>
+    ${unsent ? `<p class="ap-review-note">Nothing was emailed. Copy the customer link from <a href="#/estimates/${r.estimate.id}">estimate ${esc(r.estimate.estimate_number)}</a> to send it, or connect email in Setup &amp; connections.</p>` : ''}
     <div class="ap-stats">
       <div><span>${money(r.estimate.total)}</span><em>quoted &amp; ${approved ? 'approved' : 'sent'}</em></div>
       ${r.invoice ? `<div><span>${money(paid)}</span><em>${paid > 0 ? 'collected' : 'invoiced, unpaid'}</em></div>` : ''}

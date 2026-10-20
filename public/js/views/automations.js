@@ -9,8 +9,7 @@ import { api, $, $$, el, esc, relTime, setPage, empty, toast, on, modal, closeMo
 let cfg = null
 
 export async function automationsView() {
-  setPage('Automations', `<button class="btn ghost" id="run-tick">Run timed rules now</button><button class="btn" id="new-auto">+ New Automation</button>`)
-  $('#view').innerHTML = '<div class="dim">Loading…</div>'
+  setPage('Automations', `<button class="btn ghost" id="run-tick">Run timed rules now</button><button class="btn primary" id="new-auto">+ New Automation</button>`)
   const d = await api.get('/api/automations')
   cfg = d
 
@@ -81,7 +80,7 @@ export async function automationsView() {
             </div>
             <button class="del" data-del="${a.id}" data-nodrag title="Delete" aria-label="Delete the automation ${esc(a.name)}">&times;</button>
           </div>`).join('')}</div>`
-          : empty('⟳', 'No automations yet', 'Rules run themselves so you stop chasing people by hand.')}
+          : empty('automations', 'No automations yet', 'Rules run themselves so you stop chasing people by hand.')}
       </div>
 
       <div class="card">

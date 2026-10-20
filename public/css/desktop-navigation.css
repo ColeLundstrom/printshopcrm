@@ -1,5 +1,7 @@
 .desktop-nav-toggle { display: none; }
 @media (min-width: 901px) {
-  .desktop-nav-toggle { display: inline-flex; min-height: 44px; flex-shrink: 0; }
+  /* A compact icon button (see .icon-btn in app.css); its accessible name is aria-label. */
+  .desktop-nav-toggle { display: inline-grid; flex-shrink: 0; }
   html[data-navigation="collapsed"] #sidebar { display: none; }
+  html[data-navigation="collapsed"] .desktop-nav-toggle { color: var(--accent); }
 }

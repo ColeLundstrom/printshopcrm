@@ -1,4 +1,4 @@
-import { api, $, esc, money0, setPage, empty, shopLocale } from '../core.js'
+import { api, $, esc, money0, setPage, empty, skeleton, shopLocale } from '../core.js'
 
 /**
  * Today: the role-aware action center that replaces the flat dashboard. One ranked "do this next"
@@ -53,8 +53,10 @@ const startCard = (lite) => `<div class="card">
 </div>`
 
 export async function todayView() {
-  setPage('Today', '<a class="btn" href="#/estimates/new">New estimate</a>')
-  $('#view').innerHTML = '<div class="dim">Loading your day…</div>'
+  setPage('Today', '<a class="btn primary" href="#/estimates/new">New estimate</a>')
+  // The router paints this on entry too; a direct re-run must not leave a stale "caught up" on
+  // screen while it fetches (or after the fetch fails).
+  $('#view').innerHTML = skeleton('cards')
   const me = window.__me || {}
   const lite = window.__EDITION === 'lite'
   // One tenant-scoped response supplies both the work queue and onboarding/tile counts.
@@ -90,7 +92,7 @@ export async function todayView() {
         <span class="dim" style="font-size:12px">ranked by what's most at stake</span></div>
       <div class="card-b">
         ${d.actions.length ? `<div class="tdy-list">${d.actions.map(row).join('')}</div>`
-          : empty('✓', "You're all caught up", lite ? 'No overdue invoices and no estimates waiting. Nice.' : 'No overdue money, no slipping deadlines, no proofs waiting. Nice.')}
+          : empty('check', "You're all caught up", lite ? 'No overdue invoices and no estimates waiting. Nice.' : 'No overdue money, no slipping deadlines, no proofs waiting. Nice.')}
       </div>
     </div>`}`
   // Action items are plain <a href="#/…"> links; the hash router handles them, no JS click handler needed.

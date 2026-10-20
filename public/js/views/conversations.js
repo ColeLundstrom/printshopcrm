@@ -64,7 +64,7 @@ export async function conversationsView(contactId) {
   await drawList(s)
   if (!isCurrent(s) || request !== s.viewRequest) return
   if (activeId) await drawThread(activeId, s)
-  else s.thread.innerHTML = empty('▭', 'Pick a conversation', 'Sent emails and connected inbound messages appear here.')
+  else s.thread.innerHTML = empty('conversations', 'Pick a conversation', 'Sent emails and connected inbound messages appear here.')
 }
 
 async function drawList(s) {
@@ -80,7 +80,7 @@ async function drawList(s) {
         <div class="ci-preview">${t.last_dir === 'out' ? '<span class="dim">You: </span>' : ''}${esc((t.last_body || '').replace(/\n/g, ' ').slice(0, 60))}</div>
       </div>
       ${t.unread ? `<span class="ci-badge" aria-label="${t.unread} unread">${t.unread}</span>` : `<span class="ci-ch" aria-hidden="true">${t.last_channel === 'sms' ? '✉' : '@'}</span>`}
-    </div>`).join('') : empty('▭', 'No conversations', 'Send an estimate or a proof to start one.', '<a class="btn" href="#/autopilot">Create an estimate</a>')
+    </div>`).join('') : empty('conversations', 'No conversations', 'Send an estimate or a proof to start one.', '<a class="btn" href="#/autopilot">Create an estimate</a>')
   onOnce(s.list, '[data-c]', (_e, t) => go(`/conversations/${+t.dataset.c}`))
 }
 

@@ -86,7 +86,7 @@ function render(aging, qbo) {
         <tr><th>Customer</th><th class="r">Current</th><th class="r">1–30</th><th class="r">31–60</th><th class="r">61+</th><th class="r">Total</th><th></th></tr>
         ${aging.customers.map(custRow).join('')}
       </table></div>
-      <div class="card-b"><h3>Invoice details</h3>${aging.customers.map(c => `<details style="margin-top:12px"><summary>${esc(c.company || c.name)} · ${c.invoices.length} invoice${c.invoices.length === 1 ? '' : 's'} · ${money(c.total)}</summary>${c.invoices.map(invoiceRow).join('')}</details>`).join('')}</div>` : empty('✅', 'No positive balances', review?.count ? 'Review the flagged invoices above before closing the books.' : 'No non-void invoices have a positive balance.')}
+      <div class="card-b"><h3>Invoice details</h3>${aging.customers.map(c => `<details style="margin-top:12px"><summary>${esc(c.company || c.name)} · ${c.invoices.length} invoice${c.invoices.length === 1 ? '' : 's'} · ${money(c.total)}</summary>${c.invoices.map(invoiceRow).join('')}</details>`).join('')}</div>` : empty('check', 'No positive balances', review?.count ? 'Review the flagged invoices above before closing the books.' : 'No non-void invoices have a positive balance.')}
     </div>
 
     <div class="card" id="qbo-card">

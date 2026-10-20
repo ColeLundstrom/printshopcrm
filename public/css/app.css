@@ -167,7 +167,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav a.on { background: var(--accent-glow); color: var(--accent); }
 .nav a .ico { width: 16px; text-align: center; opacity: .9; font-size: var(--fs-sm); }
 .nav a .count { margin-left: auto; font-size: var(--fs-3xs); background: var(--panel-2); padding: var(--sp-1) var(--sp-3); border-radius: var(--r-full); color: var(--txt-2); }
-.nav a.on .count { background: rgba(16, 211, 154, .2); color: var(--accent); }
+.nav a.on .count { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
 
 .shopcard { padding: var(--sp-5) var(--sp-6); border-top: 1px solid var(--line); display: flex; gap: var(--sp-5); align-items: center; }
 .shopcard .av { width: 30px; height: 30px; border-radius: var(--r-md); background: linear-gradient(135deg, var(--accent), var(--violet)); display: grid; place-items: center; font-weight: 700; font-size: var(--fs-xs); color: var(--accent-ink); }
@@ -197,7 +197,7 @@ a.host-badge:hover { color: var(--accent); }
   min-height: 58px; flex-wrap: wrap; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--sp-6);
   padding: var(--sp-4) var(--sp-8); background: var(--glass); backdrop-filter: saturate(1.4) blur(14px); position: sticky; top: 0; z-index: 20;
 }
-.topbar h2 { font-size: var(--fs-lg); font-weight: 650; letter-spacing: -.2px; }
+.topbar h2 { font-size: var(--fs-lg); font-weight: 650; letter-spacing: -.015em; }
 .topbar .spacer { flex: 1; }
 /* Task actions get a full row, so money controls never sit beyond the right edge. */
 #page-actions:not(:empty) { flex-basis: 100%; min-width: 0; flex-wrap: wrap; padding-top: var(--sp-4); border-top: 1px solid var(--line); }
@@ -209,7 +209,12 @@ a.host-badge:hover { color: var(--accent); }
 .crumb { color: var(--txt-3); font-size: var(--fs-sm); }
 .crumb a:hover { color: var(--accent); }
 
-.view { padding: var(--sp-8); max-width: 1500px; width: 100%; }
+.view { padding: var(--sp-8); max-width: 1500px; width: 100%; margin-inline: auto; }
+/* Past 1500px the view centres; the topbar spans the full width, so pad it to the same column
+   and the page title sits directly above the content it names instead of at the far left. */
+@media (min-width: 901px) {
+  .topbar { padding-inline: max(var(--sp-8), calc((100% - 1500px) / 2 + var(--sp-8))); }
+}
 .menu-btn { display: none; }
 
 /* Purposeful motion — a calm fade-rise on each page. Deliberately a SINGLE container fade with
@@ -244,9 +249,24 @@ a.host-badge:hover { color: var(--accent); }
 .btn:active { transform: none; }
 .btn.ghost { background: var(--panel-2); color: var(--txt); border: 1px solid var(--line-2); }
 .btn.ghost:hover { background: var(--line); border-color: var(--txt-3); }
-.btn.danger { background: transparent; color: var(--red); border: 1px solid rgba(255, 95, 109, .35); }
-.btn.danger:hover { background: rgba(255, 95, 109, .12); }
+.btn.danger { background: transparent; color: var(--red); border: 1px solid color-mix(in srgb, var(--red) 35%, transparent); }
+.btn.danger:hover { background: color-mix(in srgb, var(--red) 12%, transparent); }
 .btn.sm { padding: var(--sp-3) var(--sp-5); font-size: var(--fs-xs); }
+/* Three emphasis levels. Plain .btn has always been the accent fill, so .primary is that fill made
+   explicit (developers.js, scan.js and production.js used it with no rule behind it) plus a soft
+   glow so the one main action on a screen reads first. .secondary is the mid step between that and
+   .ghost: an accent-tinted outline for the action that matters but is not THE action. */
+.btn.primary { background: var(--accent); color: var(--accent-ink); box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 4px 14px var(--accent-glow); }
+.btn.primary:hover { background: var(--accent-2); }
+.btn.secondary { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.btn.secondary:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: var(--accent); }
+/* A square, quiet toolbar button for an icon with an aria-label (the sidebar toggle). */
+.icon-btn { width: 34px; height: 34px; flex: none; display: inline-grid; place-items: center; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--panel-2); color: var(--txt-2); cursor: pointer; transition: .12s; padding: 0; }
+.icon-btn:hover { color: var(--txt); border-color: var(--txt-3); }
+.icon-btn:focus-visible { outline: 0; border-color: var(--accent); box-shadow: var(--ring); }
+.icon-btn svg.ico { width: 16px; height: 16px; }
+/* A sprite icon sitting inside a line of text (✓ / ⚠ / ✕ used to be glyphs). */
+svg.ico-inline { width: 1em; height: 1em; vertical-align: -.14em; flex: none; }
 .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 
 .input, select.input, textarea.input {
@@ -278,11 +298,13 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 
 .pill { display: inline-flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1) var(--sp-4); border-radius: var(--r-full); font-size: var(--fs-3xs); font-weight: 650; text-transform: uppercase; letter-spacing: .4px; border: 1px solid transparent; }
 .pill.gray { background: var(--panel-2); color: var(--txt-2); border-color: var(--line-2); }
-.pill.green { background: rgba(16, 211, 154, .13); color: var(--accent); border-color: rgba(16, 211, 154, .3); }
-.pill.amber { background: rgba(247, 185, 85, .13); color: var(--amber); border-color: rgba(247, 185, 85, .3); }
-.pill.red { background: rgba(255, 95, 109, .13); color: var(--red); border-color: rgba(255, 95, 109, .3); }
-.pill.blue { background: rgba(74, 168, 255, .13); color: var(--blue); border-color: rgba(74, 168, 255, .3); }
-.pill.violet { background: rgba(124, 108, 255, .15); color: #a99dff; border-color: rgba(124, 108, 255, .3); }
+/* Tints are mixed from the theme token, not copied from the dark palette as rgba(): the light
+   theme redefines --accent/--amber/--red/--blue, and the old literals stayed dark-neon there. */
+.pill.green { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.pill.amber { background: color-mix(in srgb, var(--amber) 13%, transparent); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 30%, transparent); }
+.pill.red { background: color-mix(in srgb, var(--red) 13%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+.pill.blue { background: color-mix(in srgb, var(--blue) 13%, transparent); color: var(--blue); border-color: color-mix(in srgb, var(--blue) 30%, transparent); }
+.pill.violet { background: color-mix(in srgb, var(--violet) 15%, transparent); color: var(--violet); border-color: color-mix(in srgb, var(--violet) 30%, transparent); }
 
 .tag { display: inline-block; padding: var(--sp-1) var(--sp-4); border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--line-2); font-size: var(--fs-3xs); color: var(--txt-2); font-weight: 500; }
 .sizetags { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
@@ -293,11 +315,11 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
    Same for "paid", "art out" and "art changes". Colour alone is never the only cue: the overdue
    tag also says the word. --amber and --red are defined for both themes, so this follows the
    light-theme contrast with them. */
-.tag.green { background: rgba(16, 211, 154, .13); color: var(--accent); border-color: rgba(16, 211, 154, .3); }
-.tag.amber { background: rgba(247, 185, 85, .13); color: var(--amber); border-color: rgba(247, 185, 85, .3); }
-.tag.red { background: rgba(255, 95, 109, .13); color: var(--red); border-color: rgba(255, 95, 109, .3); }
+.tag.green { background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.tag.amber { background: color-mix(in srgb, var(--amber) 13%, transparent); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 30%, transparent); }
+.tag.red { background: color-mix(in srgb, var(--red) 13%, transparent); color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 
-table.tbl { width: 100%; border-collapse: collapse; }
+table.tbl { width: 100%; border-collapse: collapse; font-feature-settings: "tnum" 1; font-variant-numeric: tabular-nums; }
 table.tbl th {
   text-align: left; font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .7px; color: var(--txt-3);
   font-weight: 650; padding: var(--sp-4) var(--sp-6); border-bottom: 1px solid var(--line); white-space: nowrap;
@@ -311,8 +333,15 @@ table.tbl tbody tr.click:hover { background: var(--panel-2); }
 .mono { font-family: var(--mono); font-size: var(--fs-xs); color: var(--txt-2); }
 
 .empty { padding: var(--sp-11) var(--sp-7); text-align: center; color: var(--txt-3); }
-.empty .big { font-size: var(--fs-3xl); margin-bottom: var(--sp-5); opacity: .5; }
-.empty p { font-size: var(--fs-sm); margin-bottom: var(--sp-6); }
+.empty .big {
+  width: 48px; height: 48px; margin: 0 auto var(--sp-5); border-radius: 50%; display: grid; place-items: center;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); font-size: var(--fs-xl);
+}
+.empty .big svg.ico { width: 22px; height: 22px; }
+.empty .big.ic-alert { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 22%, transparent); }
+.empty h3 { font-size: var(--fs-md); font-weight: 650; color: var(--txt); margin-bottom: var(--sp-2); letter-spacing: -.1px; }
+.empty p { font-size: var(--fs-sm); margin: 0 auto var(--sp-6); max-width: 46ch; line-height: 1.55; }
 
 .muted { color: var(--txt-2); }
 .dim { color: var(--txt-3); }
@@ -325,12 +354,13 @@ table.tbl tbody tr.click:hover { background: var(--panel-2); }
 
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp-5); margin-bottom: var(--sp-7); }
 .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-6) var(--sp-6); position: relative; overflow: hidden; }
-.kpi::after { content: ''; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--accent); opacity: .55; }
-.kpi.warn::after { background: var(--amber); }
-.kpi.bad::after { background: var(--red); }
-.kpi.info::after { background: var(--violet); }
+.kpi { --tone: var(--accent); background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 5%, var(--panel)), var(--panel) 46%); }
+.kpi::after { content: ''; position: absolute; inset: 0 0 auto 0; height: 2px; background: linear-gradient(90deg, var(--tone), color-mix(in srgb, var(--tone) 15%, transparent)); opacity: .9; }
+.kpi.warn { --tone: var(--amber); }
+.kpi.bad { --tone: var(--red); }
+.kpi.info { --tone: var(--violet); }
 .kpi .lbl { font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .8px; color: var(--txt-3); font-weight: 650; }
-.kpi .val { font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.8px; margin: var(--sp-4) 0 var(--sp-2); font-variant-numeric: tabular-nums; }
+.kpi .val { font-size: 28px; font-weight: 750; letter-spacing: -.03em; line-height: 1.1; margin: var(--sp-4) 0 var(--sp-2); font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "ss01" 1; }
 .kpi .sub { font-size: var(--fs-2xs); color: var(--txt-2); }
 
 .schednote { margin-top: var(--sp-5); padding: var(--sp-5) var(--sp-5); border-radius: var(--r-md); background: var(--bg); border: 1px solid var(--line); font-size: var(--fs-xs); line-height: 1.5; }
@@ -342,7 +372,7 @@ table.tbl tbody tr.click:hover { background: var(--panel-2); }
 .rup { display: flex; align-items: center; gap: var(--sp-5); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-5) var(--sp-6); transition: .12s; }
 .rup:hover { border-color: var(--line-2); transform: translateY(-1px); }
 .rup-ic { font-size: var(--fs-xl); width: 26px; text-align: center; }
-.rup-v { font-size: var(--fs-xl); font-weight: 700; letter-spacing: -.4px; display: flex; align-items: center; gap: var(--sp-3); }
+.rup-v { font-size: var(--fs-xl); font-weight: 700; letter-spacing: -.4px; display: flex; align-items: center; gap: var(--sp-3); font-variant-numeric: tabular-nums; }
 .rup-l { font-size: var(--fs-2xs); color: var(--txt-3); margin-top: var(--sp-1); }
 .rup-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); display: inline-block; }
 
@@ -360,9 +390,20 @@ table.tbl tbody tr.click:hover { background: var(--panel-2); }
 
 .boardbar { display: flex; gap: var(--sp-5); align-items: center; margin-bottom: var(--sp-5); flex-wrap: wrap; }
 .boardbar .tabs button span { background: var(--bg); padding: 0 var(--sp-3); border-radius: var(--r-full); font-size: var(--fs-3xs); margin-left: var(--sp-2); color: var(--txt-3); }
-.boardbar .tabs button.on span { background: rgba(16, 211, 154, .2); color: var(--accent); }
+.boardbar .tabs button.on span { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
 
 .board { display: flex; gap: var(--sp-5); overflow-x: auto; padding-bottom: var(--sp-6); align-items: flex-start; }
+/* Desktop: a board that ends the page fills the rest of the viewport. Columns stretch to its full
+   height and scroll vertically inside themselves, so the horizontal scrollbar sits at the bottom of
+   the window rather than floating under whichever column happens to be tallest (at 1440px it hung
+   mid-screen). Mobile keeps the natural page flow, where the tab bar owns the bottom edge. */
+@media (min-width: 901px) {
+  .main:has(> .view > .board:last-child) { height: 100vh; height: 100dvh; }
+  .main:has(> .view > .board:last-child) .topbar { padding-inline: var(--sp-8); }
+  .view:has(> .board:last-child) { flex: 1; min-height: 0; max-width: none; display: flex; flex-direction: column; padding-bottom: var(--sp-5); }
+  .view > .board:last-child { flex: 1; min-height: 320px; align-items: stretch; padding-bottom: var(--sp-3); }
+  .view > .board:last-child > .col { max-height: none; min-height: 0; }
+}
 .col-empty { text-align: center; color: var(--txt-3); font-size: var(--fs-2xs); padding: var(--sp-7) var(--sp-4); border: 1px dashed var(--line); border-radius: var(--r-md); }
 .col-h .pcs { font-size: var(--fs-3xs); color: var(--txt-3); background: var(--panel-2); padding: var(--sp-1) var(--sp-3); border-radius: var(--r-sm); font-variant-numeric: tabular-nums; }
 .jpc { font-size: var(--fs-2xs); color: var(--txt-2); margin-top: var(--sp-3); }
@@ -680,12 +721,12 @@ body.dragging { cursor: grabbing; user-select: none; }
 .sepwrap { display: grid; grid-template-columns: 1fr 320px; gap: var(--sp-6); align-items: start; }
 .sep-drop { border: 1.5px dashed var(--line-2); border-radius: var(--r-md); padding: var(--sp-10) var(--sp-7); text-align: center; color: var(--txt-2); cursor: pointer; transition: .12s; }
 .sep-drop:hover, .sep-drop.over { border-color: var(--accent); background: var(--accent-glow); }
-.sep-composite { position: relative; background: repeating-conic-gradient(#1a1d22 0% 25%, #15181d 0% 50%) 50% / 20px 20px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; display: flex; justify-content: center; align-items: center; min-height: 220px; }
+.sep-composite { position: relative; background: repeating-conic-gradient(var(--panel-2) 0% 25%, var(--panel) 0% 50%) 50% / 20px 20px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; display: flex; justify-content: center; align-items: center; min-height: 220px; }
 .sep-lbl { position: absolute; top: 8px; left: 10px; font-size: var(--fs-3xs); text-transform: uppercase; letter-spacing: .6px; color: var(--txt-2); background: rgba(0,0,0,.5); padding: var(--sp-1) var(--sp-4); border-radius: var(--r-sm); z-index: 2; }
 .sep-canvas { max-width: 100%; max-height: 340px; image-rendering: auto; display: block; }
 .sep-screens { display: flex; gap: var(--sp-5); flex-wrap: wrap; margin-top: var(--sp-6); }
 .sep-screen { width: 110px; }
-.sep-thumb { background: repeating-conic-gradient(#1a1d22 0% 25%, #15181d 0% 50%) 50% / 12px 12px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; aspect-ratio: 1; display: grid; place-items: center; }
+.sep-thumb { background: repeating-conic-gradient(var(--panel-2) 0% 25%, var(--panel) 0% 50%) 50% / 12px 12px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; aspect-ratio: 1; display: grid; place-items: center; }
 .sep-thumb .sep-canvas { max-height: 108px; }
 .sep-screen-meta { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
 .sep-screen-meta .sw { width: 12px; height: 12px; border-radius: var(--r-sm); border: 1px solid var(--line-2); flex: none; }
@@ -1372,14 +1413,23 @@ select:focus-visible, textarea:focus-visible, .chip:focus-visible, [tabindex]:fo
 
 /* ============ Today — action center ============ */
 .tdy-head { margin-bottom: var(--sp-7); }
-.tdy-head h1 { font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -0.02em; }
+.tdy-head h1 { font-size: var(--fs-2xl); font-weight: 750; letter-spacing: -.028em; line-height: 1.15; }
 .tdy-date { color: var(--txt-2); font-size: var(--fs-md); margin-top: var(--sp-2); }
 .tdy-pulse { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-5); margin-bottom: var(--sp-6); }
-.tdy-stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-6) var(--sp-6); text-decoration: none; transition: border-color .15s, transform .1s; display: block; }
+.tdy-stat {
+  --tone: var(--accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 5%, var(--panel)), var(--panel) 46%);
+  border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-6) var(--sp-6); text-decoration: none;
+  transition: border-color .15s, transform .1s, box-shadow .2s; display: block; position: relative; overflow: hidden;
+}
+.tdy-stat::after { content: ''; position: absolute; inset: 0 0 auto 0; height: 2px; background: linear-gradient(90deg, var(--tone), color-mix(in srgb, var(--tone) 15%, transparent)); opacity: .85; }
+.tdy-stat.warn { --tone: var(--amber); }
+.tdy-stat.bad { --tone: var(--red); }
+.tdy-stat:hover { box-shadow: var(--shadow-sm); }
 .tdy-stat:hover { border-color: var(--line-2); transform: translateY(-1px); }
-.tdy-stat.bad { border-color: rgba(255,95,109,.4); }
-.tdy-stat.warn { border-color: rgba(247,185,85,.35); }
-.tdy-stat-v { font-size: var(--fs-2xl); font-weight: 700; color: var(--txt); letter-spacing: -0.02em; }
+.tdy-stat.bad { border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
+.tdy-stat.warn { border-color: color-mix(in srgb, var(--amber) 35%, var(--line)); }
+.tdy-stat-v { font-size: 28px; font-weight: 750; color: var(--txt); letter-spacing: -.03em; line-height: 1.1; font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
 .tdy-stat.bad .tdy-stat-v { color: var(--red); }
 .tdy-stat-l { font-size: var(--fs-xs); color: var(--txt-2); margin-top: var(--sp-1); }
 .tdy-list { display: flex; flex-direction: column; }
@@ -1784,3 +1834,12 @@ html, body { overflow-x: clip; }
   .pm-walk.pm-raise > span { flex-basis: 140px; }
   .pm-apply { min-height: 32px; }
 }
+
+/* ---------- display headings ----------
+   Large type set at the body's tracking reads loose; tighten as it grows. Applied to the generic
+   page/card headings only, so the existing per-screen rules above still win where they exist. */
+.view h1 { letter-spacing: -.025em; line-height: 1.15; }
+.view h2 { letter-spacing: -.015em; }
+
+/* Onboarding's finished mark is a sprite now; size it like the 52px glyph it replaced. */
+.ob-done-ic svg.ico { width: 1em; height: 1em; color: var(--accent); }

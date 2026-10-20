@@ -1,4 +1,4 @@
-import { api, $, esc, setPage, on, toast, onOnce, fmtDate, relTime, announce } from '../core.js'
+import { api, $, esc, icon, setPage, on, toast, onOnce, fmtDate, relTime, announce } from '../core.js'
 
 /**
  * Floor Mode — scan a work ticket's barcode with the phone camera, see the job, tap once to
@@ -42,7 +42,7 @@ export async function scanView() {
       <div class="card scan-cam-card">
         <video id="scan-video" playsinline muted style="display:none"></video>
         <div id="scan-cam-hint" class="dim" style="padding:14px">
-          ${hasDetector ? '📷 Point the camera at a work-ticket barcode.' : 'Use your phone camera to open a QR label, or enter a job number here.'}
+          ${hasDetector ? `${icon('camera', 'ico ico-inline')} Point the camera at a work-ticket barcode.` : 'Use your phone camera to open a QR label, or enter a job number here.'}
         </div>
         ${hasDetector ? '<button class="btn" id="scan-start">Start camera</button><button class="btn ghost" id="scan-stop" hidden>Stop camera</button>' : ''}
       </div>
@@ -87,7 +87,7 @@ export async function scanView() {
   onOnce($('#view'), '#scan-stop', () => {
     stopCamera()
     const hint = $('#scan-cam-hint')
-    if (hint) hint.textContent = '📷 Point the camera at a work-ticket barcode.'
+    if (hint) hint.innerHTML = `${icon('camera', 'ico ico-inline')} Point the camera at a work-ticket barcode.`
   })
 
   const form = $('#scan-form')
@@ -141,7 +141,7 @@ function renderJob(d, note) {
     : `<button class="scan-stage" data-advance="${esc(s.key)}" data-scanjob="${d.id}">${esc(s.label)}</button>`).join('')
   host.innerHTML = `
     <div class="card scan-job-card">
-      <div class="scan-done-wrap" role="status" aria-live="polite" aria-atomic="true">${note ? `<div class="scan-done">✓ ${esc(note)}</div>` : ''}</div>
+      <div class="scan-done-wrap" role="status" aria-live="polite" aria-atomic="true">${note ? `<div class="scan-done">${icon('check', 'ico ico-inline')} ${esc(note)}</div>` : ''}</div>
       <div class="scan-job-head">
         <div>
           <div class="scan-num">${esc(d.job_number)} ${d.rush ? '<span class="pill red">RUSH</span>' : ''}</div>
@@ -151,7 +151,7 @@ function renderJob(d, note) {
       </div>
       ${d.next_stage ? `<button class="btn primary scan-advance" data-advance="${esc(d.next_stage.key)}" data-scanjob="${d.id}">Advance to ${esc(d.next_stage.label)} →</button>` : '<div class="scan-done">✓ Complete</div>'}
       <div class="scan-stages">${stageBtns}</div>
-      ${mins > 0 ? `<div class="dim" style="margin-top:10px">⏱ ${mins} min measured in production${d.stage === 'production' ? ' so far' : ''}</div>` : ''}
+      ${mins > 0 ? `<div class="dim" style="margin-top:10px">${icon('clock', 'ico ico-inline')} ${mins} min measured in production${d.stage === 'production' ? ' so far' : ''}</div>` : ''}
       ${d.scans.length ? `<div class="scan-log">${d.scans.map((s) => `<div class="dim">${esc(s.to_stage.replace('_', ' '))} — ${esc(s.actor || '')} · ${esc(relTime(s.created_at))}</div>`).join('')}</div>` : ''}
     </div>`
   host.scrollIntoView({ behavior: 'smooth', block: 'start' })
