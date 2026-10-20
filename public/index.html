@@ -37,6 +37,9 @@
       var t = forced || saved;
       if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', t);
+      // The browser chrome follows the theme too; shop-branding.js keeps it in sync after a toggle.
+      var tc = document.querySelector('meta[name="theme-color"]');
+      if (tc && t === 'light') tc.setAttribute('content', '#f5f7fa');
     })();
   </script>
 </head>

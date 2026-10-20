@@ -9,20 +9,21 @@
   <style>
     /* Aligned to the app's design system: one green accent (no cyan second accent), the app's
        neutral palette, the app's radius scale, and a real light theme (the page had none). Default
-       is system; an explicit choice is honored via data-theme on <html>. */
+       is system; an explicit choice is honored via data-theme on <html>. The values are copies of
+       public/css/app.css's :root tokens (this page loads no app stylesheet); keep them in step. */
     :root, :root[data-theme="light"] {
-      --bg:#f5f7fa; --panel:#ffffff; --line:#e3e8ef; --txt:#1a2230; --dim:#5b6675;
-      --field:#f7f9fc; --accent:#0b8f6a; --accent-ink:#ffffff; --red:#c5262c;
+      --bg:#f5f7fa; --panel:#ffffff; --line:#e6eaf0; --txt:#141922; --dim:#566072;
+      --field:#f7f9fc; --accent:#047857; --accent-ink:#ffffff; --red:#c5262c;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) {
         --bg:#0a0c0f; --panel:#151920; --line:#242a34; --txt:#eef1f6; --dim:#9aa5b6;
-        --field:#0f141b; --accent:#10d39a; --accent-ink:#04120a; --red:#ff5f6d;
+        --field:#0f141b; --accent:#10d39a; --accent-ink:#04120d; --red:#ff5f6d;
       }
     }
     :root[data-theme="dark"] {
       --bg:#0a0c0f; --panel:#151920; --line:#242a34; --txt:#eef1f6; --dim:#9aa5b6;
-      --field:#0f141b; --accent:#10d39a; --accent-ink:#04120a; --red:#ff5f6d;
+      --field:#0f141b; --accent:#10d39a; --accent-ink:#04120d; --red:#ff5f6d;
     }
     * { box-sizing: border-box; }
     body { margin:0; min-height:100vh; font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
