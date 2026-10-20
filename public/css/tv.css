@@ -126,7 +126,10 @@ body.tv-on .app { visibility: hidden; }
   .tv { overflow-y: auto; grid-template-rows: auto auto auto auto; }
   .tv-head { grid-template-columns: 1fr auto; }
   .tv-clock { display: none; }
-  .tv-lanes { grid-auto-flow: row; }
-  .tv-lane-b { max-height: none; mask-image: none; }
-  .tv-stat.money { grid-column: auto; }
+  .tv-lanes { grid-auto-flow: row; grid-auto-rows: auto; }
+  .tv-lane, .tv-lane-b { flex: none; overflow: visible; min-height: auto; }
+  .tv-lane-b { mask-image: none; }
+  .tv-stat.money { grid-column: 1 / -1; }
+  .tv-foot { position: sticky; bottom: 0; background: var(--bg); padding: .6em 0; margin: 0 -1em; padding-inline: 1em; }
+  .tv-spark { position: static; display: block; width: 100%; height: 48px; margin-top: .6em; }
 }
