@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, setPage, on, go, toast, announce, empty, confirmModal, guardLeave, onOnce } from '../core.js'
+import { api, $, $$, esc, money, setPage, on, go, toast, announce, empty, confirmModal, promptModal, guardLeave, onOnce } from '../core.js'
 import { importContacts, importOrders } from './contacts.js'
 
 /**
@@ -9,9 +9,17 @@ import { importContacts, importOrders } from './contacts.js'
  * setup, unlimited overrides: nothing here is a one-way door.
  */
 
-const SAMPLE_REQUEST = `Hi - we're the Riverside High booster club. We need 48 navy Gildan 18500 hoodies for the fall season, 2 color front with our logo.
+/* The in-hand date is always three weeks out. A fixed date went stale the day after it was
+ * written, and a sample that asks for hoodies "by" a date already in the past prices as a rush
+ * (or a miss) on the one screen meant to show the product at its best. */
+function sampleInHand(now = new Date()) {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 21)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+const sampleRequest = () => `Hi - we're the Riverside High booster club. We need 48 navy Gildan 18500 hoodies for the season, 2 color front with our logo.
 
-Sizes roughly 8 S, 14 M, 14 L, 8 XL, 4 2XL. We need them by 2026-09-08 for the first home game.
+Sizes roughly 8 S, 14 M, 14 L, 8 XL, 4 2XL. We need them by ${sampleInHand()} for our next home game.
 
 Can you send a quote? Thanks - Jamie (jamie@example.edu)`
 
@@ -34,7 +42,7 @@ export async function onboardingView() {
   state.data = await api.get('/api/onboarding').catch((e) => { bootErr = e; return null })
   if (!state.data) {
     setPage('Welcome', '<button class="btn" id="ob-retry" type="button">Try again</button>')
-    $('#view').innerHTML = empty('⚠', 'Setup could not load', bootErr?.message || 'The server did not answer.',
+    $('#view').innerHTML = empty('alert', 'Setup could not load', bootErr?.message || 'The server did not answer.',
       '<a class="btn ghost" href="#/">Skip setup and go to the dashboard</a>')
     const again = $('#ob-retry')
     if (again) again.onclick = () => { again.disabled = true; again.textContent = 'Trying…'; onboardingView() }
@@ -218,13 +226,13 @@ function panel(key) {
   if (key === 'quote') return `<div class="ob-head"><h2>Price a real request</h2>
       <p>This is the whole product in one move: paste what a customer actually sent you — email, text, whatever — and get a priced estimate back. Here's a sample to try. Change it or use your own.</p></div>
     <div class="ob-describe">
-      <textarea id="ob-req" spellcheck="false">${esc(SAMPLE_REQUEST)}</textarea>
+      <textarea id="ob-req" spellcheck="false">${esc(sampleRequest())}</textarea>
       <div class="row" style="gap:10px;margin-top:10px;align-items:center">
         <button class="btn" id="ob-price">Price it →</button>
         <span class="dim" id="ob-price-note" style="font-size:12px">No setup needed. Nothing is sent to anyone.</span>
       </div>
       <div id="ob-quote-out" class="ob-describe-out" hidden></div>
-    </div>${foot('Skip for now', true)}`
+    </div>${foot('Continue', true)}`
 
   if (key === 'basics') return `<div class="ob-head"><h2>◱ Shop & costing basics</h2>
       <p>Just the things you know off the top of your head. Everything else already has a working default.</p></div>
@@ -503,9 +511,9 @@ function wire(key) {
       const guess = channel === 'email'
         ? (($('[name=smtp_from]') || {}).value || ($('[name=smtp_user]') || {}).value || '').trim()
         : (($('[name=twilio_from]') || {}).value || '').trim()
-      const to = window.prompt(channel === 'email'
-        ? 'Send a test email to (must be your shop address or your sign-in email):'
-        : 'Send a test text to your shop phone number:', guess)
+      const to = await promptModal(channel === 'email'
+        ? { title: 'Send a test email', label: 'Send it to', type: 'email', value: guess, hint: 'Must be your shop address or your sign-in email.', okLabel: 'Send test' }
+        : { title: 'Send a test text', label: 'Your shop phone number', type: 'tel', value: guess, okLabel: 'Send test' })
       if (to === null || !to.trim()) { note.textContent = ''; return }
       note.textContent = 'Sending…'
       try {

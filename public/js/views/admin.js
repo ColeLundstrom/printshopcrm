@@ -1,4 +1,4 @@
-import { api, $, esc, money, fmtDate, setPage, on, modal, closeModal, toast, go } from '../core.js'
+import { api, $, esc, money, fmtDate, setPage, on, modal, closeModal, confirmModal, toast, go, empty } from '../core.js'
 
 /**
  * Platform Control Room — the admin's cockpit over every shop on this deployment. Only reachable by
@@ -9,7 +9,15 @@ export async function adminView() {
   setPage('Control Room', '<button class="btn" id="ad-new">+ New client shop</button>')
   let data
   try { data = await api.get('/api/admin/shops') } catch (e) {
-    $('#view').innerHTML = `<div class="empty">${esc(e.message || 'Admins only')}</div>`; return
+    // A shop owner who types #/admin, or a deployment with no PSC_ADMIN_EMAIL, lands here. Say what
+    // the screen is and why it is closed, with a way out, instead of a bare line of grey text.
+    setPage('Control Room')
+    const denied = e.status === 401 || e.status === 403 || /admin/i.test(e.message || '')
+    $('#view').innerHTML = `<div class="card">${denied
+      ? empty('admin', 'Control Room is for the deployment admin', 'This screen manages every shop on this server. It opens for the account set as PSC_ADMIN_EMAIL when the server starts.', '<a class="btn ghost" href="#/">Back to Today</a>')
+      : empty('alert', 'Control Room did not load', e.message || 'The server did not answer.', '<button class="btn" type="button" id="ad-retry">Try again</button>')}</div>`
+    $('#ad-retry')?.addEventListener('click', () => adminView())
+    return
   }
   let usage
   try { usage = await api.get('/api/admin/usage') } catch { usage = {available:false} }
@@ -51,8 +59,9 @@ export async function adminView() {
     } else if (act === 'hosting') {
       await hostingReviewModal(id,name)
     } else if (act === 'signin') {
-      if (!confirm(`Sign in as ${name}? Your admin session will switch to their shop — sign back in to your own account afterward.`)) return
-      try { await api.post(`/api/admin/shops/${id}/signin`, {}); location.href = '/' } catch (ex) { toast(ex.message, true) }
+      confirmModal(`Sign in as ${name}?`, 'Your admin session will switch to their shop. Sign back in to your own account afterward.', async () => {
+        try { await api.post(`/api/admin/shops/${id}/signin`, {}); location.href = '/' } catch (ex) { toast(ex.message, true) }
+      }, 'Sign in as shop')
     } else if (act === 'suspend' || act === 'activate') {
       try { await api.post(`/api/admin/shops/${id}/status`, { status: act === 'suspend' ? 'suspended' : 'active' }); adminView() }
       catch (ex) { toast(ex.message, true) }
@@ -106,8 +115,8 @@ const kpi = (v, label) => `<div class="card"><div class="card-b"><div style="fon
 function row(s) {
   const suspended = s.status === 'suspended'
   const statusPill = suspended
-    ? '<span class="pill" style="background:rgba(239,68,68,.15);color:#ef4444">Suspended</span>'
-    : '<span class="pill" style="background:rgba(37,99,235,.15);color:var(--accent)">Enabled</span>'
+    ? '<span class="pill red">Suspended</span>'
+    : '<span class="pill green">Enabled</span>'
   return `<tr style="border-top:1px solid var(--line)">
     <td style="padding:12px 14px"><strong>${esc(s.shop_name || '—')}</strong><div class="dim" style="font-size:11px">${esc(s.slug)}</div></td>
     <td><div>${esc(s.owner_name || '—')}</div><div class="dim" style="font-size:11px">${esc(s.owner_email || '')}</div></td>
@@ -123,7 +132,7 @@ function row(s) {
       <button class="btn ghost sm" data-act="hosting" data-id="${s.id}" data-name="${esc(s.shop_name)}">Hosting</button>
       <button class="btn ghost sm" data-act="signin" data-id="${s.id}" data-name="${esc(s.shop_name)}">Sign in</button>
       <button class="btn ghost sm" data-act="${suspended ? 'activate' : 'suspend'}" data-id="${s.id}" data-name="${esc(s.shop_name)}">${suspended ? 'Reactivate' : 'Suspend'}</button>
-      <button class="btn ghost sm" data-act="delete" data-id="${s.id}" data-name="${esc(s.shop_name)}" style="color:#ef4444">Delete</button>
+      <button class="btn ghost sm" data-act="delete" data-id="${s.id}" data-name="${esc(s.shop_name)}" style="color:var(--red)">Delete</button>
     </td>
   </tr>`
 }
@@ -193,7 +202,7 @@ function newShopModal() {
         <div class="field"><label>Owner email *</label><input class="input" id="ns-email" type="email" placeholder="milo@example.com"></div>
       </div>
       <div class="field" style="margin-top:10px"><label>Temp password (optional — auto-generated if blank)</label><input class="input" id="ns-pw" placeholder="leave blank to auto-generate"></div>
-      <div class="dim" id="ns-err" role="alert" style="color:#ef4444;font-size:12px;display:none;margin-top:8px"></div>`,
+      <div class="dim" id="ns-err" role="alert" style="color:var(--red);font-size:12px;display:none;margin-top:8px"></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="ns-go">Create shop</button>`,
     onMount: (bg) => {
       const err = (m) => { const e = $('#ns-err', bg); e.textContent = m; e.style.display = '' }

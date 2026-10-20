@@ -1,5 +1,5 @@
 import {scopedAgentSchema} from '../shared/agent-schema.js'
-import {api,$,$$,esc,setPage,toast,confirmModal,copyText} from '../core.js'
+import {api,$,$$,esc,setPage,toast,confirmModal,copyText,empty} from '../core.js'
 
 async function downloadAgentTools(scopes) {
   const response=await fetch('/openapi.json')
@@ -11,7 +11,14 @@ async function downloadAgentTools(scopes) {
 
 export async function agentKeysView(){
   setPage('Agent connections','<a class="btn ghost" href="#/setup">Setup & connections</a>')
-  const d=await api.get('/api/developers/agents')
+  // Per-agent keys belong to a signed-in member of a shop account, so a single-tenant install
+  // (no sign-in) has nobody to own them. The server refuses with a 400; explain it instead of
+  // letting the router print the raw refusal under "Something broke".
+  const unavailable=()=>{$('#view').innerHTML=`<div class="card">${empty('code','Agent connections need shop sign-in','This server runs as a single shop without sign-in, so there is no member account to own and revoke a per-agent key. Use the shared API key under Developers, or run with accounts enabled to give each agent its own access.','<a class="btn" href="#/developers">Open Developers</a> <a class="btn ghost" href="#/setup">Back to setup</a>')}</div>`}
+  if(window.__me?.single_tenant)return unavailable()
+  let d
+  try{d=await api.get('/api/developers/agents')}
+  catch(e){if(e.status===400 && /signed-in shop account/i.test(e.message||''))return unavailable();throw e}
   const defaults=['pricing:read','customers:read','estimates:read','invoices:read','payments:read','jobs:read','production:read']
   $('#view').innerHTML=`<div class="stack production-page">
     <section class="card card-b"><h2>Give each agent its own access</h2><p>Connect the agent you already use in Slack or another app. It keeps its existing model and messaging setup. Create a named PrintShopCRM key, choose what it can do, then paste the key into your agent’s secret storage.</p><p>Keys belong to the manager who creates them. Disabling or demoting that account stops its agent access. Revoking one key leaves other integrations working. No AI is required to use the CRM.</p></section>

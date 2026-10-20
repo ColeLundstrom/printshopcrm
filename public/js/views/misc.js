@@ -1,4 +1,4 @@
-import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, announce, setShopFormat, shopSymbol } from '../core.js'
+import { api, $, $$, esc, fmtDate, relTime, pill, setPage, empty, toast, go, on, modal, closeModal, confirmModal, formData, onOnce, copyText, guardLeave, promptModal, announce, setShopFormat, shopSymbol } from '../core.js'
 import { DEFAULT_UPCHARGES, SIZES } from '../shared/pricing.js'
 import { CURRENCY_CHOICES, LOCALE_CHOICES, moneyFormatter } from '../shared/format.js'
 
@@ -50,7 +50,7 @@ export async function artView() {
           </div></div>`).join('')}
       </div></div>
     </div>`).join('')
-    : empty('◈', 'No art yet', 'Upload art from a job to start the proof workflow.', '<a class="btn" href="#/board">Go to the job board</a>')
+    : empty('art', 'No art yet', 'Upload art from a job to start the proof workflow.', '<a class="btn" href="#/board">Go to the job board</a>')
 
   onOnce($('#view'), '[data-job]', (_e, t) => go(`/jobs/${t.dataset.job}`))
 }
@@ -133,7 +133,7 @@ export async function outboxView(showNeeds = false) {
         <td>${status(m)}</td>
         <td class="num dim" style="font-size:12px">${relTime(m.created_at)}</td>
       </tr>`).join('')}</tbody></table></div>`
-      : empty('✉', showNeeds ? 'Nothing waiting' : 'Outbox empty', showNeeds ? 'Every message has gone out or been sent by hand.' : 'Send an estimate or a proof to see it here.')}</div>`
+      : empty('outbox', showNeeds ? 'Nothing waiting' : 'Outbox empty', showNeeds ? 'Every message has gone out or been sent by hand.' : 'Send an estimate or a proof to see it here.')}</div>`
 
   $('#ob-all').onclick = () => outboxView(false)
   $('#ob-needs').onclick = () => outboxView(true)
@@ -982,14 +982,14 @@ export async function settingsView() {
     announce(r.ok ? 'SMTP connection OK.' : `SMTP check failed. ${r.error || 'check credentials'}`, !r.ok)
   }
   if ($('#test-email')) $('#test-email').onclick = async () => {
-    const to = prompt('Send a test email to:', s.shop_email || me.owner_email || ''); if (!to) return
+    const to = await promptModal({ title: 'Send a test email', label: 'Send it to', type: 'email', value: s.shop_email || me.owner_email || '', okLabel: 'Send test' }); if (!to) return
     $('#email-test-note').textContent = 'Sending…'; await saveDelivery()
     const r = await api.post('/api/notify/test', { to, channel: 'email' }).catch((e) => ({ delivered: false, error: e.message }))
     $('#email-test-note').textContent = r.delivered ? 'Sent ✓ check the inbox' : `Not sent: ${r.error || 'add SMTP credentials'}`
     announce(r.delivered ? 'Test email sent — check the inbox.' : `Test email not sent. ${r.error || 'add SMTP credentials'}`, !r.delivered)
   }
   if ($('#test-sms')) $('#test-sms').onclick = async () => {
-    const to = prompt('Send a test SMS to (E.164, e.g. +17145551234):', s.shop_phone || ''); if (!to) return
+    const to = await promptModal({ title: 'Send a test text', label: 'Send it to', type: 'tel', value: s.shop_phone || '', placeholder: '+17145551234', hint: 'Use the full international format, e.g. +17145551234.', okLabel: 'Send test' }); if (!to) return
     $('#sms-test-note').textContent = 'Sending…'; await saveDelivery()
     const r = await api.post('/api/notify/test', { to, channel: 'sms' }).catch((e) => ({ delivered: false, error: e.message }))
     $('#sms-test-note').textContent = r.delivered ? 'Sent ✓' : `Not sent: ${r.error || 'add Twilio credentials'}`
