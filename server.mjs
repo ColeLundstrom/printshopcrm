@@ -1110,6 +1110,18 @@ onOpportunityStage(({ opportunity, stage }) => {
     })
   } catch (e) { console.error(`opportunity.${stage}:`, e && e.message) }
 })
+/* Stage moves made from lib/ (the assistant, workflow task completion) get the same three side
+ * effects the board drag does: the job_scans timeline row, `job.stage` automations + webhooks, and
+ * the realtime board push. Re-read, so a move that was rolled back (or already superseded) is
+ * not announced. */
+onJobStage(({ job_id, from, to, source, actor }) => {
+  const job = get('SELECT * FROM jobs WHERE id = ?', job_id)
+  if (!job || job.stage !== to) return
+  run('INSERT INTO job_scans (job_id, from_stage, to_stage, actor, source, created_at) VALUES (?,?,?,?,?,?)', job_id, from, to, actor || source, source, now())
+  fireAuto('job.stage', { job, contact: get('SELECT * FROM contacts WHERE id = ?', job.contact_id) })
+  rtBroadcast('board', { job_id, stage: to, from, actor: source })
+})
+
 /**
  * The one way invoice.paid is announced: the order card walks to Paid and the shop's automations
  * and webhook subscribers hear about it — once per time the invoice becomes paid.
@@ -1133,18 +1145,6 @@ onPaymentRecorded(({ invoice_id }) => {
   announceInvoicePaid(inv.id)
   enqueueQbo(inv.id)
 })
-/* Stage moves made from lib/ (the assistant, workflow task completion) get the same three side
- * effects the board drag does: the job_scans timeline row, `job.stage` automations + webhooks, and
- * the realtime board push. Re-read, so a move that was rolled back (or already superseded) is
- * not announced. */
-onJobStage(({ job_id, from, to, source, actor }) => {
-  const job = get('SELECT * FROM jobs WHERE id = ?', job_id)
-  if (!job || job.stage !== to) return
-  run('INSERT INTO job_scans (job_id, from_stage, to_stage, actor, source, created_at) VALUES (?,?,?,?,?,?)', job_id, from, to, actor || source, source, now())
-  fireAuto('job.stage', { job, contact: get('SELECT * FROM contacts WHERE id = ?', job.contact_id) })
-  rtBroadcast('board', { job_id, stage: to, from, actor: source })
-})
-
 // announceInvoicePaid: see the note above onPaymentRecorded.
 function announceInvoicePaid(invoiceId, effects = null) {
   const inv = get('SELECT * FROM invoices WHERE id = ?', invoiceId)
