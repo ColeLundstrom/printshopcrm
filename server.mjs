@@ -2819,7 +2819,8 @@ app.delete('/api/contacts/:id', requireRole('manager'), wrap((req, res) => {
 app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
-  let rows = parseCsv(text)
+  let rows
+  try { rows = parseCsv(text) } catch (e) { return res.status(400).json({ error: e.message }) }
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
   try {
     const info = importMapping(rows, 'contacts', req.body?.mapping)
@@ -6056,6 +6057,12 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
    */
   const header = cellsIn[0].slice(1).map((h) => Math.round(Number(String(h).replace(/[^0-9.]/g, '')) || 0))
   if (!header.some((n) => n > 0)) return res.status(400).json({ error: 'The first row should list the colours / stitch counts / sizes.' })
+  const unitsSeen = new Set()
+  for (const units of header) {
+    if (units <= 0) continue
+    if (unitsSeen.has(units)) return res.status(400).json({ error: `Duplicate price-sheet column for ${units} colour(s) / stitch unit(s) / size(s). Rename or remove one before importing.` })
+    unitsSeen.add(units)
+  }
   // The headings we could not read, named, so the shop is told what was left out rather than
   // being handed a green count over a sheet that is missing a column.
   const unnamed = cellsIn[0].slice(1).filter((h, i) => !header[i] && String(h || '').trim())
@@ -6832,7 +6839,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   const preparedAt = performance.now()
   const text = req.file ? req.file.buffer.toString('utf8') : String(req.body?.text || '')
   if (!text.trim()) return res.status(400).json({ error: 'Upload a CSV file or paste the rows.' })
-  let rows = parseCsv(text)
+  let rows
+  try { rows = parseCsv(text) } catch (e) { return res.status(400).json({ error: e.message }) }
   if (!rows.length) return res.status(400).json({ error: 'No rows found — is the first line the column headers?' })
   try {
     const info = importMapping(rows, 'orders', req.body?.mapping)
