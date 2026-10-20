@@ -129,7 +129,7 @@ const LABEL = { new: 'New', art_approval: 'Art Approval', prepress: 'Prepress', 
 /* ---------- a quarter of finished, paid work ---------- */
 
 let finished = 0
-for (let ago = 92; ago >= 0; ago -= ago > 14 ? between(1, 3) : 1) {
+for (let ago = 92; ago >= 0; ago -= ago > 14 ? between(0, 2) : 1) {
   const c = pick(names)
   const e = order(c, { ago: ago + 12, status: 'approved' })
   const shippedOn = day(-ago)
@@ -159,6 +159,14 @@ for (const [stage, count] of FLOOR) {
     act('stage', `${j.num} moved to ${LABEL[stage]}`, c, j.id, stamp(-between(0, 1), between(7, 16)))
     active++
   }
+}
+
+/* ---------- quotes that were lost ----------
+ * A pipeline that wins everything is not believable, and the win rate is one of the numbers on
+ * Today. A shop that quotes honestly loses some. */
+for (let i = 0; i < 14; i++) {
+  const e = order(pick(names), { ago: between(8, 88), status: 'sent' })
+  run("UPDATE estimates SET status = 'declined' WHERE id = ?", e.id)
 }
 
 /* ---------- open quotes ---------- */

@@ -1658,3 +1658,26 @@ html, body { overflow-x: clip; }
 #payment-form [hidden] { display:none; }
 #payment-form .field { margin:16px 0; }
 @media(max-width:600px) { .payment-attempt { grid-template-columns:1fr; } }
+
+/* ── Shop pulse (Today): twelve weeks of won vs. collected, plus three headline figures ── */
+.ins-card { margin-bottom: var(--sp-6); }
+.ins-body { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: var(--sp-6); padding: var(--sp-6); align-items: center; }
+.ins-figs { display: grid; gap: var(--sp-5); }
+.ins-fig { display: grid; text-decoration: none; color: inherit; padding: var(--sp-2) 0 var(--sp-2) var(--sp-5); border-left: 2px solid var(--line-2); }
+.ins-fig:hover { border-left-color: var(--accent); }
+.ins-v { font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.ins-v.good { color: var(--accent); } .ins-v.warn { color: var(--amber); } .ins-v.bad { color: var(--red); }
+.ins-l { font-size: var(--fs-xs); color: var(--txt-2); margin-top: var(--sp-1); }
+.ins-d { font-size: var(--fs-2xs); color: var(--txt-3); margin-top: var(--sp-1); }
+.ins-d.up { color: var(--accent); } .ins-d.down { color: var(--red); }
+.ins-chart { width: 100%; height: auto; max-height: 220px; overflow: visible; }
+.ins-chart text { fill: var(--txt-3); font-size: 10px; }
+.ins-chart rect.ins-won { fill: color-mix(in srgb, var(--violet) 55%, transparent); }
+.ins-chart rect.ins-col { fill: color-mix(in srgb, var(--accent) 70%, transparent); }
+.ins-chart rect.ins-col.now { fill: var(--accent); }
+.ins-chart g:hover rect { filter: brightness(1.25); }
+.ins-key { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-2xs); color: var(--txt-2); margin-left: var(--sp-5); }
+.ins-key i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.ins-key i.ins-won { background: color-mix(in srgb, var(--violet) 55%, transparent); }
+.ins-key i.ins-col { background: var(--accent); }
+@media (max-width: 760px) { .ins-body { grid-template-columns: 1fr; } .ins-figs { grid-template-columns: repeat(3, 1fr); } .ins-fig { padding-left: var(--sp-3); } .ins-v { font-size: var(--fs-xl); } }

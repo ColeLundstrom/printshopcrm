@@ -22,6 +22,7 @@ import { validBrandColor, BRAND_THEMES } from './public/js/shared/branding.js'
 import { registerCostingRoutes } from './lib/costing-routes.mjs'
 import { registerProductionRoutes } from './lib/production-routes.mjs'
 import { tvSnapshot } from './lib/tv.mjs'
+import { shopInsights } from './lib/insights.mjs'
 import { registerPortalRoutes } from './lib/portal-routes.mjs'
 import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
@@ -2494,6 +2495,9 @@ app.get('/api/today', wrap((req, res) => {
     clear: actions.length === 0,
   })
 }))
+
+// Trend lines under Today: weekly collected / quoted / won, win rate, kept margin. Money → manager.
+app.get('/api/insights', requireRole('manager'), wrap((_req, res) => res.json(shopInsights())))
 
 /* ================= REORDER RADAR =================
  * The best lead is a customer who already bought. Learns each customer's cadence and surfaces
