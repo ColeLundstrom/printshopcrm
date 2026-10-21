@@ -10818,7 +10818,10 @@ server.listen(...(HOST ? [PORT, HOST] : [PORT]), () => {
     tickRunning = true
     try { await runTick() } finally { tickRunning = false }
   }
-  setTimeout(runTickGuarded, 4000).unref?.()
+  // Synthetic HTTP fixtures can set this alongside PSC_TICK_MS so a startup sweep does not
+  // race assertions about a single rejected request. Ordinary installs retain the 4s sweep.
+  const initialTickMs = process.env.PSC_DEMO === '1' ? Number(process.env.PSC_TICK_INITIAL_MS) : NaN
+  setTimeout(runTickGuarded, Number.isFinite(initialTickMs) && initialTickMs > 0 ? initialTickMs : 4000).unref?.()
   setInterval(runTickGuarded, TICK_MS).unref?.()
 
   // Warm the AI availability check off the request path, so Autopilot's first run doesn't
