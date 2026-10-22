@@ -14411,11 +14411,12 @@ section('every backup this project documents contains the shops')
     const s = readFileSync(join(ROOT, 'INSTALL.md'), 'utf8')
     const i = s.indexOf('## Upgrading')
     assert.ok(i > 0, 'INSTALL.md must still document upgrading')
-    const block = s.slice(i, i + 1600)
+    const block = s.slice(i, s.indexOf('### Confirming the server runs', i))
     assert.match(block, /snapshot\.mjs/, 'the pre-upgrade backup has to be the one that captures every database')
     assert.ok(!/sqlite3 .*printshop\.db.*\.backup/.test(block),
       'the single-file sqlite3 dump is back — it captures no shop on a multi-tenant install')
-    assert.match(block, /restore\.mjs/, '…and the block has to say how to put it back')
+    assert.match(block, /npm run restore/, '…and the block has to say how to put it back')
+    assert.match(block, /uploads\.tar\.gz/, '…and the snapshot needs artwork for a complete restore')
   })
 
   await t('the verification a reader is told to run actually shows them a shop', () => {
@@ -15369,7 +15370,9 @@ section('the only backup the documented upgrade takes can actually be written')
     assert.match(block, /npm run snapshot/, 'sanity: the upgrade still takes a snapshot')
     assert.doesNotMatch(block, /\/var\/backups/,
       '/var/backups is root-owned 0755 and this runs as the service account — the documented backup cannot be written there')
-    assert.match(block, /&& git pull/,
+    assert.match(block, /&& sudo -u printshopcrm tar czhf "\$BACKUP_DIR\/uploads\.tar\.gz"/,
+      'artwork archiving must be behind the same failure-stopping chain as the database snapshot')
+    assert.match(block, /&& sudo -u printshopcrm git pull --ff-only/,
       'the steps are not chained, so a failed backup is followed by the migration it existed to protect')
     assert.match(block, /&& sudo systemctl restart/, 'the restart is what runs the migrations — it must be behind the same &&')
   })
