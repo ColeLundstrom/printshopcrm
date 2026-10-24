@@ -3455,6 +3455,8 @@ app.put('/api/orders/:id/stage', wrap((req, res) => {
   if (!ORDER_STAGE_KEYS.includes(stage)) return res.status(400).json({ error: 'Unknown stage' })
   const e = get('SELECT * FROM estimates WHERE id = ?', id)
   if (!e) return res.status(404).json({ error: 'Order not found' })
+  // A repeated board selection is not a move. Keep the original position and history intact.
+  if (stage === (e.board_stage || 'quote')) return res.json({ ok: true, stage })
   run('UPDATE estimates SET board_stage = ?, stage_moved_at = ? WHERE id = ?', stage, now(), id)
   const label = ORDER_STAGES.find((s) => s.key === stage).label
   logActivity('stage', `${e.estimate_number} moved to ${label}`, { contact_id: e.contact_id })
@@ -4447,6 +4449,15 @@ app.patch('/api/jobs/:id/stage', wrap((req, res) => {
     order = Number(req.body.sort_order)
     if (!Number.isFinite(order)) return res.status(400).json({ error: 'sort_order must be a number', code: 'invalid_sort_order' })
   }
+  // Reordering within a column is valid; repeating the same stage and position is not a
+  // transition and must not touch updated_at, the timeline, or downstream listeners.
+  if (stage === j.stage) {
+    if (order !== j.sort_order) {
+      run('UPDATE jobs SET sort_order=?, updated_at=? WHERE id=?', order, now(), id)
+      rtBroadcast('board', { job_id: id, stage, from: stage, actor: 'you' })
+    }
+    return res.json(get('SELECT * FROM jobs WHERE id = ?', id))
+  }
   try { guardWorkflowStage(id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   const status = stage === 'complete' ? 'complete' : 'active'
   run('UPDATE jobs SET stage=?, sort_order=?, status=?, updated_at=? WHERE id=?', stage, order, status, now(), id)
@@ -4522,6 +4533,7 @@ app.post('/api/scan', wrap((req, res) => {
   if (!j) return res.status(404).json({ error: 'Job not found' })
   const stage = String(b.to_stage || '')
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `Unknown stage: ${stage}` })
+  if (stage === j.stage) return res.json(scanJobPayload(j))
   try { guardWorkflowStage(j.id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   if (stage !== j.stage) {
     run('UPDATE jobs SET stage=?, status=?, updated_at=? WHERE id=?', stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
@@ -7394,6 +7406,7 @@ app.post('/api/v1/jobs/:id/stage', wrap((req, res) => {
   const stage = String(req.body?.stage || '')
   if (!STAGE_KEYS.includes(stage)) return res.status(400).json({ error: `stage must be one of: ${STAGE_KEYS.join(', ')}` })
   const from = j.stage
+  if (stage === from) return res.json(v1Job(j))
   try { guardWorkflowStage(j.id,stage) } catch(e) { return res.status(e.status||409).json({error:e.message}) }
   run("UPDATE jobs SET stage = ?, status = ?, updated_at = ? WHERE id = ?", stage, stage === 'complete' ? 'complete' : 'active', now(), j.id)
   stampShipDate(j, stage)
