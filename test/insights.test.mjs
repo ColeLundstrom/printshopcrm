@@ -17,7 +17,9 @@ test('shop pulse: twelve contiguous Monday weeks, honest nulls, payments land in
       import { initSuppliers } from './lib/suppliers.mjs'
       initSuppliers(getDb())
       const i = shopInsights({ today: '2026-10-21' })
-      const paid = get("SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE created_at >= ?", i.weeks[0].start).v
+      // The fixture is seeded on the real date, while the chart is pinned to October 21.
+      // Count only its twelve displayed weeks; later seed payments are outside that chart.
+      const paid = get("SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE created_at >= ? AND created_at < date(?, '+7 days')", i.weeks[0].start, i.weeks.at(-1).start).v
       console.log(JSON.stringify({ i, paid }))`
     const r = spawnSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', probe], { cwd: root, env, encoding: 'utf8' })
     assert.equal(r.status, 0, r.stderr)
