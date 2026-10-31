@@ -1,5 +1,6 @@
 import { api, $, $$, el, esc, icon, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
+import { changedJobFields } from '../shared/job-edit-delta.js'
 import { contactForm } from './contacts.js'
 import { mountArtProduction } from '../art-production.js'
 
@@ -264,9 +265,15 @@ export async function jobForm(job, after) {
         const d = formData(bg)
         if (!d.title?.trim()) return toast('Job title is required', true)
         if (!job && !d.contact_id) return toast(contacts.length ? 'Choose a customer for this job first' : 'Add a customer first', true)
-        if (job) d.contact_id = job.contact_id
+        const payload = job ? changedJobFields(job, d) : d
+        if (job && !Object.keys(payload).length) {
+          closeModal()
+          toast('No changes to save')
+          after?.()
+          return
+        }
         try {
-          const saved = job ? await api.put(`/api/jobs/${job.id}`, d) : await api.post('/api/jobs', d)
+          const saved = job ? await api.put(`/api/jobs/${job.id}`, payload) : await api.post('/api/jobs', payload)
           closeModal()
           toast(job ? 'Job saved' : `Job ${saved.job_number} created`)
           after?.(saved)
@@ -276,7 +283,7 @@ export async function jobForm(job, after) {
           // hands back the per-garment split instead. Its advice ("edit it on the estimate") does
           // not work once the estimate is invoiced, which is the ordinary case, so this is the
           // screen that actually does it rather than a sentence that sends the shop nowhere.
-          if (e.data?.code === 'multi_garment_quantities') return splitForm(job, e.data.lines || [], d, after)
+          if (e.data?.code === 'multi_garment_quantities') return splitForm(job, e.data.lines || [], payload, after)
           toast(e.message, true)
         }
       })
