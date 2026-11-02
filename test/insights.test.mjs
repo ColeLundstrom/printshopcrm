@@ -17,7 +17,7 @@ test('shop pulse: twelve contiguous Monday weeks, honest nulls, payments land in
       import { initSuppliers } from './lib/suppliers.mjs'
       initSuppliers(getDb())
       const i = shopInsights({ today: '2026-10-21' })
-      const paid = get("SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE created_at >= ?", i.weeks[0].start).v
+      const paid = get("SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE created_at >= ? AND substr(created_at, 1, 10) < '2026-10-26'", i.weeks[0].start).v
       console.log(JSON.stringify({ i, paid }))`
     const r = spawnSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', probe], { cwd: root, env, encoding: 'utf8' })
     assert.equal(r.status, 0, r.stderr)
