@@ -5,6 +5,8 @@ Modern-minimal workbench. Existing routes and workflows stay intact. A new shop 
 ## Locked system
 Use the light and dark palettes in public/css/app.css: --bg, --bg-2, --panel, --panel-2, --txt, --txt-2, --txt-3, --line, --accent, --accent-ink. Use --mono for code and the existing system sans-serif stack for UI. No external font dependency. Body --fs-md, labels --fs-sm, section titles --fs-lg, page titles --fs-2xl. Use the existing --sp-1 through --sp-11 four-point spacing ramp and --r-sm/--r-md radii.
 
+The neutral ramp, radii, elevation, control sizing and table styling are set in public/css/boardui-theme.css, loaded last and adapted from BoardUI's free MIT source (docs/third-party/boardui-LICENSE.txt). Keep BoardUI Pro source out of this repository: its licence forbids publishing it. Never set --accent there; shop branding owns it.
+
 ## Layout
 Task-first. A shop arrives wanting to do one thing ("make a mockup"), so the product leads with verbs, not a feature map.
 - Home opens on "What do you want to do?": big tiles for Make an estimate, Make a mockup, Automatic follow-ups, then smaller ones (public/js/shared/tasks.js). The "Needs you today" queue follows; the numbers come last.

@@ -1,0 +1,123 @@
+/* BoardUI look for PrintShopCRM. Loaded last, so it wins over app.css without editing the tokens the gate pins.
+   Neutral ramp, radii, elevation, control sizing and table treatment are adapted from BoardUI's free source
+   (MIT, see docs/third-party/boardui-LICENSE.txt). No React, Tailwind or build step: plain CSS over existing markup.
+   --accent and its relatives are left alone: shop branding sets them per tenant. --txt-3 stays darker/lighter than
+   BoardUI's tertiary so small labels keep 4.5:1. */
+
+:root, :root[data-theme="dark"] {
+  --bg: #121212;
+  --bg-2: #171717;
+  --panel: #171717;
+  --panel-2: #262626;
+  --line: #262626;
+  --line-2: #404040;
+  --txt: #fafafa;
+  --txt-2: #a3a3a3;
+  --txt-3: #a3a3a3;
+  --shadow: 0 10px 24px -4px rgb(0 0 0 / .4);
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / .12), 0 1px 3px 0 rgb(0 0 0 / .16);
+  --glass: rgb(18 18 18 / .8);
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-2: #f7f7f7;
+  --panel: #ffffff;
+  --panel-2: #f7f7f7;
+  --line: #ebebeb;
+  --line-2: #d4d4d4;
+  --txt: #0a0a0a;
+  --txt-2: #525252;
+  --txt-3: #5c5c5c;
+  --shadow: 0 10px 24px -4px rgb(0 0 0 / .08);
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / .06), 0 1px 3px 0 rgb(0 0 0 / .1);
+  --glass: rgb(255 255 255 / .8);
+}
+
+:root {
+  --r-md: 10px;
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+
+body {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-kerning: normal;
+  font-variant-ligatures: contextual;
+}
+
+/* Flat surfaces: a hairline and a 1px shadow instead of gradients and glow. */
+.card, .kpi {
+  background: var(--panel);
+  border-color: var(--line);
+  box-shadow: 0 1px 1px 0 rgb(0 0 0 / .05);
+}
+.kpi::after { display: none; }
+.kpi .lbl {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--txt-2);
+}
+.kpi .val { font-size: var(--fs-2xl); font-weight: 600; letter-spacing: -.02em; }
+.card-h h3 { font-size: var(--fs-md); font-weight: 600; }
+
+/* Controls: 36px tall, medium weight, no lift on hover. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 36px;
+  border-radius: var(--r-md);
+  font-weight: 500;
+  box-shadow: none;
+}
+.btn:hover, .btn.primary:hover { transform: none; box-shadow: none; }
+.btn.primary { box-shadow: none; }
+.btn.ghost { background: var(--panel); border-color: var(--line-2); }
+.btn.ghost:hover { background: var(--panel-2); border-color: var(--line-2); }
+.btn.sm { min-height: 32px; }
+.input, select.input, textarea.input {
+  background: var(--panel);
+  border-color: var(--line-2);
+  border-radius: var(--r-md);
+}
+.field > .lbl, .field label { font-size: var(--fs-xs); font-weight: 500; }
+
+/* Navigation: a quiet neutral pill; the accent stays on the icon and label. */
+.nav a { border-radius: 8px; font-weight: 500; }
+.nav a:hover { background: var(--panel-2); }
+.nav a.on { background: var(--line); }
+.nav-label { letter-spacing: 0; text-transform: none; font-size: var(--fs-xs); font-weight: 500; }
+
+/* Tables: filled header row, separators between rows only. */
+table.tbl th {
+  background: var(--bg-2);
+  color: var(--txt-2);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+table.tbl tbody tr { transition: background-color .15s ease; }
+/* .stack is also the flex-column utility, which stopped these tables being tables on desktop:
+   the header sized itself apart from the rows. Phones keep their own stacked-card rules. */
+@media (min-width: 901px) {
+  table.tbl.stack { display: table; }
+  table.tbl.stack thead { display: table-header-group; }
+  table.tbl.stack tbody { display: table-row-group; }
+}
+
+.tag { border-radius: 6px; font-weight: 500; }
+.modal { border-color: var(--line); box-shadow: var(--shadow); }
+.modal-bg { backdrop-filter: none; background: rgb(0 0 0 / .6); }
+
+@media (max-width: 760px) {
+  .btn { min-height: var(--tap); }
+  .input, select.input, textarea.input { min-height: var(--tap); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  table.tbl tbody tr { transition: none; }
+}
