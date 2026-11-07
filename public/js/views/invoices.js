@@ -2,6 +2,7 @@ import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, g
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
 import { mountCollections } from '../shared/payment-collections.js'
+import { invoiceTermsChanges, invoiceTermsExpected } from '../shared/invoice-terms.js'
 
 let filter = 'all'
 
@@ -230,14 +231,46 @@ export async function invoiceDetailView(id) {
         <div class="field"><label for="invoice-shipping-address">Shipping address</label><textarea class="input" id="invoice-shipping-address" name="shipping_address" rows="4" maxlength="600">${esc(i.shipping_address || '')}</textarea></div>
       </div>
       <div class="dim" style="font-size:12px">Up to 8 lines each. These addresses belong to this invoice. Update the job separately if its shipping destination changes.</div>
-      <div class="dim" style="font-size:11.5px;margin-top:8px;line-height:1.6">The PO shows on the invoice your customer sees. Changing the due date also re-checks whether this invoice counts as overdue.</div>`,
+      <div class="dim" style="font-size:11.5px;margin-top:8px;line-height:1.6">The PO shows on the invoice your customer sees. Changing the due date also re-checks whether this invoice counts as overdue.</div>
+      <div id="terms-conflict" role="alert" hidden></div>`,
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="tgo">Save terms</button>`,
     onMount: (bg) => {
-      $('#tgo', bg).onclick = async () => {
+      const opening = { ...i }
+      let saving = false
+      const save = async () => {
+        if (saving) return
+        const changes = invoiceTermsChanges(opening, formData(bg))
+        if (!Object.keys(changes).length) { closeModal(); toast('No changes to save'); invoiceDetailView(i.id); return }
+        if (Object.hasOwn(changes, 'due_date') && !changes.due_date) { toast('Payment due date is required', true); return }
+        saving = true
         const btn = $('#tgo', bg); btn.disabled = true; btn.textContent = 'Saving…'
-        try { await api.put(`/api/invoices/${i.id}`, formData(bg)); closeModal(); toast('Terms updated'); invoiceDetailView(i.id) }
-        catch (ex) { toast(ex.message, true); btn.disabled = false; btn.textContent = 'Save terms' }
+        try {
+          await api.put(`/api/invoices/${i.id}`, { ...changes, expected: invoiceTermsExpected(opening, changes) })
+          closeModal(); toast('Terms updated'); invoiceDetailView(i.id)
+        } catch (ex) {
+          if (ex.data?.code === 'invoice_terms_conflict' && Array.isArray(ex.data.conflicts)) {
+            const labels = { due_date: 'Payment due', po_number: 'Customer PO number', billing_address: 'Billing address', shipping_address: 'Shipping address' }
+            const conflicts = ex.data.conflicts.filter(c => Object.hasOwn(labels, c.field))
+            const notice = $('#terms-conflict', bg)
+            notice.hidden = false
+            notice.innerHTML = `<p>Another teammate changed ${conflicts.map(c => labels[c.field]).join(', ')} while this form was open.</p>
+              ${conflicts.map(c => `<p><strong>${labels[c.field]} now:</strong> <span style="white-space:pre-wrap">${esc(c.current || '(blank)')}</span></p>`).join('')}
+              <div class="row" style="gap:8px"><button class="btn ghost sm" type="button" id="terms-use-latest">Use latest values</button>
+              <button class="btn sm" type="button" id="terms-keep-mine">Save my values</button></div>`
+            $('#terms-use-latest', bg).onclick = () => {
+              for (const c of conflicts) { opening[c.field] = c.current; $(`[name="${c.field}"]`, bg).value = c.current }
+              notice.hidden = true
+              toast('Latest values loaded; your other edits are still here')
+            }
+            $('#terms-keep-mine', bg).onclick = () => {
+              for (const c of conflicts) opening[c.field] = c.current
+              notice.hidden = true
+              save()
+            }
+          } else toast(ex.message, true)
+        } finally { saving = false; btn.disabled = false; btn.textContent = 'Save terms' }
       }
+      $('#tgo', bg).onclick = save
     },
   }))
   // Optional now: the button is not rendered on a voided invoice. And it reports what the server

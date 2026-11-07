@@ -1,6 +1,7 @@
 import { usageEligible, USAGE_KINDS } from './lib/usage.mjs'
 import { contactSearchFilter } from './lib/contact-filters.mjs'
 import { normalizeLocationItem } from './public/js/shared/location-pricing.js'
+import { INVOICE_TERM_FIELDS, invoiceTermsConflicts } from './public/js/shared/invoice-terms.js'
 import { withImportCheckpoints, shutdownImportCheckpoints } from './lib/import-checkpoints.mjs'
 import { postalPatch, postalDefaults, postalAddress } from './lib/addresses.mjs'
 import { paymentTerm, paymentDueDate } from './lib/payment-terms.mjs'
@@ -3888,6 +3889,18 @@ app.put('/api/invoices/:id', requireRole('manager'), wrap((req, res) => {
   const inv = get('SELECT * FROM invoices WHERE id = ?', id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const b = req.body || {}
+  if (b.expected !== undefined) {
+    if (!b.expected || typeof b.expected !== 'object' || Array.isArray(b.expected)
+      || INVOICE_TERM_FIELDS.some(field => Object.hasOwn(b, field) && !Object.hasOwn(b.expected, field)))
+      return res.status(400).json({ error: 'Expected values must cover each changed invoice term.', code: 'invalid_expected_terms' })
+    // The route is synchronous inside one tenant context: no other request can write between
+    // this comparison and the update. Older API clients may omit expected to keep compatibility.
+    const conflicts = invoiceTermsConflicts(inv, b, b.expected)
+    if (conflicts.length) return res.status(409).json({
+      error: 'Invoice terms changed while you were editing. Review the latest values before saving.',
+      code: 'invoice_terms_conflict', conflicts,
+    })
+  }
   const due = String(b.due_date || '').trim()
   const addresses = postalPatch(b, inv)
   // A real calendar day — the shape alone let 2026-13-45 through, which then never reads overdue.
