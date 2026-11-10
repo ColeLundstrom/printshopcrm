@@ -2782,6 +2782,13 @@ try {
    * learn WHO had been dropped: the ctx naming the customer went with the row.
    * The off switch was a delete button. */
   {
+    // 1.39: starter rules that reach a customer ship OFF, so the shop switches the sequence on first.
+    {
+      const seeded = ((await req('GET', '/api/automations')).json?.automations || []).find((x) => x.name === 'New lead nurture (3-step)')
+      chk('the nurture sequence ships switched off', String(seeded?.enabled ? 1 : 0), '^0$')
+      r = await req('PUT', `/api/automations/${seeded?.id}`, { body: { enabled: true } })
+      chk('…and the shop can switch it on', String(r.status), '^200$')
+    }
     r = await req('POST', '/api/contacts', { body: { name: 'Drip Survivor', email: 'drip-survivor@example.test' } })
     chk('a new lead enters the seeded nurture sequence', String(r.status), '^200$')
 
@@ -3758,7 +3765,9 @@ try {
     chk('a 45-piece order with 6XL and tall sizes is accepted', String(est.status), '^200$')
     // 45 x $18 = $810, plus the shop's 2XL upcharge of $2 on 5 pieces = $820. Was $640: the 4 6XL
     // and 6 LT were deleted, so 35 pieces were billed for an order of 45.
-    chk('…and quoted for every piece that was ordered (was $640 of a $820 order)', String(est.json?.subtotal), '^820$')
+    // 1.39: a new shop's upcharge table now covers 6XL ($6) and LT ($2) too — they used to be
+    // charged as a Medium — so the same order is $810 + $10 + $24 + $12 = $856.
+    chk('…and quoted for every piece that was ordered, big and tall sizes at their upcharge', String(est.json?.subtotal), '^856$')
     const stored = (est.json?.items && typeof est.json.items === 'string' ? JSON.parse(est.json.items) : est.json?.items) || []
     chk('…with the sizes still on the line', String(sizeSum(stored[0]?.sizes)), '^45$')
 
