@@ -1261,6 +1261,6 @@
       "integrity": "sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ=="
     }
   ],
-  "packaging_verified_commit": "826bee534d80a160005618c8f636505533d4228b",
-  "lockfile_sha256": "52eb10a4145a1620777c0819ceb28819f2a60b555fc786053c6ab2afd6480daa"
+  "packaging_verified_commit": "320f8902e161bae98dcb001384ad615c10ea14cc",
+  "lockfile_sha256": "1ccb0eafd788653c319f12088d2dccb4e3cdfa3aafbb2c9b58d6b089029eabb8"
 }
