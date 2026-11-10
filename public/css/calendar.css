@@ -14,6 +14,8 @@
 .cal-outside { background:var(--bg-2) }
 .cal-event { display:grid; gap:3px; min-width:0; margin:6px 0; padding:8px; border-left:3px solid var(--accent); border-radius:3px; background:var(--panel); color:var(--txt); text-decoration:none; font-size:12px }
 .cal-event span,.cal-event strong,.cal-event small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0 }
+/* The job title gets two lines: one line cut every event to "24 embroidered …". */
+.cal-event span { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow-wrap:anywhere }
 .cal-event small { color:var(--txt-3) }
 .cal-delivery { border-left-style:double; border-left-width:5px }
 .cal-task { border-left-color:var(--violet) }

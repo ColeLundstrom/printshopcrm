@@ -39,7 +39,7 @@
 /* ---------- Home ---------- */
 .home-launch { margin-bottom: var(--sp-8); }
 .home-q { font-size: var(--fs-xl); font-weight: 700; letter-spacing: -.02em; margin: 0 0 var(--sp-6); }
-.home-sub { font-size: var(--fs-sm); font-weight: 650; color: var(--txt-2); text-transform: uppercase; letter-spacing: .6px; margin: var(--sp-9) 0 var(--sp-5); }
+.home-sub { font-size: var(--fs-lg); font-weight: 650; color: var(--txt); letter-spacing: -.01em; margin: var(--sp-9) 0 var(--sp-5); }
 .home-first { margin: var(--sp-6) 0 0; font-size: var(--fs-sm); color: var(--txt-2); line-height: 1.6; }
 .home-first a { margin-left: var(--sp-3); }
 
@@ -202,4 +202,11 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .task-tile, .task-grid.big .task-tile::after, #g-price.busy { transition: none; }
+}
+
+/* Seven small tiles in four fixed columns left a hole in the second row. Above the breakpoints
+   that already restack them, let the last row share the width. */
+@media (min-width: 1101px) {
+  .home-launch .task-grid.small { display: flex; flex-wrap: wrap; }
+  .home-launch .task-grid.small > .task-tile { flex: 1 1 220px; }
 }

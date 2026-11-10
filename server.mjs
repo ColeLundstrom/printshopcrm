@@ -942,9 +942,32 @@ function markDelivery(slug, rowId, result) {
  * has wired SMTP. With no credentials the message still records (tagged "logged"), so nothing
  * silently vanishes — the honesty rule, now with real delivery on top.
  */
-function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, estimate_id=null, recipient_revision, deliver = true }) {
+/**
+ * Where a link in an email may point when there is no request to read it from (a timed follow-up):
+ * the operator's configured address, else the origin this shop's owner has signed in on.
+ */
+const mailOrigin = () => String(process.env.PSC_PUBLIC_URL || '').replace(/\/$/, '') || learnedOriginFor(tenantStore.getStore()?.tenant) || ''
+/**
+ * Every email about a document carries the link to it.
+ *
+ * Until 1.39 none did. "Estimate EST-1009 for $67.00 is attached and viewable at the link below"
+ * went out with nothing attached and no link below: the share URL was returned to the shop's own
+ * screen and never put in the message, so the customer could not view, approve or pay from the
+ * email that asked them to. The link is resolved here, once, for every sender: a `{{link}}` in
+ * the template is filled in, and a template without one (every shop's saved template, today) has
+ * the link added on its own line above the sign-off.
+ */
+const withDocumentLink = (body, link) => {
+  if (!link || body.includes(link)) return body
+  const line = `View it here: ${link}`
+  const sign = body.lastIndexOf('\n\n— ')
+  return sign > 0 ? `${body.slice(0, sign)}\n\n${line}${body.slice(sign)}` : `${body.replace(/\s+$/, '')}\n\n${line}`
+}
+function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, estimate_id=null, recipient_revision, deliver = true, origin = '' }) {
   const s = getSettings()
   const slug = curSlug()
+  const base = String(origin || '').replace(/\/$/, '') || mailOrigin()
+  const link = vars?.link || (base && estimate_id ? base + shareUrl('estimate', estimate_id) : base && invoice_id ? base + shareUrl('pay', invoice_id) : '')
   const {to,body,rowId}=tx(()=>{
   const type=invoice_id?'invoice':estimate_id?'estimate':null
   const doc=type?documentForRecipient(type,invoice_id || estimate_id):null
@@ -952,8 +975,8 @@ function queueEmail({ contact, subject, template, vars, kind, invoice_id=null, e
   const recipient=doc?documentRecipient(doc,type):{name:contact?.name || '',email:contact?.email || ''}
   if(doc && (recipient.blocked || (recipient_revision!==undefined && recipient_revision!==recipient.revision)))
     throw Object.assign(new Error(recipient.blocked || 'Document recipients changed. Create a fresh message.'),{status:409,expose:true,code:'recipient_review'})
-  const merged = { ...vars, first_name: String(recipient.name).split(' ')[0], recipient_name:recipient.name, recipient_first_name:String(recipient.name).split(' ')[0] }
-  const body = String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => templateValue(k, merged, s))
+  const merged = { ...vars, link, first_name: String(recipient.name).split(' ')[0], recipient_name:recipient.name, recipient_first_name:String(recipient.name).split(' ')[0] }
+  const body = withDocumentLink(String(template || '').replace(/\{\{(\w+)\}\}/g, (_, k) => templateValue(k, merged, s)), kind === 'reply' || kind === 'chat' ? '' : link)
   const to = recipient.email
   const rowId = Number(run('INSERT INTO email_log (contact_id,to_email,subject,body,kind,via,created_at,invoice_id,estimate_id,recipient_name,recipient_revision,sending_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
     contact?.id ?? null,to,subject,body,kind,deliver?'logged':'draft',now(),invoice_id,estimate_id,recipient.name,doc?recipient.revision:null,deliver&&to?now():null).lastInsertRowid)
@@ -2493,6 +2516,15 @@ app.put('/api/capacity/settings', requireRole('manager'), wrap((req, res) => {
  * Replaces the flat dashboard with a ranked "do this next" queue. Same signals as before, but
  * prioritized by financial/production risk and shaped to the signed-in person's role, so the one
  * thing that matters most is obvious instead of every counter competing at the same weight. */
+/** A calendar date the way a person says it: "Nov 7", with the year only when it is not this one. */
+const sayDate = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''))
+  if (!m) return String(iso || '')
+  const at = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12))
+  const opts = { month: 'short', day: 'numeric', timeZone: 'UTC', ...(m[1] === todayIso().slice(0, 4) ? {} : { year: 'numeric' }) }
+  try { return new Intl.DateTimeFormat(getSettings().locale || 'en-US', opts).format(at) } catch { return new Intl.DateTimeFormat('en-US', opts).format(at) }
+}
+
 app.get('/api/today', wrap((req, res) => {
   const today = todayIso()
   const role = req.role || 'owner'
@@ -2505,7 +2537,7 @@ app.get('/api/today', wrap((req, res) => {
       WHERE i.status NOT IN ('paid','void') AND i.amount_due-i.amount_paid > 0.005 AND i.due_date < ? ORDER BY (i.amount_due-i.amount_paid) DESC LIMIT 6`, today)) {
     const bal = round2(i.amount_due - i.amount_paid)
     add({ kind: 'collect', icon: '💸', priority: (production ? 40 : 90) + Math.min(20, bal / 200),
-      title: `Collect ${money(bal)} from ${i.cn || 'customer'}`, sub: `${i.invoice_number} · overdue since ${i.due_date}`,
+      title: `Collect ${money(bal)} from ${i.cn || 'customer'}`, sub: `${i.invoice_number} · overdue since ${sayDate(i.due_date)}`,
       href: `#/invoices/${i.id}`, amount: bal })
   }
   // Proofs waiting on the customer — these block production and silently eat the schedule.
@@ -2522,13 +2554,33 @@ app.get('/api/today', wrap((req, res) => {
       AND j.due_date IS NOT NULL AND j.stage IN ('new','art_approval')`)) {
     const s = scheduleFor(j)
     if (s.slip > 0) add({ kind: 'risk', icon: '⚠️', priority: 82 + Math.min(12, s.slip),
-      title: `${j.title} will miss its date`, sub: `${j.job_number} · lands ${s.due} (+${s.slip}d late)`, href: `#/jobs/${j.id}` })
+      title: `${j.title} will miss its date`, sub: `${j.job_number} · lands ${sayDate(s.due)} (+${s.slip}d late)`, href: `#/jobs/${j.id}` })
   }
   // Due today / tomorrow on the floor — production's top concern.
   for (const j of all(`SELECT j.*, c.name AS cn FROM jobs j LEFT JOIN contacts c ON c.id=j.contact_id
       WHERE j.status='active' AND j.due_date <= date(?, '+1 day') AND j.stage NOT IN ('complete','shipping') ORDER BY j.due_date LIMIT 8`, today)) {
     add({ kind: 'floor', icon: '🖨️', priority: (production ? 92 : 70) + (j.rush ? 8 : 0),
-      title: `${j.title} — ${j.due_date < today ? 'overdue since ' + j.due_date : j.due_date === today ? 'due today' : 'due tomorrow'}`, sub: `${j.job_number} · ${j.stage.replace('_', ' ')}${j.rush ? ' · RUSH' : ''}`, href: `#/jobs/${j.id}` })
+      title: `${j.title} — ${j.due_date < today ? 'overdue since ' + sayDate(j.due_date) : j.due_date === today ? 'due today' : 'due tomorrow'}`, sub: `${j.job_number} · ${j.stage.replace('_', ' ')}${j.rush ? ' · RUSH' : ''}`, href: `#/jobs/${j.id}` })
+  }
+  // The customer said yes and nothing has happened since. This is money the shop has already won:
+  // an approved quote with no invoice was invisible here, and Home read "You're all caught up".
+  for (const e of all(`SELECT e.*, c.name AS cn FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id
+      WHERE e.status='approved' AND e.total > 0 AND e.imported_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.estimate_id = e.id AND i.status != 'void')
+      ORDER BY e.approved_at DESC LIMIT 6`)) {
+    add({ kind: 'bill', icon: '🧾', priority: (production ? 45 : 88) + Math.min(8, e.total / 500),
+      title: `${e.cn || 'A customer'} approved ${money(e.total)} — bill it and start the job`, sub: `${e.estimate_number}${e.approved_at ? ` · approved ${sayDate(localDateOf(e.approved_at))}` : ''}`,
+      href: `#/estimates/${e.id}`, amount: e.total })
+  }
+  // Finished work that has not been paid for and is not overdue yet — the cheapest time to ask.
+  for (const j of all(`SELECT j.id, j.job_number, j.title, c.name AS cn, i.id AS iid, i.invoice_number, i.amount_due, i.amount_paid
+      FROM jobs j JOIN invoices i ON i.id = j.invoice_id LEFT JOIN contacts c ON c.id = j.contact_id
+      WHERE j.stage IN ('complete','shipping') AND i.status NOT IN ('paid','void') AND i.amount_due - i.amount_paid > 0.005
+        AND (i.due_date IS NULL OR i.due_date >= ?) AND j.imported_at IS NULL
+      ORDER BY j.updated_at DESC LIMIT 4`, today)) {
+    const bal = round2(j.amount_due - j.amount_paid)
+    add({ kind: 'collect', icon: '💸', priority: (production ? 35 : 72) + Math.min(10, bal / 300),
+      title: `${j.title} is done — ${money(bal)} still to collect`, sub: `${j.job_number} · ${j.invoice_number}${j.cn ? ` · ${j.cn}` : ''}`, href: `#/invoices/${j.iid}`, amount: bal })
   }
   // Unread customer messages.
   const unread = get(`SELECT COUNT(*) AS n FROM messages WHERE direction='in' AND read=0`).n
@@ -3368,7 +3420,7 @@ app.post('/api/estimates/:id/send', outboundLimit, wrap((req, res) => {
   else run(`UPDATE estimates SET status='sent', sent_at=? WHERE id=?`, now(), id)
   queueEmail({ contact: c, estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'estimate', subject: `Estimate ${e.estimate_number} from ${s.shop_name}`,
     template: s.email_template_estimate,
-    vars: { contact_name: c?.name || '', estimate_number: e.estimate_number, total: money(e.total) } })
+    vars: { contact_name: c?.name || '', estimate_number: e.estimate_number, total: money(e.total) }, origin: publicOrigin(req) })
   const sentTo=documentRecipient(e,'estimate').email
   logActivity('estimate', `Estimate ${e.estimate_number} queued to ${sentTo}`, { contact_id: e.contact_id })
   fireAuto('estimate.sent', { estimate: get('SELECT * FROM estimates WHERE id = ?', id), contact: c, total: e.total })
@@ -4157,7 +4209,7 @@ app.post('/api/invoices/:id/send', outboundLimit, wrap((req, res) => {
   const s = getSettings()
   queueEmail({ contact: c, invoice_id:inv.id,recipient_revision:inv.recipient_revision,kind: 'invoice', subject: `Invoice ${inv.invoice_number} from ${s.shop_name}`,
     template: s.email_template_invoice,
-    vars: { contact_name: c?.name || '', invoice_number: inv.invoice_number, total: money(inv.amount_due), due_date: inv.due_date } })
+    vars: { contact_name: c?.name || '', invoice_number: inv.invoice_number, total: money(inv.amount_due), due_date: inv.due_date }, origin: publicOrigin(req) })
   const sentTo=documentRecipient(inv).email
   logActivity('invoice', `Invoice ${inv.invoice_number} queued to ${sentTo}`, { contact_id: inv.contact_id })
   res.json({ ok: true, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
@@ -4948,7 +5000,7 @@ app.post('/api/art/:id/send', outboundLimit, wrap((req, res) => {
   })
   run(`UPDATE jobs SET stage='art_approval', updated_at=? WHERE id=? AND stage IN ('new','prepress') AND NOT EXISTS(SELECT 1 FROM production_tasks WHERE job_id=jobs.id)`, now(), j.id)
   queueEmail({ contact: c, kind: 'art', subject: `Proof v${a.version} for ${j.title} — approval needed`,
-    template: s.email_template_art, vars: { contact_name: c?.name || '', version: a.version, job_title: j.title } })
+    template: s.email_template_art, vars: { contact_name: c?.name || '', version: a.version, job_title: j.title, link: publicOrigin(req) + shareUrl('art', a.id) } })
   logActivity('art', `Proof v${a.version} sent to ${c?.email || 'customer'}`, { contact_id: j.contact_id, job_id: j.id })
   fireAuto('art.sent', { job: get('SELECT * FROM jobs WHERE id = ?', j.id), contact: c, version: a.version })
   res.json({ ok: true, share_url: shareUrl('art', a.id), art: get('SELECT * FROM art_versions WHERE id = ?', a.id) })
@@ -5147,7 +5199,7 @@ app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   const deliver = s.mode_followups !== 'manual'
   queueEmail({ contact: c,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
     template: s.email_template_nudge,
-    vars: { estimate_number: e.estimate_number, total: money(e.total) }, deliver })
+    vars: { estimate_number: e.estimate_number, total: money(e.total) }, deliver, origin: publicOrigin(req) })
   const sentTo=documentRecipient(e,'estimate').email
   logActivity('estimate', `Follow-up ${deliver ? 'queued' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${sentTo}`, { contact_id: e.contact_id })
   res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
@@ -5163,7 +5215,7 @@ app.post('/api/invoices/:id/nudge', outboundLimit, wrap((req, res) => {
   const deliver = s.mode_followups !== 'manual'   // the same switch, for the same reason as above
   queueEmail({ contact: c, invoice_id:i.id,recipient_revision:i.recipient_revision,kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
-    vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver })
+    vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver, origin: publicOrigin(req) })
   const sentTo=documentRecipient(i).email
   logActivity('invoice', `Payment reminder ${deliver ? 'queued' : 'drafted'} on ${i.invoice_number} to ${sentTo}`, { contact_id: i.contact_id })
   res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
@@ -8785,6 +8837,7 @@ app.put('/api/settings', requireRole('manager'), wrap(async (req, res) => {
   if ('anet_environment' in patch && !['sandbox','live'].includes(patch.anet_environment)) return res.status(400).json({error:'Choose sandbox or live.'})
   if ('anet_currency' in patch && !/^[A-Z]{3}$/.test(String(patch.anet_currency))) return res.status(400).json({error:'Use a three-letter merchant currency.'})
   if ('api_access' in patch && !['read','full'].includes(patch.api_access)) return res.status(400).json({error:'API access must be read or full.'})
+  if ('deposit_percent' in patch) { const n = Number(patch.deposit_percent); if (!Number.isFinite(n) || n < 1 || n > 100) return res.status(400).json({ error: 'Deposit must be a percentage from 1 to 100.', code: 'deposit_invalid' }); patch.deposit_percent = String(Math.round(n * 100) / 100) }
   // The two settings every document is formatted through are checked on the way IN, not folded to
   // a default on the way out. format.js does fall back to USD/en-US on a value it cannot use, so a
   // bad row can never break a PDF — but a 200 for `currency: "US$"` that then invoices in dollars
@@ -9403,6 +9456,33 @@ const escView = (o) => new Proxy(o || {}, { get: (t, k) => (typeof t[k] === 'str
 /** Join document footer parts, dropping blanks — a new shop has no phone yet and " ·  · " on a
  *  customer-facing invoice looks broken. Takes already-escaped values. */
 const joinDot = (...parts) => parts.map((p) => String(p ?? '').trim()).filter(Boolean).join(' · ')
+/** The shop's name, phone and email for the foot of a customer page — phone and email tappable. */
+const shopFoot = () => {
+  const s = getSettings()
+  const tel = String(s.shop_phone || '').replace(/[^\d+]/g, '')
+  const mail = String(s.shop_email || '').trim()
+  return joinDot(esc(s.shop_name),
+    s.shop_phone ? (tel.length >= 7 ? `<a href="tel:${esc(tel)}">${esc(s.shop_phone)}</a>` : esc(s.shop_phone)) : '',
+    mail ? (/^[^\s@<>"]+@[^\s@<>"]+$/.test(mail) ? `<a href="mailto:${esc(mail)}">${esc(mail)}</a>` : esc(mail)) : '')
+}
+/** Deposit as a fraction of the invoice: the shop's own setting, 1–100%, 50% when unset or unusable. */
+const depositRate = (s) => { const n = Number(s?.deposit_percent); return Number.isFinite(n) && n >= 1 && n <= 100 ? n / 100 : 0.5 }
+const depositLabel = (s) => `${Math.round(depositRate(s) * 100)}%`
+/**
+ * Print-shop shorthand, said the way a customer reads it. "2/0 Front + 1/0 Back" is how a shop
+ * writes ink colours per side; to a buyer it is noise on the one page they must understand before
+ * approving. Display only — the stored line, the PDF and the work ticket keep the shop's wording.
+ */
+const plainPrintSpec = (text) => String(text ?? '')
+  .replace(/\b(\d{1,2})\/0\s+(?=[A-Za-z])/g, (_m, n) => `${n}-color `)
+  .replace(/\bunderbase incl\./gi, 'white underbase included')
+/** The amount owed, first, with when it is due — what a customer opens a pay link to find out. */
+const dueHero = (inv, balance) => {
+  const today = todayIso(), due = inv.due_date
+  const late = due && due < today ? Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${due}T12:00:00Z`)) / 864e5) : 0
+  const when = !due ? '' : late > 0 ? `Was due ${sayDate(due)} · ${late} day${late === 1 ? '' : 's'} late` : due === today ? 'Due today' : `Due ${sayDate(due)}`
+  return `<div class="due-hero${late > 0 ? ' late' : ''}"><div class="due-label">Balance due</div><div class="due-amt">${money(balance)}</div>${when ? `<div class="due-when">${esc(when)}</div>` : ''}</div>`
+}
 
 // Customer share links carry the shop slug (?s=) so they resolve to the right shop's database.
 const sQ = (req) => (req.query.s ? `&s=${encodeURIComponent(req.query.s)}` : '')
@@ -9443,7 +9523,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
   const up = getUpcharges()
   const rows = items.map((i) => {
     const extra = lineUpcharge(i, up)
-    return `<tr><td><strong>${esc(i.description || '')}</strong>${i.detail ? `<div class="detail">${esc(i.detail)}</div>` : ''}${i.sizes && sizeTotal(i.sizes) > 0 ? `<div class="detail">${esc(sizeSummary(i.sizes))}</div>` : ''}</td>
+    return `<tr><td><strong>${esc(plainPrintSpec(i.description || ''))}</strong>${i.detail ? `<div class="detail">${esc(plainPrintSpec(i.detail))}</div>` : ''}${i.sizes && sizeTotal(i.sizes) > 0 ? `<div class="detail">${esc(sizeSummary(i.sizes))}</div>` : ''}</td>
     <td class="num">${esc(lineQty(i) || '')}</td><td class="num">${money(i.unit_price)}${extra ? `<div class="detail">+${money(extra)} sizes</div>` : ''}</td><td class="num">${money(lineAmount(i, up))}</td></tr>`
   }).join('')
   const done = e.status === 'approved' || e.status === 'invoiced'
@@ -9451,7 +9531,7 @@ app.get('/p/estimate/:id', pPage((req, res) => {
     <div class="card">
       <div class="head"><div>${logoImg(s)}<div class="shop">${esc(s.shop_name)}</div><div class="tag">${esc(s.shop_tagline)}</div></div>
         <div class="right"><div class="doc">ESTIMATE</div><div class="num2">${esc(e.estimate_number)}</div></div></div>
-      <div class="to">Prepared for <strong>${esc(recipientSnapshot(e).buyer_name)}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}</div>
+      <div class="to">Prepared for <strong>${esc(recipientSnapshot(e).buyer_name)}</strong>${c?.company ? ` · ${esc(c.company)}` : ''}${e.sent_at || e.created_at ? ` · ${esc(sayDate(localDateOf(e.sent_at || e.created_at)))}` : ''}</div>
       ${documentAddresses(e)}
       <table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="totals"><div><span>Subtotal</span><span>${money(e.subtotal)}</span></div>
@@ -9465,8 +9545,36 @@ app.get('/p/estimate/:id', pPage((req, res) => {
         : `<form method="POST" action="/p/estimate/${id}/approve?k=${req.query.k}${sQ(req)}">
              <button class="btn">Approve this estimate</button>
              <button type="button" class="btn ghost" onclick="window.print()">Print / Save PDF</button>
-           </form>`}
-    </div><div class="foot">${joinDot(esc(s.shop_name), esc(s.shop_phone), esc(s.shop_email))}</div>${portal.allOrdersLink(e.contact_id)}</div>`))
+           </form>
+           ${req.query.asked ? '<div class="ok">✓ Sent. The shop has your message and will get back to you.</div>'
+             : `<details class="ask"><summary>Question, or need something changed?</summary>
+             <form method="POST" action="/p/estimate/${id}/question?k=${req.query.k}${sQ(req)}">
+               <label for="ask-msg">Tell ${esc(s.shop_name)} what you need — sizes, quantities, colors, dates.</label>
+               <textarea id="ask-msg" name="message" required maxlength="2000" rows="4"></textarea>
+               <button class="btn ghost">Send to the shop</button>
+             </form></details>`}`}
+    </div><div class="foot">${shopFoot()}</div>${portal.allOrdersLink(e.contact_id)}</div>`))
+}))
+
+/**
+ * "Request changes" for a quote. The page had exactly one thing a customer could do — approve —
+ * so anyone who needed 60 instead of 48, or a different delivery date, had to find the shop's
+ * email somewhere else and start a thread the quote knew nothing about. This lands their words on
+ * the customer's own conversation, unread, where the shop already answers messages.
+ */
+app.post('/p/estimate/:id/question', ipLimit(10, 'That is a lot of messages. Please call or email the shop instead.'), express.urlencoded({ extended: false, limit: '16kb' }), pPage((req, res) => {
+  const id = +req.params.id
+  if (!checkToken('estimate', id, req.query.k)) return res.status(403).send('Forbidden')
+  const e = get('SELECT * FROM estimates WHERE id = ?', id)
+  if (!e) return res.status(404).send('Not found')
+  const text = String(req.body?.message || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 2000)
+  const back = `/p/estimate/${id}?k=${req.query.k}${sQ(req)}`
+  if (!text) return res.redirect(back)
+  const c = get('SELECT name FROM contacts WHERE id = ?', e.contact_id)
+  recordMessage({ contact_id: e.contact_id, direction: 'in', channel: 'email', subject: `Question about ${e.estimate_number}`, body: text, kind: 'estimate_question' })
+  logActivity('estimate', `${c?.name || 'Customer'} asked about ${e.estimate_number}: ${text.slice(0, 140)}`, { contact_id: e.contact_id })
+  fireAuto('conversation.received', { contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), estimate: e, message: text })
+  res.redirect(`${back}&asked=1`)
 }))
 
 app.post('/p/estimate/:id/approve', express.urlencoded({ extended: false }), pPage((req, res) => {
@@ -9907,33 +10015,35 @@ app.get('/p/pay/:id', pPage(async (req, res) => {
     return res.send(page(`Invoice ${inv.invoice_number}`, `<div class="wrap"><div class="card">
       <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div>
         <div class="right"><div class="doc">INVOICE</div><div class="num2">${inv.invoice_number}</div></div></div>
+      ${dueHero(inv, balance)}
+      <div class="notes"><strong>How to pay</strong><p>To pay this invoice, contact ${shopFoot()}. Card payment online isn't switched on for this shop yet.</p></div>
       ${billedTo(inv, c)}
       ${itemsTable(inv)}
       ${invoiceTotals(inv, balance, s, c)}
-      <div class="notes"><strong>How to pay</strong><p>Card payment isn't switched on for this shop yet — please contact ${s.shop_name} to settle this invoice.</p></div>
       <div class="terms">${esc(getSettings().invoice_terms || '')}</div>
-      <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
+      <div class="foot">${shopFoot()}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
   }
 
   // Half of ¥16,109 is ¥8,054.5, which no card gateway can charge — round the deposit to the
   // currency's minor unit, the same way the checkout below does.
-  const deposit = roundMoney(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid)))
+  const deposit = roundMoney(Math.min(balance, Math.max(0, inv.amount_due * depositRate(s) - inv.amount_paid)))
   const depositBtn = (deposit > 0 && deposit < balance)
-    ? `<button class="btn" name="kind" value="deposit">Pay ${inv.amount_paid > 0 ? 'remaining ' : ''}50% deposit — ${money(deposit)}</button>`
+    ? `<button class="btn" name="kind" value="deposit">Pay ${inv.amount_paid > 0 ? 'remaining ' : ''}${depositLabel(s)} deposit — ${money(deposit)}</button>`
     : ''
   res.send(page(`Pay ${inv.invoice_number}`, `<div class="wrap"><div class="card">
     <div class="head"><div>${logoImg(s)}<div class="shop">${s.shop_name}</div><div class="tag">${s.shop_tagline}</div></div><div class="right"><div class="doc">INVOICE</div><div class="num2">${inv.invoice_number}</div></div></div>
-    ${billedTo(inv, c)}
-    ${itemsTable(inv)}
-    ${invoiceTotals(inv, balance, s, c)}
-    <form method="POST" action="/p/pay/${id}/checkout?k=${req.query.k}${sQ(req)}" style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
+    ${dueHero(inv, balance)}
+    <form method="POST" action="/p/pay/${id}/checkout?k=${req.query.k}${sQ(req)}" style="display:flex;flex-direction:column;gap:10px;margin:14px 0 22px">
       <input type="hidden" name="choice" value="${paymentChoice(inv,getSettings())}">
       ${depositBtn}
       <button class="btn ${depositBtn ? 'ghost' : ''}" name="kind" value="balance">Pay ${inv.amount_paid > 0 ? 'the balance' : 'in full'} — ${money(balance)}</button>
     </form>
+    ${billedTo(inv, c)}
+    ${itemsTable(inv)}
+    ${invoiceTotals(inv, balance, s, c)}
     <div class="qr-pay" style="text-align:center;margin-top:16px">${qrSvg(publicOrigin(req) + shareUrl('pay', id), { size: 112, label: 'Scan to pay on your phone' })}<div class="tag">Scan to pay on your phone</div></div>
     <div class="terms">Secure payment through ${s.shop_name}'s ${providerName(s)} account. Your card details go directly to the payment provider.</div>
-    <div class="foot">${joinDot(s.shop_name, s.shop_phone, s.shop_email)}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
+    <div class="foot">${shopFoot()}</div></div>${portal.allOrdersLink(inv.contact_id)}</div>`))
 }))
 
 app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(async (req, res) => {
@@ -9949,7 +10059,7 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
   const balance = roundMoney(inv.amount_due - inv.amount_paid)
   if (balance <= 0) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const kind = req.body?.kind === 'deposit' ? 'deposit' : 'balance'
-  const amount = kind === 'deposit' ? roundMoney(Math.min(balance, Math.max(0, inv.amount_due * 0.5 - inv.amount_paid))) : balance
+  const amount = kind === 'deposit' ? roundMoney(Math.min(balance, Math.max(0, inv.amount_due * depositRate(s) - inv.amount_paid))) : balance
   if (!(amount > 0)) return res.redirect(`/p/pay/${id}?k=${req.query.k}${sQ(req)}`)
   const c = get('SELECT * FROM contacts WHERE id = ?', inv.contact_id)
   const origin = trustedOrigin(req)
