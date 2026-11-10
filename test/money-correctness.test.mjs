@@ -104,15 +104,22 @@ test('matrix headers that look like numbers are labels first', async () => {
 test('order import statuses: cancelled is skipped, open/due is unpaid, only settled words are paid', async () => {
   const { importOrderStatus, strictImportStatus } = await import('../lib/csv.mjs')
   const cases = {
-    '': 'paid', Paid: 'paid', Complete: 'paid', Delivered: 'paid', Shipped: 'paid', Closed: 'paid',
+    '': 'paid', Paid: 'paid', 'Payment received': 'paid', Settled: 'paid',
     Cancelled: 'cancelled', Canceled: 'cancelled', Refunded: 'cancelled', Void: 'cancelled',
     Open: 'unpaid', 'Not Paid': 'unpaid', 'Payment Due': 'unpaid', Pending: 'unpaid', Invoiced: 'unpaid', Overdue: 'unpaid',
-    Quote: 'quote', Draft: 'quote',
-    'In Production': null, 'Partially refunded': null, Approved: null,
+    Quote: 'quote', Draft: 'quote', 'Pending approval': 'quote',
+    // An accepted order is an order, not an open quote — "Quote Approved" is Printavo's own wording.
+    Approved: 'unpaid', 'Quote Approved': 'unpaid', Won: 'unpaid',
+    // Production words say the job is finished, not that it was paid for; a part payment has no amount.
+    Complete: null, Completed: null, Delivered: null, Shipped: null, Closed: null, 'Picked up': null,
+    Partial: null, 'Partially paid': null, 'Deposit paid': null,
+    'In Production': null, 'Partially refunded': null,
   }
   for (const [status, want] of Object.entries(cases)) assert.equal(importOrderStatus(status), want, JSON.stringify(status))
+  assert.equal(importOrderStatus('', { statusColumn: true }), null, 'a blank cell in a file that HAS a status column is not paid history')
   assert.equal(strictImportStatus('Refunded'), 'cancelled')
   assert.equal(strictImportStatus('complete'), null, 'strict mode still refuses to read completion as payment')
+  assert.equal(strictImportStatus('Quote Approved'), null, 'strict mode does not read an accepted order as an open quote')
 })
 
 test('QuickBooks: a voided invoice is voided there, never pushed as live A/R', async () => {

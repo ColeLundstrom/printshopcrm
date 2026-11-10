@@ -74,7 +74,7 @@ import { capacityReport, promise as capacityPromise, colorsFromItems } from './l
 import { reorderRadar, snoozeReorder, unsnoozeReorder } from './lib/reorder.mjs'
 import { estimateTermsIn, commercialEstimateChanged, invalidateEstimateApproval, recordEstimateApproval, estimateApprovalHistory, latestAcceptedEstimate, assertEstimateRevision } from './lib/estimate-approvals.mjs'
 import { qrSvg } from './lib/qr.mjs'
-import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importOrderStatus, importMapping, applyImportMapping } from './lib/csv.mjs'
+import { parseCsv, mapContactRow, detectColumns, mapOrderRows, summarizeImport, interruptedImportReport, strictImportStatus, importOrderStatus, importPaymentState, importMapping, applyImportMapping } from './lib/csv.mjs'
 import { writeContactImport } from './lib/contact-import.mjs'
 import { quoteScreenPrint, pricingMatrix, embroideryMatrix, dtfMatrix } from './public/js/shared/pricing.js'
 import { isCurrencyCode, isLocale } from './public/js/shared/format.js'
@@ -2904,7 +2904,10 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
   try {
     const info = importMapping(rows, 'contacts', req.body?.mapping)
     if (req.body?.mapping_only === true || req.body?.mapping_only === 'true') return res.json(info)
-    rows = applyImportMapping(rows, 'contacts', req.body?.mapping)
+    // An API caller that sends no mapping still gets a RECOGNISED export read by its preset. The
+    // generic synonyms compare exact headings, so YoPrint's snake_case file (customer_name,
+    // contact_email …) answered "Couldn't find a name column" unless it came through the mapper.
+    rows = applyImportMapping(rows, 'contacts', req.body?.mapping ?? (info.preset !== 'generic' ? info.mapping : undefined))
   } catch (e) { return res.status(400).json({ error: e.message }) }
 
   const columns = detectColumns(Object.keys(rows[0]))
@@ -6948,6 +6951,21 @@ function groupImportedOrders(orders) {
     const evidence = round2(g._lines.reduce((a, l) => a + (Number(l.unit_price) || 0) * qtyOf(l), 0))
     g.total = Math.abs(sum - evidence) <= Math.abs(max - evidence) ? sum : round2(max)
   }
+  // The order's other money columns fold the same way an unweighted total does: one value repeated
+  // on every line is the ORDER's figure; values that differ are per-line and add up.
+  const fold = (g, field) => {
+    const vals = g._lines.map((l) => l[field]).filter((n) => n != null && Number.isFinite(Number(n))).map(Number)
+    if (!vals.length) return null
+    return vals.every((n) => n === vals[0]) ? round2(vals[0]) : round2(vals.reduce((a, b) => a + b, 0))
+  }
+  for (const g of grouped) {
+    for (const field of ['subtotal', 'tax', 'amount_paid', 'balance']) g[field] = fold(g, field)
+    // Details the first line of an order may not carry but a later one does.
+    for (const field of ['title', 'po_number', 'payment_due_date', 'due_date', 'notes', 'status'])
+      if (g[field] == null) g[field] = g._lines.find((l) => l[field] != null)?.[field] ?? null
+    // An export with Subtotal and Tax and no Total column still states what was billed.
+    if (g.total == null && g.subtotal != null && g.subtotal > 0) g.total = round2(g.subtotal + (g.tax || 0))
+  }
   return grouped
 }
 
@@ -6966,14 +6984,19 @@ function groupImportedOrders(orders) {
  * underpaid and an unpaid one as owing more than the customer was ever invoiced.)
  */
 function importOrderRefusal(grouped, kindOf, strict) {
+  // Nothing that identifies an order was mapped: no customer, no order number, no amount. This is
+  // a file whose headings were not recognised, and writing it produced "Imported customer"
+  // contacts with $0 paid invoices and finished jobs — with ok:true. Refuse it and say why.
+  if (!grouped.some(o => o.customer_name || o.customer_email || o.order_number || (o.total != null && o.total > 0)))
+    return { payment_states: {}, refusal: { error: 'None of this file’s columns were recognised as a customer, an order number or a total, so there is nothing to import. Open “Match your columns” and choose which column holds each, then preview again. No orders were imported.', code: 'import_unmapped' } }
   const payment_states = grouped.reduce((counts,o) => { const k=kindOf(o) || 'needs_review'; counts[k]=(counts[k] || 0)+1; return counts },{})
   const oversized = grouped.filter(o => o._lines.some(l => (Number(l.quantity) || 0) > MAX_PIECES || sizeTotal(l.sizes || {}) > MAX_PIECES))
   if (oversized.length) return { payment_states, refusal: { error: `${oversized.length} order(s) have a quantity above ${MAX_PIECES} pieces (${oversized.slice(0, 5).map(o => o.order_number || o.customer_name || 'unnamed').join(', ')}). Check the quantity column. No orders were imported.`, code: 'import_quantity' } }
   const unresolved = grouped.filter(o => !kindOf(o))
   if (!unresolved.length) return { payment_states, refusal: null }
-  if (strict) return { payment_states, refusal: {error:`${unresolved.length} order(s) need payment status review. Use paid, unpaid or quote. Completed jobs do not prove payment; partial payments need a separate balance reconciliation. No orders were imported.`,code:'import_status_review'} }
+  if (strict) return { payment_states, refusal: {error:`${unresolved.length} order(s) need payment status review. Use paid, unpaid or quote — or map the file’s Amount paid or Balance column, and the amounts decide. Completed jobs do not prove payment, and a partial payment needs its amount. No orders were imported.`,code:'import_status_review'} }
   const seen = [...new Set(unresolved.map(o => String(o.status || '').trim()))].slice(0, 6).map(v => `"${v.slice(0, 40)}"`).join(', ')
-  return { payment_states, refusal: { error: `${unresolved.length} order(s) have a status this import cannot read as paid, unpaid, a quote or cancelled: ${seen}. Change those to paid, unpaid or quote and upload again. No orders were imported.`, code: 'import_status_review' } }
+  return { payment_states, refusal: { error: `${unresolved.length} order(s) have a status this import cannot read as paid, unpaid, a quote or cancelled: ${seen}. Change those to paid, unpaid or quote and upload again — or map the file’s Amount paid or Balance column, and the amounts decide. A finished job is not proof of payment. No orders were imported.`, code: 'import_status_review' } }
 }
 
 app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('manager'), wrap(async (req, res) => {
@@ -7001,17 +7024,22 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   const grouped = groupImportedOrders(mapped.orders)
   const strict = req.body?.status_policy === 'strict'
   // The export's own status decides how much of the graph gets written (importOrderStatus).
-  const kindOf = (o) => strict ? strictImportStatus(o.status) : importOrderStatus(o.status)
+  // …together with the money columns beside it (importPaymentState): an amount paid or a balance
+  // settles paid / part-paid / unpaid better than any status word. A blank status reads as paid
+  // history only in a file with no status column at all.
+  const statusColumn = grouped.some(o => String(o.status || '').trim() !== '')
+  const stateOf = (o) => importPaymentState(o, { strict, statusColumn })
+  const kindOf = (o) => stateOf(o).kind
   const { refusal, payment_states } = importOrderRefusal(grouped, kindOf, strict)
 
   const preview = req.body?.preview === 'true' || req.body?.preview === true
   if (preview) {
     const summary = summarizeImport({ orders: grouped, warnings: mapped.warnings })
-    return res.json({ preview: true, ...summary, blocked:!!refusal, payment_states, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
+    return res.json({ preview: true, ...summary, blocked:!!refusal, blocked_reason: refusal?.error || null, payment_states, sample: grouped.slice(0, 8), warnings: mapped.warnings.slice(0, 20) })
   }
 
   if (refusal) return res.status(400).json(refusal)
-  let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0, skippedCancelled = 0
+  let created = 0, contactsMade = 0, skippedDupes = 0, openQuotes = 0, unpaidInvoices = 0, reconciled = 0, skippedCancelled = 0, partlyPaid = 0
   const findContact = (name, email) => {
     let c = email ? get('SELECT * FROM contacts WHERE lower(email) = lower(?)', email) : null
     if (!c && name) c = get('SELECT * FROM contacts WHERE lower(name) = lower(?)', name)
@@ -7065,18 +7093,22 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     // discarded the whole order as a "duplicate".)
     const ref = o.order_number ? String(o.order_number).slice(0, 120) : `csv:${fileTag}:${rowIndex}`
     if (get('SELECT id FROM estimates WHERE source_ref = ?', ref)) { skippedDupes++; return }
-    const kind = kindOf(o)
+    const state = stateOf(o), kind = state.kind
     // A cancelled, voided or refunded order is not money the shop received, nor money it is owed.
     if (kind === 'cancelled') { skippedCancelled++; return }
 
     const c = findContact(o.customer_name, o.customer_email)
     const when = o.date ? `${o.date} 12:00:00` : now()
     const items = o._lines.map((ln) => {
-      const sizes = ln.sizes && Object.keys(ln.sizes).length ? ln.sizes : { M: ln.quantity || 0 }
-      const qty = sizeTotal(sizes)
+      // A line with a quantity and no size columns is a quantity. It used to be written as
+      // {M: qty}: 48 caps, or 500 transfers, became "48 M" on the work ticket, the pick list and
+      // every size rollup. A plain `qty` is the shape the rest of the app reads for an unsized
+      // line (lineQty, profitability's flat-production rule, capacity's "N pcs").
+      const hasGrid = ln.sizes && sizeTotal(ln.sizes) > 0
+      const qty = hasGrid ? sizeTotal(ln.sizes) : Math.max(0, Number(ln.quantity) || 0)
       return {
-        description: ln.garment || ln.order_number || 'Imported order',
-        sizes,
+        description: ln.garment || ln.title || ln.order_number || 'Imported order',
+        ...(hasGrid ? { sizes: ln.sizes } : { qty }),
         unit_price: Number(ln.unit_price) || (ln.total && qty ? Number(ln.total) / qty : 0),
         decoration: ln.decoration || 'Screen Print',
         taxable: true,
@@ -7084,6 +7116,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
       }
     })
     const allSizes = rollupSizes(items)
+    const pieces = items.reduce((n, it) => n + lineQty(it), 0)
     freezeUpcharges(items).forEach((it, i) => { items[i] = it }) // keeps the stamped {} above
     const t = computeTotals(items, 0, getUpcharges())
     // A document must never hide money between its subtotal and its total — 8e9239e. The file's
@@ -7093,39 +7126,57 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     // defect one layer down: Subtotal $1,000.00 / Tax $0.00 / TOTAL $1,180.00, with $180 arriving
     // from nowhere, stored, carried into the invoice's frozen amount_due and posted to the books.
     // Give the difference a line of its own instead, so the money is named rather than missing.
+    //
+    // Sales tax is not that difference. When the file states it, it is stored AS tax: it used to
+    // be folded into a customer-visible "Other charges" line with tax = 0, so Reports counted the
+    // tax as pre-tax sales and showed no tax invoiced at all. Only what is left after the stated
+    // tax is unexplained. A tax figure that does not fit inside the total is not believed.
     const filed = Number(o.total) > 0 ? round2(Number(o.total)) : null
-    const gap = filed == null ? 0 : round2(filed - t.total)
+    const taxIn = Number(o.tax) > 0 ? round2(Number(o.tax)) : 0
+    const tax = taxIn > 0 && (filed == null || taxIn < filed) ? taxIn : 0
+    const gap = filed == null ? 0 : round2(filed - tax - t.total)
     if (Math.abs(gap) >= 0.01) {
       items.push({ description: gap > 0 ? 'Other charges' : 'Discount', qty: 1, unit_price: gap, taxable: false })
       reconciled++
     }
     const doc = Math.abs(gap) >= 0.01 ? computeTotals(items, 0, getUpcharges()) : t
-    const total = filed != null ? doc.total : t.total
+    const total = round2(doc.total + tax)
+    // The rate the stated tax works out to on the taxable lines — what the document prints beside it.
+    const taxRate = tax > 0 && t.subtotal > 0 ? Math.min(100, Math.round((tax / t.subtotal) * 1e6) / 1e4) : 0
     // Keyed off the REAL order number: "was csv:1f1c562505d8:0" is not something to show a customer.
     const notes = `Imported${o.order_number ? ` — was ${ref}` : ''}${o.date ? ` (${o.date})` : ''}`.trim()
 
     const estStatus = kind === 'quote' ? 'sent' : 'approved'
     const estId = Number(run('INSERT INTO estimates (contact_id, estimate_number, status, items, subtotal, tax, total, tax_rate, notes, source_ref, imported_at, sent_at, approved_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), doc.subtotal, doc.tax, total, 0,
+      c.id, nextEstimateNumber(), estStatus, JSON.stringify(items), doc.subtotal, tax, total, taxRate,
       notes, ref, stamp, when, kind === 'quote' ? null : when, when).lastInsertRowid)
     created++
     if (kind === 'quote') { openQuotes++; return }
 
-    const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, paid_at, imported_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    // What had been collected. A part-paid order — a deposit down, a balance outstanding — used to
+    // arrive as wholly unpaid, so the shop's open A/R on day one overstated what it was owed by
+    // every dollar its customers had already paid. The amount lands as ONE payment row marked
+    // `imported`, exactly like a fully paid order's, and fires nothing: no receipt, no automation,
+    // no webhook, no announcement — this is history, not a payment arriving now.
+    const paidAmt = kind === 'paid' ? total : kind === 'partial' ? round2(Math.min(total, Math.max(0, Number(state.paid) || 0))) : 0
+    const invId = Number(run('INSERT INTO invoices (estimate_id, contact_id, invoice_number, status, amount_due, amount_paid, due_date, paid_at, po_number, imported_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
       estId, c.id, nextInvoiceNumber(), kind === 'paid' ? 'paid' : 'unpaid', total,
-      kind === 'paid' ? total : 0, o.due_date || o.date || null, kind === 'paid' ? when : null, stamp, when).lastInsertRowid)
-    if (kind === 'paid') {
+      paidAmt, o.payment_due_date || o.due_date || o.date || null, kind === 'paid' ? when : null, o.po_number || '', stamp, when).lastInsertRowid)
+    if (paidAmt > 0) {
       run('INSERT INTO payments (invoice_id, amount, method, note, created_at) VALUES (?,?,?,?,?)',
-        invId, total, 'imported', notes, when)
-    } else unpaidInvoices++
+        invId, paidAmt, 'imported', notes, when)
+    }
+    if (kind === 'partial') { syncInvoiceStatus(invId); partlyPaid++ } // derived, like every invoice status
+    if (kind !== 'paid') unpaidInvoices++
 
     // The job row is what Reorder Radar reads cadence from — created_at MUST be the
     // historical order date, or every imported customer looks like they ordered today.
-    run(`INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, sizes, line_sizes, due_date, notes, imported_at, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      c.id, estId, invId, nextJobNumber(), o.garment || o.order_number || 'Imported order',
+    run(`INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, sizes, line_sizes, quantities, due_date, notes, imported_at, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      c.id, estId, invId, nextJobNumber(), o.title || o.garment || o.order_number || 'Imported order',
       'complete', 'complete', o.decoration || 'Screen Print', JSON.stringify(allSizes), JSON.stringify(garmentLines(items)),
-      o.due_date || null, notes, stamp, when, when)
+      sizeSummary(allSizes) || (pieces > 0 ? `${pieces} pcs` : null),
+      o.due_date || null, o.notes ? `${notes}\n${o.notes}` : notes, stamp, when, when)
   }
   // A batch that fails must be reported by the importer, not thrown at the generic error handler.
   // That handler is written for single-statement routes and answers "so nothing was saved", which
@@ -7136,7 +7187,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   await withImportCheckpoints(importDb, async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
-      const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled]
+      const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled, partlyPaid]
       let commitAt = started
       try {
         tx(() => {
@@ -7150,7 +7201,7 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
         metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
       } catch (e) {
         // SQLite rolled back this whole batch; the partial-import report must do the same.
-        ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled] = countsBefore
+        ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled, partlyPaid] = countsBefore
         stopped = e; break
       }
       // Checkpoint maintenance yields the request thread after committed counts are durable.
@@ -7174,8 +7225,8 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     return res.status(503).json(report)
   }
   // These orders have committed. A secondary timeline failure must not report that import failed.
-  try { logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${skippedCancelled ? `, ${skippedCancelled} cancelled/refunded skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {}) } catch { /* preserve the durable import result */ }
-  res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, skipped_duplicates: skippedDupes, skipped_cancelled: skippedCancelled, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
+  try { logActivity('note', `Imported ${created} order(s) with history (${contactsMade} new customers, ${openQuotes} open quotes, ${unpaidInvoices} unpaid invoices${partlyPaid ? ` (${partlyPaid} part-paid)` : ''}${skippedDupes ? `, ${skippedDupes} duplicates skipped` : ''}${skippedCancelled ? `, ${skippedCancelled} cancelled/refunded skipped` : ''}${reconciled ? `, ${reconciled} with charges the lines did not explain` : ''}) from a CSV`, {}) } catch { /* preserve the durable import result */ }
+  res.json({ ok: true, imported: created, new_customers: contactsMade, open_quotes: openQuotes, unpaid_invoices: unpaidInvoices, partly_paid: partlyPaid, skipped_duplicates: skippedDupes, skipped_cancelled: skippedCancelled, totals_reconciled: reconciled, warnings: mapped.warnings.slice(0, 20) })
 }))
 
 /* ================= PUBLIC REST API v1 =================

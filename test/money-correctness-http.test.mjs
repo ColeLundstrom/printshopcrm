@@ -139,6 +139,52 @@ test('money correctness over HTTP: currency precision, paid announcements, line 
       assert.equal(db.prepare("SELECT count(*) n FROM estimates WHERE source_ref IN ('IMP-7','IMP-8')").get().n, 0)
     })
 
+    await t.test('order import: amounts paid, tax, PO, dates and flat quantities arrive; unmapped files are refused', async () => {
+      const csv = [
+        'order_number,customer_name,customer_email,order_date,status,item_name,quantity,unit_price,sub_total,sales_tax,grand_total,amount_paid,balance_due,po_number,job_name,payment_due_date,customer_due_date,production_notes',
+        'FID-1,Fidelity Fixture,fidelity@example.test,2026-04-02,Completed,Gildan 5000,200,10.00,2000.00,165.00,2165.00,1000.00,1165.00,PO-77,Spring tees,2026-05-02,2026-04-20,Bag by size',
+        'FID-2,Fidelity Fixture,fidelity@example.test,2026-04-03,Quote Approved,Caps,48,12.00,576.00,0,576.00,288.00,288.00,,Cap run,,,',
+        'FID-3,Fidelity Fixture,fidelity@example.test,2026-04-04,Completed,Totes,10,5.00,50.00,4.13,54.13,54.13,0,,,,,',
+        'FID-4,Fidelity Fixture,fidelity@example.test,2026-04-05,Invoiced,Totes,10,5.00,50.00,4.13,54.13,0,54.13,,,,,',
+      ].join('\n')
+      const hooksBefore = db.prepare('SELECT count(*) n FROM automation_runs').get().n
+      const r = await ok('/api/import/orders', { text: csv })
+      assert.equal(r.imported, 4); assert.equal(r.partly_paid, 2); assert.equal(r.unpaid_invoices, 3); assert.equal(r.totals_reconciled, 0)
+      const row = (ref) => db.prepare('SELECT i.*, e.items, e.subtotal est_subtotal, e.tax est_tax, e.total est_total, e.tax_rate, e.status est_status, j.title, j.due_date job_due, j.notes job_notes, j.sizes, j.quantities FROM invoices i JOIN estimates e ON e.id=i.estimate_id JOIN jobs j ON j.invoice_id=i.id WHERE e.source_ref=?').get(ref)
+      const one = row('FID-1')
+      assert.deepEqual([one.amount_due, one.amount_paid, one.po_number, one.due_date, one.job_due, one.title], [2165, 1000, 'PO-77', '2026-05-02', '2026-04-20', 'Spring tees'])
+      assert.match(one.status, /^(partial|overdue)$/, 'status is derived from the payment, not stamped paid')
+      assert.deepEqual([one.est_subtotal, one.est_tax, one.est_total, one.tax_rate], [2000, 165, 2165, 8.25], 'tax is stored as tax, not as an "Other charges" line')
+      const items = JSON.parse(one.items)
+      assert.equal(items.length, 1); assert.equal(items[0].sizes, undefined, 'no invented size M'); assert.equal(items[0].qty, 200)
+      assert.equal(one.sizes, '{}'); assert.equal(one.quantities, '200 pcs'); assert.match(one.job_notes, /Bag by size/)
+      const pay = db.prepare('SELECT amount, method FROM payments WHERE invoice_id=?').all(one.id)
+      assert.deepEqual(pay.map(p => [p.amount, p.method]), [[1000, 'imported']])
+      const two = row('FID-2')
+      assert.deepEqual([two.est_status, two.amount_due, two.amount_paid], ['approved', 576, 288], '"Quote Approved" with a deposit is an order with a balance, not an open quote')
+      assert.equal(row('FID-3').status, 'paid'); assert.equal(row('FID-3').amount_paid, 54.13)
+      assert.deepEqual([row('FID-4').status, row('FID-4').amount_paid], ['unpaid', 0])
+      const owed = db.prepare("SELECT round(sum(amount_due-amount_paid),2) v FROM invoices i JOIN estimates e ON e.id=i.estimate_id WHERE e.source_ref LIKE 'FID-%'").get().v
+      assert.equal(owed, 1507.13, 'open A/R is what the export said was still owed')
+      assert.equal(db.prepare('SELECT count(*) n FROM automation_runs').get().n, hooksBefore, 'imported payments fire no automation')
+
+      const noAmounts = await req('/api/import/orders', { text: 'Order #,Customer,Date,Status,Product,Qty,Unit Price\nFID-5,Fidelity Fixture,2026-04-06,Completed,Tee,5,10\nFID-6,Fidelity Fixture,2026-04-06,Partial,Tee,5,10\nFID-7,Fidelity Fixture,2026-04-06,,Tee,5,10' })
+      assert.equal(noAmounts.status, 400); assert.equal(noAmounts.body.code, 'import_status_review')
+      const unmapped = await req('/api/import/orders', { text: 'foo,bar,baz\n1,2,3\n4,5,6' })
+      assert.equal(unmapped.status, 400); assert.equal(unmapped.body.code, 'import_unmapped')
+      const preview = await ok('/api/import/orders', { text: 'foo,bar,quantity\n1,2,3', preview: true })
+      assert.equal(preview.blocked, true); assert.match(preview.blocked_reason, /Match your columns/)
+      assert.equal(db.prepare("SELECT count(*) n FROM contacts WHERE name='Imported customer'").get().n, 0)
+    })
+
+    await t.test('customer import writes tax-exempt status, resale number and payment terms', async () => {
+      const r = await ok('/api/import/contacts', { text: 'Customer ID,Company,First Name,Last Name,Email,Tax Exempt,Tax Resale No,Default Payment Term\n1,Exempt Co,Dana,Lee,exempt-import@example.test,true,RS-99-1234,Net 30\n2,Plain Co,Sam,Poe,plain-import@example.test,false,,' })
+      assert.equal(r.created, 2)
+      const c = (email) => db.prepare('SELECT tax_exempt, tax_exempt_id, payment_term FROM contacts WHERE email=?').get(email)
+      assert.deepEqual({ ...c('exempt-import@example.test') }, { tax_exempt: 1, tax_exempt_id: 'RS-99-1234', payment_term: 'net_30' })
+      assert.deepEqual({ ...c('plain-import@example.test') }, { tax_exempt: 0, tax_exempt_id: '', payment_term: 'net_15' })
+    })
+
     await t.test('contact import refuses a row with two email addresses, with a reason', async () => {
       const r = await ok('/api/import/contacts', { text: 'Name,Email\nTwo Address Co,"a@example.test, b@example.test"\nOne Address Co,one-address@example.test' })
       assert.equal(r.created, 1)

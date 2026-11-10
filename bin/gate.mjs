@@ -4481,7 +4481,7 @@ section('an interrupted import reports what it actually wrote')
     ]) {
       const at = src.indexOf(route)
       assert.ok(at > 0, `${route} moved`)
-      const body = src.slice(at, at + 12000)
+      const body = src.slice(at, at + 20000) // the orders route grew with the 1.39 payment/tax columns
       assert.match(body, /interruptedImportReport/, `${why} still lets a failing batch reach the generic handler`)
     }
   })

@@ -4,7 +4,7 @@ Customers → Import CSV and Import order history now offer “Match your column
 
 The same field-to-header `mapping` object is accepted by JSON and multipart requests to `/api/import/contacts` and `/api/import/orders`. `mapping_only: true` returns headers, examples, field names and suggested mapping without writing data. Invalid fields or missing mapped headers return 400. Existing callers omitting mapping retain automatic synonym fallback behavior.
 
-The UI retains strict paid/unpaid/quote review. Mapping a production-completed column does not establish payment. Partial-payment reconciliation, artwork/attachments, custom-field migration and active-production migration remain separate gaps. Customer deduplication uses email; rows without email need manual duplicate review. Choices apply to the current import and are not saved as reusable import profiles yet.
+The UI retains strict paid/unpaid/quote review. Mapping a production-completed column does not establish payment. Since 1.39 the order mapper also offers subtotal, tax, amount paid, balance, payment due date, PO number and title (job name), and the customer mapper offers tax exempt, resale number and payment terms; a mapped amount-paid or balance column settles paid / part-paid / unpaid. Artwork/attachments, custom-field migration and active-production migration remain separate gaps. Customer deduplication uses email; rows without email need manual duplicate review. Choices apply to the current import and are not saved as reusable import profiles yet.
 
 ## Switcher presets (customer import)
 
