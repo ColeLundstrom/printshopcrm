@@ -76,3 +76,34 @@ A job's Profitability card says which was used for its blanks: live distributor 
 catalog estimate, or **approximate — blank not in your catalog** when the style was not found and
 the cost was borrowed from a similar garment. Add that blank to make the number real. Built-in rows
 can be corrected but not removed; blanks you added can be taken out.
+
+## QuickBooks Online
+
+Open **Books & A/R → QuickBooks Online**. The connection is **one-way: PrintShopCRM → QuickBooks**. Customers, invoices and payments are sent to QuickBooks; nothing is read back into the shop.
+
+Only the shop owner can set it up. It uses an Intuit app that belongs to your shop:
+
+1. At developer.intuit.com open **My Hub → App dashboard**, create an app with the **Accounting** scope, and open its **Keys & credentials**.
+2. Copy the **Redirect URI** shown on the card into the app’s Redirect URIs. On a hosted install set `PSC_PUBLIC_URL` so this address is the public one.
+3. Paste the app’s **Client ID** and **Client Secret** on the card, choose Production (your real books) or Sandbox (an Intuit test company), and save. The secret is stored on the server and never shown again.
+4. Press **Connect QuickBooks** and approve access to your company. The card then names the company it is connected to.
+
+What is sent:
+
+- **Customers** are matched by display name and created when missing.
+- **Invoices** carry the invoice number, the shop-local invoice date and due date, and one line per quoted line.
+- **Sales tax** is sent as its own line through an item named “Sales Tax (PrintShopCRM)”, which is created on the first taxed invoice and mapped to a “Sales Tax Payable” liability account. To post it elsewhere, change that item’s account in QuickBooks. If QuickBooks’ automatic sales tax is also on, mark the customer or invoice non-taxable there; the card reports an invoice whose total in QuickBooks differs from the shop’s. The older behaviour (a plain line, which counts as income) is still available under **App keys and options**.
+- **Payments** are applied to their invoice with the shop-local payment date.
+- **Voids** void the invoice in QuickBooks when no money is recorded on it.
+
+What is not sent: invoice credits, card refunds, and a voided invoice that has money on it. Those rows appear as **Enter by hand** with the reason; enter them in QuickBooks and press **Mark done**. They never hold up other invoices.
+
+The card shows every invoice as Synced, Waiting, Will retry, Failed or Enter by hand, with the reason in plain words. **Sync now** sends everything waiting; **Retry all failed** puts failed rows back on the queue. A failed push is retried automatically up to six times with increasing gaps. If the sign-in expires or is revoked, the card says **QuickBooks needs to be reconnected** and everything waiting stays queued until the owner reconnects.
+
+**Disconnect QuickBooks** removes the keys and tokens from the shop. Nothing already in QuickBooks is changed.
+
+### Export for Xero
+
+There is no Xero connection. **Export for Xero** on the same card downloads invoices as a CSV in Xero’s sales-invoice import layout for a date range in the shop’s time zone. Import it in Xero under Invoices → Import; Xero creates drafts for you to approve. Set the sales account code and the tax rate name to match your Xero organisation (defaults: `200` and `Tax on Sales`). Dates are written month-first for a US-English shop and day-first otherwise; add `&date=dmy` or `&date=mdy` to the download address to force one.
+
+QuickBooks Desktop users can still download an IIF file from the same card.

@@ -83,6 +83,7 @@ import { ask } from './lib/assistant.mjs'
 import { initSuppliers, listGarments, supplierStatus, lookupLive, buildPurchaseOrder, buildJobPurchaseOrder, submitPurchaseOrder, blankCost, blankCostLabel, createPurchaseOrder, getPurchaseOrder, purchaseOrdersForJob, receivePurchaseOrder, poAlreadySent, purchaseOrderReview, confirmManualPurchaseOrder } from './lib/suppliers.mjs'
 import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
 import * as qbo from './lib/quickbooks.mjs'
+import { registerQuickbooksRoutes } from './lib/quickbooks-routes.mjs'
 import * as gdrive from './lib/gdrive.mjs'
 import { liveInventory } from './lib/suppliers.mjs'
 import { registerStockRoutes } from './lib/stock-routes.mjs'
@@ -7799,16 +7800,14 @@ app.post('/api/developers/deliveries/:id/redeliver', requireRole('manager'), wra
 
 /* ================= QUICKBOOKS ONLINE ================= */
 
-const QBO_REDIRECT = (req) => `${req.protocol}://${req.get('host')}/api/qbo/callback`
+// The address registered in the shop's Intuit app must be the one the card shows, so both read the
+// operator's configured public URL first (a proxy's Host header is not what Intuit redirects to).
+const QBO_REDIRECT = (req) => `${publicOrigin(req)}/api/qbo/callback`
 
-/** Start the Intuit OAuth consent flow. */
-app.get('/api/qbo/connect', requireRole('manager'), wrap((req, res) => {
+/** Start the Intuit OAuth consent flow. Owner-only: this decides which company's books the shop writes to. */
+app.get('/api/qbo/connect', requireRole('owner'), wrap((req, res) => {
   const s = getSettings()
-  // Not "in Settings": there is no QuickBooks card on that screen and never has been. The keys are
-  // in SETTING_DEFAULTS so PUT /api/settings stores them, but nothing renders an input for either,
-  // so a shop sent to Settings reads eleven cards, finds nothing, and concludes the product is
-  // broken. Say what is actually true, and name the export that does work today.
-  if (!s.qbo_client_id) return res.status(400).json({ error: 'QuickBooks Online has no setup screen yet — its app Client ID and Secret can currently only be set through the API (PUT /api/settings). The “Export to QuickBooks” button on the Profitability screen produces an IIF file that imports today.' })
+  if (!s.qbo_client_id || !s.qbo_client_secret) return res.status(400).json({ code: 'qbo_keys_missing', error: 'Add your Intuit app’s Client ID and Client Secret first — Books → QuickBooks Online.' })
   const state = crypto.randomBytes(12).toString('base64url')
   setSetting('qbo_oauth_state', state)
   res.json({ url: qbo.authorizeUrl({ clientId: s.qbo_client_id, redirectUri: QBO_REDIRECT(req), state }) })
@@ -7852,7 +7851,7 @@ function clearQboMappings() {
 }
 
 app.get('/api/qbo/callback', wrap(async (req, res) => {
-  if (!hasRole(req, 'manager')) return res.status(403).send('Connecting QuickBooks needs manager access. Ask an owner or manager to finish this.')
+  if (!hasRole(req, 'owner')) return res.status(403).send('Connecting QuickBooks needs the shop owner. Ask the owner to finish this.')
   const s = getSettings()
   if (!req.query.state || req.query.state !== s.qbo_oauth_state) return res.status(400).send('QuickBooks connection expired — try again.')
   const r = await qbo.exchangeCode({ clientId: s.qbo_client_id, clientSecret: s.qbo_client_secret, code: String(req.query.code || ''), redirectUri: QBO_REDIRECT(req) })
@@ -7890,8 +7889,13 @@ app.get('/api/qbo/callback', wrap(async (req, res) => {
   setSetting('qbo_token_expires', String(r.expiresAt || ''))
   setSetting('qbo_last_realm_id', realm)
   setSetting('qbo_oauth_state', '')
-  logActivity('note', 'QuickBooks Online connected', {})
-  res.redirect('/#/settings?qbo=connected')
+  setSetting('qbo_needs_reconnect', '')
+  // Which company is this? Shown on the card so nobody connects the wrong books and finds out at
+  // month end. A failure here is not a failed connection — the name is filled in on the next sync.
+  const info = await qbo.companyInfo({ realmId: realm, accessToken: r.accessToken, apiBase: qbo.apiBaseFor(s.qbo_environment) })
+  setSetting('qbo_company_name', info.ok ? String(info.name || '').slice(0, 120) : '')
+  logActivity('note', `QuickBooks Online connected${info.ok && info.name ? ` — ${info.name}` : ''}`, {})
+  res.redirect('/#/books?qbo=connected')
 }))
 
 /* ================= GOOGLE DRIVE (art storage) ================= */
@@ -8003,10 +8007,11 @@ function syncInvoiceToQbo(invoiceId) {
 }
 
 async function syncInvoiceToQboInner(invoiceId) {
-  if(get('SELECT 1 FROM invoice_credits WHERE invoice_id=?',Number(invoiceId))) return {ok:false,error:'This invoice has credit adjustments. Reconcile the credit in QuickBooks; automatic credit documents are not supported yet.'}
-  if(get("SELECT 1 FROM payments WHERE invoice_id=? AND stripe_session LIKE 'reversal:%'",Number(invoiceId))) return {ok:false,error:'This invoice has processor reversals. Reconcile the refund/void in QuickBooks before syncing; automatic refund documents are not supported yet.'}
+  if(get('SELECT 1 FROM invoice_credits WHERE invoice_id=?',Number(invoiceId))) return {ok:false,manual:true,error:'This invoice has a credit on it. Enter the credit memo in QuickBooks by hand, then mark this row done — credits are not pushed automatically.'}
+  if(get("SELECT 1 FROM payments WHERE invoice_id=? AND stripe_session LIKE 'reversal:%'",Number(invoiceId))) return {ok:false,manual:true,error:'This invoice has a card refund or void on it. Enter the refund in QuickBooks by hand, then mark this row done — refunds are not pushed automatically.'}
   const s = getSettings()
-  if (!s.qbo_realm_id || !s.qbo_refresh_token) return { ok: false, error: 'QuickBooks is not connected' }
+  if (!s.qbo_realm_id || !s.qbo_refresh_token) return { ok: false, own: true, error: 'QuickBooks is not connected' }
+  const apiBase = qbo.apiBaseFor(s.qbo_environment)
   const contactOf = (id) => get('SELECT * FROM contacts WHERE id = ?', id)
   const out = await qbo.withRefresh({
     clientId: s.qbo_client_id, clientSecret: s.qbo_client_secret, refreshToken: s.qbo_refresh_token,
@@ -8028,16 +8033,16 @@ async function syncInvoiceToQboInner(invoiceId) {
        *    against a voided invoice — park it for a human rather than invent a document. */
       if (inv.status === 'void') {
         if (get('SELECT 1 FROM payments WHERE invoice_id = ?', inv.id)) {
-          return { ok: false, error: `${inv.invoice_number} is voided but has money recorded on it — refund it at the processor and reconcile it in QuickBooks by hand; a voided invoice is never pushed as open A/R.` }
+          return { ok: false, manual: true, error: `${inv.invoice_number} is voided but has money recorded on it — refund it at the processor and reconcile it in QuickBooks by hand; a voided invoice is never pushed as open A/R.` }
         }
         if (!inv.qbo_id) return { ok: true, qbo_id: '', skipped: 'void' }
-        const voided = await qbo.voidInvoice({ realmId: s.qbo_realm_id, accessToken, qboId: inv.qbo_id, syncToken: inv.qbo_sync_token ?? '0' })
+        const voided = await qbo.voidInvoice({ realmId: s.qbo_realm_id, accessToken, apiBase, qboId: inv.qbo_id, syncToken: inv.qbo_sync_token ?? '0' })
         if (!voided.ok) return voided
         run('UPDATE invoices SET qbo_sync_token = ? WHERE id = ?', String(voided.syncToken ?? inv.qbo_sync_token ?? ''), inv.id)
         return { ok: true, qbo_id: inv.qbo_id }
       }
       const contact = contactOf(inv.contact_id)
-      const est = inv.estimate_id ? get('SELECT items FROM estimates WHERE id = ?', inv.estimate_id) : null
+      const est = inv.estimate_id ? get('SELECT items, tax FROM estimates WHERE id = ?', inv.estimate_id) : null
       const items = est ? parse(est.items, []) : []
       const lines = items.map((it) => ({ description: it.description, amount: lineAmount(it, getUpcharges()) }))
 
@@ -8048,49 +8053,90 @@ async function syncInvoiceToQboInner(invoiceId) {
       const lineSum = round2(lines.reduce((t, l) => t + (Number(l.amount) || 0), 0))
       const taxAmount = round2((Number(inv.amount_due) || 0) - lineSum)
       if (Math.abs(taxAmount) > 0.005) {
-        lines.push({ description: 'Sales tax', amount: taxAmount, qty: 1 })
+        // Sales tax is a liability, not income. When the gap IS the quote's tax, the line goes
+        // through an item mapped to Sales Tax Payable (lib/quickbooks.mjs ensureTaxItem); pushed
+        // as a plain line it posted to income and overstated revenue by the tax. A shop that
+        // wants the old plain line sets qbo_tax_mode = 'income_line'. If QuickBooks will not give
+        // us the item, the push stops with something a bookkeeper can act on — never a guess.
+        const isTax = est && Math.abs(round2(Number(est.tax) || 0) - taxAmount) <= 0.005
+        let itemRef = ''
+        if (isTax && s.qbo_tax_mode !== 'income_line') {
+          itemRef = getSettings().qbo_tax_item_id || ''
+          if (!itemRef) {
+            const item = await qbo.ensureTaxItem({ realmId: s.qbo_realm_id, accessToken, apiBase })
+            if (!item.ok) {
+              if (qbo.needsReconnect(item)) return item
+              return { ok: false, own: true, error: `QuickBooks would not set up the “${qbo.TAX_ITEM_NAME}” item sales tax is posted through (${String(item.error || 'no reason given').slice(0, 160)}). In QuickBooks, create a Service item with exactly that name mapped to your sales tax liability account, then retry.` }
+            }
+            itemRef = String(item.id || '')
+            if (itemRef) setSetting('qbo_tax_item_id', itemRef)
+          }
+        }
+        lines.push({ description: isTax ? 'Sales tax' : 'Other charges', amount: taxAmount, qty: 1, ...(itemRef ? { itemRef } : {}) })
       }
       const pushSum = round2(lines.reduce((t, l) => t + (Number(l.amount) || 0), 0))
       if (Math.abs(pushSum - (Number(inv.amount_due) || 0)) > 0.005) {
-        return { ok: false, error: `refusing to push: lines total ${money(pushSum)} but the invoice is ${money(inv.amount_due)} — fix the invoice, then retry` }
+        return { ok: false, own: true, error: `Not sent: the lines add up to ${money(pushSum)} but the invoice is ${money(inv.amount_due)}. Fix the invoice, then retry.` }
       }
 
       // Customer: reuse the persisted mapping; resolve + persist on first contact.
       let custId = contact?.qbo_id || ''
       if (!custId) {
-        const cust = await qbo.ensureCustomer({ realmId: s.qbo_realm_id, accessToken, contact })
+        const cust = await qbo.ensureCustomer({ realmId: s.qbo_realm_id, accessToken, apiBase, contact })
         if (!cust.ok) return cust
         custId = cust.id
         // Never write a non-id into an id column. ensureCustomer returns { ok: true, id: r.data
         // ?.Customer?.Id }, so a 200 with an unreadable body (a TLS-inspecting proxy, an nginx
         // error page) yields id === undefined and this stored the literal string 'undefined' —
         // which then short-circuits ensureCustomer for that customer on EVERY future invoice.
-        if (!custId) return { ok: false, error: 'QuickBooks accepted the customer but returned no id — nothing was recorded; retry' }
+        if (!custId) return { ok: false, own: true, error: 'QuickBooks accepted the customer but returned no id. Nothing was recorded — retry.' }
         if (contact) run('UPDATE contacts SET qbo_id = ? WHERE id = ?', String(custId), contact.id)
       }
       // Invoice: create, or update in place when we already hold its QBO id + current SyncToken.
       // QBO rotates the token on every write and rejects a stale one (error 5010).
       const pushed = await qbo.pushInvoice({
-        realmId: s.qbo_realm_id, accessToken, customer: custId, lines,
-        invoice: inv.qbo_id ? { ...inv, qboId: inv.qbo_id, syncToken: inv.qbo_sync_token ?? '0' } : inv,
+        realmId: s.qbo_realm_id, accessToken, apiBase, customer: custId, lines,
+        // The shop's calendar date, not the UTC stamp: an invoice raised at 6pm in California is
+        // not tomorrow's invoice in the books.
+        invoice: { ...inv, txn_date: localDateOf(inv.created_at), ...(inv.qbo_id ? { qboId: inv.qbo_id, syncToken: inv.qbo_sync_token ?? '0' } : {}) },
       })
       if (!pushed.ok) return pushed
       run('UPDATE invoices SET qbo_id = ?, qbo_sync_token = ? WHERE id = ?', String(pushed.id), String(pushed.syncToken ?? ''), inv.id)
+      // QuickBooks answers with what the document now totals. If it added tax of its own (automatic
+      // sales tax on the customer) the two disagree, and the payment that follows would not match.
+      if (pushed.totalAmt != null && Math.abs(Number(pushed.totalAmt) - (Number(inv.amount_due) || 0)) > 0.005)
+        return { ok: false, own: true, qbo_id: pushed.id, error: `QuickBooks shows ${inv.invoice_number} as ${money(Number(pushed.totalAmt))} but it is ${money(inv.amount_due)} here — QuickBooks is likely adding its own sales tax. Mark the customer or the invoice non-taxable in QuickBooks (the tax is already on the invoice as its own line), then retry.` }
       // Payments: everything recorded here that QBO hasn't seen yet.
       for (const p of all("SELECT * FROM payments WHERE invoice_id = ? AND (qbo_id IS NULL OR qbo_id = '')", inv.id)) {
-        const pr = await qbo.pushPayment({ realmId: s.qbo_realm_id, accessToken, payment: p, qboInvoiceId: pushed.id, customerId: custId })
-        if (!pr.ok) return { ok: false, error: `invoice synced, payment ${p.id} failed: ${pr.error || `HTTP ${pr.status || '?'}`}`, qbo_id: pushed.id }
+        const pr = await qbo.pushPayment({ realmId: s.qbo_realm_id, accessToken, apiBase, payment: { ...p, txn_date: localDateOf(p.created_at) }, qboInvoiceId: pushed.id, customerId: custId })
+        if (!pr.ok) return qbo.needsReconnect(pr) ? pr : { ok: false, own: true, qbo_id: pushed.id, error: `The invoice is in QuickBooks, but a ${money(p.amount)} payment on it was not accepted. ${qbo.friendlyError(pr, 'the payment')}` }
         run('UPDATE payments SET qbo_id = ? WHERE id = ?', String(pr.id), p.id)
       }
       return { ok: true, qbo_id: pushed.id }
     },
   })
-  return out.ok ? { ok: true, qbo_id: out.qbo_id || out.id } : { ok: false, error: out.error || `HTTP ${out.status || '?'}`, qbo_id: out.qbo_id }
+  if (out.ok) {
+    setSetting('qbo_last_sync_at', now())
+    if (getSettings().qbo_needs_reconnect) setSetting('qbo_needs_reconnect', '')
+    return { ok: true, qbo_id: out.qbo_id || out.id }
+  }
+  // The connection itself is gone (revoked, expired, wrong keys). That is one problem with one
+  // fix, not a failure of this invoice — say so once on the card instead of failing every row.
+  if (!out.own && !out.manual && qbo.needsReconnect(out)) {
+    setSetting('qbo_needs_reconnect', '1')
+    return { ok: false, reconnect: true, error: qbo.friendlyError(out), qbo_id: out.qbo_id }
+  }
+  const invNo = get('SELECT invoice_number FROM invoices WHERE id = ?', Number(invoiceId))?.invoice_number
+  return { ok: false, manual: !!out.manual, qbo_id: out.qbo_id,
+    error: out.own || out.manual ? String(out.error) : qbo.friendlyError(out, invNo || 'this invoice') }
 }
 
 /** Work the reconciliation queue: due rows, oldest first, exponential backoff, 6 tries then parked. */
-async function processQboQueue(limit = 5) {
+async function processQboQueue(limit = 5, { force = false } = {}) {
   if (!qboConnected()) return 0
+  // A lapsed sign-in fails every row the same way. Wait for the reconnect instead of burning each
+  // row's six attempts on it; Sync now (force) is the owner asking to try anyway.
+  if (getSettings().qbo_needs_reconnect && !force) return 0
   // Reclaim rows abandoned by a crash/restart mid-push before looking for new work.
   run("UPDATE qbo_sync SET status = 'retrying' WHERE status = 'syncing' AND updated_at < datetime('now', '-15 minutes')")
   const due = all("SELECT * FROM qbo_sync WHERE status IN ('pending','retrying') AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY id LIMIT ?", now(), limit)
@@ -8108,6 +8154,14 @@ async function processQboQueue(limit = 5) {
       const inv = get('SELECT * FROM invoices WHERE id = ?', row.entity_id)
       if (inv) logActivity('note', `Invoice ${inv.invoice_number} synced to QuickBooks`, { contact_id: inv.contact_id })
       done++
+    } else if (r.reconnect) {
+      // Not this invoice's fault: back on the queue untouched, and stop — the rest would fail the same way.
+      run("UPDATE qbo_sync SET status = 'pending', error = ?, updated_at = ? WHERE id = ?", String(r.error || '').slice(0, 400), now(), row.id)
+      break
+    } else if (r.manual) {
+      // Something only a person can enter (a credit memo, a refund). Retrying cannot fix it, so it
+      // is parked at once with the reason, and everything behind it keeps moving.
+      run("UPDATE qbo_sync SET status = 'manual', error = ?, attempts = ?, next_attempt_at = NULL, updated_at = ? WHERE id = ?", String(r.error || '').slice(0, 400), attempts, now(), row.id)
     } else {
       const backoffMin = Math.min(5 * 2 ** attempts, 240)
       const next = new Date(Date.now() + backoffMin * 60_000).toISOString().slice(0, 19).replace('T', ' ')
@@ -8120,19 +8174,20 @@ async function processQboQueue(limit = 5) {
 
 /** Manual "sync this invoice now" — records the attempt in the queue either way. */
 app.post('/api/invoices/:id/qbo-sync', requireRole('manager'), wrap(async (req, res) => {
-  if (!qboConnected()) return res.status(400).json({ error: 'QuickBooks Online is not connected, and has no setup screen yet — see GET /api/qbo/connect. The “Export to QuickBooks” button on the Profitability screen produces an IIF file that imports today.' })
+  if (!qboConnected()) return res.status(400).json({ code: 'qbo_not_connected', error: 'QuickBooks Online is not connected — connect it under Books → QuickBooks Online. The “Export to QuickBooks” button on the Profitability screen produces an IIF file that imports today.' })
   const inv = get('SELECT * FROM invoices WHERE id = ?', +req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const r = await syncInvoiceToQbo(inv.id)
-  const open = get("SELECT id FROM qbo_sync WHERE entity = 'invoice' AND entity_id = ? AND status IN ('pending','retrying','failed')", inv.id)
+  const open = get("SELECT id FROM qbo_sync WHERE entity = 'invoice' AND entity_id = ? AND status IN ('pending','retrying','failed','manual')", inv.id)
   if (r.ok) {
     if (open) run("UPDATE qbo_sync SET status = 'ok', qbo_id = ?, error = NULL, updated_at = ? WHERE id = ?", String(r.qbo_id || ''), now(), open.id)
     else run("INSERT INTO qbo_sync (entity, entity_id, status, qbo_id, attempts) VALUES ('invoice', ?, 'ok', ?, 1)", inv.id, String(r.qbo_id || ''))
     logActivity('note', `Invoice ${inv.invoice_number} synced to QuickBooks`, { contact_id: inv.contact_id })
     return res.json({ ok: true, qbo_id: r.qbo_id })
   }
-  if (open) run("UPDATE qbo_sync SET status = 'retrying', error = ?, updated_at = ? WHERE id = ?", String(r.error).slice(0, 400), now(), open.id)
-  else run("INSERT INTO qbo_sync (entity, entity_id, status, error, attempts, next_attempt_at) VALUES ('invoice', ?, 'retrying', ?, 1, ?)", inv.id, String(r.error).slice(0, 400), now())
+  const failAs = r.manual ? 'manual' : r.reconnect ? 'pending' : 'retrying'
+  if (open) run("UPDATE qbo_sync SET status = ?, error = ?, updated_at = ? WHERE id = ?", failAs, String(r.error).slice(0, 400), now(), open.id)
+  else run("INSERT INTO qbo_sync (entity, entity_id, status, error, attempts, next_attempt_at) VALUES ('invoice', ?, ?, ?, 1, ?)", inv.id, failAs, String(r.error).slice(0, 400), now())
   res.status(502).json({ error: r.error || 'QuickBooks sync failed' })
 }))
 
@@ -8140,7 +8195,7 @@ app.post('/api/invoices/:id/qbo-sync', requireRole('manager'), wrap(async (req, 
 app.get('/api/qbo/queue', requireRole('manager'), wrap((_req, res) => {
   const rows = all(`SELECT q.*, i.invoice_number, i.amount_due, i.status AS invoice_status, c.name AS contact_name
     FROM qbo_sync q LEFT JOIN invoices i ON i.id = q.entity_id LEFT JOIN contacts c ON c.id = i.contact_id
-    ORDER BY CASE q.status WHEN 'failed' THEN 0 WHEN 'retrying' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END, q.updated_at DESC LIMIT 200`)
+    ORDER BY CASE q.status WHEN 'failed' THEN 0 WHEN 'manual' THEN 0 WHEN 'retrying' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END, q.updated_at DESC LIMIT 200`)
   res.json({
     connected: qboConnected(),
     autosync: getSettings().qbo_autosync !== 'off',
@@ -8148,6 +8203,7 @@ app.get('/api/qbo/queue', requireRole('manager'), wrap((_req, res) => {
       ok: get("SELECT COUNT(*) AS n FROM qbo_sync WHERE status = 'ok'").n,
       open: get("SELECT COUNT(*) AS n FROM qbo_sync WHERE status IN ('pending','retrying','syncing')").n,
       failed: get("SELECT COUNT(*) AS n FROM qbo_sync WHERE status = 'failed'").n,
+      manual: get("SELECT COUNT(*) AS n FROM qbo_sync WHERE status = 'manual'").n,
     },
     rows,
   })
@@ -8157,7 +8213,7 @@ app.post('/api/qbo/queue/:id/retry', requireRole('manager'), wrap(async (req, re
   if (!row) return res.status(404).json({ error: 'Not found' })
   const r = await syncInvoiceToQbo(row.entity_id)
   if (r.ok) run("UPDATE qbo_sync SET status = 'ok', qbo_id = ?, error = NULL, attempts = attempts + 1, updated_at = ? WHERE id = ?", String(r.qbo_id || ''), now(), row.id)
-  else run("UPDATE qbo_sync SET status = 'retrying', error = ?, attempts = attempts + 1, updated_at = ?, next_attempt_at = ? WHERE id = ?", String(r.error).slice(0, 400), now(), new Date(Date.now() + 600_000).toISOString().slice(0, 19).replace('T', ' '), row.id)
+  else run("UPDATE qbo_sync SET status = ?, error = ?, attempts = attempts + 1, updated_at = ?, next_attempt_at = ? WHERE id = ?", r.manual ? 'manual' : r.reconnect ? 'pending' : 'retrying', String(r.error).slice(0, 400), now(), new Date(Date.now() + 600_000).toISOString().slice(0, 19).replace('T', ' '), row.id)
   res.status(r.ok ? 200 : 502).json(r.ok ? { ok: true, qbo_id: r.qbo_id } : { error: r.error })
 }))
 app.post('/api/qbo/queue/:id/dismiss', requireRole('manager'), wrap((req, res) => {
@@ -8921,6 +8977,14 @@ app.put('/api/settings', requireRole('manager'), wrap(async (req, res) => {
     if (OWNER_PAYMENT_KEYS.some((k) => k in patch && String(patch[k] ?? '') !== '' && String(patch[k]) !== String(cur[k] ?? '')))
       return res.status(403).json({ error: 'Only the shop owner can change where card payments go.', code: 'owner_only_payments' })
   }
+  // Which company's books the shop writes to is the owner's decision too (Books → QuickBooks Online).
+  if (!hasRole(req, 'owner')) {
+    const cur = getSettings()
+    if (['qbo_client_id', 'qbo_client_secret', 'qbo_environment', 'qbo_realm_id', 'qbo_access_token', 'qbo_refresh_token'].some((k) => k in patch && String(patch[k] ?? '') !== '' && String(patch[k]) !== String(cur[k] ?? '')))
+      return res.status(403).json({ error: 'Only the shop owner can change the QuickBooks connection.', code: 'owner_only_quickbooks' })
+  }
+  if ('qbo_environment' in patch && !['production', 'sandbox'].includes(patch.qbo_environment)) return res.status(400).json({ error: 'Choose production or sandbox.' })
+  if ('qbo_tax_mode' in patch && !['liability', 'income_line'].includes(patch.qbo_tax_mode)) return res.status(400).json({ error: 'Choose how sales tax is posted: liability or income_line.' })
   // Size keys are printed on documents and in Settings; keep them to what a size name can be.
   if (patch.size_upcharges && typeof patch.size_upcharges === 'object' && !Array.isArray(patch.size_upcharges)
     && Object.keys(patch.size_upcharges).some((k) => k.length > 24 || /[<>"'&`\\\u0000-\u001f]/.test(k)))
@@ -8994,7 +9058,7 @@ const DISCONNECT_GROUPS = {
   twilio: ['twilio_sid', 'twilio_token', 'twilio_from'],
   smtp: ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_secure'],
   ai: ['ai_api_key'],
-  quickbooks: ['qbo_realm_id', 'qbo_client_id', 'qbo_client_secret', 'qbo_access_token', 'qbo_refresh_token', 'qbo_token_expires', 'qbo_oauth_state'],
+  quickbooks: ['qbo_realm_id', 'qbo_client_id', 'qbo_client_secret', 'qbo_access_token', 'qbo_refresh_token', 'qbo_token_expires', 'qbo_oauth_state', 'qbo_company_name', 'qbo_needs_reconnect', 'qbo_tax_item_id'],
   ss: ['ss_account', 'ss_api_key'],
   sanmar: ['sanmar_user', 'sanmar_pass', 'sanmar_cust'],
   alpha: ['alpha_account', 'alpha_pass'],
@@ -9604,6 +9668,7 @@ const merchStores = registerMerchRoutes(app,{pPage,page,esc,logoImg,joinDot,publ
   payments:{ready:(s)=>paymentsReady(s),providerName:(s)=>providerName(s),startCheckout:(s,args)=>startCheckout(s,args),token,checkToken,collectionError,
     notify:(n)=>rtBroadcast('notify',n),invoicePaid:(id,effects)=>{announceInvoicePaid(id,effects);enqueueQbo(id)}}})
 registerReportRoutes(app,{requireRole,wrap})
+registerQuickbooksRoutes(app,{requireRole,hasRole,wrap,publicOrigin,processQboQueue:(...a)=>processQboQueue(...a),qboConnected:()=>qboConnected(),csvCell:(v)=>csvCell(v),logActivity})
 
 app.get('/p/estimate/:id', pPage((req, res) => {
   const id = +req.params.id

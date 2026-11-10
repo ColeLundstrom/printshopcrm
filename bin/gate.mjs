@@ -6509,11 +6509,14 @@ await t('…and finishing a connection takes the same role as starting one', asy
   const { fileURLToPath } = await import('node:url')
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const src = readFileSync(join(root, 'server.mjs'), 'utf8')
-  for (const [route, what] of [['/api/qbo/callback', 'QuickBooks'], ['/api/gdrive/callback', 'Google Drive']]) {
+  // 1.40: QuickBooks is started and finished by the OWNER (it decides whose books the shop writes
+  // to); Drive stays a manager's. The rule is unchanged: the callback takes the role the start did.
+  for (const [route, what, role, start] of [['/api/qbo/callback', 'QuickBooks', 'owner', "app.get('/api/qbo/connect', requireRole('owner')"], ['/api/gdrive/callback', 'Google Drive', 'manager', '']]) {
+    if (start) assert.ok(src.includes(start), `${what}: starting the flow takes ${role}`)
     const i = src.indexOf(`app.get('${route}'`)
     assert.ok(i > 0, `${route} should still be there`)
     const body = src.slice(i, src.indexOf('\n}))', i))
-    assert.match(body, /hasRole\(req, 'manager'\)/,
+    assert.ok(body.includes(`hasRole(req, '${role}')`),
       `${what}: the state nonce proves a flow was started, never who is finishing it`)
     // Plain text, not requireRole's JSON — this response is read by a human in an address bar.
     assert.match(body, /res\.status\(403\)\.send\(/, `${what}: a browser redirect lands here, so the refusal has to be readable`)
@@ -6521,7 +6524,7 @@ await t('…and finishing a connection takes the same role as starting one', asy
     assert.ok(body.indexOf('hasRole') < body.indexOf('oauth_state'), `${what}: gate before you compare`)
   }
   // The routes it mirrors, which have always been gated.
-  assert.match(src, /app\.get\('\/api\/qbo\/connect', requireRole\('manager'\)/, 'the connect route keeps its gate')
+  assert.match(src, /app\.get\('\/api\/qbo\/connect', requireRole\('owner'\)/, 'the connect route keeps its gate')
   assert.match(src, /app\.get\('\/api\/gdrive\/connect', requireRole\('manager'\)/, 'and so does the Drive one')
 })
 

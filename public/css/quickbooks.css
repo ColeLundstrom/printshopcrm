@@ -1,0 +1,24 @@
+/* Books → QuickBooks Online card and the Xero export. Layout only; colour comes from app.css tokens. */
+#qbo-card .qbo-oneway { font-weight: 400; font-size: var(--fs-xs); margin-left: var(--sp-4); white-space: nowrap; }
+#qbo-card .t-2xs { font-size: var(--fs-2xs); }
+#qbo-card .qbo-who { margin: var(--sp-4) 0; }
+#qbo-card .qbo-counts { gap: var(--sp-8); flex-wrap: wrap; align-items: center; margin-bottom: var(--sp-6); font-size: var(--fs-sm); }
+#qbo-card .qbo-counts .qbo-push { margin-left: auto; display: flex; gap: var(--sp-4); }
+#qbo-card .qbo-log { overflow-x: auto; margin-bottom: var(--sp-6); }
+#qbo-card .qbo-detail { max-width: 340px; font-size: var(--fs-xs); overflow-wrap: anywhere; }
+#qbo-card .qbo-setup { border-top: 1px solid var(--line); padding-top: var(--sp-6); margin-top: var(--sp-6); }
+#qbo-card .qbo-setup[open] > summary { margin-bottom: var(--sp-6); }
+#qbo-card .qbo-setup summary { font-weight: 600; }
+#qbo-card .qbo-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-6); margin: var(--sp-6) 0; }
+#qbo-card .qbo-copy { gap: var(--sp-4); }
+#qbo-card .qbo-copy .input { flex: 1 1 0; min-width: 0; font-family: var(--mono, ui-monospace, monospace); font-size: var(--fs-xs); }
+#qbo-card .qbo-auto { gap: var(--sp-4); align-items: center; margin: var(--sp-4) 0 var(--sp-6); font-size: var(--fs-sm); }
+#qbo-card .qbo-actions { gap: var(--sp-4); align-items: center; flex-wrap: wrap; margin-top: var(--sp-6); }
+#qbo-card .qbo-alert { border: 1px solid var(--red, #e5484d); border-radius: var(--r-md); padding: var(--sp-6); margin: var(--sp-4) 0 var(--sp-6); display: flex; flex-wrap: wrap; gap: var(--sp-4); align-items: center; }
+#qbo-card .qbo-alert .btn { margin-left: auto; }
+@media (max-width: 720px) {
+  #qbo-card .qbo-oneway { display: block; margin: var(--sp-2) 0 0; white-space: normal; }
+  #qbo-card .qbo-grid { grid-template-columns: 1fr; }
+  #qbo-card .qbo-counts .qbo-push { margin-left: 0; width: 100%; }
+  #qbo-card .qbo-detail { max-width: none; }
+}

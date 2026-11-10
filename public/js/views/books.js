@@ -1,4 +1,4 @@
-import { api, $, esc, money, setPage, on, toast, empty, confirmModal, onOnce } from '../core.js'
+import { api, $, esc, money, setPage, on, toast, empty, confirmModal, onOnce, onceClick, fmtDate, copyText } from '../core.js'
 
 /**
  * Books — receivables, saved collection-review flags and the QuickBooks reconciliation queue.
@@ -17,11 +17,12 @@ export async function booksView() {
    * page they were sent to showed an error instead of the receivables report they can read.
    * The QuickBooks half degrades to a line that says who can see it; the report renders. */
   try {
-    const [aging, qbo] = await Promise.all([
+    const [aging, qbo, qs] = await Promise.all([
       api.get('/api/reports/ar-aging'),
       api.get('/api/qbo/queue').catch((e) => ({ forbidden: e?.status === 403, error: e?.message || 'unavailable' })),
+      api.get('/api/qbo/status').catch(() => null),
     ])
-    if (current()) render(aging, qbo)
+    if (current()) render(aging, qbo, qs)
   } catch (error) {
     if (!current()) return
     loading.innerHTML = `<p role="alert">${esc(error.message)}</p><button class="btn" id="books-retry">Try again</button>`
@@ -29,7 +30,7 @@ export async function booksView() {
   }
 }
 
-function render(aging, qbo) {
+function render(aging, qbo, qs) {
   const t = aging.totals
   const review = aging.collection_review
   const invoiceRow = i => `<div class="card card-b" style="margin-top:10px;overflow-wrap:anywhere">
@@ -53,16 +54,89 @@ function render(aging, qbo) {
       <td class="r"><a class="btn ghost sm" href="/api/contacts/${c.contact_id}/statement.pdf" target="_blank">Statement</a></td>
     </tr>`
 
-  const qboRow = (r) => `
+  // What the status column says, in words a bookkeeper uses. `manual` is a row only a person can
+  // finish (a credit memo, a refund); it is parked at once instead of being retried six times.
+  const QBO_STATE = { ok: ['Synced', 'green'], pending: ['Waiting', 'amber'], retrying: ['Will retry', 'amber'], syncing: ['Sending…', 'amber'],
+    failed: ['Failed', 'red'], manual: ['Enter by hand', 'red'], dismissed: ['Done by hand', ''] }
+  const qboRow = (r) => { const [label, tone] = QBO_STATE[r.status] || [r.status, 'amber']; return `
     <tr>
-      <td>${esc(r.invoice_number || `#${r.entity_id}`)}<div class="dim" style="font-size:11px">${esc(r.contact_name || '')}</div></td>
-      <td class="r">${money(r.amount_due || 0)}</td>
-      <td><span class="pill ${r.status === 'ok' ? 'green' : r.status === 'failed' ? 'red' : 'amber'}">${esc(r.status)}</span></td>
-      <td class="dim" style="max-width:260px;font-size:11.5px">${esc(r.error || (r.qbo_id ? `QBO #${r.qbo_id}` : ''))}</td>
+      <td data-label="Invoice">${r.invoice_number ? `<a href="#/invoices/${r.entity_id}">${esc(r.invoice_number)}</a>` : `#${esc(r.entity_id)}`}<div class="dim t-2xs">${esc(r.contact_name || '')}</div></td>
+      <td class="r" data-label="Amount">${money(r.amount_due || 0)}</td>
+      <td data-label="Status"><span class="pill ${tone}">${esc(label)}</span></td>
+      <td class="dim qbo-detail" data-label="Detail">${esc(r.error || (r.qbo_id ? `In QuickBooks as #${r.qbo_id}` : ''))}</td>
       <td class="r">${r.status === 'dismissed'
         ? `<button class="btn ghost sm" data-qbo-requeue="${r.id}">Send to QuickBooks</button>`
+        : r.status === 'manual' ? `<button class="btn sm" data-qbo-dismiss="${r.id}">Mark done</button> <button class="btn ghost sm" data-qbo-retry="${r.id}">Retry</button>`
         : r.status !== 'ok' ? `<button class="btn sm" data-qbo-retry="${r.id}">Retry</button> <button class="btn ghost sm" data-qbo-dismiss="${r.id}">Dismiss</button>` : ''}</td>
-    </tr>`
+    </tr>` }
+
+  const owner = !!qs?.can_configure
+  const today = new Date().toISOString().slice(0, 10)
+  // Setup: the shop's own Intuit app, like every other connection here. Shown until connected,
+  // and again (collapsed) afterwards so the keys or environment can be changed.
+  const qboSetup = (open) => !qs ? '' : `
+    <details class="qbo-setup"${open ? ' open' : ''}>
+      <summary class="fold-sum">${qs.connected ? 'App keys and options' : 'Set up the connection'}</summary>
+      ${owner ? `
+      <p class="dim">QuickBooks connects through an Intuit app that belongs to your shop. Create one free at <strong>developer.intuit.com → My Hub → App dashboard</strong> (scope: Accounting), then paste its two keys below.</p>
+      <div class="field"><label class="lbl" for="qbo-redirect">Redirect URI to add in your Intuit app (Keys &amp; credentials → Redirect URIs)</label>
+      <div class="row qbo-copy"><input class="input" id="qbo-redirect" readonly value="${esc(qs.redirect_uri)}"><button class="btn ghost sm" type="button" id="qbo-copy">Copy</button></div></div>
+      <div class="qbo-grid">
+        <div class="field"><label class="lbl" for="qbo-client-id">Client ID</label><input class="input" id="qbo-client-id" autocomplete="off" spellcheck="false" value="${esc(qs.client_id)}"></div>
+        <div class="field"><label class="lbl" for="qbo-client-secret">Client Secret</label><input class="input" id="qbo-client-secret" type="password" autocomplete="new-password" placeholder="${qs.client_secret_set ? 'Saved — leave blank to keep it' : ''}"></div>
+        <div class="field"><label class="lbl" for="qbo-env">Keys are for</label><select class="input" id="qbo-env"><option value="production"${qs.environment === 'production' ? ' selected' : ''}>Production (your real books)</option><option value="sandbox"${qs.environment === 'sandbox' ? ' selected' : ''}>Sandbox (Intuit test company)</option></select></div>
+        <div class="field"><label class="lbl" for="qbo-tax">Sales tax goes to</label><select class="input" id="qbo-tax"><option value="liability"${qs.tax_mode === 'liability' ? ' selected' : ''}>${esc(qs.tax_account)} (a liability)</option><option value="income_line"${qs.tax_mode === 'income_line' ? ' selected' : ''}>A plain invoice line (counts as income)</option></select></div>
+      </div>
+      <label class="row qbo-auto"><input type="checkbox" id="qbo-autosync"${qs.autosync ? ' checked' : ''}> Send invoices and payments automatically as they happen</label>
+      <div class="row qbo-actions">
+        <button class="btn${qs.connected ? ' ghost' : qs.client_id && qs.client_secret_set ? ' ghost' : ''}" type="button" id="qbo-save">Save</button>
+        ${qs.connected ? '' : `<button class="btn${qs.client_id && qs.client_secret_set ? '' : ' ghost'}" type="button" id="qbo-connect"${qs.client_id && qs.client_secret_set ? '' : ' disabled'}>Connect QuickBooks</button>`}
+      </div>
+      <p class="dim t-2xs">Sales tax is posted through an item named “${esc(qs.tax_item)}”, created in QuickBooks on the first taxed invoice. Your keys stay on this server and are never shown again.</p>`
+      : '<p class="dim">Only the shop owner can connect QuickBooks or change its keys.</p>'}
+    </details>`
+
+  const qboXero = !qs ? '' : `
+    <details class="qbo-setup" id="xero-export">
+      <summary class="fold-sum">Export for Xero</summary>
+      <p class="dim">A file, not a connection: invoices in Xero’s own import layout. In Xero, go to Invoices → Import; they arrive as drafts for you to approve. Voided and imported-history invoices are left out.</p>
+      <div class="qbo-grid">
+        <div class="field"><label class="lbl" for="xero-from">From</label><input class="input" type="date" id="xero-from" value="${today.slice(0, 8)}01"></div>
+        <div class="field"><label class="lbl" for="xero-to">To</label><input class="input" type="date" id="xero-to" value="${today}"></div>
+        <div class="field"><label class="lbl" for="xero-account">Sales account code</label><input class="input" id="xero-account" value="200" maxlength="20"></div>
+        <div class="field"><label class="lbl" for="xero-tax">Tax rate name in Xero</label><input class="input" id="xero-tax" value="Tax on Sales" maxlength="60"></div>
+      </div>
+      <div class="row qbo-actions"><button class="btn ghost" type="button" id="xero-download">Download CSV</button></div>
+    </details>`
+
+  const qboBody = !qbo.counts
+    ? `<p class="dim">${qbo.forbidden
+        ? 'The QuickBooks queue is visible to managers and owners. The receivables report above is yours to use.'
+        : `The QuickBooks queue could not be loaded — ${esc(qbo.error || 'unavailable')}.`}</p>`
+    : !qbo.connected
+    ? `<p>Not connected. Once connected, every invoice and payment is sent to QuickBooks as it happens, and this card shows what went and what did not.</p>
+       ${qbo.counts.open ? `<p class="bad">${qbo.counts.open} invoice${qbo.counts.open === 1 ? ' is' : 's are'} waiting — connect QuickBooks and ${qbo.counts.open === 1 ? 'it' : 'they'} will go through.</p>` : ''}
+       ${qboSetup(true)}
+       <p class="dim t-2xs">Prefer a file? <a href="/api/export/quickbooks.iif">Download an IIF export</a> that imports into QuickBooks Desktop.</p>`
+    : `${qs?.needs_reconnect ? `<div class="qbo-alert" role="alert"><strong>QuickBooks needs to be reconnected.</strong> The sign-in expired or was revoked, so nothing is being sent. Everything waiting stays queued. ${owner ? '<button class="btn sm" type="button" id="qbo-connect">Reconnect QuickBooks</button>' : 'Ask the shop owner to reconnect.'}</div>` : ''}
+       <p class="qbo-who"><strong>${esc(qs?.company_name || 'QuickBooks company')}</strong>${qs?.environment === 'sandbox' ? ' <span class="pill amber">Sandbox</span>' : ''}
+         <span class="dim">· ${qs?.last_sync_at ? `last sent ${esc(fmtDate(qs.last_sync_at))}` : 'nothing sent yet'} · automatic sending ${qbo.autosync ? 'on' : 'off'}</span></p>
+       <div class="row qbo-counts">
+         <span><strong>${qbo.counts.ok}</strong> synced</span><span><strong>${qbo.counts.open}</strong> waiting</span>
+         <span${qbo.counts.failed ? ' class="bad"' : ''}><strong>${qbo.counts.failed}</strong> failed</span>
+         <span${qbo.counts.manual ? ' class="bad"' : ''}><strong>${qbo.counts.manual || 0}</strong> to enter by hand</span>
+         <span class="qbo-push"><button class="btn${qs?.needs_reconnect ? ' ghost' : ''} sm" type="button" id="qbo-sync-now">Sync now</button>
+         ${qbo.counts.failed ? '<button class="btn ghost sm" type="button" id="qbo-retry-failed">Retry all failed</button>' : ''}</span>
+       </div>
+       ${qbo.rows.length ? `<div class="qbo-log" role="region" aria-label="QuickBooks sync log" tabindex="0"><table class="tbl stack">
+         <thead><tr><th>Invoice</th><th class="r">Amount</th><th>Status</th><th>Detail</th><th></th></tr></thead>
+         <tbody>${qbo.rows.map(qboRow).join('')}</tbody>
+       </table></div>` : '<p class="dim">Nothing sent yet — the next invoice or payment will appear here.</p>'}
+       ${qboSetup(false)}
+       <div class="row qbo-actions">
+         <button class="btn ghost sm" type="button" id="qbo-disconnect">Disconnect QuickBooks</button>
+         <span class="dim t-2xs">Removes the saved keys and tokens. Nothing already in QuickBooks is touched.</span>
+       </div>`
 
   $('#view').innerHTML = `
     <div id="books-page">
@@ -89,27 +163,10 @@ function render(aging, qbo) {
       <div class="card-b"><h3>Invoice details</h3>${aging.customers.map(c => `<details style="margin-top:12px"><summary>${esc(c.company || c.name)} · ${c.invoices.length} invoice${c.invoices.length === 1 ? '' : 's'} · ${money(c.total)}</summary>${c.invoices.map(invoiceRow).join('')}</details>`).join('')}</div>` : empty('check', 'No positive balances', review?.count ? 'Review the flagged invoices above before closing the books.' : 'No non-void invoices have a positive balance.')}
     </div>
 
-    <div class="card" id="qbo-card">
-      <h2>QuickBooks sync</h2>
-      ${!qbo.counts
-        ? `<p class="dim">${qbo.forbidden
-            ? 'The QuickBooks queue is visible to managers and owners. The receivables report above is yours to use.'
-            : `The QuickBooks queue could not be loaded — ${esc(qbo.error || 'unavailable')}.`}</p>`
-        : !qbo.connected
-        ? `<p class="dim">Not connected — QuickBooks Online has no setup screen yet, so this queue stays empty. In the meantime the <a href="#/roi">Profitability</a> screen's <strong>Export to QuickBooks</strong> button produces an IIF file that imports into QuickBooks today.</p>
-           ${qbo.counts.open ? `<p class="bad">${qbo.counts.open} invoice${qbo.counts.open === 1 ? '' : 's'} waiting to sync — reconnect QuickBooks and they'll go through.</p>` : ''}`
-        : `<div class="dim" style="margin-bottom:10px">
-             ${qbo.counts.ok} synced · ${qbo.counts.open} waiting · <strong${qbo.counts.failed ? ' class="bad"' : ''}>${qbo.counts.failed} need attention</strong>
-             · auto-sync ${qbo.autosync ? 'on' : 'off'}
-           </div>
-           ${qbo.rows.length ? `<table class="tbl">
-             <tr><th>Invoice</th><th class="r">Amount</th><th>Status</th><th>Detail</th><th></th></tr>
-             ${qbo.rows.map(qboRow).join('')}
-           </table>` : '<p class="dim">No sync activity yet — record a payment and it will queue itself.</p>'}
-           <div class="row" style="gap:8px;margin-top:12px">
-             <button class="btn ghost sm" type="button" id="qbo-disconnect">Disconnect QuickBooks</button>
-             <span class="dim" style="font-size:11.5px">Removes the saved keys and tokens. Nothing already synced is touched.</span>
-           </div>`}
+    <div class="card card-b" id="qbo-card">
+      <h2>QuickBooks Online <span class="dim qbo-oneway">One-way: PrintShopCRM → QuickBooks</span></h2>
+      ${qboBody}
+      ${qbo.counts ? qboXero : ''}
     </div>
     </div>`
 
@@ -122,6 +179,43 @@ function render(aging, qbo) {
       try { await api.post('/api/settings/disconnect/quickbooks', {}); toast('QuickBooks disconnected'); booksView() }
       catch (e) { toast(e.message, true) }
     }, 'Disconnect')
+
+  // Back from Intuit's consent page: say so once, then drop the marker so a refresh does not repeat it.
+  if (/[?&]qbo=connected\b/.test(location.hash)) {
+    toast('QuickBooks connected')
+    if (typeof history !== 'undefined') history.replaceState(null, '', '#/books')
+  }
+  if ($('#qbo-copy')) $('#qbo-copy').onclick = () => copyText($('#qbo-redirect').value, 'Redirect URI copied')
+  if ($('#qbo-save')) onceClick($('#qbo-save'), 'Saving…', async () => {
+    const body = { environment: $('#qbo-env').value, tax_mode: $('#qbo-tax').value, autosync: $('#qbo-autosync').checked }
+    if ($('#qbo-client-id').value.trim()) body.client_id = $('#qbo-client-id').value.trim()
+    if ($('#qbo-client-secret').value.trim()) body.client_secret = $('#qbo-client-secret').value.trim()
+    try {
+      const r = await api.put('/api/qbo/credentials', body)
+      toast(r.needs_reconnect ? 'Saved — reconnect QuickBooks to use the new keys' : 'Saved')
+      booksView()
+    } catch (e) { toast(e.message, true) }
+  })
+  // Connect and Reconnect are the same door: Intuit's consent page, then back here.
+  if ($('#qbo-connect')) onceClick($('#qbo-connect'), 'Opening QuickBooks…', async () => {
+    try { const r = await api.get('/api/qbo/connect'); location.href = r.url }
+    catch (e) { toast(e.message, true) }
+  })
+  if ($('#qbo-sync-now')) onceClick($('#qbo-sync-now'), 'Sending…', async () => {
+    try {
+      const r = await api.post('/api/qbo/sync-now', {})
+      toast(r.needs_reconnect ? 'QuickBooks needs to be reconnected' : r.synced ? `${r.synced} sent to QuickBooks${r.waiting ? `, ${r.waiting} still waiting` : ''}` : r.waiting ? `${r.waiting} could not be sent — see the reasons below` : 'Nothing was waiting', !!r.needs_reconnect)
+      booksView()
+    } catch (e) { toast(e.message, true) }
+  })
+  if ($('#qbo-retry-failed')) onceClick($('#qbo-retry-failed'), 'Queuing…', async () => {
+    try { const r = await api.post('/api/qbo/queue/retry-failed', {}); toast(`${r.requeued} back on the queue — press Sync now to send them`); booksView() }
+    catch (e) { toast(e.message, true) }
+  })
+  if ($('#xero-download')) $('#xero-download').onclick = () => {
+    const q = new URLSearchParams({ from: $('#xero-from').value, to: $('#xero-to').value, account: $('#xero-account').value.trim() || '200', tax: $('#xero-tax').value.trim() || 'Tax on Sales' })
+    location.href = `/api/xero/invoices.csv?${q}`
+  }
 
   onOnce($('#view'), '[data-qbo-retry]', async (e) => {
     const btn = e.target.closest('[data-qbo-retry]')

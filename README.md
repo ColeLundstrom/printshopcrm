@@ -143,7 +143,7 @@ Read the [core readiness and remaining gaps](docs/CORE-READINESS.md) before eval
 - Stripe and Authorize.net hosted checkout with signed callbacks, test-mode isolation, refund/void reconciliation and explicit invoice credits ([setup and limits](docs/PAYMENTS.md))
 - Per-job and shop-wide profitability with cost breakdown and $/productive-hour
 - Books & A/R: aging buckets and customer statements
-- QuickBooks IIF export (Online sync is API-only for now — it has no setup screen yet)
+- QuickBooks Online: connect from Books, one-way push of customers, invoices and payments with a visible sync log; IIF export for Desktop; CSV export for Xero
 
 **Purchasing**
 - Garment catalog with editable baseline costs feeding the ROI estimates
