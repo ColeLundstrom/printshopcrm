@@ -54,7 +54,7 @@ test('purchasing HTTP is authenticated and read-only for staff; live receipts an
       const nodes = new Map()
       const $ = key => { if (!nodes.has(key)) nodes.set(key, { innerHTML: '', style: {}, classList: { contains: () => false } }); return nodes.get(key) }
       const context = vm.createContext({ api: { get: async path => { assert.equal(path, '/api/production/jobs/' + fixtures.partial.jobId + query); return detail } },
-        $, $$: () => [], esc: value => String(value ?? ''), setPage() {}, mountShipments() {}, fmtDate: value => value,
+        $, $$: () => [], esc: value => String(value ?? ''), setPage() {}, mountShipments() {}, mountLabels() {}, fmtDate: value => value,
         window: { addEventListener() {} }, location: { hash: '#/production/jobs/' + fixtures.partial.jobId + query }, document: { body: { classList: { contains: () => false } } } })
       const source = readFileSync(new URL('../public/js/views/production.js', import.meta.url), 'utf8').replace(/^import[^\n]+\n/gm, '').replaceAll('export async function ', 'async function ')
       vm.runInContext(source + '\nglobalThis.show = productionJobView;', context)

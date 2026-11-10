@@ -19,7 +19,7 @@ async function taskPage(data) {
   const context = vm.createContext({
     api: { get: async path => { assert.equal(path, '/api/production/jobs/' + data.job.id); return data } },
     $, $$: () => [], esc: v => String(v ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'),
-    setPage() {}, mountShipments() {}, fmtDate: v => v, window: { addEventListener() {} },
+    setPage() {}, mountShipments() {}, mountLabels() {}, fmtDate: v => v, window: { addEventListener() {} },
     location: { hash: '#/production/jobs/' + data.job.id }, document: { body: { classList: { contains: () => false } } },
   })
   const source = readFileSync(new URL('../public/js/views/production.js', import.meta.url), 'utf8')

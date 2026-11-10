@@ -1,6 +1,7 @@
 /* Hallmark · pre-emit critique: P4 H4 E4 S5 R5 V4 */
 import { api, $, $$, esc, setPage, toast, modal, closeModal, go, fmtDate, onOnce } from '../core.js'
 import { mountShipments } from '../shared/shipments.js'
+import { mountLabels } from '../shared/shipping-labels.js'
 const stages = ['new', 'art_approval', 'prepress', 'production', 'qc', 'shipping']
 const options = (values, current) =>
   values
@@ -106,6 +107,7 @@ export async function productionJobView(id) {
     <details class="card card-b" ${next?.stage === 'shipping' ? 'open' : ''}><summary>Outgoing shipments / collection</summary>
       <p><strong>Ship to</strong></p><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(j.shipping_address || 'No shipping address saved. Check with the job owner before dispatch.')}</p>
       <a class="btn ghost" href="/api/jobs/${j.id}/packing-slip.pdf" target="_blank" rel="noopener">Open packing slip</a>
+      <div id="prod-labels"></div>
       <div id="prod-shipments"></div></details>
     <details class="card card-b"><summary>Artwork</summary>${d.art.map((a) => `<p>Version ${a.version} · ${esc(a.status)} · <a href="${esc(a.url)}" target="_blank" rel="noopener">View artwork</a></p>`).join('') || '<p>No artwork attached.</p>'}</details>
     <details class="card card-b"><summary>Task history</summary>${d.events.map((e) => `<p>${esc(e.created_at)} · ${esc(e.actor)} · ${esc(e.action)}<br><small>${esc(e.detail)}</small></p>`).join('') || '<p>No task activity yet.</p>'}</details></div>`
@@ -204,6 +206,7 @@ export async function productionJobView(id) {
         toast(err.message, true)
       }
     }
+  mountLabels($('#prod-labels'),{ jobId:id, onChange:()=>{ if (location.hash.split('?')[0]===`#/production/jobs/${id}`) productionJobView(id) } })
   mountShipments($('#prod-shipments'),{
     key:`job:${id}`,initial:d.shipping,endpoint:`/api/production/jobs/${id}/shipments`,
     load:async()=> (await api.get(`/api/production/jobs/${id}`)).shipping,

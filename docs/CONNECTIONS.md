@@ -32,6 +32,14 @@ Keep the PrintShopCRM key in the agent runtime’s secret storage. It is not a m
 
 Use **Work manually** to turn off model selection and require human review in assisted workflows. Independently configured automation rules remain separately controlled in Automations.
 
+## Shipping labels (EasyPost)
+
+Optional. Under **Setup & connections → Shipping labels**, paste an API key from your own EasyPost account (easypost.com → Account → API keys), enter the address parcels ship from, and press **Test connection**. Use the **test** key first: it makes sample labels and costs nothing; every screen and printed label is marked TEST until you switch to the live key. Carrier accounts, rates and billing stay in EasyPost; PrintShopCRM never handles the postage money.
+
+The key is stored with the shop’s other credentials and is never sent back to a browser. **Disconnect** removes it; labels already bought stay on their jobs. The server connects only to `api.easypost.com` and EasyPost’s label-file hosts — no inbound webhook, so no public address is required. Buying, printing, tracking and voiding are described in [Shipping](SHIPPING.md#shipping-labels).
+
+EasyPost references: https://docs.easypost.com/docs/shipments and https://docs.easypost.com/docs/shipments/shipping-refund
+
 ## Payments
 
 Use **Setup & connections → Set up payments** for Stripe or Authorize.net, or leave online payments off and record payments manually. Follow [Payment connections](PAYMENTS.md) for credentials, signed callbacks, test-mode verification and reconciliation limits. Existing Stripe users need the new callback signing secret before new checkouts can start.

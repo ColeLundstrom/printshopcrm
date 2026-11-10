@@ -23,4 +23,40 @@ Persist the intended request before posting it. After a lost response, retry the
 
 The older Floor request without `request_id` retains its production `revision` check and exact-duplicate no-op, without the newer replay guarantee. Legacy `PUT /api/orders/:id/tracking` affects only its own legacy record, never extra parcels; changed values require choosing the normal shipment flow when production jobs exist. Managers correct legacy records. Identical old-field writes do nothing, including after a manual stage change.
 
-Carrier-label purchasing, postage refunds, carrier tracking webhooks and automatic delivery notifications are not implemented. Use the carrier’s own site/account for those actions. The starter packing notification describes entering the shipping department; existing custom automation wording is preserved and should be reviewed by its owner.
+Carrier tracking webhooks and automatic delivery notifications are not implemented. Labels can be bought here on the shop’s own EasyPost account — see **Shipping labels** below. The starter packing notification describes entering the shipping department; existing custom automation wording is preserved and should be reviewed by its owner.
+
+## Shipping labels
+
+Optional. A shop connects its **own** EasyPost account under Setup & connections → Shipping labels (an API key, the ship-from address, a usual box, and whether staff may buy). Labels are bought at the shop’s own carrier rates; PrintShopCRM adds nothing and is never the merchant. Start with EasyPost’s test key: it makes sample labels and cannot spend money.
+
+On a job’s department view, under **Outgoing shipments / collection**:
+
+1. **Create a shipping label.** The ship-to fields are prefilled by reading the job’s typed address; a person confirms or corrects them. Add one row per box (weight; dimensions optional). One box is one label.
+2. **Get rates.** Each box lists carrier, service, days and price, with the cheapest and the fastest marked.
+3. **Buy label…** asks once more, stating the price and that it charges the shop’s label account. The label image is downloaded and kept with the shop’s files; **Print label** opens a 4 × 6 page.
+4. The carrier and tracking number are written to the same shipment ledger described above, as a parcel record with no dispatch date. Like any shipment record, this does not move the job, complete a task or message the customer.
+5. **Email tracking to customer** is a separate button and sends once. **Void label** (managers) asks the carrier for a refund and, when the carrier accepts the request, voids the ledger record the label wrote, keeping its history.
+
+**One purchase per label.** Buying claims the box before any request is sent. If the answer is lost, the box shows *Purchase not confirmed* with **Check purchase**, which asks EasyPost whether that shipment was bought and finishes from the answer; it never buys. Pressing Buy twice, or retrying after a timeout, cannot buy a second label for the same box.
+
+**Test labels** are marked TEST on screen and across the printed label, are not written to the shipment ledger, and cannot be emailed to a customer.
+
+**Who can buy.** Whoever may record a shipment on that job: managers always; staff only on a shipping task assigned to them (or unassigned) and only when the shop has switched *Staff can buy labels* on. Setup, voiding and disconnecting are manager-only.
+
+**Tracking** is read from EasyPost when the job is opened (at most every 30 minutes per label) and with **Refresh tracking**. There are no inbound carrier webhooks, and the customer portal does not show shipment status.
+
+Not included: customs forms and international paperwork, insurance, pickups, return labels, batch buying, thermal ZPL output, and labels for orders that have no production job.
+
+### Label API
+
+All routes need a signed-in member; every label belongs to the shop whose database it is in.
+
+- `GET/PUT /api/shipping/labels/setup` — connection state (never the key) / save key, `ship_from`, `parcel_default`, `staff_can_buy` (manager).
+- `POST /api/shipping/labels/setup/test`, `/disconnect` (manager).
+- `GET /api/production/jobs/:id/labels` — setup, parsed `ship_to`, `can_buy`, and the job’s labels.
+- `POST /api/production/jobs/:id/labels/rates` — `{ request_id, to, boxes[] }`. The same `request_id` returns the same rows.
+- `POST /api/shipping/labels/:id/buy` — `{ rate_id, confirm_price_cents }`; the price must equal the stored rate.
+- `POST /api/shipping/labels/:id/check | track | discard | notify`, and manager-only `/void` with `{ reason }`.
+- `GET /api/shipping/labels/:id/file` (PNG) and `/print` (HTML). Label files are not served from `/uploads`.
+
+The API key is stored with the shop’s other secrets and is never returned to a browser. The server talks only to `api.easypost.com` and downloads label images only from EasyPost’s file hosts.

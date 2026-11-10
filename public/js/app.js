@@ -1,6 +1,7 @@
 import { mountDesktopNavigation } from './shared/desktop-navigation.js'
 import { agentKeysView } from './views/agent-keys.js'
 import { slackOperatorView } from './views/slack-operator.js'
+import { shippingLabelsSetupView } from './views/shipping-labels.js'
 import { calendarView } from './views/calendar.js'
 import { brandingView } from './views/branding.js'
 import { applyShopBranding,toggleShopTheme } from './shop-branding.js'
@@ -168,6 +169,7 @@ route(/^\/jobs\/(\d+)\/mockup$/, mockupComposerView)
 route(/^\/calendar$/, calendarView)
 route(/^\/agent-keys$/, agentKeysView)
 route(/^\/slack-assistant$/, slackOperatorView)
+route(/^\/shipping-labels$/, shippingLabelsSetupView)
 route(/^\/capacity$/, capacityView)
 route(/^\/jobs\/(\d+)$/, jobDetailView)
 route(/^\/art$/, artView)

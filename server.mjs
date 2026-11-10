@@ -28,6 +28,7 @@ import { registerPortalRoutes } from './lib/portal-routes.mjs'
 import { registerMerchRoutes } from './lib/merch-stores.mjs'
 import { registerReportRoutes } from './lib/reports.mjs'
 import { shippingView, mutateShipment, legacyOrderTracking } from './lib/shipping.mjs'
+import { registerShippingLabelRoutes } from './lib/shipping-labels.mjs'
 import { guardWorkflowStage, workflow as productionWorkflow } from './lib/production.mjs'
 import express from 'express'
 import { verifyTwilio, ingestSms, phoneKey } from './lib/inbound-sms.mjs'
@@ -3576,6 +3577,9 @@ for (const action of ['correct','void']) app.post(`/api/shipping/:id/${action}`,
   if (mutation.changed && !mutation.replayed) rtBroadcast('production',{job_id:record.job_id})
   res.json({mutation})
 }))
+
+// Rate, buy, print, track and void carrier labels on the shop's own label account — lib/shipping-labels.mjs.
+registerShippingLabelRoutes(app, { wrap, requireRole, shippingActor, uploads: UPLOADS, queueEmail, outboundLimit, rtBroadcast, logActivity, money })
 
 /** Compatibility adapter for one legacy tracking field; never changes a board stage. */
 app.put('/api/orders/:id/tracking', wrap((req, res) => {
@@ -9062,6 +9066,7 @@ const DISCONNECT_GROUPS = {
   ss: ['ss_account', 'ss_api_key'],
   sanmar: ['sanmar_user', 'sanmar_pass', 'sanmar_cust'],
   alpha: ['alpha_account', 'alpha_pass'],
+  shipping_labels: ['easypost_api_key'],
 }
 app.post('/api/settings/disconnect/:group', requireRole('manager'), wrap((req, res) => {
   const group = String(req.params.group)
