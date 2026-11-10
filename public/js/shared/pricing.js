@@ -175,6 +175,9 @@ export function garmentLines(items) {
       description: String(i.description || ''),
       garment: String(i.description || '').split('—')[0].trim(),
       sizes: i.sizes,
+      // The distributor SKU per size, when the quote resolved it from live stock — the purchase
+      // order reads these. Present only when set, so older lines keep their exact shape.
+      ...(i.skus && Object.keys(i.skus).length ? { skus: i.skus, sku_color: i.sku_color || '', sku_source: i.sku_source || '' } : {}),
     }))
 }
 

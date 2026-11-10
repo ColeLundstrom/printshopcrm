@@ -85,6 +85,9 @@ import { deliverWebhook, assertPublicUrl } from './lib/webhook.mjs'
 import * as qbo from './lib/quickbooks.mjs'
 import * as gdrive from './lib/gdrive.mjs'
 import { liveInventory } from './lib/suppliers.mjs'
+import { registerStockRoutes } from './lib/stock-routes.mjs'
+import { isStockCatalogSku } from './lib/suppliers.mjs'
+import { sanitizeLineSkus } from './lib/stock.mjs'
 import { jobRoi, shopRoi, laborActualMinutes } from './lib/roi.mjs'
 import { code128Svg } from './lib/barcode.mjs'
 import { nest, priceSheet } from './public/js/shared/gangnest.js'
@@ -3117,6 +3120,7 @@ function sanitizeEstimateItems(items, rejected = []) {
         out.matrix = { id: Number(m.id) || null, name: String(m.name ?? '').slice(0, 60), row: String(m.row ?? '').slice(0, 40), col: String(m.col ?? '').slice(0, 48) }
       } else delete out.matrix
     }
+    sanitizeLineSkus(out) // distributor SKUs per size, when the quote resolved them from live stock
     return normalizeLocationItem(out)
   }))
 }
@@ -5944,6 +5948,7 @@ app.get('/api/suppliers/lookup', async (req, res) => {
 })
 
 app.get('/api/suppliers/status', wrap((_req, res) => res.json(supplierStatus(getSettings()))))
+registerStockRoutes(app, { wrap, requireRole }) // live stock per size on a quote line; the shop's own blank catalog
 
 /**
  * Prove a distributor connection the only way that counts — resolve a real style and come back
@@ -6526,7 +6531,8 @@ app.get('/api/products', wrap((_req, res) => {
   const garments = listGarments()
   const byBrand = {}
   for (const g of garments) (byBrand[g.brand] ||= []).push(g)
-  res.json({ garments, byBrand, count: garments.length, suppliers: supplierStatus(getSettings()) })
+  // `removable`: only blanks the shop added — a built-in row comes back at the next start.
+  res.json({ garments, byBrand, count: garments.length, suppliers: supplierStatus(getSettings()), removable: Object.fromEntries(garments.filter((g) => !isStockCatalogSku(g.sku)).map((g) => [g.id, true])) })
 }))
 
 /**

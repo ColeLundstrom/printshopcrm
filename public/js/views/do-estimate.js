@@ -1,5 +1,6 @@
 import { api, $, esc, money, setPage, toast, go, on, copyText, guardLeave, confirmModal } from '../core.js'
 import { customerPicker } from '../shared/customer-picker.js'
+import { fetchStock, knownStock, paintStock, stampSkus } from '../shared/stock.js'
 
 /**
  * Make an estimate — the guided way.
@@ -114,7 +115,8 @@ function drawWhat() {
 
       <h2 class="guide-q">How many of each size?</h2>
       <div class="size-grid" id="g-sizes">${[...SIZE_ROW, ...(state.moreSizes ? MORE_SIZES : [])].map((s) => `<label class="size-box"><span>${s}</span>
-        <input class="input" type="number" min="0" inputmode="numeric" data-size="${s}" value="${o.sizes[s] || ''}" placeholder="0" aria-label="${s} quantity"></label>`).join('')}</div>
+        <input class="input" type="number" min="0" inputmode="numeric" data-size="${s}" value="${o.sizes[s] || ''}" placeholder="0" aria-label="${s} quantity"><i class="sz-stock" data-st="${s}"></i></label>`).join('')}</div>
+      <div class="stock-line" id="g-stock" data-stockline hidden></div>
       <div class="guide-row">
         ${state.moreSizes ? '' : '<button type="button" class="linkbtn" id="g-more-sizes">＋ More sizes (4XL, youth…)</button>'}
         <span class="spacer"></span>
@@ -152,12 +154,24 @@ function drawWhat() {
   </div>`
 
   $('#g-change').onclick = () => { state.step = 1; draw() }
-  $('#g-garment').oninput = (e) => { o.garment = e.target.value; reprice() }
-  $('#g-color').oninput = (e) => { o.garment_color = e.target.value; reprice() }
+  // Live distributor stock under the size boxes (shared/stock.js). Advisory: it is asked for after
+  // typing settles, an answer for text that has since changed is dropped, and nothing waits on it.
+  const showStock = () => { const grid = $('#g-sizes'); if (grid) paintStock(grid, knownStock(o.garment, o.garment_color), o.sizes) }
+  const askStock = (opts = {}) => {
+    const garment = o.garment, color = o.garment_color
+    fetchStock(garment, { color, ...opts }).then(() => { if (o.garment === garment && o.garment_color === color) showStock() })
+  }
+  let stockTimer = 0
+  const askStockSoon = () => { clearTimeout(stockTimer); stockTimer = setTimeout(askStock, 700) }
+  // On #g-stock, which this render just made — never on a container that outlives the redraw.
+  on($('#g-stock'), '[data-stock-refresh]', (e) => { e.preventDefault(); askStock({ refresh: true }) })
+  showStock(); if (o.garment) askStock()
+  $('#g-garment').oninput = (e) => { o.garment = e.target.value; reprice(); askStockSoon() }
+  $('#g-color').oninput = (e) => { o.garment_color = e.target.value; reprice(); askStockSoon() }
   // Blank = not sent, so the price book's own default applies.
   const optional = (id, key) => { const box = $(id); if (box) box.oninput = () => { const n = Math.floor(+box.value || 0); if (n > 0) o[key] = n; else delete o[key]; reprice() } }
   optional('#g-stitches', 'stitches'); optional('#g-area', 'print_area')
-  on($('#g-sizes'), '[data-size]', (_e, t) => { const n = Math.max(0, Math.floor(+t.value || 0)); if (n) o.sizes[t.dataset.size] = n; else delete o.sizes[t.dataset.size]; reprice() }, 'input')
+  on($('#g-sizes'), '[data-size]', (_e, t) => { const n = Math.max(0, Math.floor(+t.value || 0)); if (n) o.sizes[t.dataset.size] = n; else delete o.sizes[t.dataset.size]; reprice(); showStock() }, 'input')
   $('#g-total').oninput = (e) => { o.total_pieces = Math.max(0, Math.floor(+e.target.value || 0)); reprice() }
   $('#g-more-sizes')?.addEventListener('click', () => { state.moreSizes = true; drawWhat() })
   // Bound to elements this render just made: #g-body outlives every redraw, and a listener on it
@@ -256,6 +270,9 @@ async function create() {
   // and that reached the customer's estimate, the invoice and the job ticket as "48 M". Nobody
   // ordered 48 mediums. Send the line as a plain quantity and say the sizes are still to come.
   if (sizesUnknown(o)) items = items.map(flatQuantity)
+  // The exact distributor SKU per size, when stock resolved for this item and colour — the purchase
+  // order built from the job reads them. Only on the garment line, and only for a real size grid.
+  else { const main = items.find((it) => it.sizes); const known = knownStock(o.garment, o.garment_color); if (main && known?.state === 'ok') stampSkus(main, known) }
   try {
     const est = await api.post('/api/estimates', { contact_id: state.contact.id, items })
     state.created = est

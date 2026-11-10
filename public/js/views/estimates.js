@@ -5,6 +5,7 @@ import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipien
 import { api, $, $$, el, esc, money, money0, moneyShort, undoable, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick, routeToken, routeIsCurrent } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, lineBlankCostKnown, guessColors, priceForMargin, raiseToSubtotal, valuePerHour } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
+import { fetchStock, knownStock, paintStock, stampSkus, stockLineText } from '../shared/stock.js'
 import { PAGE, listState, applyList, sortTh, toggleSort, listFoot } from '../shared/list-tools.js'
 import { intakeModal } from './intake.js'
 import { matrixPickerModal } from './matrices.js'
@@ -256,9 +257,11 @@ export async function estimateEditor(id) {
       ${sizesFor(it).map((s) => `<label class="sz ${Number(it.sizes[s]) > 0 ? 'on' : ''}">
         <span>${esc(s)}${itemUp[s] ? `<em>+${esc(moneyShort(itemUp[s]))}</em>` : ''}</span>
         <input type="number" min="0" inputmode="numeric" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0" aria-label="${esc(s)} quantity, line ${i + 1}">
+        <i class="sz-stock" data-st="${esc(s)}"></i>
       </label>`).join('')}
       <button class="sz-more" data-more="${i}" title="Add another size" aria-label="Add another size to line ${i + 1}">+</button>
       <div class="sz-sum">${szSum(it, i)}</div>
+      <div class="stock-line" data-stockline hidden></div>
     </div>
     ${locationPanel(it,i)}` : ''}`
   }
@@ -276,6 +279,29 @@ export async function estimateEditor(id) {
     $('#tot').textContent = money(t.total)
     marginGuard(t.subtotal)
   }
+
+  /* Live distributor stock under each size box (shared/stock.js). Advisory only: it never blocks a
+   * keystroke or a save, and it is asked for after the row is on screen. A line's stock is keyed on
+   * what the line SAYS, so an answer that arrives after the description changed is dropped. */
+  const stockText = stockLineText
+  const showStock = (i) => {
+    const it = items[i], grid = $(`.sizegrid[data-sg="${i}"]`)
+    if (!it?.sizes || !grid) return
+    paintStock(grid, knownStock(stockText(it)), it.sizes)
+  }
+  const refreshStock = (i, opts = {}) => {
+    const it = items[i]
+    if (!it?.sizes) return
+    const asked = stockText(it)
+    fetchStock(asked, opts).then((result) => {
+      const now = items[i]
+      if (!now?.sizes || stockText(now) !== asked || !$('#rows')?.isConnected) return
+      stampSkus(now, result)
+      showStock(i)
+    })
+  }
+  const stockTimers = new Map()
+  const refreshStockSoon = (i) => { clearTimeout(stockTimers.get(i)); stockTimers.set(i, setTimeout(() => refreshStock(i), 700)) }
 
   /**
    * Live profit meter: the profit-floor check while you build the quote (Print Life's core idea).
@@ -429,6 +455,7 @@ export async function estimateEditor(id) {
   const draw = () => {
     $('#rows').innerHTML = items.map(rowHtml).join('')
     totals()
+    items.forEach((it, i) => { if (it.sizes) { showStock(i); refreshStock(i) } })
   }
 
   /* Walk-away Apply: one click, never silent. The raise goes through the same draw() → totals() →
@@ -538,8 +565,10 @@ export async function estimateEditor(id) {
     refreshLocation(i)
     t.closest('.ir').querySelector('.amt').textContent = displayLineAmount(items[i], up)
     if (f === 'unit_price' && items[i].sizes) { const sum = $(`.sizegrid[data-sg="${i}"] .sz-sum`); if (sum) sum.innerHTML = szSum(items[i], i) }
+    if ((f === 'description' || f === 'detail') && items[i].sizes) refreshStockSoon(i)
     totals()
   }, 'input')
+  on($('#rows'), '[data-stock-refresh]', (e, t) => { e.preventDefault(); const sg = t.closest('.sizegrid'); if (sg) refreshStock(+sg.dataset.sg, { refresh: true }) })
 
   on($('#rows'), '[data-size]', (_e, t) => {
     const i = +t.dataset.i
@@ -552,6 +581,8 @@ export async function estimateEditor(id) {
     row.querySelector('.amt').textContent = displayLineAmount(items[i], up)
     const extra = lineUpcharge(items[i], up)
     t.closest('.sizegrid').querySelector('.sz-sum').innerHTML = szSum(items[i], i)
+    { const known = knownStock(stockText(items[i])); if (known) stampSkus(items[i], known) } // a new size gets its SKU from the answer already in hand
+    showStock(i) // re-flag sizes that now exceed stock
     totals()
   }, 'input')
 

@@ -521,6 +521,26 @@ body.dragging { cursor: grabbing; user-select: none; }
 }
 .sz-more:hover { border-color: var(--accent); color: var(--accent); }
 .sz-sum { margin-left: auto; align-self: flex-end; font-size: var(--fs-2xs); color: var(--txt-2); font-variant-numeric: tabular-nums; }
+/* Live distributor stock under a size box, and the one line beneath the grid (shared/stock.js).
+   Advisory, so it is quiet until a size is short; the reserved height keeps the grid from jumping
+   when the answer arrives. Never wider than its box — the grid must not grow past the screen. */
+.sz-stock {
+  display: block; min-height: 14px; font-style: normal; font-size: var(--fs-3xs); line-height: 14px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: clip; color: var(--txt-3); font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+}
+.sz-stock:empty { min-height: 0; }
+.sz-stock { text-transform: none; font-weight: 500; }
+.sizegrid:has(.sz-stock:not(:empty)) .sz-more { margin-bottom: 14px; }
+.sizegrid:has(.sz-stock:not(:empty)) .sz-stock:empty, .size-grid:has(.sz-stock:not(:empty)) .sz-stock:empty { min-height: 14px; }
+.sz-stock.low { color: var(--amber); }
+.sz-stock.out { color: var(--txt-3); text-decoration: line-through; }
+.sz-stock.short { color: var(--red); font-weight: 700; }
+.stock-line { flex-basis: 100%; font-size: var(--fs-2xs); color: var(--txt-3); line-height: 1.5; }
+.stock-line[hidden] { display: none; }
+.stock-line .stock-warn { color: var(--red); font-weight: 600; }
+.stock-line a, .stock-line .linkbtn { color: var(--accent-text, var(--accent)); font-size: inherit; }
+.stock-line .stock-refresh { margin-left: var(--sp-2); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.size-grid + .stock-line { margin-top: var(--sp-3); }
 
 .sizebar { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
 .sizebox {

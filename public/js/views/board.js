@@ -492,7 +492,7 @@ export async function jobDetailView(id) {
               <div class="dim" style="font-size:13px">profit · <strong style="color:${vc}">${roi.margin}%</strong> margin</div>
             </div>
             ${row('Revenue', money(roi.revenue))}
-            ${row('Blanks', '−' + money(roi.breakdown.garment), roi.blank_matched ? 'catalog cost' : 'estimated')}
+            ${row('Blanks', '−' + money(roi.breakdown.garment), ({ live: 'live distributor cost', yours: 'your price', catalog: 'catalog estimate', approximate: 'approximate — blank not in your catalog', default: 'estimated — blank not in your catalog' })[roi.blank_basis] || (roi.blank_matched ? 'catalog estimate' : 'estimated'))}
             ${row('Labor', '−' + money(roi.breakdown.labor), 'real press time')}
             ${roi.breakdown.screens ? row('Screens', '−' + money(roi.breakdown.screens)) : ''}
             <div style="border-top:1px solid var(--line);margin:8px 0 8px"></div>

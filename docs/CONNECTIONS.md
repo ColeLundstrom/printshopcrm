@@ -35,3 +35,44 @@ Use **Work manually** to turn off model selection and require human review in as
 ## Payments
 
 Use **Setup & connections → Set up payments** for Stripe or Authorize.net, or leave online payments off and record payments manually. Follow [Payment connections](PAYMENTS.md) for credentials, signed callbacks, test-mode verification and reconciliation limits. Existing Stripe users need the new callback signing secret before new checkouts can start.
+
+## Suppliers: live stock and blank costs
+
+Settings → Wholesale Suppliers takes your own S&S Activewear account number and API key, and/or your
+SanMar or alphabroder PromoStandards login. Credentials are stored per shop and never shared.
+
+Once one is connected, a quote line that names a style number shows the distributor's stock under
+each size box, in both the estimate editor and the guided estimate:
+
+- **Which colour.** The line's own wording decides: `Gildan 5000 Tee — Black — 2/0 Front`. Text in
+  brackets that mentions ink is the ink, not the shirt. With no colour on the line, stock is not
+  shown and the line lists a few colours the distributor carries.
+- **What the numbers mean.** A plain number is on hand; `low: 18` is under two dozen; `out` is
+  none; `only 18` in red means the quote asks for more than the distributor has.
+- **How fresh.** The line says "as of" when the distributor answered. Answers are reused for ten
+  minutes per style (every colour of a style is one lookup); **Refresh** asks again. Each shop may
+  make 20 distributor lookups a minute.
+- **When it cannot be shown.** Not connected, style not found, or the distributor not answering
+  each read as one quiet line. Stock never blocks typing, pricing or saving a quote.
+
+When stock resolves, the quote line also keeps the distributor's exact SKU for each size being
+ordered. Those SKUs follow the line to the job and appear on its purchase order, so the PO names
+the precise blanks instead of a style-level code. If the line's wording changes, the SKUs are
+dropped and resolved again. **The software still does not place the order**: download the PO, enter
+those SKUs in the supplier's portal, and record the supplier's confirmation on the job.
+
+PromoStandards inventory (SanMar, alphabroder) carries no price, so those lines show stock and SKU
+only. S&S returns your negotiated price as well.
+
+### Your own blank catalog
+
+Products → Blank catalog lists every blank the app knows a cost for. A manager can **Add a blank**
+(brand, style number, what you pay) or **Edit** any row. Each row is labelled:
+
+- **Your price** — a cost you entered. It outranks the built-in row for the same style.
+- **Catalog estimate** — a built-in ballpark. Correct it to what you pay.
+
+A job's Profitability card says which was used for its blanks: live distributor cost, your price,
+catalog estimate, or **approximate — blank not in your catalog** when the style was not found and
+the cost was borrowed from a similar garment. Add that blank to make the number real. Built-in rows
+can be corrected but not removed; blanks you added can be taken out.
