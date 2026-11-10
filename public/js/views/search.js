@@ -27,7 +27,7 @@ const COMMANDS = [
   { icon: '▦', title: 'New job', kw: 'create job board production', run: () => go('/board?new=1') },
   { icon: '◉', title: 'New customer', kw: 'create contact customer add', run: () => go('/contacts?new=1') },
   { icon: '◱', title: 'New opportunity', kw: 'create deal pipeline lead', run: () => go('/pipeline?new=1') },
-  { icon: '◆', title: 'Run Autopilot', kw: 'autopilot email automate front office', run: () => go('/autopilot') },
+  { icon: '◆', title: 'Run autopilot', kw: 'autopilot email automate front office', run: () => go('/autopilot') },
   { icon: '⟳', title: 'New automation', kw: 'create automation rule workflow', run: () => go('/automations?new=1') },
   { icon: '◳', title: 'DTF Resize — trim art to print size', kw: 'dtf resize trim transparent png dpi print size film', run: () => go('/dtf') },
   { icon: '◷', title: 'Screen print capacity', kw: 'capacity promise date schedule deadline can we hit press hours booked', run: () => go('/capacity'), hint: 'g y' },
@@ -46,6 +46,9 @@ const COMMANDS = [
   { icon: '⟳', title: 'Go to Automations', kw: 'automations rules workflows', run: () => go('/automations'), hint: 'g u' },
   { icon: '⚙', title: 'Go to Settings', kw: 'settings config shop preferences', run: () => go('/settings'), hint: 'g ,' },
 ]
+
+/** Does the command literally contain what was typed (in its name or its keywords)? */
+const saysIt = (q, c) => { const n = q.toLowerCase(); return c.title.toLowerCase().includes(n) || ` ${c.kw} `.includes(` ${n}`) }
 
 /** Subsequence fuzzy score: matches "tgldk" → "Toggle dark", rewards start + consecutive hits. */
 function fuzzy(query, text) {
@@ -102,8 +105,10 @@ export function openSearch() {
     // The highlight is drawn with a class; aria-activedescendant is how a screen reader is told
     // which row that class is on, so Arrow-Down actually reads the next result out.
     input.setAttribute('aria-activedescendant', `cmd-i-${cursor}`)
-    on($('#cmd-list', box), '[data-i]', (_e, t) => pick(+t.dataset.i))
   }
+  // Bound ONCE: #cmd-list outlives every draw(), and binding inside it stacked a listener per
+  // keystroke — so one click on "Toggle light / dark" after typing five letters toggled it five times.
+  on($('#cmd-list', box), '[data-i]', (_e, t) => pick(+t.dataset.i))
 
   // Default view: the commands a shop reaches for most.
   const showDefault = () => {
@@ -124,14 +129,17 @@ export function openSearch() {
     if (!q) return showDefault()
     // Commands match instantly and locally; entities stream in from the server.
     const cmds = COMMANDS.map((c) => ({ c, s: Math.max(fuzzy(q, c.title), fuzzy(q, c.kw) - 1) }))
-      .filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).slice(0, 6).map((x) => ({ ...x.c, isCmd: true }))
+      .filter((x) => x.s >= 0).sort((a, b) => b.s - a.s).slice(0, 6).map((x) => ({ ...x.c, isCmd: true, strong: saysIt(q, x.c) }))
     items = cmds; cursor = 0; draw()
     timer = setTimeout(async () => {
       const mine = ++seq
       try {
         const rows = await api.get(`/api/search?q=${encodeURIComponent(q)}`)
         if (mine !== seq || input.value.trim() !== q) return
-        items = [...cmds, ...rows]; draw()
+        // A name somebody typed is nearly always a record. "dana" used to list DTF Resize, Screen
+        // print capacity and New opportunity — scattered-letter matches — above the customer Dana.
+        // Commands that actually contain what was typed still lead; the loose ones follow the records.
+        items = [...cmds.filter((c) => c.strong), ...rows, ...cmds.filter((c) => !c.strong)]; cursor = 0; draw()
       } catch { /* keep the commands even if search fails */ }
     }, 120)
   }

@@ -244,7 +244,7 @@ export function onOnce(root, sel, fn, evt = 'click') {
  * answer this app gives a non-visual user — "Matrix saved", "Estimate sent", "The server is
  * restarting", and the message the unhandledrejection net puts on screen for all 24 write
  * handlers — is a <div> that appears silently in a corner and removes itself 3.4 seconds later.
- * A screen-reader user presses Email Invoice on a $4,200 invoice and is told nothing at all, in
+ * A screen-reader user presses Email invoice on a $4,200 invoice and is told nothing at all, in
  * either direction, so the only safe thing to do is press it again.
  *
  * A live region is only announced if it was ALREADY in the document when its text changed:
@@ -322,7 +322,7 @@ if (typeof window !== 'undefined' && !window.__pscUndoFlush) {
   // api.req() THROWS on any non-2xx — including the 502/503 restart window httpMessage() was
   // written for. A handler shaped `async () => { await api.post(…); toast('Sent') }` therefore
   // stops BEFORE the toast and before the re-render, and the rejection goes nowhere: pressing
-  // "Email Invoice" on a $4,200 invoice with bad SMTP credentials did absolutely nothing on
+  // "Email invoice" on a $4,200 invoice with bad SMTP credentials did absolutely nothing on
   // screen, so the shop pressed it again. A scan of public/js/views found 24 write handlers in
   // exactly that shape, which makes it a contract problem rather than a list of oversights — and
   // a list would grow back. A local catch is still better where the screen has state to put back
@@ -484,12 +484,18 @@ export function closeModal() {
   return null
 }
 
-export function confirmModal(title, msg, onYes, yesLabel = 'Delete') {
+export function confirmModal(title, msg, onYes, yesLabel = 'Delete', also = null) {
+  // `also` is an optional third way out — { label, run } — drawn as the filled button, for the one
+  // dialog where the destructive answer is not the one most people want ("Save and continue"
+  // beside "Discard changes").
   modal({
     title,
     body: `<p class="muted" style="line-height:1.6">${esc(msg)}</p>`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="yes">${esc(yesLabel)}</button>`,
-    onMount: (bg) => $('#yes', bg).onclick = async () => { closeModal(); await onYes() },
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="yes">${esc(yesLabel)}</button>${also ? `<button class="btn" id="also">${esc(also.label)}</button>` : ''}`,
+    onMount: (bg) => {
+      $('#yes', bg).onclick = async () => { closeModal(); await onYes() }
+      if (also) $('#also', bg).onclick = async () => { closeModal(); await also.run() }
+    },
   })
 }
 
@@ -537,9 +543,9 @@ export function promptModal({ title, label, value = '', type = 'text', placehold
  * and four more controls with exactly that shape never got it. On shop wifi the round trip is
  * long enough to click again, and a UI that shows no progress invites it:
  *
- *   New Job      two job numbers for one order, each with its own purchase order, print package,
+ *   New job      two job numbers for one order, each with its own purchase order, print package,
  *                work ticket and capacity claim, and nothing on the board says they are the same job
- *   New Customer two customer records with one name, splitting that customer's job history,
+ *   New customer two customer records with one name, splitting that customer's job history,
  *                lifetime value and A/R balance across two rows, with no merge anywhere
  *   Send         a live customer gets the quote, or the invoice, twice
  *
@@ -581,6 +587,31 @@ export const icon = (name, cls = 'ico') =>
  */
 const EMPTY_GLYPHS = { '⚠': 'alert', '✓': 'check', '✅': 'check', '⌕': 'search', '▤': 'estimates', '▣': 'invoices', '◉': 'customers',
   '▭': 'conversations', '◈': 'art', '✉': 'outbox', '◎': 'today', '⊛': 'reorders', '⟳': 'automations', '◲': 'roi', '▦': 'board' }
+/**
+ * "More ▾" — the secondary actions of a detail page, out of the row of buttons.
+ *
+ * A sent estimate showed five ghost buttons of equal weight and a contact seven, with Delete beside
+ * the primary. One action per state stays on the bar; the rest live here. A native <details>, so it
+ * opens with Enter/Space and needs no handler of its own; one document listener closes it on an
+ * outside click, on Escape, and after any item in it is chosen. `items` is button/anchor HTML.
+ */
+export const moreMenu = (items) => `<details class="more-menu" style="position:relative;display:inline-block">
+  <summary class="btn ghost" style="list-style:none;cursor:pointer" aria-label="More actions">More <span aria-hidden="true">▾</span></summary>
+  <div class="more-menu-list" role="group" style="position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:190px;display:flex;flex-direction:column;gap:2px;padding:6px;background:var(--panel);border:1px solid var(--line-2,var(--line));border-radius:var(--r-md,10px);box-shadow:0 12px 32px rgba(0,0,0,.28)">${items}</div>
+</details>`
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('click', (e) => {
+    for (const d of document.querySelectorAll('details.more-menu[open]')) {
+      const inside = d.contains(e.target)
+      if (!inside || (e.target.closest('.more-menu-list') && e.target.closest('button,a'))) d.removeAttribute('open')
+    }
+  })
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    for (const d of document.querySelectorAll('details.more-menu[open]')) { d.removeAttribute('open'); d.querySelector('summary')?.focus() }
+  })
+}
+
 export const empty = (glyph, title, msg, action = '') => {
   const name = EMPTY_GLYPHS[glyph] || glyph
   const sprite = /^[a-z][a-z0-9-]*$/.test(String(name || ''))

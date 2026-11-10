@@ -117,7 +117,7 @@ async function exercise(viewport,cookies) {
     await page.locator('#new').waitFor()
     delayed.release();await delayed.finished
     await isolation.waitForIdle()
-    await page.getByRole('button',{name:'+ New Estimate',exact:true}).waitFor()
+    await page.getByRole('button',{name:'+ New estimate',exact:true}).waitFor()
     assert.equal(new URL(page.url()).hash,'#/estimates','A late creation response must not hijack the newer page')
     await page.goBack();await page.locator('#dup').waitFor()
     await page.getByRole('button',{name:'Duplicate',exact:true}).click()

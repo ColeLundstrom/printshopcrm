@@ -116,7 +116,7 @@ export async function outboxView(showNeeds = false) {
           : `Messages are being delivered over your ${[notif.shop_email && 'SMTP', notif.sms && 'Twilio'].filter(Boolean).join(' + ')} connection and logged here. Each row shows whether it actually left the building.`)
         : (lite
           ? 'Your email isn\'t connected yet, so what you send is saved here with a shareable link instead of reaching the customer — nothing vanishes. Connect it under <strong>Settings → Sending Email</strong> and it goes out from your own address.'
-          : 'No delivery is wired yet, so "sent" mail is recorded here instead of reaching customers — nothing vanishes. Add SMTP / Twilio in Settings → Message Delivery and the same calls go out for real.')}</p>
+          : 'Your shop email and texting are not connected yet, so messages are saved here instead of going to customers. Nothing is lost. Connect email (and texting, if you want it) in Settings → Message delivery and they go out for real.')}</p>
     </div></div>
     <div class="row" style="gap:8px;align-items:center;margin-bottom:10px">
       <button class="btn ${showNeeds ? 'ghost' : ''} sm" type="button" id="ob-all" aria-pressed="${!showNeeds}">Recent</button>
@@ -637,10 +637,10 @@ export async function settingsView() {
 
     ${me.can_manage === false
       ? '<div class="card"><div class="card-b dim" style="font-size:12.5px">You have <strong>staff</strong> access — settings are read-only. Ask an owner or manager to change shop settings, keys, or integrations.</div></div>'
-      : '<div class="row" style="justify-content:flex-end"><button class="btn" id="save">Save Settings</button></div>'}
+      : '<div class="row" style="justify-content:flex-end"><button class="btn" id="save">Save settings</button></div>'}
   </div>`
 
-  /* Settings is ONE long form — eleven cards and a single Save Settings button at the bottom — and
+  /* Settings is ONE long form — eleven cards and a single Save settings button at the bottom — and
    * five controls on that same page used to throw the whole thing away without asking: a logo
    * upload, a logo removal, returning from Stripe Connect, and both Disconnect buttons, two of
    * which called location.reload(). Each re-rendered from the STORED values, so an owner who
@@ -675,7 +675,24 @@ export async function settingsView() {
   // a sidebar link discarded them with no prompt, on the same page that DOES prompt if you touched
   // the shop name. File inputs are excluded: choosing a logo triggers its own upload and repaint,
   // and must not leave the page looking unsaved.
-  for (const el of $$('#view input:not([type=file]), #view select, #view textarea')) el.addEventListener('input', () => { settingsDirty = true })
+  /* The only Save settings button is at the very bottom of a page of sixty-odd fields. Change the
+   * tax rate at the top and nothing in sight says it is not saved yet, or how to save it. This bar
+   * appears with the first change and stays at the foot of the screen; it presses the same button,
+   * so there is still one save path. */
+  let leavingAfterSave = false
+  const showSaveBar = () => {
+    if (!$('#save') || $('#settings-savebar')) return
+    const bar = document.createElement('div')
+    bar.id = 'settings-savebar'
+    bar.setAttribute('role', 'status')
+    const lift = window.matchMedia?.('(max-width: 900px)').matches ? 76 : 14
+    bar.style.cssText = `position:sticky;bottom:${lift}px;z-index:40;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding:10px 14px;background:var(--panel);border:1px solid var(--accent);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.28)`
+    bar.innerHTML = '<span style="font-weight:600">You have unsaved changes</span><span style="flex:1"></span><button type="button" class="btn" id="settings-savebar-go">Save settings</button>'
+    $('#view').appendChild(bar)
+    $('#settings-savebar-go').onclick = () => $('#save')?.click()
+  }
+  const markSettingsDirty = () => { settingsDirty = true; showSaveBar() }
+  for (const el of $$('#view input:not([type=file]), #view select, #view textarea')) el.addEventListener('input', markSettingsDirty)
   const repaint = () => {
     if (!settingsDirty) return settingsView()
     confirmModal('Reload settings?',
@@ -688,11 +705,17 @@ export async function settingsView() {
    * browser's Back button. Every one of them is a hash change, and a hash change fires no
    * beforeunload — so the listener below never saw any of them. This is the choke point that does.
    * Refusing owns re-issuing the navigation once the shop has answered. */
+  // Save is the answer most people want on the way out, and the dialog only offered to throw the
+  // work away. A refused save (a bad key, a server error) has already said why and stays put.
+  const saveThenGo = async (to) => {
+    leavingAfterSave = true
+    try { await $('#save')?.onclick?.() } finally { leavingAfterSave = false }
+    if (!settingsDirty) go(to)
+  }
   guardLeave((to) => {
     if (!settingsDirty) return true
-    confirmModal('Leave without saving?',
-      'The settings you changed are only in this browser. Leaving now discards them.',
-      () => { settingsDirty = false; go(to) }, 'Discard changes')
+    confirmModal('Leave without saving?', 'The settings you changed are only in this browser so far.',
+      () => { settingsDirty = false; go(to) }, 'Discard changes', { label: 'Save and continue', run: () => saveThenGo(to) })
     return false
   })
   // The paths the app does not control: tab close, reload, navigating off the origin entirely. NOT
@@ -878,7 +901,9 @@ export async function settingsView() {
       // The server answers with what it stored (normalised — 'eur' came back 'EUR'). Apply it here
       // so the re-render below, and every screen after it, already writes money the new way.
       setShopFormat(saved)
-      toast('Settings saved'); settingsDirty = false; settingsView(); window.dispatchEvent(new Event('psc:settings'))
+      // Saving on the way out (the leave dialog) must not repaint Settings: that repaint is async
+      // and landed AFTER the next screen had drawn, leaving Settings on screen under another URL.
+      toast('Settings saved'); settingsDirty = false; if (!leavingAfterSave) settingsView(); window.dispatchEvent(new Event('psc:settings'))
     }
     catch (e) { toast(e.message, true) }
   }

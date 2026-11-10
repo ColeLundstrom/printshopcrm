@@ -9,7 +9,7 @@ import { api, $, $$, el, esc, relTime, setPage, empty, toast, on, modal, closeMo
 let cfg = null
 
 export async function automationsView() {
-  setPage('Automations', `<button class="btn ghost" id="run-tick">Run timed rules now</button><button class="btn primary" id="new-auto">+ New Automation</button>`)
+  setPage('Automations', `<button class="btn ghost" id="run-tick">Run timed rules now</button><button class="btn primary" id="new-auto">+ New automation</button>`)
   const d = await api.get('/api/automations')
   cfg = d
 
@@ -182,7 +182,7 @@ function autoForm(a) {
   }
 
   const bg = modal({
-    title: isNew ? 'New Automation' : 'Edit Automation',
+    title: isNew ? 'New automation' : 'Edit automation',
     wide: true,
     body: `<div class="field"><label>Name</label>
         <input class="input" id="a-name" value="${esc(state.name)}" placeholder="Chase a quote after 3 quiet days"></div>
@@ -192,7 +192,7 @@ function autoForm(a) {
         <div class="ab-step"><div class="ab-badge then">THEN</div><div id="ab-actions" style="flex:1"></div></div>
       </div>
       <div class="dim" style="font-size:11.5px;margin-top:12px">Tokens: <code>{{first_name}} {{contact_name}} {{shop_name}} {{estimate_number}} {{invoice_number}} {{job_number}} {{job_title}} {{total}} {{due_date}} {{version}} {{days}} {{stage}}</code></div>`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="a-save">${isNew ? 'Create Automation' : 'Save'}</button>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="a-save">${isNew ? 'Create automation' : 'Save'}</button>`,
     onMount: (root) => {
       const drawTrigger = () => {
         const t = cfg.triggers.find((x) => x.key === state.trigger)

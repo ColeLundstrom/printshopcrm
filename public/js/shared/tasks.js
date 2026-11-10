@@ -31,9 +31,13 @@ const tile = (t) => `<a class="task-tile${t.primary ? ' primary' : ''}" href="${
 </a>`
 
 /** The big three, then the rest as smaller tiles. */
-export function taskTiles(me, edition) {
+export function taskTiles(me, edition, { compact = false } = {}) {
   const list = tasksFor(me, edition)
   const big = list.filter((t) => t.primary), small = list.filter((t) => !t.primary)
+  // Home with work waiting shows the three everyday tiles only; the rest are one click away under
+  // the New button, which opens this same list on every screen.
+  if (compact) return `<div class="task-grid small">${big.map(tile).join('')}</div>
+    ${small.length ? `<p class="dim" style="margin:var(--sp-4) 0 0;font-size:var(--fs-sm)"><button type="button" class="link" data-more-tasks style="background:none;border:0;padding:0;color:var(--accent-ink,var(--accent));cursor:pointer;font:inherit">${small.length} more things you can do →</button></p>` : ''}`
   return `<div class="task-grid big">${big.map(tile).join('')}</div>
     ${small.length ? `<div class="task-grid small">${small.map(tile).join('')}</div>` : ''}`
 }

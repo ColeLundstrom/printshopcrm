@@ -419,10 +419,16 @@ function wire(key) {
         const r = await api.post('/api/onboarding/configure', { description })
         const out = $('#ob-desc-out'); out.hidden = false
         out.innerHTML = r.changed
-          ? `<strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Configured ${r.changed} setting${r.changed === 1 ? '' : 's'}${r.methods.length ? ` · ${esc(r.methods.join(', '))}` : ''}</strong><ul>${r.applied.map((a) => `<li>${esc(a)}</li>`).join('')}</ul><div class="ob-hint">Review them in the next step — nothing's locked.</div>`
-          : `<span class="dim">Didn't catch specific numbers — no problem, set them in the next step.</span>`
+          ? `<strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Configured ${r.changed} setting${r.changed === 1 ? '' : 's'}${r.methods.length ? ` · ${esc(r.methods.join(', '))}` : ''}</strong><ul>${r.applied.map((a) => `<li>${esc(a)}</li>`).join('')}</ul><div class="ob-hint">Check these over. Anything wrong? Fix it in Settings any time — nothing's locked.</div><button type="button" class="btn" id="ob-desc-next" style="margin-top:10px">Looks right, continue →</button>`
+          : `<span class="dim">Didn't catch specific numbers — no problem, set them in the next step.</span><div><button type="button" class="btn ghost" id="ob-desc-next" style="margin-top:10px">Continue →</button></div>`
+        // The summary used to flash for 1.4 seconds and the page moved on, so nobody could read what
+        // had just been set on their shop. It stays until they press Continue; the step counts as
+        // done (the counter above is the server's own tally, re-read here).
+        if (r.changed) await markStep('welcome', 'done').catch(() => {})
         state.data = await api.get('/api/onboarding').catch(() => state.data)
-        setTimeout(() => { state.i = FLOW.indexOf('quote'); render() }, 1400)
+        const tally = $('.ob-progress-t'); if (tally && state.data?.onboarding) tally.textContent = `${state.data.onboarding.done} of ${state.data.onboarding.total} done`
+        $('#ob-desc-next').onclick = () => { state.i = FLOW.indexOf('quote'); render() }
+        $('#ob-desc-next').focus()
       } catch (e) { toast(e.message, true) }
       btn.disabled = false; btn.textContent = 'Configure from this'
     }

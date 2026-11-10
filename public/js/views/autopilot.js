@@ -99,7 +99,7 @@ export async function autopilotView() {
             <div class="ap-empty">
               <div class="ap-orbit"><span>◆</span></div>
               <p>Ready when you are.</p>
-              <button class="btn ap-go" id="ap-run">Run Autopilot →</button>
+              <button class="btn ap-go" id="ap-run">Run autopilot →</button>
             </div>
           </div>
         </div>

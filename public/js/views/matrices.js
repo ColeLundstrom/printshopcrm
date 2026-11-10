@@ -28,7 +28,7 @@ async function drawList() {
   $('#mx-list').innerHTML = `
     <div class="card card-b" id="mx-drop"><strong>Bring your existing price sheet</strong><p class="dim">Drop one CSV or TSV here, or choose a file. The first row supplies column headings; the first column supplies row headings. Creates a new editable matrix. Maximum 60 rows, 40 price columns and 2 MB. Invalid sheets leave saved prices unchanged.</p><label class="btn ghost">Choose price sheet<input id="mx-import-new" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden></label><p id="mx-import-note" role="status" aria-live="polite"></p></div>
     <div class="card"><div class="card-b">
-      <p class="dim" style="font-size:12.5px;line-height:1.6;margin:0">A price matrix is your own price sheet. Name it anything, label the rows and columns in your own words, and type your prices in. Screen printing by ink colour, mugs by size, engraving by area, banners by the square foot — same grid, your labels. Quotes let you pick which matrix a line is priced from, so one estimate can use several.</p>
+      <p class="dim" style="font-size:12.5px;line-height:1.6;margin:0">A price matrix is your own price sheet. Name it anything, label the rows and columns in your own words, and type your prices in. Screen printing by ink color, mugs by size, engraving by area, banners by the square foot — same grid, your labels. Quotes let you pick which matrix a line is priced from, so one estimate can use several.</p>
     </div></div>
 
     ${list.length ? `<div class="card"><div class="card-h"><h3>Your matrices</h3><div class="spacer"></div>

@@ -23,7 +23,7 @@ test('first-job guide has working local links, source-backed controls and safe e
     if (fragment) assert(headingIds(readFileSync(full, 'utf8')).has(fragment), `Missing anchor: ${target}`)
   }
   const estimates = read('public/js/views/estimates.js')
-  for (const label of ['+ New Estimate', 'Create Estimate', 'Open customer view', 'Convert to Invoice + Job', 'Create Invoice + Job', 'Payment terms', 'Production due', 'Duplicate']) {
+  for (const label of ['+ New estimate', 'Create estimate', 'Open customer view', 'Convert to invoice + job', 'Create invoice + job', 'Payment terms', 'Production due', 'Duplicate']) {
     assert(estimates.includes(label), `Guide control changed: ${label}`)
     assert(guide.includes(label), `Guide should use the real control: ${label}`)
   }

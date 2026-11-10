@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick, copyText } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, relTime, pill, setPage, empty, modal, closeModal, confirmModal, formData, toast, go, initials, on , onOnce, onceClick, copyText, moreMenu } from '../core.js'
 import { billingFields, bindBillingFields } from '../shared/billing-recipients.js'
 
 
@@ -52,7 +52,7 @@ function mappingEditor(bg, prefix, kind) {
 
 
 export async function contactsView() {
-  setPage('Customers', `<button class="btn ghost" id="import-c">Import CSV</button><button class="btn ghost" id="import-o">Import order history</button><button class="btn" id="new-c">+ New Customer</button>`)
+  setPage('Customers', `<button class="btn ghost" id="import-c">Import CSV</button><button class="btn ghost" id="import-o">Import order history</button><button class="btn" id="new-c">+ New customer</button>`)
   const included = new Set(), excluded = new Set()
   const account = window.__me, route = location.hash.split('?')[0]
   let sequence = 0, listRoot
@@ -115,12 +115,12 @@ export async function contactsView() {
   $('#view').innerHTML = `<div class="searchbar">
       <input class="input" id="q" placeholder="Search name, company, email…" autocomplete="off">
       <div class="tabs" id="tags" role="group" aria-label="Filter customers by tag"></div>
-    </div><div class="card card-b" style="margin-bottom:12px"><div class="wrap-row">
+    </div><details class="card" id="tag-filter" style="margin-bottom:12px"><summary class="card-h" style="cursor:pointer"><h3 style="font-size:13px">Filter</h3><span class="dim" id="customer-filter-status" role="status" aria-live="polite" style="font-size:12px;margin-left:8px"></span></summary><div class="card-b"><div class="wrap-row">
       <label for="tag-mode">Included tags must match</label><select class="input" id="tag-mode" style="width:auto"><option value="all">All selected tags</option><option value="any">Any selected tag</option></select>
       <label for="exclude-tag">Exclude customers tagged</label><select class="input" id="exclude-tag" style="width:auto"><option value="">Choose a tag to exclude</option></select>
       <button class="btn ghost" id="clear-tags" type="button">Clear tags</button>
       ${window.__me?.can_manage === false ? '' : '<a class="btn ghost" id="export-customers" aria-disabled="true" tabindex="-1" target="_blank" rel="noopener" download="printshopcrm-contacts.csv">Export matching CSV</a>'}
-    </div><div class="wrap-row" id="excluded-tags" style="margin-top:8px"></div><p class="dim" id="customer-filter-status" role="status" aria-live="polite"></p></div><div class="card" id="list"></div>`
+    </div><div class="wrap-row" id="excluded-tags" style="margin-top:8px"></div></div></details><div class="card" id="list"></div>`
 
   listRoot = $('#list')
 
@@ -142,10 +142,10 @@ export async function contactsView() {
   }
   let t
   $('#q').oninput = (e) => { ++sequence; disableExport(); clearTimeout(t); t = setTimeout(() => render(e.target.value), 180) }
-  $('#new-c').onclick = () => contactForm(null, () => render($('#q').value))
+  $('#new-c').onclick = () => contactForm(null, (saved) => { render($('#q').value); offerNext(saved) })
   $('#import-c').onclick = () => importContacts(() => render($('#q').value))
   $('#import-o').onclick = () => importOrders(() => render($('#q').value))
-  if (new URLSearchParams(location.hash.split('?')[1] || '').get('new')) { history.replaceState(null, '', location.hash.split('?')[0]); contactForm(null, () => render($('#q').value)) }
+  if (new URLSearchParams(location.hash.split('?')[1] || '').get('new')) { history.replaceState(null, '', location.hash.split('?')[0]); contactForm(null, (saved) => { render($('#q').value); offerNext(saved) }) }
   await render()
 }
 
@@ -272,9 +272,20 @@ export function importOrders(after) {
   })
 }
 
+/** A customer was just added by hand. The next thing is nearly always a quote for them. */
+function offerNext(saved) {
+  if (!saved?.id) return
+  const first = String(saved.name || '').split(' ')[0] || 'them'
+  modal({
+    title: `${saved.name} is saved`,
+    body: `<p class="muted" style="margin:0">What would you like to do next?</p>`,
+    footer: `<button class="btn ghost" data-close>Done</button><a class="btn ghost" href="#/contacts/${saved.id}" data-close>Open their page</a><a class="btn" href="#/do/estimate?contact=${saved.id}" data-close>Make an estimate for ${esc(first)}</a>`,
+  })
+}
+
 export function contactForm(c, after) {
   modal({
-    title: c ? 'Edit Customer' : 'New Customer',
+    title: c ? 'Edit customer' : 'New customer',
     body: `<div class="grid2">
         <div class="field"><label>Name *</label><input class="input" name="name" value="${esc(c?.name || '')}" placeholder="Jamie Rivera"></div>
         <div class="field"><label>Company</label><input class="input" name="company" value="${esc(c?.company || '')}" placeholder="Lakeside High School"></div>
@@ -283,6 +294,7 @@ export function contactForm(c, after) {
         <div class="field"><label>Email</label><input class="input" name="email" type="email" value="${esc(c?.email || '')}" placeholder="jamie@example.com"></div>
         <div class="field"><label>Phone</label><input class="input" name="phone" value="${esc(c?.phone || '')}" placeholder="(714) 555-0142"></div>
       </div>
+      <details id="customer-more"${c ? ' open' : ''} style="margin:4px 0 12px"><summary style="cursor:pointer;font-weight:600;padding:8px 0">More details <span class="dim" style="font-weight:400">· tags, payment terms, addresses, tax, billing contact</span></summary>
       <div class="field"><label>Tags (comma separated)</label><input class="input" name="tags" value="${esc((c?.tags || []).join(', '))}" placeholder="school, repeat, net-30"></div>
       <div class="field"><label for="customer-payment-term">Default payment terms for new invoices</label>
         <select class="input" id="customer-payment-term" name="payment_term">${[
@@ -306,8 +318,9 @@ export function contactForm(c, after) {
         <input class="input" name="tax_exempt_id" value="${esc(c?.tax_exempt_id || '')}" placeholder="Optional — kept on file for your records">
       </div>
       ${billingFields(c || {})}<p class="dim">Billing defaults apply to new quotes and invoices. Existing documents keep their saved delivery contacts.</p>
-      <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Sizing preferences, PO requirements, who signs off…">${esc(c?.notes || '')}</textarea></div>`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${c ? 'Save' : 'Create Customer'}</button>`,
+      <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Sizing preferences, PO requirements, who signs off…">${esc(c?.notes || '')}</textarea></div>
+      </details>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${c ? 'Save' : 'Create customer'}</button>`,
     onMount: (bg) => {
       // Only ask for the certificate number once the box is ticked.
       bindBillingFields(bg)
@@ -332,7 +345,10 @@ export function contactForm(c, after) {
 export async function contactDetailView(id) {
   const d = await api.get(`/api/contacts/${id}`)
   const c = d.contact
-  setPage(c.name, `<a class="btn ghost" href="/api/contacts/${id}/statement.pdf" target="_blank">Statement</a><button class="btn ghost" id="portal-copy" title="Copy this customer's portal link: every estimate, proof, invoice and job in one place">Customer portal</button><a class="btn ghost" id="portal-open" target="_blank" rel="noopener" aria-disabled="true">Open</a><button class="btn ghost" id="edit">Edit</button>${d.jobs.length || d.estimates.length ? '<button class="btn ghost" id="same-again">↻ Same as last time</button>' : ''}<button class="btn" id="new-est">+ New Estimate</button><button class="btn danger" id="del-contact">Delete</button>`,
+  // One primary (a new estimate for them), the everyday two beside it, the rest under More — and
+  // Delete no longer sits a thumb-width from the button people press all day.
+  const item = 'style="justify-content:flex-start;text-align:left"'
+  setPage(c.name, `<button class="btn ghost" id="edit">Edit</button>${d.jobs.length || d.estimates.length ? '<button class="btn ghost" id="same-again">↻ Same as last time</button>' : ''}<button class="btn" id="new-est">+ New estimate</button>${moreMenu(`<button class="btn ghost" id="portal-copy" ${item} title="Copy this customer's portal link: every estimate, proof, invoice and job in one place">Copy portal link</button><a class="btn ghost" id="portal-open" target="_blank" rel="noopener" aria-disabled="true" ${item}>Open portal ↗</a><a class="btn ghost" href="/api/contacts/${id}/statement.pdf" target="_blank" ${item}>Statement (PDF)</a><button class="btn ghost" id="del-contact" style="justify-content:flex-start;text-align:left;color:var(--red)">Delete customer</button>`)}`,
     `<a href="#/contacts">Customers</a> /`)
 
   const docRow = (rows, kind) => rows.length ? `<table class="tbl"><tbody>${rows.map((r) => `

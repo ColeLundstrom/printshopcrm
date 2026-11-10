@@ -1,27 +1,37 @@
-import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick, moreMenu, shopSymbol } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
 import { mountCollections } from '../shared/payment-collections.js'
+import { PAGE, listState, applyList, sortTh, toggleSort, listFoot } from '../shared/list-tools.js'
 
 let filter = 'all'
 
 export async function invoicesView() {
   setPage('Invoices', '<a class="btn primary" href="#/do/invoice">＋ Bill a customer</a>')
-  const render = async () => {
-    const rows = await api.get(`/api/invoices?status=${filter}`)
-    // A voided invoice is a cancelled demand, not money owed — and the void dialog's own copy
-    // promises "it stops counting toward money owed". Every balance query on the server was
-    // taught that; this one client-side sum was missed, so the list header read $14,154.10 over
-    // a dashboard reading $11,568.10 — the difference being exactly one voided invoice — and the
-    // Void tab cheerfully totalled "$2,586 outstanding" above a list of nothing but voids.
-    const owes = (r) => r.status !== 'paid' && r.status !== 'void'
+  const ls = listState()
+  let rows = []
+  // A voided invoice is a cancelled demand, not money owed — and the void dialog's own copy
+  // promises "it stops counting toward money owed". Every balance query on the server was
+  // taught that; this one client-side sum was missed, so the list header read $14,154.10 over
+  // a dashboard reading $11,568.10 — the difference being exactly one voided invoice — and the
+  // Void tab cheerfully totalled "$2,586 outstanding" above a list of nothing but voids.
+  const owes = (r) => r.status !== 'paid' && r.status !== 'void'
+  const balOf = (i) => (i.status === 'void' ? 0 : i.amount_due - i.amount_paid)
+  const cols = { number: (i) => i.invoice_number, customer: (i) => i.contact_name || '', status: (i) => i.status, total: (i) => Number(i.amount_due) || 0,
+    paid: (i) => Number(i.amount_paid) || 0, balance: balOf, due: (i) => i.due_date || '' }
+  const text = (i) => `${i.invoice_number} ${i.contact_name || ''} ${i.company || ''} ${i.estimate_number || ''}`
+  const paint = () => {
     const totalOpen = rows.filter(owes).reduce((s, r) => s + r.amount_due - r.amount_paid, 0)
     $('#sum').innerHTML = rows.length ? `<span class="dim">${rows.length} invoice${rows.length > 1 ? 's' : ''} · <strong style="color:var(--amber)">${money0(totalOpen)}</strong> outstanding</span>` : ''
-    $('#list').innerHTML = rows.length ? `<table class="tbl stack">
-      <thead><tr><th>Invoice</th><th>Customer</th><th>Status</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th><th class="num">Due</th></tr></thead>
-      <tbody>${rows.map((i) => {
+    const r = applyList(rows, ls, cols, text)
+    $('#list').innerHTML = !rows.length
+      ? empty('invoices', 'No invoices', 'Approve an estimate and convert it to create one.', '<a class="btn" href="#/estimates">Go to estimates</a>')
+      : !r.matched ? empty('invoices', 'Nothing matches', `No invoice matches “${esc(ls.q)}”. Try a customer name or an invoice number.`)
+      : `<table class="tbl stack">
+      <thead><tr>${sortTh('Invoice', 'number', ls)}${sortTh('Customer', 'customer', ls)}${sortTh('Status', 'status', ls)}${sortTh('Total', 'total', ls, 'num')}${sortTh('Paid', 'paid', ls, 'num')}${sortTh('Balance', 'balance', ls, 'num')}${sortTh('Due', 'due', ls, 'num')}</tr></thead>
+      <tbody>${r.rows.map((i) => {
         // Same rule per row: a cancelled invoice is not owing and cannot be late.
-        const bal = i.status === 'void' ? 0 : i.amount_due - i.amount_paid
+        const bal = balOf(i)
         const late = owes(i) && daysOut(i.due_date) < 0
         return `<tr class="click" data-id="${i.id}">
           <td class="mono" data-label="Invoice" style="color:var(--txt)">${esc(i.invoice_number)}</td>
@@ -32,17 +42,22 @@ export async function invoicesView() {
           <td class="num" data-label="Balance"><strong style="${bal > 0 ? 'color:var(--amber)' : 'color:var(--txt-3)'}">${money(bal)}</strong></td>
           <td class="num" data-label="Due" style="font-size:12px"><span class="${late ? '' : 'dim'}" style="${late ? 'color:var(--red);font-weight:600' : ''}">${fmtDate(i.due_date)}</span></td>
         </tr>`
-      }).join('')}</tbody></table>` : empty('invoices', 'No invoices', 'Approve an estimate and convert it to create one.', '<a class="btn" href="#/estimates">Go to estimates</a>')
+      }).join('')}</tbody></table>${listFoot(r, 'invoice')}`
   }
+  const render = async () => { rows = await api.get(`/api/invoices?status=${filter}`); ls.shown = PAGE; paint() }
 
   $('#view').innerHTML = `<div class="searchbar">
       <div class="tabs" id="tabs" role="group" aria-label="Filter invoices by status">${['all', 'unpaid', 'overdue', 'partial', 'paid', 'void'].map((s) => `<button type="button" data-s="${s}" class="${filter === s ? 'on' : ''}" aria-pressed="${filter === s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
+      <input class="input" id="list-q" type="search" placeholder="Search invoices or customers" aria-label="Search invoices" autocomplete="off">
       <div class="sp"></div><div id="sum" style="align-self:center"></div>
     </div><div class="card" id="list"></div>`
   // #list is created ONCE per visit and only its innerHTML is repainted, so this binding used to
   // sit inside render() and stacked one more listener on every tab switch: by the sixth tab a
   // single click on a row ran go() six times. onOnce is keyed on (root, event, selector).
   onOnce($('#list'), '[data-id]', (_e, t) => go(`/invoices/${t.dataset.id}`))
+  onOnce($('#list'), '[data-sort]', (e, t) => { e.stopPropagation(); toggleSort(ls, t.dataset.sort, ['number', 'customer', 'status', 'due'].includes(t.dataset.sort) ? 'asc' : 'desc'); paint() })
+  onOnce($('#list'), '[data-more-rows]', () => { ls.shown += PAGE; paint() })
+  $('#list-q').oninput = (e) => { ls.q = e.target.value; ls.shown = PAGE; paint() }
   on($('#tabs'), '[data-s]', (_e, t) => {
     filter = t.dataset.s
     $$('#tabs button').forEach((b) => { const on = b.dataset.s === filter; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) })
@@ -65,18 +80,22 @@ export async function invoiceDetailView(id) {
     && Math.abs(Math.round((Number(i.subtotal) + (Number(i.tax) || 0)) * 100) / 100 - (Number(i.amount_due) || 0)) <= 0.005
 
   // A voided invoice is a cancelled demand. `bal > 0` is true of one — the balance is still on the
-  // row, it just is not owed — so this screen went on offering Request Payment and Email Invoice,
+  // row, it just is not owed — so this screen went on offering Request payment and Email invoice,
   // and the server built a live pay link and mailed the customer a demand for money the shop had
   // already withdrawn. The list's own balance expression got this right; the detail screen's did not.
   const manager=['owner','manager'].includes(cfg.role)
   const chaseable = bal > 0 && i.status !== 'void' && !i.payment_review
+  // One filled button — ask for the money — and the rare, heavier actions under More.
+  const moreItems = [
+    i.status !== 'void' && manager ? '<button class="btn ghost" id="credit" style="justify-content:flex-start;text-align:left">Issue credit</button>' : '',
+    `<a class="btn ghost" href="/api/invoices/${id}/pdf" target="_blank" style="justify-content:flex-start;text-align:left">Download PDF</a>`,
+    i.status === 'void' ? '' : '<button class="btn ghost" id="void" style="justify-content:flex-start;text-align:left;color:var(--red)">Void invoice</button>',
+  ].join('')
   setPage(i.invoice_number, `
-    ${chaseable ? `<button class="btn" id="reqpay">Request Payment</button>` : ''}
-    ${chaseable ? `<button class="btn ghost" id="pay">Record Payment</button>` : ''}
-    ${i.status === 'void' || i.payment_review ? '' : '<button class="btn ghost" id="send">Email Invoice</button>'}
-    ${i.status !== 'void' && manager ? '<button class="btn ghost" id="credit">Issue credit</button>' : ''}
-    <a class="btn ghost" href="/api/invoices/${id}/pdf" target="_blank">PDF</a>
-    ${i.status === 'void' ? '' : `<button class="btn ghost" id="void">Void</button>`}`,
+    ${chaseable ? `<button class="btn" id="reqpay">Request payment</button>` : ''}
+    ${chaseable ? `<button class="btn ghost" id="pay">Record payment</button>` : ''}
+    ${i.status === 'void' || i.payment_review ? '' : '<button class="btn ghost" id="send">Email invoice</button>'}
+    ${moreMenu(moreItems)}`,
     `<a href="#/invoices">Invoices</a> /`)
 
   $('#view').innerHTML = `${i.payment_review ? `<section class="setup-section" role="status"><h2>Review this payment change</h2><p>${esc(i.payment_review)}</p><p>Payment requests and invoice automations are paused. A refund returns money; an invoice credit reduces what the customer owes. Check both before resuming.</p>${manager ? '<button class="btn" id="review-payment">Review balance</button>' : '<p>An owner or manager must complete this review.</p>'} <a class="btn ghost" href="#/payments">Payment history & recheck</a></section>` : ''}<div class="cols invoice-workspace">
@@ -99,7 +118,7 @@ export async function invoiceDetailView(id) {
           <div><span>Tax${i.tax_rate ? ` (${i.tax_rate}%)` : ''}</span><span>${money(i.tax)}</span></div>` : ''}
           ${i.credit_base ? `<div><span>Original invoice</span><span>${money(i.credit_base.amount_due)}</span></div>${i.credits.filter(c=>!c.cancelled_at).map(c=>`<div><span>Credit: ${esc(c.reason)}${c.tax_cents ? ` (includes ${money(c.tax_cents/100)} tax)` : ''}</span><span>-${money((c.subtotal_cents+c.tax_cents)/100)}</span></div>`).join('')}` : ''}
           <div><span>Invoice total</span><span>${money(i.amount_due)}</span></div>
-          <div><span>Net received</span><span style="color:var(--accent)">-${money(i.amount_paid)}</span></div>
+          <div><span>Paid</span><span style="${i.amount_paid > 0 ? 'color:var(--accent)' : ''}">${money(i.amount_paid)}</span></div>
           <div class="g"><span>Balance due</span><span style="${bal > 0 ? 'color:var(--amber)' : 'color:var(--accent)'}">${money(bal)}</span></div>
         </div>
       </div>
@@ -162,7 +181,7 @@ export async function invoiceDetailView(id) {
     $$('[data-cancel-credit]',section).forEach(b=>b.onclick=()=>modal({title:'Cancel this credit',body:'<p>The invoice amount will increase again. No money moves; collections pause for review.</p><div class="field"><label for="cancel-reason">Reason</label><input class="input" id="cancel-reason" name="reason" maxlength="500"></div>',footer:'<button class="btn ghost" data-close>Back</button><button class="btn" id="cancel-save">Cancel credit</button>',onMount:bg=>onceClick($('#cancel-save',bg),'Saving…',async()=>{try{await api.post(`/api/invoices/${id}/credits/${b.dataset.cancelCredit}/cancel`,formData(bg));closeModal();await invoiceDetailView(id)}catch(e){toast(e.message,true)}})}))
   }
 
-  $('#view').insertAdjacentHTML('afterbegin',recipientsPanel(i,'invoice',manager))
+  $('#view').insertAdjacentHTML('beforeend',recipientsPanel(i,'invoice',manager))
   bindRecipientEditor(i,'invoice',()=>invoiceDetailView(id))
   if (manager) {
     const collectionHost = document.createElement('div')
@@ -172,14 +191,14 @@ export async function invoiceDetailView(id) {
     }})
   }
   const openPay = () => modal({
-    title: 'Record Payment',
-    body: `<div class="field"><label>Amount</label><input class="input" name="amount" type="number" step="0.01" value="${bal.toFixed(2)}"></div>
+    title: 'Record payment',
+    body: `<div class="field"><label for="pay-amount">Amount (${esc(shopSymbol())})</label><input class="input" id="pay-amount" name="amount" type="number" inputmode="decimal" step="0.01" value="${bal.toFixed(2)}"></div>
       <div class="field"><label>Method</label><select class="input" name="method">
-        ${['card', 'check', 'cash', 'ach', 'other'].map((m) => `<option>${m}</option>`).join('')}</select></div>
+        ${[['card', 'Card'], ['check', 'Check'], ['cash', 'Cash'], ['ach', 'Bank transfer (ACH)'], ['other', 'Other']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
       <div class="field"><label>Note</label><input class="input" name="note" placeholder="Check #1042, deposit, etc."></div>
-      <p class="dim" style="font-size:12px">Balance due is ${money(bal)}. Partial payments are fine. The invoice flips to <em>partial</em>.</p>
+      <p class="muted" style="font-size:12.5px">Balance due is ${money(bal)}. A smaller amount is fine; the invoice then shows as partly paid.</p>
       <p id="pay-dup" role="alert" hidden style="font-size:12px;color:var(--amber);margin-top:8px"></p>`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">Record Payment</button>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">Record payment</button>`,
     onMount: (bg) => {
       // In-flight guard, the same one the Terms dialog below has always had. Without it the button
       // stayed live and the dialog stayed open for the whole round trip, so on shop wifi a second
@@ -209,7 +228,7 @@ export async function invoiceDetailView(id) {
             btn.textContent = 'Record it anyway'
             return
           }
-          toast(e.message, true); btn.textContent = 'Record Payment'
+          toast(e.message, true); btn.textContent = 'Record payment'
         }
       }
     },

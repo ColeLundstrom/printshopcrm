@@ -38,7 +38,7 @@ test('purchasing view uses read-only lookup, escaped records, separate evidence 
   assert.match(f.view.innerHTML,/6 outstanding/)
   assert.match(f.view.innerHTML,/overdue with outstanding quantities/)
   assert.match(f.view.innerHTML,/#\/production\/jobs\/2\?receiving=1/)
-  assert.match(f.view.innerHTML,/do not establish production readiness/)
+  assert.match(f.view.innerHTML,/check with your supplier for live delivery status/)
   assert.match(f.view.innerHTML,/aria-label="Purchase order pages"/)
   assert.match(f.view.innerHTML,/page=2/)
   f.node('purchasing-filter').onsubmit({preventDefault(){},currentTarget:{}})

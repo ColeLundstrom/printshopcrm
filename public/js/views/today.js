@@ -8,7 +8,7 @@ import { taskTiles } from '../shared/tasks.js'
  * shop doing?" — a fine question, and never the first one.
  */
 
-const KIND_TINT = { collect: 'var(--red)', risk: 'var(--amber)', approval: 'var(--violet)', floor: 'var(--blue)', reply: 'var(--accent)', followup: 'var(--accent)' }
+const KIND_TINT = { collect: 'var(--red)', risk: 'var(--amber)', approval: 'var(--violet)', floor: 'var(--blue)', reply: 'var(--accent)', followup: 'var(--accent)', bill: 'var(--accent)' }
 
 /**
  * A shop with nothing in it at all. The generic "You're all caught up" is technically true here but
@@ -51,7 +51,7 @@ export async function todayView() {
   const p = d.pulse
 
   const row = (a, i) => `<a class="tdy-item ${i === 0 ? 'lead' : ''}" href="${a.href}">
-    <span class="tdy-ic" style="background:var(--panel-2);color:${KIND_TINT[a.kind] || 'var(--txt-2)'}"><svg viewBox="0 0 16 16" aria-hidden="true"><use href="#i-${({ collect: 'invoices', risk: 'capacity', approval: 'art', floor: 'board', reply: 'conversations', followup: 'followups' })[a.kind] || 'today'}"></use></svg></span>
+    <span class="tdy-ic" style="background:var(--panel-2);color:${KIND_TINT[a.kind] || 'var(--txt-2)'}"><svg viewBox="0 0 16 16" aria-hidden="true"><use href="#i-${({ collect: 'invoices', risk: 'capacity', approval: 'art', floor: 'board', reply: 'conversations', followup: 'followups', bill: 'estimates' })[a.kind] || 'today'}"></use></svg></span>
     <span class="tdy-txt"><span class="tdy-t">${esc(a.title)}</span><span class="tdy-s">${esc(a.sub)}</span></span>
     <span class="tdy-go">→</span></a>`
 
@@ -63,30 +63,37 @@ export async function todayView() {
       <a class="tdy-stat" href="#/board"><div class="tdy-stat-v">${p.due_week}</div><div class="tdy-stat-l">Due in 7 days${p.overdue_jobs ? ` · ${p.overdue_jobs} overdue` : ''}</div></a>
     </div>`
 
+  // Work that is waiting comes first: with twelve urgent items the queue used to start a full
+  // phone screen and a half below ten launcher tiles. A quiet shop still leads with the tiles.
+  const busy = !first && d.actions.length > 0
+  const queue = first ? '' : `<div class="card" style="margin-bottom:var(--sp-8)">
+      <div class="card-h"><h3>Needs you today</h3>${d.actions.length ? `<span class="pill gray" style="margin-left:8px">${d.actions.length}</span>` : ''}<div class="spacer"></div>
+        <span class="dim" style="font-size:12px">most urgent first</span></div>
+      <div class="card-b">
+        ${d.actions.length ? `<div class="tdy-list">${d.actions.map(row).join('')}</div>`
+          : empty('check', "You're all caught up", lite ? 'No overdue invoices and no estimates waiting. Nice.' : 'No overdue money, no slipping deadlines, no proofs waiting. Nice.')}
+      </div>
+    </div>`
+
   $('#view').innerHTML = `
     <div class="tdy-head">
       <h1>${greet}${name ? ', ' + esc(name) : ''}</h1>
       <p class="tdy-date">${new Date(`${d.date}T12:00:00`).toLocaleDateString(shopLocale(), { weekday: 'long', month: 'long', day: 'numeric' })}${d.role !== 'owner' ? ` · <span class="dim">${esc(d.role)}</span>` : ''}</p>
     </div>
 
+    ${busy ? queue : ''}
     <section class="home-launch" aria-labelledby="home-q">
-      <h2 id="home-q" class="home-q">${first ? 'Let\'s get your first job in' : 'What do you want to do?'}</h2>
-      ${taskTiles(me, lite ? 'lite' : 'pro')}
+      <h2 id="home-q" class="home-q">${first ? 'Let\'s get your first job in' : busy ? 'Start something new' : 'What do you want to do?'}</h2>
+      ${taskTiles(me, lite ? 'lite' : 'pro', { compact: busy })}
       ${first ? startNote() : ''}
     </section>
 
-    ${first ? '' : `<div class="card">
-      <div class="card-h"><h3>Needs you today</h3><div class="spacer"></div>
-        <span class="dim" style="font-size:12px">most urgent first</span></div>
-      <div class="card-b">
-        ${d.actions.length ? `<div class="tdy-list">${d.actions.map(row).join('')}</div>`
-          : empty('check', "You're all caught up", lite ? 'No overdue invoices and no estimates waiting. Nice.' : 'No overdue money, no slipping deadlines, no proofs waiting. Nice.')}
-      </div>
-    </div>`}
+    ${busy ? '' : queue}
 
     <h2 class="home-sub">How the shop is doing</h2>
     ${pulse}
     ${!lite && me.can_manage !== false && !first ? '<div id="tdy-insights"></div>' : ''}`
+  const more = $('[data-more-tasks]'); if (more) more.onclick = () => document.getElementById('new-trigger')?.click()
   // Action items are plain <a href="#/…"> links; the hash router handles them, no JS click handler needed.
   // The trend card loads after the queue paints: the queue is the job, the trends are context.
   if ($('#tdy-insights')) api.get('/api/insights').then((i) => { const m = $('#tdy-insights'); if (m) m.innerHTML = insightsCard(i) }).catch(() => $('#tdy-insights')?.remove())

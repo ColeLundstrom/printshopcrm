@@ -1,4 +1,4 @@
-import { api, $, esc, money, money0, setPage, empty, skeleton, shopLocale } from '../core.js'
+import { api, $, esc, money, money0, moneyShort, setPage, empty, skeleton, shopLocale } from '../core.js'
 
 /**
  * Reports: the "how did we do" screen. One date range drives everything — KPI tiles, twelve months
@@ -131,20 +131,34 @@ const kpi = (label, value, sub, tone = '') => `<div class="kpi${tone ? ' ' + ton
 const none = (msg) => `<p class="rpt-none">${esc(msg)}</p>`
 
 /** Twelve months of invoiced vs collected as paired bars — the same inline-SVG approach as Today's pulse card. */
-export function chart(months) {
-  const W = 720, H = 190, pad = 18, n = months.length || 1
-  const max = Math.max(1, ...months.flatMap((m) => [m.invoiced, m.collected]))
-  const slot = (W - pad * 2) / n, bw = Math.max(4, slot * 0.3)
+export function chart(all) {
+  // Start at the first month with any money in it (but never show fewer than six): a shop three
+  // months old had nine empty slots and its real bars squeezed into the right-hand quarter.
+  const firstLive = all.findIndex((m) => m.invoiced || m.collected)
+  const months = all.slice(Math.max(0, Math.min(firstLive < 0 ? 0 : firstLive, all.length - 6)))
+  const W = 720, H = 190, pad = 18, left = 46, n = months.length || 1
+  // A round axis top and two gridlines to read against, instead of one raw maximum ("$176,924").
+  const top = niceMax(Math.max(1, ...months.flatMap((m) => [m.invoiced, m.collected])))
+  const slot = (W - left - pad) / n, bw = Math.max(4, Math.min(22, slot * 0.3))
   const base = H - 24
-  const y = (v) => base - (Math.max(0, v) / max) * (H - 44)
+  const y = (v) => base - (Math.max(0, v) / top) * (H - 44)
   const bars = months.map((m, k) => {
-    const x = pad + k * slot + slot / 2
+    const x = left + k * slot + slot / 2
     const label = fmtMonth(m.month)
     return `<g><title>${esc(fmtMonth(m.month, 'long'))}: ${esc(money0(m.invoiced))} invoiced, ${esc(money0(m.collected))} collected</title>
       <rect class="rpt-inv" x="${(x - bw - 1).toFixed(1)}" y="${y(m.invoiced).toFixed(1)}" width="${bw.toFixed(1)}" height="${(base - y(m.invoiced)).toFixed(1)}" rx="2"/>
       <rect class="rpt-col${k === n - 1 ? ' now' : ''}" x="${(x + 1).toFixed(1)}" y="${y(m.collected).toFixed(1)}" width="${bw.toFixed(1)}" height="${(base - y(m.collected)).toFixed(1)}" rx="2"/>
       <text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(label)}</text></g>`
   }).join('')
-  const top = `<text class="rpt-max" x="${pad}" y="12">${esc(money0(max))}</text><line class="rpt-axis" x1="${pad}" x2="${W - pad}" y1="${base}" y2="${base}"/>`
-  return `<svg class="rpt-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Invoiced and collected per month, last ${months.length} months">${top}${bars}</svg>`
+  const grid = [1, 0.5].map((f) => `<line class="rpt-axis" x1="${left}" x2="${W - pad}" y1="${y(top * f).toFixed(1)}" y2="${y(top * f).toFixed(1)}" stroke-dasharray="2 4" opacity=".55"/>
+    <text class="rpt-max" x="${left - 6}" y="${(y(top * f) + 4).toFixed(1)}" text-anchor="end">${esc(moneyShort(top * f))}</text>`).join('')
+  const axis = `${grid}<line class="rpt-axis" x1="${left}" x2="${W - pad}" y1="${base}" y2="${base}"/>`
+  return `<svg class="rpt-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Invoiced and collected per month, last ${months.length} months">${axis}${bars}</svg>`
+}
+
+/** The next "round" number at or above v: 1, 2, 2.5, 5 or 10 times a power of ten. */
+export function niceMax(v) {
+  const p = 10 ** Math.floor(Math.log10(Math.max(1, v)))
+  for (const step of [1, 2, 2.5, 5, 10]) if (v <= step * p) return step * p
+  return 10 * p
 }

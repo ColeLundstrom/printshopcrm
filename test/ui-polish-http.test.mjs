@@ -10,7 +10,7 @@ import { createHttpTestServer } from './helpers/http-test-server.mjs'
 /*
  * The server halves of the trade-show UI pass:
  *  - GET /api/invoices/:id names the estimate it came from (the "From estimate →" link was blank)
- *  - Request Payment says whether email is really connected, so the toast cannot claim a delivery
+ *  - Request payment says whether email is really connected, so the toast cannot claim a delivery
  *  - /api/auth/me carries the preferred department, so boot no longer loads the whole queue for it
  *  - a stylesheet or app.js requested with the shell's exact ?v= stamp is cached as immutable,
  *    while views (no stamp), html and a stale stamp keep revalidating
@@ -42,7 +42,7 @@ test('invoice estimate number, honest payment-link delivery, preferred departmen
     assert.ok(estimate.estimate_number)
     assert.equal(detail.estimate_number, estimate.estimate_number)
 
-    // 2. With no shop SMTP, Request Payment must report email_live:false (the client then says
+    // 2. With no shop SMTP, Request payment must report email_live:false (the client then says
     //    "copy the pay link" instead of "Payment link emailed").
     await ok('/api/settings', { smtp_host: '', smtp_user: '', smtp_pass: '' }, 'PUT')
     const reqPay = await ok(`/api/invoices/${inv.id}/request-payment`, { recipient_revision: detail.recipient_revision })

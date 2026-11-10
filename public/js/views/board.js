@@ -1,4 +1,4 @@
-import { api, $, $$, el, esc, icon, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
+import { api, store, $, $$, el, esc, icon, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
 import { mountArtProduction } from '../art-production.js'
@@ -31,7 +31,7 @@ const decoOptions = (cur) => {
 const boardState = { filter: 'all', assignee: 'all' }
 
 export async function boardView() {
-  setPage('Job Board', `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn primary" id="new-job">+ New Job</button>`)
+  setPage('Job Board', `<a class="btn ghost" href="#/calendar">Calendar</a><button class="btn primary" id="new-job">+ New job</button>`)
   // The Job Board is the shared screen. A realtime 'board' event re-runs this whole function
   // (app.js handleRealtime), and so does every filter chip and the assignee select — and the
   // render below is `#view`.innerHTML, which destroys whatever had focus. A keyboard user tabbing
@@ -93,7 +93,7 @@ function card(j) {
     ${j.rush ? '<div class="rushb">RUSH</div>' : ''}
     <div class="jn">${esc(j.job_number)}</div>
     <div class="ti">${esc(j.title)}</div>
-    <div class="cn"><div class="avatar" style="width:17px;height:17px;font-size:8px;border-radius:5px">${esc(initials(j.contact_name))}</div>${esc(j.contact_name || '—')}</div>
+    <div class="cn">${esc(j.contact_name || '—')}</div>
     ${j.pieces ? `<div class="jpc"><strong>${j.pieces}</strong> pc${j.garment ? ` · ${esc(String(j.garment).split('—')[0].trim())}` : ''}</div>` : ''}
     <div class="ft">
       <span class="due ${dueClass(j.due_date)}">${late ? `${icon('alert', 'ico ico-inline')} ` : ''}${esc(dueLabel(j.due_date))}</span>
@@ -225,7 +225,7 @@ export async function jobForm(job, after) {
   // of the first em-dash because that is what costFor() reads.
   const { garments = [] } = await api.get('/api/products').catch(() => ({ garments: [] }))
   modal({
-    title: job ? `Edit ${job.job_number}` : 'New Job',
+    title: job ? `Edit ${job.job_number}` : 'New job',
     body: `<div class="field"><label>Customer *</label>${job || contacts.length
         ? `<select class="input" name="contact_id" ${job ? 'disabled' : ''}>
             ${job ? '' : '<option value="">Choose a customer…</option>'}
@@ -251,7 +251,7 @@ export async function jobForm(job, after) {
         <div class="dim" style="font-size:12px;margin-top:4px">Up to 8 lines. Prints on the packing slip. Saved for this job; invoice addresses are edited separately.</div></div>
       <div class="field"><label>Notes</label><textarea class="input" name="notes" placeholder="Ink colors, placement, packing…">${esc(job?.notes || '')}</textarea></div>
       <label class="row" style="gap:7px;cursor:pointer"><input type="checkbox" name="rush" ${job?.rush ? 'checked' : ''}> <span style="font-size:13px">Rush job</span></label>`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${job ? 'Save' : 'Create Job'}</button>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="save">${job ? 'Save' : 'Create job'}</button>`,
     onMount: (bg) => {
       if (!job) $('[name="contact_id"]', bg)?.addEventListener('change', event => {
         const contact = contacts.find(c => c.id === +event.target.value)
@@ -373,10 +373,15 @@ export async function jobDetailView(id) {
         <div class="dim">Proof isn't approved yet. Approve today and it lands <strong style="color:var(--amber)">${fmtDate(sc.due)}</strong>${slip > 0
           ? ` — <span style="color:var(--red)">${slip} working day${slip === 1 ? '' : 's'} past the promised ${fmtDate(j.due_date)}</span>` : ''}.</div>
       </div>`
-    : `<div class="schednote ok"><div><strong>Art approved ${fmtDate(sc.approvedOn)}</strong></div>
+    : !sc.approvedOn
+      // A job moved past art approval with no proof on it: there is no approval and no date, and
+      // this used to read "Art approved —" beside "0 versions".
+      ? `<div class="schednote"><div><strong>No approved proof on this job</strong></div>
+        <div class="dim">${j.art?.length ? 'The proof has not been approved yet.' : 'No proof has been uploaded.'} ${sc.due ? `Due ${fmtDate(sc.due)}.` : ''}</div></div>`
+      : `<div class="schednote ok"><div><strong>Art approved ${fmtDate(sc.approvedOn)}</strong></div>
         <div class="dim">${j.turnaround_days} working days from approval → due ${fmtDate(sc.due)}.</div></div>`
 
-  setPage(j.title, `<a class="btn ghost" href="#/production/jobs/${id}">Production tasks</a>${window.__me?.can_manage===false?'':`<a class="btn ghost" href="#/costing/jobs/${id}">Job margin</a>`}<button class="btn ghost" id="edit">Edit</button><button class="btn" id="upload-btn">+ Upload Art</button>`,
+  setPage(j.title, `<a class="btn ghost" href="#/production/jobs/${id}">Production tasks</a>${window.__me?.can_manage===false?'':`<a class="btn ghost" href="#/costing/jobs/${id}">Job margin</a>`}<button class="btn ghost" id="edit">Edit</button><button class="btn" id="upload-btn">+ Upload art</button>`,
     `<a href="#/board">Board</a> /`)
 
   $('#view').innerHTML = `<div class="cols">
@@ -425,7 +430,12 @@ export async function jobDetailView(id) {
         </div>
       </div>
 
+      <details id="job-advanced"${store.get('psc-job-advanced') === '1' ? ' open' : ''}>
+        <summary class="btn ghost" style="width:100%;justify-content:space-between;cursor:pointer;list-style:none"><span>Advanced: production files &amp; technical review</span><span class="dim" aria-hidden="true">▾</span></summary>
+        <div style="margin-top:var(--sp-5)">
       <section id="art-production" class="card" aria-label="Production files and review"><div class="card-h"><h3>Production files & review</h3></div><div class="card-b" role="status">Loading file review…</div></section>
+        </div>
+      </details>
 
       <div class="card"><div class="card-h"><h3>Job Details</h3><div class="spacer"></div>
         <button class="btn ghost sm" id="print-ticket">Work ticket</button></div><div class="card-b">
@@ -484,7 +494,7 @@ export async function jobDetailView(id) {
         <div class="card-b">
           <div class="stack" style="gap:8px">
             <button class="btn ghost sm" id="po-order" style="width:100%">Review purchase order</button>
-            <a class="btn ghost sm" href="/api/jobs/${id}/po?download=1" style="width:100%">↓ Download PO (JSON)</a>
+            <a class="dim" href="/api/jobs/${id}/po?download=1" style="font-size:12px;text-align:center">Download the order as a data file (JSON)</a>
           </div>
         </div></div>
 
@@ -502,16 +512,40 @@ export async function jobDetailView(id) {
   </div>`
 
   mountArtProduction($('#art-production'), id, j)
+  // Remembered per browser: a shop that works from these files keeps them open; most never open them.
+  $('#job-advanced')?.addEventListener('toggle', (ev) => store.set('psc-job-advanced', ev.target.open ? '1' : '0'))
   $('#po-order')?.addEventListener('click', () => openPO(id, j.job_number))
   loadReceiving(id)
   $('#print-ticket').onclick = () => window.open(j.ticket_url || `/p/ticket/${id}`, '_blank')
-  $('#stage').onchange = async (e) => {
-    // The select has ALREADY moved before this runs, so a failure here is worse than a silent
-    // no-op: the screen shows a stage the server never took, for the rest of the session. The
-    // re-render is outside the catch on purpose — it is what puts the select back to the truth.
-    try { await api.patch(`/api/jobs/${id}/stage`, { stage: e.target.value }); toast('Stage updated') }
-    catch (err) { toast(err.message, true) }
-    jobDetailView(id)
+  // Two moves a shop regrets: onto the press with nothing the customer signed off, and closed out
+  // with money still owed. Both are allowed — a phone approval or a net-30 account is ordinary —
+  // but neither should happen by a slip of the dropdown. Asked once, and "anyway" is one click.
+  const stageGuard = (stage) => {
+    const order = STAGES.map(([k]) => k), was = order.indexOf(j.stage), to = order.indexOf(stage)
+    const approved = (j.art || []).some((a) => a.status === 'approved') || !!sc.approvedOn
+    const owed = j.invoice_id ? Math.round(((Number(j.amount_due) || 0) - (Number(j.amount_paid) || 0)) * 100) / 100 : 0
+    if (to >= order.indexOf('production') && was < order.indexOf('production') && !approved)
+      return ['No approved proof yet', (j.art || []).length
+        ? 'The customer has not approved the proof on this job. If they approved by phone or email, use “Approved by phone” on the proof first so it is on record. Move it to the press anyway?'
+        : 'Nothing has been uploaded for the customer to approve. Move it to the press anyway?', 'Move it anyway']
+    if (stage === 'complete' && j.stage !== 'complete' && owed > 0)
+      return ['This job is not paid yet', `${money(owed)} is still owed on its invoice. Mark the job complete anyway? The invoice stays open either way.`, 'Mark complete']
+    return null
+  }
+  // The select has ALREADY moved before this runs, so a failure here is worse than a silent
+  // no-op: the screen shows a stage the server never took, for the rest of the session. The
+  // re-render is outside the catch on purpose — it is what puts the select back to the truth.
+  $('#stage').onchange = (e) => {
+    const stage = e.target.value
+    const move = async () => {
+      try { await api.patch(`/api/jobs/${id}/stage`, { stage }); toast('Stage updated') }
+      catch (err) { toast(err.message, true) }
+      jobDetailView(id)
+    }
+    const ask = stageGuard(stage)
+    if (!ask) return move()
+    e.target.value = j.stage // nothing has moved until they answer
+    confirmModal(ask[0], ask[1], move, ask[2])
   }
   $('#edit').onclick = () => jobForm(j, () => jobDetailView(id))
 

@@ -3,7 +3,7 @@ import { customerPicker } from '../shared/customer-picker.js'
 
 /**
  * Start a job — for work that never needed a quote: the walk-in, the reorder agreed on the phone,
- * the shop's own merch. The Job Board's "+ New Job" form asks for everything at once; this asks who
+ * the shop's own merch. The Job Board's "+ New job" form asks for everything at once; this asks who
  * it's for, then what it is and when it's due, and drops the job straight onto the board.
  */
 export async function doJobView() {
@@ -25,7 +25,7 @@ export async function doJobView() {
         <div class="field"><label for="dj-garment">Item (optional)</label><input class="input" id="dj-garment" autocomplete="off" placeholder="Gildan 5000 Black"></div>
         <div class="field"><label for="dj-due">Due date</label><input class="input" id="dj-due" type="date" value="${localDay(due)}"></div>
       </div>
-      <div class="field"><label for="dj-notes">Notes for the shop (optional)</label><textarea class="input" id="dj-notes" rows="3" placeholder="Sizes, ink colours, where it prints…"></textarea></div>
+      <div class="field"><label for="dj-notes">Notes for the shop (optional)</label><textarea class="input" id="dj-notes" rows="3" placeholder="Sizes, ink colors, where it prints…"></textarea></div>
       <button class="btn primary big" type="submit" id="dj-go">Put it on the board →</button>
     </form>`
     $('#dj-change').onclick = () => doJobView()

@@ -48,7 +48,7 @@ async function loadBook() {
 }
 
 const AXIS_HELP = {
-  colors: 'Price rises per ink colour.',
+  colors: 'Price rises per ink color.',
   stitches: 'Price rises per 1,000 stitches.',
   area: 'Price rises per square inch printed.',
   flat: 'One rate per piece, per placement.',
@@ -67,7 +67,7 @@ function serviceCard(s) {
       <div class="grid2">
         <div class="field"><label>Base rate ($/piece)</label>
           <input class="input" data-f="base" type="number" step="0.01" value="${n(s.base)}"></div>
-        <div class="field"><label>${s.axis === 'stitches' ? 'Per 1,000 stitches ($)' : s.axis === 'area' ? 'Per sq inch ($)' : s.axis === 'colors' ? 'Each extra colour ($)' : 'Per extra unit ($)'}</label>
+        <div class="field"><label>${s.axis === 'stitches' ? 'Per 1,000 stitches ($)' : s.axis === 'area' ? 'Per sq inch ($)' : s.axis === 'colors' ? 'Each extra color ($)' : 'Per extra unit ($)'}</label>
           <input class="input" data-f="perUnit" type="number" step="0.01" value="${n(s.perUnit)}"></div>
       </div>
       <div class="grid2">
@@ -82,7 +82,7 @@ function serviceCard(s) {
         <div class="field"><label>Charged per</label>
           <select class="input" data-f="setupPer">
             <option value="design" ${su.per === 'design' ? 'selected' : ''}>Design (once per artwork)</option>
-            <option value="color" ${su.per === 'color' ? 'selected' : ''}>Colour (once per screen)</option>
+            <option value="color" ${su.per === 'color' ? 'selected' : ''}>Color (once per screen)</option>
           </select></div>
       </div>
       <div class="row" style="gap:10px;align-items:center;margin-top:4px">
@@ -257,7 +257,7 @@ function wireBook(b) {
       const cols = (r.unnamed_columns || []).filter(Boolean)
       if (r.skipped > 0) {
         const which = cols.length ? ` under ${cols.map(esc).join(', ')}` : ''
-        const msg = `Imported ${r.filled} price(s). ${r.skipped}${which} were skipped — that column heading is not a number of colours, stitches or sizes.`
+        const msg = `Imported ${r.filled} price(s). ${r.skipped}${which} were skipped — that column heading is not a number of colors, stitches or sizes.`
         note.innerHTML = `<span style="color:var(--amber)">${msg}</span>`
         announce(msg, true)
       } else {
@@ -310,7 +310,7 @@ function renderMatrix(card, r) {
   // screen reader calls each one "edit text, blank", with no way to know whether you are typing
   // the 24-piece 3-colour price or the 500-piece 1-colour price. matrices.js labels the identical
   // grid; this one, the one the price book itself uses, never did.
-  const colName = (c) => (isColors ? `${c} colour${c === 1 ? '' : 's'}` : String(c))
+  const colName = (c) => (isColors ? `${c} color${c === 1 ? '' : 's'}` : String(c))
   const head = m.cols.map((c) => `<th scope="col">${isColors ? c + (c === 1 ? ' color' : '') : esc(String(c))}</th>`).join('')
   const body = m.rows.map((row) => `<tr>
     <th class="pm-qty" scope="row">${row.qty}+</th>
@@ -322,18 +322,18 @@ function renderMatrix(card, r) {
   card.innerHTML = `<div class="card-h"><h3>Your price matrix</h3><div class="spacer"></div>
       <span class="dim" style="font-size:11px">your number beats the calculator</span></div>
     <div class="card-b">
-      <p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Type your real price into any cell and that exact number is what quotes use for that quantity and colour count, even if it doesn't match the calculator. Leave a cell blank to let the calculator fill it. Or upload your existing price sheet.</p>
+      <p class="dim" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">Type your real price into any cell and that exact number is what quotes use for that quantity and color count, even if it doesn't match the calculator. Leave a cell blank to let the calculator fill it. Or upload your existing price sheet.</p>
       <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
         <div class="field" style="margin:0"><label style="font-size:11px">Service</label>
           <select class="input" id="mx-svc">${r.services.map((sv) => `<option ${sv === m.service ? 'selected' : ''}>${esc(sv)}</option>`).join('')}</select></div>
-        ${isColors ? `<div class="field" style="margin:0"><label style="font-size:11px">Colours on your press</label>
+        ${isColors ? `<div class="field" style="margin:0"><label style="font-size:11px">Colors on your press</label>
           <input class="input" id="mx-colors" type="number" min="1" max="14" value="${m.cols.length}" style="width:90px"></div>` : ''}
         <div class="spacer"></div>
         <label class="btn ghost sm" style="cursor:pointer">Upload price sheet<input type="file" id="pb-mx-file" accept=".csv,text/csv,text/plain" style="display:none"></label>
         <button class="btn sm" id="mx-save" type="button">Save matrix</button>
       </div>
       <div class="tbl-wrap"><table class="pm-table pm-editable">
-        <thead><tr><th>Qty &darr; / ${isColors ? 'Colours' : 'Units'} &rarr;</th>${head}</tr></thead>
+        <thead><tr><th>Qty &darr; / ${isColors ? 'Colors' : 'Units'} &rarr;</th>${head}</tr></thead>
         <tbody>${body}</tbody></table></div>
       <div id="mx-note" class="dim" role="status" aria-live="polite" aria-atomic="true" style="font-size:12px;margin-top:10px"></div>
     </div>`

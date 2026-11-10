@@ -34,13 +34,13 @@ this demo is not evidence of email delivery. Do not connect real accounts or ent
 
 ## 2. Create a quote you can reconcile
 
-1. Open **Estimates → + New Estimate**. Select one of the fictional customers, or use
+1. Open **Estimates → + New estimate**. Select one of the fictional customers, or use
    **Add a new customer** for a clearly labeled evaluation customer.
 2. Describe the line as `Evaluation shirts`, select **Screen Print**, and enter **24 M / 24 L**
    in the size grid. Set the rate to **12.00** and every other size to zero.
 3. Add a **Fee / setup line** called `Evaluation setup`, quantity **1**, rate **24.00**.
 4. Set **Tax rate (%)** to **0** for this example. Confirm **48 pieces**, **$600 subtotal**,
-   **$0 tax** and **$600 total**, then choose **Create Estimate**.
+   **$0 tax** and **$600 total**, then choose **Create estimate**.
 
 If the total differs, inspect line quantities, rates, size upcharges and any extra fees before
 proceeding. The check is useful because you know the expected result. After this first pass,
@@ -53,23 +53,23 @@ repeat it with **From a price matrix** and a copy of your own rates. Review
 Choose **Open customer view** in the estimate's **Customer Link** section on the same computer.
 Check the customer, size breakdown,
 total and saved terms, then approve the fictional quote. Return to the staff screen and refresh
-if needed. The estimate should show its approval and make **Convert to Invoice + Job** available.
+if needed. The estimate should show its approval and make **Convert to invoice + job** available.
 No email is necessary for this local check.
 
 For real orders, commercial changes such as price, quantities, notes or terms require a fresh
-approval. Earlier acceptance remains in the history. A staff **Mark Approved** action records
+approval. Earlier acceptance remains in the history. A staff **Mark approved** action records
 staff acceptance; do not use it as evidence that a customer clicked their link.
 
 ## 4. Create the invoice and production record
 
-Choose **Convert to Invoice + Job**. Review **Payment terms** and **Production due** separately.
+Choose **Convert to invoice + job**. Review **Payment terms** and **Production due** separately.
 The current options include Due on receipt, Net 15, Net 30 and Net 45, with an optional invoice
 date override. Terms count calendar days from invoice creation using the server's UTC date;
 they do not set the production promise.
 
-Choose **Create Invoice + Job**, then check that the job links to the original estimate and its
+Choose **Create invoice + job**, then check that the job links to the original estimate and its
 invoice. Compare the 48-piece size breakdown and $600 invoice against the quote. Reopening the
-quote should show **View Invoice**, without offering a second conversion for that invoice.
+quote should show **View invoice**, without offering a second conversion for that invoice.
 
 ## 5. Check a proof before production
 
@@ -88,7 +88,7 @@ Do not disable a technical hold just to make an evaluation job advance.
 
 ## 6. Reconcile two fictional payments
 
-Open the linked invoice and choose **Record Payment**. Enter **200.00**, select **other**,
+Open the linked invoice and choose **Record payment**. Enter **200.00**, select **other**,
 and add the note `Fictional evaluation deposit`. Confirm a partial payment and a **$400 balance**.
 Record **400.00** with the note `Fictional evaluation balance`. Confirm **$600 paid**, **$0 balance**
 and the **paid** status. Both payment records should remain visible.

@@ -52,6 +52,13 @@ export async function doEstimateView() {
 }
 
 const piecesOf = (o) => Math.max(Object.values(o.sizes).reduce((a, n) => a + (Number(n) || 0), 0), Number(o.total_pieces) || 0)
+const sizesUnknown = (o) => !Object.values(o.sizes).some((n) => Number(n) > 0) && Number(o.total_pieces) > 0
+const flatQuantity = (it) => {
+  if (!it.sizes) return it
+  const { sizes, ...rest } = it
+  const qty = Object.values(sizes).reduce((a, n) => a + (Number(n) || 0), 0)
+  return { ...rest, qty, detail: [rest.detail, 'Sizes to come'].filter(Boolean).join(' · ') }
+}
 const axisOf = (name) => state.services.find((s) => s.name === name)?.axis || 'colors'
 
 function stepper() {
@@ -94,17 +101,17 @@ function drawWhat() {
       <details class="guide-paste" id="g-paste">
         <summary>Got an email or text from them? Paste it and we’ll fill this in.</summary>
         <label class="sr-only" for="g-paste-text">Their message</label>
-        <textarea class="input" id="g-paste-text" rows="5" placeholder="e.g. Need 48 navy Gildan 18500 hoodies, 6 S 14 M 16 L 8 XL 4 2XL, 2 colour front and 1 colour back"></textarea>
+        <textarea class="input" id="g-paste-text" rows="5" placeholder="e.g. Need 48 navy Gildan 18500 hoodies, 6 S 14 M 16 L 8 XL 4 2XL, 2 color front and 1 color back"></textarea>
         <button type="button" class="btn secondary" id="g-paste-go">Fill it in for me</button>
       </details>
 
-      <h2 class="guide-q">1. What are they getting?</h2>
+      <h2 class="guide-q">What are they getting?</h2>
       <div class="grid2">
         <div class="field"><label for="g-garment">Item</label><input class="input" id="g-garment" value="${esc(o.garment)}" placeholder="Gildan 5000 T-shirt" autocomplete="off"></div>
-        <div class="field"><label for="g-color">Colour</label><input class="input" id="g-color" value="${esc(o.garment_color)}" placeholder="Black" autocomplete="off"></div>
+        <div class="field"><label for="g-color">Color</label><input class="input" id="g-color" value="${esc(o.garment_color)}" placeholder="Black" autocomplete="off"></div>
       </div>
 
-      <h2 class="guide-q">2. How many of each size?</h2>
+      <h2 class="guide-q">How many of each size?</h2>
       <div class="size-grid" id="g-sizes">${[...SIZE_ROW, ...(state.moreSizes ? MORE_SIZES : [])].map((s) => `<label class="size-box"><span>${s}</span>
         <input class="input" type="number" min="0" inputmode="numeric" data-size="${s}" value="${o.sizes[s] || ''}" placeholder="0" aria-label="${s} quantity"></label>`).join('')}</div>
       <div class="guide-row">
@@ -113,15 +120,15 @@ function drawWhat() {
         <label class="guide-total" for="g-total">Don’t know sizes yet? Total pieces <input class="input" id="g-total" type="number" min="0" inputmode="numeric" value="${o.total_pieces || ''}" placeholder="0"></label>
       </div>
 
-      <h2 class="guide-q">3. How is it decorated?</h2>
+      <h2 class="guide-q">How is it decorated?</h2>
       <div class="choice-row" id="g-deco" role="radiogroup" aria-label="Decoration">${state.services.map((s) => `<button type="button" class="choice${s.name === deco ? ' on' : ''}" role="radio" aria-checked="${s.name === deco}" data-deco="${esc(s.name)}">${esc(FRIENDLY[s.name] || s.name)}</button>`).join('')}</div>
 
-      <h2 class="guide-q">4. Where does it go?</h2>
+      <h2 class="guide-q">Where does it go?</h2>
       <div class="spots" id="g-spots">${o.locations.map((l, i) => `<div class="spot">
         <label class="sr-only" for="g-spot-${i}">Print location ${i + 1}</label>
         <select class="input" id="g-spot-${i}" data-spot="${i}">${SPOTS.map((s) => `<option${s === l.name ? ' selected' : ''}>${s}</option>`).join('')}</select>
-        ${colorAxis ? `<label class="spot-colors">Ink colours
-          <select class="input" data-colors="${i}" aria-label="Ink colours for location ${i + 1}">${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option${n === l.colors ? ' selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}
+        ${colorAxis ? `<label class="spot-colors">Ink colors
+          <select class="input" data-colors="${i}" aria-label="Ink colors for location ${i + 1}">${[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `<option${n === l.colors ? ' selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}
         ${o.locations.length > 1 ? `<button type="button" class="del" data-rm-spot="${i}" aria-label="Remove location ${i + 1}">&times;</button>` : ''}
       </div>`).join('')}</div>
       <button type="button" class="btn ghost sm" id="g-add-spot">＋ Add another spot</button>
@@ -219,7 +226,7 @@ function paintPrice() {
     <div class="price-sub">${p.pieces} piece${p.pieces === 1 ? '' : 's'} · ${money(p.per_piece)} each${p.totals.tax ? ` · incl. ${money(p.totals.tax)} tax` : ''}</div>
     <ul class="price-lines">${p.items.map((i) => {
       const qty = i.qty || Object.values(i.sizes || {}).reduce((a, n) => a + (Number(n) || 0), 0)
-      return `<li><span>${esc(i.description)}</span><span>${qty} × ${money(i.unit_price)}</span></li>`
+      return `<li><span>${esc(i.description)}${i.sizes && sizesUnknown(state.order) ? ' <span class="dim">· sizes to come</span>' : ''}</span><span>${qty} × ${money(i.unit_price)}</span></li>`
     }).join('')}</ul>
     ${p.blank?.source === 'default' ? '<p class="guide-hint">Blank cost is your shop default. Connect a supplier in Setup for live prices.</p>' : ''}`
   $('#g-create').disabled = false
@@ -233,8 +240,12 @@ async function create() {
   const btn = $('#g-create'); btn.disabled = true; btn.textContent = 'Creating…'
   const o = state.order
   // The engine names the garment; the colour the shop typed belongs on the customer's line too.
-  const items = state.priced.items.map((it, i) => (i === 0 && o.garment_color && !String(it.description).toLowerCase().includes(o.garment_color.toLowerCase())
+  let items = state.priced.items.map((it, i) => (i === 0 && o.garment_color && !String(it.description).toLowerCase().includes(o.garment_color.toLowerCase())
     ? { ...it, description: `${it.description.replace(/ — /, ` (${o.garment_color}) — `)}` } : it))
+  // "Don't know sizes yet": the pricing engine needs a grid to price, so it parks every piece in M,
+  // and that reached the customer's estimate, the invoice and the job ticket as "48 M". Nobody
+  // ordered 48 mediums. Send the line as a plain quantity and say the sizes are still to come.
+  if (sizesUnknown(o)) items = items.map(flatQuantity)
   try {
     const est = await api.post('/api/estimates', { contact_id: state.contact.id, items })
     state.created = est
@@ -261,6 +272,18 @@ function drawSend() {
     </div>
     <div id="g-sent"></div>
   </section>`
+  // Say what the button will do BEFORE it is pressed. With no shop email connected nothing can go
+  // out, and the click used to answer "Marked as sent… nothing went out" only afterwards.
+  api.get('/api/notify/status').then((n) => {
+    const btn = $('#g-send')
+    if (!btn || btn.disabled || n?.shop_email) return
+    emailOff = true
+    btn.textContent = 'Mark sent & copy link →'
+    const hint = $('#g-send-hint')
+    if (hint) hint.innerHTML = 'Your shop email is not connected yet, so this gives you a link to text or email them yourself. <a href="#/setup">Connect email</a>'
+    $('#g-email')?.closest('.field')?.remove()
+  }).catch(() => {})
+  let emailOff = false
   $('#g-send').onclick = async () => {
     const btn = $('#g-send'), label = btn.textContent
     const emailBox = $('#g-email')
@@ -284,9 +307,10 @@ function drawSend() {
         <div class="guide-actions"><a class="btn primary" href="#/do/estimate">Make another estimate</a><a class="btn ghost" href="#/">Back to Home</a></div>
       </div>`
       $('#g-copy')?.addEventListener('click', () => copyText(link, 'Link copied'))
+      if (emailOff && link) copyText(link, 'Marked sent. Link copied')
     } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = label }
   }
 }
 
 // Exposed for the headless view test.
-export const _test = { piecesOf, get state() { return state } }
+export const _test = { piecesOf, sizesUnknown, flatQuantity, get state() { return state } }

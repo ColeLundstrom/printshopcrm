@@ -1,11 +1,11 @@
-import { api, $, esc, money, fmtDate, setPage, toast, go, on, copyText } from '../core.js'
+import { api, today, $, esc, money, fmtDate, setPage, toast, go, on, copyText } from '../core.js'
 
 /**
  * Bill a customer — the guided way.
  *
  * An invoice here is always made from an approved estimate (Convert, on the estimate's own page),
  * which is right, but nothing told a shop that: "Invoices" had no New button and the way in was to
- * find the estimate, notice it said approved, and spot "Convert to Invoice + Job" among seven
+ * find the estimate, notice it said approved, and spot "Convert to invoice + job" among seven
  * buttons. This screen lists what is ready to bill, lets the shop record a yes it got by phone,
  * asks the one real question (when is it due?) and ends on Send.
  */
@@ -91,7 +91,11 @@ function drawTerms() {
     <div class="choice-row" id="inv-terms" role="radiogroup" aria-label="Payment terms">${TERMS.map(([v, l]) => `<button type="button" class="choice${v === term ? ' on' : ''}" role="radio" aria-checked="${v === term}" data-term="${v}">${l}</button>`).join('')}</div>
     ${lite() ? '' : `<h2 class="guide-q">What should we call the job?</h2>
       <div class="field"><label for="inv-title" class="sr-only">Job name</label><input class="input" id="inv-title" value="${esc(e.items?.[0]?.description || 'Custom order')}"></div>
-      <p class="guide-hint">The job goes on the board so the shop can start printing.</p>`}
+      <p class="guide-hint">The job goes on the board so the shop can start printing.</p>
+      <h2 class="guide-q">When do they need it? <span class="dim" style="font-weight:400;font-size:var(--fs-sm)">optional</span></h2>
+      <div class="field narrow"><label for="inv-due" class="sr-only">Date the order is needed</label><input class="input" id="inv-due" type="date" min="${today()}"></div>
+      <p class="guide-hint">Leave it blank and the job gets your normal turnaround.</p>`}
+    <p class="guide-hint">If you take cards, the pay page lets them pay a 50% deposit or the whole balance.</p>
     <button type="button" class="btn primary big" id="inv-go">${lite() ? 'Create invoice →' : 'Create invoice and job →'}</button>
   </section>`
   let chosen = term
@@ -106,6 +110,10 @@ function drawTerms() {
     try {
       const body = { payment_term: chosen, commercial_revision: e.commercial_revision }
       if (!lite()) body.title = $('#inv-title').value.trim() || 'Custom order'
+      // The promised date belongs to the job; payment terms above date the invoice. Sent only when
+      // the shop picked one, so a blank keeps the shop's own turnaround.
+      const needBy = $('#inv-due')?.value
+      if (needBy) body.production_due_date = needBy
       const r = await api.post(`/api/estimates/${e.id}/convert`, body)
       state.invoice = await api.get(`/api/invoices/${r.invoice_id}`)
       state.job = lite() ? null : { id: r.job_id, number: r.job_number, reused: r.job_reused }

@@ -55,7 +55,7 @@ Alexis`
       <div class="quote-out" id="in-out">
         <div class="dim" style="text-align:center;padding:40px 10px;font-size:12.5px">
           Paste a message and hit <strong>Read it</strong>.<br><br>
-          It pulls out the size run, colours, garment and dates so you're not retyping an email into a form.
+          It pulls out the size run, colors, garment and dates so you're not retyping an email into a form.
         </div>
       </div>
     </div>`,

@@ -20,7 +20,7 @@ let dragEndedAt = 0
 let st = null
 
 export async function pipelineView() {
-  setPage('Pipeline', `<button class="btn primary" id="new-opp">+ New Opportunity</button>`)
+  setPage('Pipeline', `<button class="btn primary" id="new-opp">+ New opportunity</button>`)
   const d = await api.get('/api/pipeline')
 
   $('#view').innerHTML = `
@@ -141,7 +141,7 @@ function oppForm(o) {
   const isNew = !o
   api.get('/api/contacts').then(({ contacts }) => {
     modal({
-      title: isNew ? 'New Opportunity' : o.title,
+      title: isNew ? 'New opportunity' : o.title,
       /* A brand-new shop has no contacts, and this select had no empty state and no placeholder.
        * It rendered with ZERO options, Create posted contact_id: '', and POST /api/opportunities
        * answered 400 customer_required — "Pick a customer to open a deal for." — which the dialog

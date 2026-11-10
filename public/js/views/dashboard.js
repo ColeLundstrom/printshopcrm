@@ -3,7 +3,7 @@ import { api, $, el, esc, icon, money0, money, fmtDate, relTime, pill, setPage, 
 const ICON = { estimate: '▤', invoice: '▣', payment: '⊕', job: '▦', stage: '→', art: '◈', contact: '◉', note: '✎' }
 
 export async function dashboardView() {
-  setPage('Dashboard', `<button class="btn primary" id="new-est">+ New Estimate</button>`)
+  setPage('Dashboard', `<button class="btn primary" id="new-est">+ New estimate</button>`)
   $('#view').innerHTML = skeleton('dashboard')
   const [d, ob] = await Promise.all([api.get('/api/dashboard'), api.get('/api/onboarding').catch(() => null)])
   const k = d.kpis

@@ -158,7 +158,7 @@ function renderJob(d, note) {
   // Floor Mode is a phone page used one-handed on the shop floor, and every tap here stamps a
   // labour timestamp the profitability report is built from, with no undo. It confirmed the scan
   // by swapping this whole block's innerHTML — visible if you can see it, and completely silent
-  // otherwise. A press operator using VoiceOver tapped "Advance to Production" and heard nothing:
+  // otherwise. A press operator using VoiceOver tapped "Advance to production" and heard nothing:
   // no confirmation, no new stage, no error. The only safe thing to do is tap it again.
   announce(note
     ? `${note}. ${d.job_number}, ${d.title || ''}.`

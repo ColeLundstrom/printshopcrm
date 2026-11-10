@@ -5,6 +5,7 @@ import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipien
 import { api, $, $$, el, esc, money, money0, moneyShort, undoable, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, lineBlankCostKnown, guessColors, priceForMargin, raiseToSubtotal, valuePerHour } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
+import { PAGE, listState, applyList, sortTh, toggleSort, listFoot } from '../shared/list-tools.js'
 import { intakeModal } from './intake.js'
 import { matrixPickerModal } from './matrices.js'
 import { takeEstimatePrefill } from './assistant.js'
@@ -14,28 +15,40 @@ let listFilter = 'all'
 const DECORATIONS = ['Screen Print', 'DTF Transfer', 'Embroidery', 'UV DTF', 'Vinyl', 'Patch', 'Laser', 'Promo']
 
 export async function estimatesView() {
-  setPage('Estimates', `<button class="btn" id="new">+ New Estimate</button>`)
-  const render = async () => {
-    const rows = await api.get(`/api/estimates?status=${listFilter}`)
-    $('#list').innerHTML = rows.length ? `<table class="tbl stack">
-      <thead><tr><th>Estimate</th><th>Customer</th><th>Items</th><th>Status</th><th class="num">Total</th><th class="num">Created</th></tr></thead>
-      <tbody>${rows.map((e) => `<tr class="click" data-id="${e.id}">
+  setPage('Estimates', `<button class="btn" id="new">+ New estimate</button>`)
+  const ls = listState()
+  let rows = []
+  const cols = { number: (e) => e.estimate_number, customer: (e) => e.contact_name || '', status: (e) => e.status, total: (e) => Number(e.total) || 0, created: (e) => e.created_at || '' }
+  const text = (e) => `${e.estimate_number} ${e.contact_name || ''} ${e.company || ''} ${e.items[0]?.description || ''}`
+  // Painting is separate from fetching: a keystroke in the search box, a heading click and "Show
+  // more" all redraw from the rows already here.
+  const paint = () => {
+    const r = applyList(rows, ls, cols, text)
+    $('#list').innerHTML = !rows.length
+      ? empty('▤', 'No estimates', 'Quote a job and it shows up here.', '<a class="btn" href="#/do/estimate">Make an estimate</a>')
+      : !r.matched ? empty('▤', 'Nothing matches', `No estimate matches “${esc(ls.q)}”. Try a customer name or an estimate number.`)
+      : `<table class="tbl stack">
+      <thead><tr>${sortTh('Estimate', 'number', ls)}${sortTh('Customer', 'customer', ls)}<th>Items</th>${sortTh('Status', 'status', ls)}${sortTh('Total', 'total', ls, 'num')}${sortTh('Created', 'created', ls, 'num')}</tr></thead>
+      <tbody>${r.rows.map((e) => `<tr class="click" data-id="${e.id}">
         <td class="mono" data-label="Estimate" style="color:var(--txt)">${esc(e.estimate_number)}</td>
         <td data-label="Customer"><div style="font-weight:600">${esc(e.contact_name || '—')}</div><div class="dim" style="font-size:12px">${esc(e.company || '')}</div></td>
         <td class="muted" data-label="Items" style="font-size:12.5px">${esc(e.items[0]?.description || '—')}${e.items.length > 1 ? ` <span class="dim">+${e.items.length - 1}</span>` : ''}</td>
         <td data-label="Status">${pill(e.status)}</td>
         <td class="num" data-label="Total"><strong>${money(e.total)}</strong></td>
         <td class="num dim" data-label="Created" style="font-size:12px">${fmtDate(e.created_at)}</td>
-      </tr>`).join('')}</tbody></table>`
-      : empty('▤', 'No estimates', 'Quote a job and it shows up here.', '<a class="btn" href="#/autopilot">Paste a request → estimate</a>')
+      </tr>`).join('')}</tbody></table>${listFoot(r, 'estimate')}`
   }
+  const render = async () => { rows = await api.get(`/api/estimates?status=${listFilter}`); ls.shown = PAGE; paint() }
 
   $('#view').innerHTML = `<div class="searchbar"><div class="tabs" id="tabs" role="group" aria-label="Filter estimates by status">
       ${['all', 'draft', 'sent', 'approved'].map((s) => `<button type="button" data-s="${s}" class="${listFilter === s ? 'on' : ''}" aria-pressed="${listFilter === s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}
-    </div></div><div class="card" id="list"></div>`
-  // Bound once. #list only has its innerHTML replaced by render(), so binding this inside render()
+    </div><div class="sp"></div><input class="input" id="list-q" type="search" placeholder="Search estimates or customers" aria-label="Search estimates" autocomplete="off"></div><div class="card" id="list"></div>`
+  // Bound once. #list only has its innerHTML replaced by paint(), so binding this inside it
   // stacked a new listener per tab switch — the same doubling bug as the customer list.
   on($('#list'), '[data-id]', (_e, t) => go(`/estimates/${t.dataset.id}`))
+  on($('#list'), '[data-sort]', (e, t) => { e.stopPropagation(); toggleSort(ls, t.dataset.sort, ['total', 'created'].includes(t.dataset.sort) ? 'desc' : 'asc'); paint() })
+  on($('#list'), '[data-more-rows]', () => { ls.shown += PAGE; paint() })
+  $('#list-q').oninput = (e) => { ls.q = e.target.value; ls.shown = PAGE; paint() }
   on($('#tabs'), '[data-s]', (_e, t) => {
     listFilter = t.dataset.s
     // The class stays — it is the style AND, in six of these groups, the state store. The ARIA
@@ -91,7 +104,7 @@ export async function estimateEditor(id) {
   const initialShipping = isNew ? selectedCustomer?.shipping_address || initialBilling : est.shipping_address || ''
   const upcharges = () => { try { return JSON.parse(settings.size_upcharges) } catch { return {} } }
 
-  setPage(isNew ? 'New Estimate' : `Edit ${est.estimate_number}`, `<button class="btn ghost" id="cancel">Cancel</button><button class="btn" id="save">${isNew ? 'Create Estimate' : 'Save'}</button>`,
+  setPage(isNew ? 'New estimate' : `Edit ${est.estimate_number}`, `<button class="btn ghost" id="cancel">Cancel</button><button class="btn" id="save">${isNew ? 'Create estimate' : 'Save'}</button>`,
     `<a href="#/estimates">Estimates</a> /`)
 
   $('#view').innerHTML = `<div class="card" style="max-width:1000px">
@@ -182,6 +195,43 @@ export async function estimateEditor(id) {
     const rate=$(`.ir[data-i="${i}"] [data-f="unit_price"]`);if(rate) rate.value=items[i].unit_price
   }
 
+  /**
+   * A garment line with pieces on it and a $0.00 rate is a line nobody has priced. The guided
+   * screen prices from the shop's price book as you type; here the only ways in were "Price
+   * calculator", "From a price matrix" and an unlabelled ▦. Offer the same engine by name, on the
+   * line, and only while the rate is still empty — a rate somebody typed is never replaced.
+   */
+  const needsPrice = (it) => !!it.sizes && lineQty(it) > 0 && !(Number(it.unit_price) > 0) && !it.decoration_pricing && !it.matrix
+  const szSum = (it, i) => {
+    const extra = lineUpcharge(it, up)
+    return `${lineQty(it)} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}${needsPrice(it) ? ` · <button type="button" class="btn secondary sm" data-autoprice="${i}">Price this line</button>` : ''}`
+  }
+  const autoPrice = async (i, btn) => {
+    const it = items[i]
+    if (!needsPrice(it)) return
+    if (!String(it.description || '').trim()) { toast('Say what the item is first, for example “Gildan 5000 tee, 2 color front”', true); $(`.ir[data-i="${i}"] [data-f="description"]`)?.focus(); return }
+    btn.disabled = true; btn.textContent = 'Pricing…'
+    try {
+      const said = `${lineQty(it)} ${it.description} ${it.detail || ''}`.trim()
+      const read = await api.post('/api/ai/intake', { text: said }).catch(() => ({}))
+      const sizes = Object.fromEntries(Object.entries(it.sizes).filter(([, n]) => Number(n) > 0))
+      const r = await api.post('/api/quick-price', { contact_id: +$('#contact').value || undefined, order: {
+        garment: read.garment || it.description, garment_color: read.garment_color || read.color || '', sizes,
+        decoration: read.decoration || it.decoration || 'Screen Print',
+        locations: Array.isArray(read.locations) && read.locations.length ? read.locations : [{ name: 'Front', colors: 1 }],
+        dark_garment: !!read.dark_garment } })
+      const priced = r.priced?.items || []
+      const main = priced.find((p) => p.sizes) || priced[0]
+      if (!main || !(Number(main.unit_price) > 0)) throw new Error('Your price book has no price for this yet. Type a rate, or use the Price calculator.')
+      if (!needsPrice(items[i])) return // a rate was typed while this was in flight; theirs wins
+      items[i] = { ...items[i], unit_price: main.unit_price, decoration: items[i].decoration || main.decoration || '', detail: items[i].detail || main.detail || '' }
+      const extras = priced.filter((p) => p !== main)
+      items.splice(i + 1, 0, ...extras)
+      markEditorDirty(); draw()
+      toast(`Your price book says ${money(main.unit_price)} each${extras.length ? `, plus ${extras.length} setup line${extras.length === 1 ? '' : 's'}` : ''}. Change anything you like.`)
+    } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = 'Price this line' }
+  }
+
   const rowHtml = (it, i) => {
     const gridded = !!it.sizes
     const extra = lineUpcharge(it, up)
@@ -202,10 +252,10 @@ export async function estimateEditor(id) {
     ${gridded ? `<div class="sizegrid" data-sg="${i}">
       ${sizesFor(it).map((s) => `<label class="sz ${Number(it.sizes[s]) > 0 ? 'on' : ''}">
         <span>${esc(s)}${itemUp[s] ? `<em>+${esc(moneyShort(itemUp[s]))}</em>` : ''}</span>
-        <input type="number" min="0" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0">
+        <input type="number" min="0" inputmode="numeric" data-size="${esc(s)}" data-i="${i}" value="${esc(it.sizes[s] || '')}" placeholder="0" aria-label="${esc(s)} quantity, line ${i + 1}">
       </label>`).join('')}
       <button class="sz-more" data-more="${i}" title="Add another size" aria-label="Add another size to line ${i + 1}">+</button>
-      <div class="sz-sum">${lineQty(it)} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}</div>
+      <div class="sz-sum">${szSum(it, i)}</div>
     </div>
     ${locationPanel(it,i)}` : ''}`
   }
@@ -480,6 +530,7 @@ export async function estimateEditor(id) {
     else items[i][f] = f === 'qty' || f === 'unit_price' ? +t.value : t.value
     refreshLocation(i)
     t.closest('.ir').querySelector('.amt').textContent = displayLineAmount(items[i], up)
+    if (f === 'unit_price' && items[i].sizes) { const sum = $(`.sizegrid[data-sg="${i}"] .sz-sum`); if (sum) sum.innerHTML = szSum(items[i], i) }
     totals()
   }, 'input')
 
@@ -493,9 +544,11 @@ export async function estimateEditor(id) {
     row.querySelector('.qtycell').innerHTML = `${lineQty(items[i])}<span class="dim" style="font-size:10px"> pcs</span>`
     row.querySelector('.amt').textContent = displayLineAmount(items[i], up)
     const extra = lineUpcharge(items[i], up)
-    t.closest('.sizegrid').querySelector('.sz-sum').innerHTML = `${lineQty(items[i])} pcs${extra ? ` · <span style="color:var(--amber)">+${money(extra)} size upcharges</span>` : ''}`
+    t.closest('.sizegrid').querySelector('.sz-sum').innerHTML = szSum(items[i], i)
     totals()
   }, 'input')
+
+  on($('#rows'), '[data-autoprice]', (_e, t) => autoPrice(+t.dataset.autoprice, t))
 
   on($('#rows'), '[data-more]', (_e, t) => {
     const i = +t.dataset.more
@@ -654,6 +707,7 @@ export async function estimateEditor(id) {
       tax_exempt_override: buyerIsExempt() && +$('#tax').value > 0,
       rush_days: rushDays,
     }
+    if (!isNew) payload.edit_revision = est.edit_revision || 0 // refuse to overwrite a teammate's newer save
     if (!payload.contact_id) return toast('Choose a customer for this estimate first', true)
     if (!payload.items.length) return toast('Add at least one line item', true)
     // Saving a NEW estimate is a create: two clicks made two estimates, with two estimate numbers,
@@ -664,7 +718,15 @@ export async function estimateEditor(id) {
       editorDirty = false // it is on the server now; leaving must not ask
       toast(isNew ? `Estimate ${saved.estimate_number} created` : saved.quote_revised ? 'Saved as draft. Send the new link for approval.' : 'Estimate saved')
       go(`/estimates/${saved.id}`)
-    } catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = isNew ? 'Create Estimate' : 'Save' }
+    } catch (e) {
+      btn.disabled = false; btn.textContent = isNew ? 'Create estimate' : 'Save'
+      // A teammate saved this quote first. Nothing of theirs was overwritten; offer the reload
+      // rather than leaving a sentence and a Save button that can only fail again.
+      if (e.data?.code === 'estimate_edited_elsewhere')
+        return confirmModal('Someone else saved this quote', 'A teammate saved changes while you had it open, so yours were not saved. Reload to see theirs, then make your changes again. Tip: copy anything long you typed before reloading.',
+          () => { editorDirty = false; location.reload() }, 'Reload the quote')
+      toast(e.message, true)
+    }
   }
 
   // Every typed character in the editor — customer, tax rate, description, detail, qty, rate,
@@ -759,12 +821,16 @@ export async function estimateDetailView(id) {
   // deliberately refuses to un-settle one, so the correction the server would have accepted had no
   // button anywhere. `e.invoice` is on the payload already, selected with the same status != 'void'
   // filter both routes use.
+  // One filled button per state — the next thing this quote needs — and the occasional actions
+  // stay quiet beside it. Five ghost buttons of equal weight said nothing about what to do next.
+  const next = e.status === 'draft' ? 'send' : e.status === 'sent' ? 'approve' : canConvert ? 'convert' : ''
+  const cls = (id) => (next === id ? 'btn' : 'btn ghost')
   setPage(e.estimate_number, `
     ${!e.invoice ? `<button class="btn ghost" id="edit">Edit</button>` : ''}
-    ${e.status === 'draft' || e.status === 'sent' ? `<button class="btn ghost" id="send">${e.status === 'sent' ? 'Resend' : 'Send to Customer'}</button>` : ''}
-    ${e.status === 'sent' ? `<button class="btn ghost" id="approve">Mark Approved</button>` : ''}
-    ${canConvert ? `<button class="btn" id="convert">${window.__EDITION === 'lite' ? 'Convert to Invoice' : 'Convert to Invoice + Job'}</button>` : ''}
-    ${e.invoice ? `<a class="btn ghost" href="#/invoices/${e.invoice.id}">View Invoice</a>` : ''}
+    ${e.status === 'draft' || e.status === 'sent' ? `<button class="${cls('send')}" id="send">${e.status === 'sent' ? 'Resend' : 'Send to customer'}</button>` : ''}
+    ${e.status === 'sent' ? `<button class="${cls('approve')}" id="approve">Mark approved</button>` : ''}
+    ${canConvert ? `<button class="btn" id="convert">${window.__EDITION === 'lite' ? 'Convert to invoice' : 'Convert to invoice + job'}</button>` : ''}
+    ${e.invoice ? `<a class="btn ghost" href="#/invoices/${e.invoice.id}">View invoice</a>` : ''}
     ${(e.voided_invoices || []).map((v) => `<a class="btn ghost" href="#/invoices/${v.id}" title="${esc(v.void_reason || 'cancelled')}">${esc(v.invoice_number)} · voided</a>`).join('')}
     <button class="btn ghost" id="dup">Duplicate</button>
     <a class="btn ghost" href="/api/estimates/${id}/pdf" target="_blank">PDF</a>`,
@@ -815,7 +881,7 @@ export async function estimateDetailView(id) {
         </div>
       </div></div>
 
-      ${e.approval_history?.length ? `<details class="card"><summary class="card-h">Approval history</summary><div class="card-b">${e.approval_history.map(h => `<div style="margin-bottom:12px"><strong>Revision ${h.commercial_revision + 1} · ${money(h.snapshot.total)}</strong><p class="dim">${esc(({staff:'Marked approved by staff',staff_conversion:'Recorded during conversion',customer_link:'Approved using customer link',legacy_record:'Historical approval record'})[h.source] || 'Approval record')}${h.approved_at ? ` · ${fmtDate(h.approved_at)}` : ' · original date unknown'}${h.actor ? ` · ${esc(h.actor)}` : ''}${h.revoked_at ? ` · superseded ${fmtDate(h.revoked_at)}` : ' · current acceptance'}</p><details><summary>Accepted quote details</summary><p>${esc(h.snapshot.contact_name || '')}</p>${h.snapshot.items.map(i => `<p><strong>${esc(i?.description || '')}</strong><br>${esc(i?.detail || '')}<br>${lineQty(i || {})} × ${money(i?.unit_price || 0)}${i?.sizes ? `<br>${esc(sizeSummary(i.sizes))}` : ''}</p>`).join('')}<p>Tax: ${money(h.snapshot.tax)} · Total: ${money(h.snapshot.total)}</p>${h.snapshot.billing_address ? `<p style="white-space:pre-wrap">Bill to:<br>${esc(h.snapshot.billing_address)}</p>` : ''}${h.snapshot.shipping_address ? `<p style="white-space:pre-wrap">Ship to:<br>${esc(h.snapshot.shipping_address)}</p>` : ''}${h.snapshot.notes ? `<p style="white-space:pre-wrap">${esc(h.snapshot.notes)}</p>` : ''}<p style="white-space:pre-wrap">${esc(h.snapshot.terms_snapshot)}</p>${h.snapshot.terms_snapshot_source === 'legacy_migration' ? '<p class="dim">Original historical terms are unknown. These terms were frozen from shop settings when snapshot storage was introduced.</p>' : ''}</details></div>`).join('')}</div></details>` : ''}
+      ${e.approval_history?.length ? `<details class="card"><summary class="card-h">Approval history</summary><div class="card-b">${e.approval_history.map(h => `<div style="margin-bottom:12px"><strong>Revision ${h.commercial_revision + 1} · ${money(h.snapshot.total)}</strong><p class="dim">${esc(({staff:'Marked approved by staff',staff_conversion:'Recorded during conversion',customer_link:'Approved using customer link',customer_payment:'Approved by paying online',legacy_record:'Historical approval record'})[h.source] || 'Approval record')}${h.approved_at ? ` · ${fmtDate(h.approved_at)}` : ' · original date unknown'}${h.actor ? ` · ${esc(h.actor)}` : ''}${h.revoked_at ? ` · superseded ${fmtDate(h.revoked_at)}` : ' · current acceptance'}</p><details><summary>Accepted quote details</summary><p>${esc(h.snapshot.contact_name || '')}</p>${h.snapshot.items.map(i => `<p><strong>${esc(i?.description || '')}</strong><br>${esc(i?.detail || '')}<br>${lineQty(i || {})} × ${money(i?.unit_price || 0)}${i?.sizes ? `<br>${esc(sizeSummary(i.sizes))}` : ''}</p>`).join('')}<p>Tax: ${money(h.snapshot.tax)} · Total: ${money(h.snapshot.total)}</p>${h.snapshot.billing_address ? `<p style="white-space:pre-wrap">Bill to:<br>${esc(h.snapshot.billing_address)}</p>` : ''}${h.snapshot.shipping_address ? `<p style="white-space:pre-wrap">Ship to:<br>${esc(h.snapshot.shipping_address)}</p>` : ''}${h.snapshot.notes ? `<p style="white-space:pre-wrap">${esc(h.snapshot.notes)}</p>` : ''}<p style="white-space:pre-wrap">${esc(h.snapshot.terms_snapshot)}</p>${h.snapshot.terms_snapshot_source === 'legacy_migration' ? '<p class="dim">Original historical terms are unknown. These terms were frozen from shop settings when snapshot storage was introduced.</p>' : ''}</details></div>`).join('')}</div></details>` : ''}
       ${mockups ? mockupCard(mockups) : ''}
 
       <div class="card"><div class="card-h"><h3>Customer Link</h3></div><div class="card-b">
@@ -865,7 +931,7 @@ export async function estimateDetailView(id) {
     }
   }
   $('#edit')?.addEventListener('click', () => go(`/estimates/${id}/edit`))
-  $('#view').insertAdjacentHTML('afterbegin',recipientsPanel(e,'estimate',!e.invoice && window.__me?.can_manage!==false))
+  $('#view').insertAdjacentHTML('beforeend',recipientsPanel(e,'estimate',!e.invoice && window.__me?.can_manage!==false))
   bindRecipientEditor(e,'estimate',()=>estimateDetailView(id))
   onceClick($('#send'), 'Sending…', async () => {
     const r = await api.post(`/api/estimates/${id}/send`,{recipient_revision:e.recipient_revision})
@@ -901,7 +967,7 @@ function convertModal(e) {
   // in this edition's nav at all. That dead end was the single most jarring thing in the lite flow.
   const lite = window.__EDITION === 'lite'
   modal({
-    title: lite ? 'Convert to Invoice' : 'Convert to Invoice + Job',
+    title: lite ? 'Convert to invoice' : 'Convert to invoice + job',
     body: `<p class="muted" style="margin-bottom:15px;line-height:1.6">${lite
         ? `This creates an invoice for <strong>${money(e.total)}</strong> linked to this estimate, ready to send and take payment on.`
         : `This creates invoice for <strong>${money(e.total)}</strong>, opens a production job on the board, and links all three together.`}</p>
@@ -913,7 +979,7 @@ function convertModal(e) {
         <div class="dim" style="font-size:12px;margin-top:4px">Terms count calendar days from invoice creation. An override sets this invoice’s due date only.</div></div>
       ${lite ? '' : `<div class="field"><label for="convert-production-due">Production due</label><input class="input" id="convert-production-due" name="production_due_date" type="date">
         <div class="dim" style="font-size:12px;margin-top:4px">Leave blank to use this quote’s turnaround${e.rush_days ? ` (${esc(e.rush_days)} business days)` : ' (10 business days)'}. Payment terms do not change when the job must be ready.</div></div>`}`,
-    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">${lite ? 'Create Invoice' : 'Create Invoice + Job'}</button>`,
+    footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="go">${lite ? 'Create invoice' : 'Create invoice + job'}</button>`,
     onMount: (bg) => {
       $('#go', bg).onclick = async () => {
         const btn = $('#go', bg); btn.disabled = true; btn.textContent = 'Creating…'
@@ -926,7 +992,7 @@ function convertModal(e) {
             : r.job_reused ? `Created ${r.invoice_number} — linked to ${r.job_number}, already on the board`
               : `Created ${r.invoice_number} and ${r.job_number}`)
           go(lite ? `/invoices/${r.invoice_id}` : `/jobs/${r.job_id}`)
-        } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = lite ? 'Create Invoice' : 'Create Invoice + Job' }
+        } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = lite ? 'Create invoice' : 'Create invoice + job' }
       }
     },
   })
