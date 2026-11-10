@@ -6185,7 +6185,7 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
   // Split rows/cols on comma or tab; tolerate $ and commas in numbers.
   const money = (v) => { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null }
   const cellsIn = text.replace(/\r/g, '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.split(/[\t,]/).map((c) => c.trim()))
-  if (cellsIn.length < 2) return res.status(400).json({ error: 'Need a header row of colours/units and at least one quantity row.' })
+  if (cellsIn.length < 2) return res.status(400).json({ error: 'Need a header row of colors/units and at least one quantity row.' })
   /**
    * NOT compacted. The header array is read POSITIONALLY against each data row, so removing a
    * heading shifts every price after it one column to the left and drops the last.
@@ -6205,7 +6205,7 @@ app.post('/api/pricebook/import', uploadMem.single('file'), reTenant, requireRol
    * was already the right test — instead of shifting everything after it.
    */
   const header = cellsIn[0].slice(1).map((h) => Math.round(Number(String(h).replace(/[^0-9.]/g, '')) || 0))
-  if (!header.some((n) => n > 0)) return res.status(400).json({ error: 'The first row should list the colours / stitch counts / sizes.' })
+  if (!header.some((n) => n > 0)) return res.status(400).json({ error: 'The first row should list the colors / stitch counts / sizes.' })
   // The headings we could not read, named, so the shop is told what was left out rather than
   // being handed a green count over a sheet that is missing a column.
   const unnamed = cellsIn[0].slice(1).filter((h, i) => !header[i] && String(h || '').trim())
@@ -10212,7 +10212,7 @@ app.get('/p/ticket/:id', pPage((req, res) => {
             ${imprintLines.map((l) => `<tr><td class="g">${esc(l.garment)}</td><td>${l.placements.map((p) => `<span class="tk-pl">${esc(p)}</span>`).join('')}</td></tr>`).join('')}
           </table>
           <div class="tk-specs">
-            ${['Ink colours / PMS', 'Ink type', 'Mesh', 'Squeegee', 'Flash / cure', 'Platen'].map((k) => `<div><span>${esc(k)}</span><div class="ln"></div></div>`).join('')}
+            ${['Ink colors / PMS', 'Ink type', 'Mesh', 'Squeegee', 'Flash / cure', 'Platen'].map((k) => `<div><span>${esc(k)}</span><div class="ln"></div></div>`).join('')}
           </div>`
       })()}
       <div class="tk-cols">
