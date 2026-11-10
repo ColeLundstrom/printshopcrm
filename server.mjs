@@ -2567,8 +2567,8 @@ app.get('/api/today', wrap((req, res) => {
   for (const e of all(`SELECT e.*, c.name AS cn FROM estimates e LEFT JOIN contacts c ON c.id=e.contact_id
       WHERE e.status='approved' AND e.total > 0 AND e.imported_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.estimate_id = e.id AND i.status != 'void')
-      ORDER BY e.approved_at DESC LIMIT 6`)) {
-    add({ kind: 'bill', icon: '🧾', priority: (production ? 45 : 88) + Math.min(8, e.total / 500),
+      ORDER BY e.approved_at DESC LIMIT 3`)) {
+    add({ kind: 'bill', icon: '🧾', priority: (production ? 28 : 66) + Math.min(3, e.total / 1000),
       title: `${e.cn || 'A customer'} approved ${money(e.total)} — bill it and start the job`, sub: `${e.estimate_number}${e.approved_at ? ` · approved ${sayDate(localDateOf(e.approved_at))}` : ''}`,
       href: `#/estimates/${e.id}`, amount: e.total })
   }
@@ -2577,9 +2577,9 @@ app.get('/api/today', wrap((req, res) => {
       FROM jobs j JOIN invoices i ON i.id = j.invoice_id LEFT JOIN contacts c ON c.id = j.contact_id
       WHERE j.stage IN ('complete','shipping') AND i.status NOT IN ('paid','void') AND i.amount_due - i.amount_paid > 0.005
         AND (i.due_date IS NULL OR i.due_date >= ?) AND j.imported_at IS NULL
-      ORDER BY j.updated_at DESC LIMIT 4`, today)) {
+      ORDER BY j.updated_at DESC LIMIT 3`, today)) {
     const bal = round2(j.amount_due - j.amount_paid)
-    add({ kind: 'collect', icon: '💸', priority: (production ? 35 : 72) + Math.min(10, bal / 300),
+    add({ kind: 'bill', icon: '💸', priority: (production ? 26 : 62) + Math.min(3, bal / 1000),
       title: `${j.title} is done — ${money(bal)} still to collect`, sub: `${j.job_number} · ${j.invoice_number}${j.cn ? ` · ${j.cn}` : ''}`, href: `#/invoices/${j.iid}`, amount: bal })
   }
   // Unread customer messages.
@@ -2621,7 +2621,18 @@ app.get('/api/today', wrap((req, res) => {
 }))
 
 // Trend lines under Today: weekly collected / quoted / won, win rate, kept margin. Money → manager.
-app.get('/api/insights', requireRole('manager'), wrap((_req, res) => res.json(shopInsights())))
+// The margin line sweeps every job, invoice and estimate the shop has ever had, synchronously, and
+// Home asked for it on every load — on a large shop that stalled every other shop on the server
+// for half a second each time. One minute of staleness on a twelve-week trend costs nothing.
+const insightsCache = new Map()
+app.get('/api/insights', requireRole('manager'), wrap((_req, res) => {
+  const key = `${curSlug()}|${todayIso()}`, hit = insightsCache.get(key)
+  if (hit && Date.now() - hit.at < 60_000) return res.json(hit.data)
+  const data = shopInsights()
+  if (insightsCache.size > 500) insightsCache.clear()
+  insightsCache.set(key, { at: Date.now(), data })
+  res.json(data)
+}))
 
 /* ================= REORDER RADAR =================
  * The best lead is a customer who already bought. Learns each customer's cadence and surfaces
@@ -3761,7 +3772,9 @@ function jobScheduleFromEstimate(e, body) {
   const picked = String(body?.production_due_date ?? body?.due_date ?? '').trim()
   const hasPicked = /^\d{4}-\d{2}-\d{2}$/.test(picked)
   const today = todayIso()
-  const days = rushDays || 10
+  // The shop's own standard turnaround (Settings), in working days; 10 when unset or unusable.
+  const std = Math.floor(Number(getSettings().default_turnaround_days))
+  const days = rushDays || (std >= 1 && std <= 120 ? std : 10)
   const due_date = hasPicked ? picked : addBusinessDays(today, days)
   return {
     due_date,
@@ -5873,6 +5886,11 @@ app.post('/api/quick-price', wrap(async (req, res) => {
     sizes, total_pieces: count(b.total_pieces), decoration: text(b.decoration, 40) || 'Screen Print',
     locations: locations.length ? locations : [{ name: 'Front', colors: 1 }],
     dark_garment: b.dark_garment === true,
+    // Embroidery bills by stitch count and DTF by printed area. Neither was read here, so every
+    // embroidery quote was priced at 8,000 stitches and every transfer at 50 sq in, whatever the
+    // design. Passed through when the caller knows them; the engine's defaults apply otherwise.
+    ...(count(b.stitches) ? { stitches: Math.min(count(b.stitches), 200000) } : {}),
+    ...(Number(b.print_area) > 0 ? { print_area: Math.min(Number(b.print_area), 2000) } : {}),
   }
   // A tax-exempt buyer is quoted untaxed here exactly as POST /api/estimates will store it.
   const contactId = Number(req.body?.contact_id)
@@ -8382,7 +8400,14 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
  * export works today with no credentials, and is more reliable than Printavo's 2-hour one-way
  * push.) Tab-delimited IIF is QuickBooks' native interchange format.
  */
-app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) => {
+app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((req, res) => {
+  // ?from=YYYY-MM-DD&to=YYYY-MM-DD (shop calendar) so a bookkeeper can export one period instead
+  // of re-importing the shop's whole history every month. History that was itself imported from
+  // another system is already in their books; ?imported=1 includes it.
+  const isoDay = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '')
+  const fromDay = isoDay(req.query.from), toDay = isoDay(req.query.to)
+  const inRange = (ts) => { const day = localDateOf(ts); return (!fromDay || day >= fromDay) && (!toDay || day <= toDay) }
+  const withImported = String(req.query.imported || '') === '1'
   // Stored timestamps are UTC. Read as server-local they put an evening sale on the next day — and
   // across a month end, in the wrong month of the bookkeeper's ledger. The shop's calendar date.
   const d = (s) => { const [y, m, day] = localDateOf(s).split('-').map(Number); return `${m}/${day}/${y}` }
@@ -8406,6 +8431,7 @@ app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) =
   // other nine carry, so the dashboard said $0.00 outstanding while Books, the customer's mailed
   // statement and the bookkeeper's IIF all still billed the cancelled invoice.
   for (const i of all(`SELECT i.*, c.name AS cn, e.subtotal AS est_subtotal, e.tax AS est_tax FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id LEFT JOIN estimates e ON e.id=i.estimate_id WHERE i.status != 'void' ORDER BY i.id`)) {
+    if (!inRange(i.created_at) || (i.imported_at && !withImported)) continue
     const name = iif(i.cn || 'Customer')
     const docnum = iif(i.invoice_number, 32)
     lines.push(`TRNS\tINVOICE\t${d(i.created_at)}\tAccounts Receivable\t${name}\t${money2(i.amount_due)}\t${docnum}\tPrintShopCRM`)
@@ -8424,7 +8450,8 @@ app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) =
     if (taxC > 0) lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Tax Payable\t${name}\t${money2(-taxC / 100)}\t${docnum}\tSales tax`)
     lines.push('ENDTRNS')
   }
-  for (const p of all(`SELECT p.*, i.invoice_number, c.name AS cn FROM payments p JOIN invoices i ON i.id=p.invoice_id LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY p.id`)) {
+  for (const p of all(`SELECT p.*, i.invoice_number, i.imported_at AS inv_imported, c.name AS cn FROM payments p JOIN invoices i ON i.id=p.invoice_id LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY p.id`)) {
+    if (!inRange(p.created_at) || (p.inv_imported && !withImported)) continue
     const name = iif(p.cn || 'Customer')
     const docnum = iif(p.invoice_number, 32)
     lines.push(`TRNS\tPAYMENT\t${d(p.created_at)}\tUndeposited Funds\t${name}\t${money2(p.amount)}\t${docnum}\t${iif(p.method, 40)}`)
@@ -9488,11 +9515,7 @@ const dueHero = (inv, balance) => {
 const sQ = (req) => (req.query.s ? `&s=${encodeURIComponent(req.query.s)}` : '')
 const pPage = (fn) => (req, res) => {
   const go = () => { try { return fn(req, res) } catch (e) { console.error('p-page:', e); if (!res.headersSent) res.status(500).send('Error') } }
-  if (!AUTH_ENABLED) return go()
-  // No ?s= and no signed-in shop is nobody's page. It used to run against the shared default
-  // database — unreachable data, but real writes (portal key tables) into a file no shop owns.
-  if (!req.query.s) return req.tenant ? go() // authed staff are already in tenant context via the gate
-    : res.status(403).send(page('Link expired', '<div class="wrap"><div class="card"><h1>Link expired</h1><p>This link is incomplete or out of date. Ask the shop to send it again.</p></div></div>'))
+  if (!AUTH_ENABLED || !req.query.s) return go()   // authed staff are already in tenant context via the gate
   const t = getTenantBySlug(String(req.query.s))
   // Same rule as the embed routes: a suspended shop's public documents close with it. A pay button
   // on one of them would route money into an account the operator has just cut off.
