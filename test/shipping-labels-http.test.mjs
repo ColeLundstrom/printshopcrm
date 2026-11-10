@@ -53,8 +53,8 @@ test('shipping labels over HTTP: one purchase per label, private files, shop and
       body: JSON.stringify({ email: 'dylan@example.test', password: readFileSync(join(dest, 'LOGIN.txt'), 'utf8').match(/Password: (.+)/)[1] }) })
     assert.equal(login.status, 200)
     const owner = login.headers.getSetCookie().map((c) => c.split(';')[0]).join('; '), staff = control.staff
-    const raw = (path, { body, method = body === undefined ? 'GET' : 'POST', cookie = owner } = {}) => fetch(server.base + path, { method, redirect: 'manual',
-      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15000) })
+    const raw = (path, { body, method = body === undefined ? 'GET' : 'POST', cookie = owner, wait = 15000 } = {}) => fetch(server.base + path, { method, redirect: 'manual',
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(cookie ? { Cookie: cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(wait) })
     const call = async (path, opts) => { const r = await raw(path, opts); const text = await r.text(); let json = null; try { json = JSON.parse(text) } catch { /* not json */ } return { status: r.status, body: json, text } }
     const purchases = () => readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.kind === 'purchase').length
     const apiCalls = () => readFileSync(log, 'utf8').split('\n').filter(Boolean).length
@@ -112,7 +112,8 @@ test('shipping labels over HTTP: one purchase per label, private files, shop and
     assert.equal(print.status, 200); assert.ok(!print.text.includes('TEST LABEL'), 'a live label carries no test mark'); assert.ok(print.text.includes(bought.tracking_code))
 
     // Another shop on the same server sees no key, no label and no file.
-    const signup = await raw('/api/auth/signup', { cookie: '', body: { shop_name: 'Neighbor label fixture', owner_name: 'Other owner', owner_email: 'labels-neighbor@example.test', password: 'Labels-neighbor-fixture-1' } })
+    // Creating a shop builds a whole database; a hosted Windows runner has taken longer than 15 seconds.
+    const signup = await raw('/api/auth/signup', { cookie: '', wait: 60000, body: { shop_name: 'Neighbor label fixture', owner_name: 'Other owner', owner_email: 'labels-neighbor@example.test', password: 'Labels-neighbor-fixture-1' } })
     assert.equal(signup.status, 200, await signup.clone().text())
     const neighbor = signup.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ')
     assert.equal((await call('/api/shipping/labels/setup', { cookie: neighbor })).body.connected, false)

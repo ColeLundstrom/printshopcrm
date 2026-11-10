@@ -67,6 +67,22 @@ const chk = (label, got, want) => {
 /* ---------- a cookie jar, because signup returns a session we have to carry ---------- */
 const jar = new Map()
 const cookieHeader = () => [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
+
+/* A multipart upload whose answer may take minutes. Global fetch gives up waiting for response
+ * headers after 300 seconds, and the 9,000-order import takes 270-285 seconds on a hosted Windows
+ * runner, so that job passed or failed on runner speed alone. node:http has no such limit; the
+ * request and every assertion made about it are unchanged. */
+const longUpload = async (path, form) => {
+  const encoded = new Response(form), body = Buffer.from(await encoded.arrayBuffer())
+  return new Promise((resolve, reject) => {
+    const rq = rawHttp(BASE + path, { method: 'POST', headers: { Cookie: cookieHeader(), 'Content-Type': encoded.headers.get('content-type'), 'Content-Length': body.length } }, (rs) => {
+      const parts = []
+      rs.on('data', (c) => parts.push(c)); rs.on('error', reject)
+      rs.on('end', () => { const text = Buffer.concat(parts).toString('utf8'); resolve({ status: rs.statusCode, text: async () => text, json: async () => JSON.parse(text) }) })
+    })
+    rq.on('error', reject); rq.end(body)
+  })
+}
 function stash(res) {
   // Node exposes repeated Set-Cookie via getSetCookie(); fall back for older runtimes.
   const raw = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie')].filter(Boolean)
@@ -3347,7 +3363,7 @@ try {
     const form = new FormData()
     form.append('file', new Blob([big], { type: 'text/csv' }), 'history.csv')
     const t0 = Date.now()
-    const up = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form })
+    const up = await longUpload('/api/import/orders', form)
     const wall = Date.now() - t0
     polling = false
     await probe
@@ -3404,7 +3420,7 @@ try {
     // file's content hash plus its position, so this holds across every batch boundary.
     const form2 = new FormData()
     form2.append('file', new Blob([big], { type: 'text/csv' }), 'history.csv')
-    const up2 = await fetch(`${BASE}/api/import/orders`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: form2 })
+    const up2 = await longUpload('/api/import/orders', form2)
     const body2 = await up2.json().catch(() => ({}))
     chk('…and re-uploading it after an interrupted run writes nothing new', String(body2.imported), '^0$')
     chk('…recognising every batch that had already landed', String(body2.skipped_duplicates), '^9000$')
@@ -3434,7 +3450,7 @@ try {
     const cform = new FormData()
     cform.append('file', new Blob([cbig], { type: 'text/csv' }), 'book.csv')
     const ct0 = Date.now()
-    const cup = await fetch(`${BASE}/api/import/contacts`, { method: 'POST', headers: { Cookie: cookieHeader() }, body: cform })
+    const cup = await longUpload('/api/import/contacts', cform)
     const cwall = Date.now() - ct0
     cpolling = false
     await cprobe
