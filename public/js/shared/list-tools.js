@@ -42,7 +42,7 @@ const escAttr = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;
 /** A sortable column heading. The button is the control; aria-sort on the th says the state. */
 export function sortTh(label, key, state, cls = '') {
   const on = state.sort === key
-  return `<th${cls ? ` class="${cls}"` : ''}${on ? ` aria-sort="${state.dir === 'asc' ? 'ascending' : 'descending'}"` : ''}><button type="button" data-sort="${escAttr(key)}" title="Sort by ${escAttr(label.toLowerCase())}" style="background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer">${escAttr(label)}<span aria-hidden="true" style="opacity:${on ? 1 : 0.35}"> ${on ? (state.dir === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>`
+  return `<th${cls ? ` class="${cls}"` : ''}${on ? ` aria-sort="${state.dir === 'asc' ? 'ascending' : 'descending'}"` : ''}><button type="button" data-sort="${escAttr(key)}" title="Sort by ${escAttr(label.toLowerCase())}" class="th-sort">${escAttr(label)}<span aria-hidden="true" class="th-sort-dir"> ${on ? (state.dir === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>`
 }
 
 /** Clicking the heading that is already sorted flips it; a new heading starts where it reads best. */

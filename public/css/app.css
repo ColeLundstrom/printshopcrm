@@ -1927,3 +1927,92 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @media (max-width: 720px) {
   table.tbl.stack thead, table.tbl.stack tbody { min-width: 0; }
 }
+
+/* ---- 1.39 follow-up: components that shipped with inline styles get real rules ---- */
+
+/* One disclosure marker everywhere: the drawn chevron .disc uses, on any summary.fold-sum. */
+summary.fold-sum { cursor: pointer; list-style: none; display: flex; align-items: center; gap: var(--sp-4); }
+summary.fold-sum::-webkit-details-marker { display: none; }
+summary.fold-sum::before {
+  content: ''; width: 7px; height: 7px; flex: none;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); margin: 0 var(--sp-2) 0 var(--sp-1); color: var(--txt-3);
+  transition: transform .18s ease;
+}
+details[open] > summary.fold-sum::before { transform: rotate(45deg); }
+summary.fold-sum:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm, 6px); }
+summary.fold-plain { font-weight: 600; padding: var(--sp-4) 0; flex-wrap: wrap; }
+summary.fold-bar {
+  font-weight: 600; font-size: var(--fs-sm); color: var(--txt-2);
+  padding: var(--sp-5) var(--sp-6); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel);
+}
+summary.fold-bar:hover { color: var(--txt); border-color: var(--line-2); }
+@media (prefers-reduced-motion: reduce) { summary.fold-sum::before { transition: none; } }
+
+/* The "More" overflow menu (core.js moreMenu). */
+.more-menu { position: relative; display: inline-block; }
+.more-menu > summary { list-style: none; cursor: pointer; }
+.more-menu > summary::-webkit-details-marker { display: none; }
+.more-menu-list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 60;
+  min-width: 190px; max-width: calc(100vw - 32px);
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
+}
+:root[data-theme="light"] .more-menu-list { box-shadow: 0 12px 28px rgba(16, 24, 40, .14); }
+.more-menu-list > .btn, .more-menu-list > a.btn, .more-menu-list > button { justify-content: flex-start; width: 100%; text-align: left; }
+
+/* Settings: the bar that appears once something is unsaved. */
+.settings-savebar {
+  position: sticky; bottom: 14px; z-index: 40;
+  display: flex; align-items: center; gap: var(--sp-5); flex-wrap: wrap;
+  margin-top: var(--sp-6); padding: var(--sp-4) var(--sp-5);
+  background: var(--panel); border: 1px solid var(--accent); border-radius: var(--r-md);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .28);
+}
+:root[data-theme="light"] .settings-savebar { box-shadow: 0 10px 24px rgba(16, 24, 40, .12); }
+.settings-savebar-msg { font-weight: 600; flex: 1; min-width: 0; }
+@media (max-width: 900px) { .settings-savebar { bottom: 76px; } } /* clear the bottom tab bar */
+
+/* Sortable column headings (shared/list-tools.js sortTh). */
+.th-sort { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.th-sort:hover { color: var(--txt); }
+.th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.th-sort-dir { opacity: .35; }
+th[aria-sort] .th-sort-dir { opacity: 1; }
+.guide-extra { margin-top: var(--sp-6); }
+
+/* A short table that always fits (payments on an invoice): no 440px floor, no sideways scroll. */
+@media (max-width: 900px) {
+  table.tbl.fit { display: table; overflow: visible; }
+  table.tbl.fit thead, table.tbl.fit tbody { display: table-row-group; min-width: 0; }
+}
+/* Document line items as stacked cards on a phone: description, then Qty / Rate / Amount in one row. */
+@media (max-width: 720px) {
+  table.tbl.stack.doc-lines { padding: var(--sp-5); }
+  table.tbl.stack.doc-lines tr:last-child { margin-bottom: 0; }
+  table.tbl.stack.doc-lines td:first-child { font-size: var(--fs-md); font-weight: 400; }
+  table.tbl.stack.doc-lines td.num { width: 32%; }
+}
+/* Quote editor rows on a phone: the column headings are hidden there, so each box names itself. */
+@media (max-width: 900px) {
+  .items .ir .qtycell, .items .ir .rate-cell, .items .ir .amt { position: relative; padding-top: 16px; }
+  .items .ir .qtycell::before, .items .ir .rate-cell::before, .items .ir .amt::before {
+    position: absolute; top: 0; left: 0; font-size: var(--fs-3xs); font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--txt-3); line-height: 1;
+  }
+  .items .ir .qtycell::before { content: 'Qty'; }
+  .items .ir .rate-cell::before { content: 'Rate'; }
+  .items .ir .amt::before { content: 'Amount'; }
+}
+
+.items .ir .qty-wrap { min-width: 0; }
+.items .ir .qty-wrap .input { width: 100%; }
+@media (max-width: 900px) {
+  .items .ir .qty-wrap { position: relative; padding-top: 16px; }
+  .items .ir .qty-wrap::before {
+    content: 'Qty'; position: absolute; top: 0; left: 0; font-size: var(--fs-3xs); font-weight: 600;
+    letter-spacing: .4px; text-transform: uppercase; color: var(--txt-3); line-height: 1;
+  }
+}

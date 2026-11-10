@@ -102,8 +102,12 @@ function wireDnd() {
       .catch((e) => { toast(e.message, true); pipelineView() })
     undoable(`Moved to ${col.querySelector('.nm').textContent}`, {
       undo: async () => {
-        fromCol.querySelector('.col-b').appendChild(s.card); recount()
-        try { await api.patch(`/api/opportunities/${s.id}/stage`, { stage: fromStage }) } catch (e) { toast(e.message, true); pipelineView() }
+        // A move to Won already rebuilt the board, so the card and column held here are detached
+        // nodes: moving them changed nothing on screen and the deal looked stuck in Won. Write
+        // the reversal, then repaint from the server either way.
+        if (fromCol.isConnected && s.card.isConnected) { fromCol.querySelector('.col-b').appendChild(s.card); recount() }
+        try { await api.patch(`/api/opportunities/${s.id}/stage`, { stage: fromStage }) } catch (e) { toast(e.message, true) }
+        pipelineView()
       },
     })
   })
@@ -172,11 +176,17 @@ function oppForm(o) {
       onMount: (bg) => {
         // Reopens this dialog when the customer is saved, so the deal being written is not lost.
         $('#add-contact', bg)?.addEventListener('click', () => contactForm(null, () => oppForm(o)))
+        // One save per press: a double-click made two deals, and on edit re-sent the stage change
+        // that fires the won/lost automations.
+        let saving = false
         $('#save', bg).onclick = async () => {
+          if (saving) return
           const data = formData(bg)
           if (isNew && !data.title) return toast('Give it a title', true)
           // Said here rather than by a 400 the dialog cannot act on.
           if (isNew && !data.contact_id) return toast(contacts.length ? 'Choose a customer for this deal first' : 'Add a customer first', true)
+          saving = true
+          const saveBtn = $('#save', bg); if (saveBtn) saveBtn.disabled = true
           try {
             if (isNew) await api.post('/api/opportunities', data)
             else {
@@ -189,7 +199,7 @@ function oppForm(o) {
               }
             }
             closeModal(); toast(isNew ? 'Opportunity created' : 'Saved'); pipelineView()
-          } catch (e) { toast(e.message, true) }
+          } catch (e) { toast(e.message, true) } finally { saving = false; if (saveBtn) saveBtn.disabled = false }
         }
         const stageSel = $('#opp-stage', bg)
         if (stageSel) stageSel.onchange = () => { $('#opp-lost-wrap', bg).style.display = stageSel.value === 'lost' ? 'block' : 'none' }

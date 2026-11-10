@@ -1,4 +1,4 @@
-import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick, moreMenu, shopSymbol } from '../core.js'
+import { api, $, $$, esc, money, money0, fmtDate, pill, setPage, empty, toast, go, on, onOnce, modal, closeModal, confirmModal, formData, daysOut, copyText, onceClick, moreMenu, shopSymbol, routeToken, routeIsCurrent } from '../core.js'
 import { lineQty, lineAmount, lineUpcharge, sizeTotal, sizeSummary } from '../shared/pricing.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
 import { mountCollections } from '../shared/payment-collections.js'
@@ -44,7 +44,8 @@ export async function invoicesView() {
         </tr>`
       }).join('')}</tbody></table>${listFoot(r, 'invoice')}`
   }
-  const render = async () => { rows = await api.get(`/api/invoices?status=${filter}`); ls.shown = PAGE; paint() }
+  const nav = routeToken(); let seq = 0 // newest tab click wins; a late answer never paints another screen
+  const render = async () => { const mine = ++seq; const got = await api.get(`/api/invoices?status=${filter}`); if (mine !== seq || !routeIsCurrent(nav)) return; rows = got; ls.shown = PAGE; paint() }
 
   $('#view').innerHTML = `<div class="searchbar">
       <div class="tabs" id="tabs" role="group" aria-label="Filter invoices by status">${['all', 'unpaid', 'overdue', 'partial', 'paid', 'void'].map((s) => `<button type="button" data-s="${s}" class="${filter === s ? 'on' : ''}" aria-pressed="${filter === s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
@@ -69,7 +70,9 @@ export async function invoicesView() {
 export async function invoiceDetailView(id) {
   // The shop's size-upcharge map, same as estimateDetailView. Garment lines price off a size grid,
   // so without it this screen showed $0.00 per line above a correct invoice total.
+  const nav = routeToken()
   const [i, cfg] = await Promise.all([api.get(`/api/invoices/${id}`), api.get('/api/settings')])
+  if (!routeIsCurrent(nav)) return
   const up = (() => { try { return JSON.parse(cfg.settings.size_upcharges) } catch { return {} } })()
   const bal = i.amount_due - i.amount_paid
   const pct = i.amount_due ? Math.min(100, (i.amount_paid / i.amount_due) * 100) : 0
@@ -102,15 +105,15 @@ export async function invoiceDetailView(id) {
     <div class="card">
       <div class="card-h"><h3>${esc(i.invoice_number)}</h3>${pill(i.status)}<div class="spacer"></div>
         <a class="dim" href="#/contacts/${i.contact_id}" style="font-size:13px">${esc(i.contact_name || '')} →</a></div>
-      ${i.items.length ? `<table class="tbl">
+      ${i.items.length ? `<table class="tbl stack doc-lines">
         <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
         <tbody>${i.items.map((it) => {
           const extra = lineUpcharge(it, up)
           return `<tr>
           <td><div style="font-weight:600">${esc(it.description)}</div><div class="dim" style="font-size:12px">${esc(it.detail || '')}</div>
             ${it.sizes && sizeTotal(it.sizes) > 0 ? `<div class="dim" style="font-size:12px">${esc(sizeSummary(it.sizes))}</div>` : ''}</td>
-          <td class="num">${lineQty(it) || ''}</td><td class="num">${money(it.unit_price)}${extra ? `<div class="dim" style="font-size:10.5px">+${money(extra)} sizes</div>` : ''}</td>
-          <td class="num"><strong>${money(lineAmount(it, up))}</strong></td></tr>`
+          <td class="num" data-label="Qty">${lineQty(it) || ''}</td><td class="num" data-label="Rate">${money(it.unit_price)}${extra ? `<div class="dim" style="font-size:10.5px">+${money(extra)} sizes</div>` : ''}</td>
+          <td class="num" data-label="Amount"><strong>${money(lineAmount(it, up))}</strong></td></tr>`
         }).join('')}</tbody></table>` : ''}
       <div class="card-b">
         <div class="totbox" style="margin-top:0">
@@ -143,7 +146,7 @@ export async function invoiceDetailView(id) {
 
       <div class="card" id="pay-list">
         <div class="card-h"><h3>Payments</h3><div class="spacer"></div>${chaseable ? `<button class="btn ghost sm" id="pay2">+ Add</button>` : ''}</div>
-        ${i.payments.length ? `<table class="tbl"><tbody>${i.payments.map((p) => `<tr>
+        ${i.payments.length ? `<table class="tbl fit"><tbody>${i.payments.map((p) => `<tr>
           <td><strong>${money(p.amount)}</strong><div class="dim" style="font-size:11.5px">${esc(p.method)}${p.note ? ` · ${esc(p.note)}` : ''}</div></td>
           <td class="num dim" style="font-size:12px">${fmtDate(p.created_at)}</td>
           <td class="num" style="width:34px">${p.stripe_session ? '<span class="dim" title="Verified processor entry; refund at your provider">Verified</span>' : `<button class="del btn danger sm" data-del-payment="${p.id}" aria-label="Delete the ${esc(money(p.amount))} ${esc(p.method || '')} payment">&times;</button>`}</td>
@@ -280,7 +283,8 @@ export async function invoiceDetailView(id) {
       toast('Invoice voided')
       invoiceDetailView(id)
     })
-  $('#reqpay')?.addEventListener('click', async () => {
+  // onceClick: a double-click on slow wifi sent the customer the payment email twice.
+  onceClick($('#reqpay'), 'Sending…', async () => {
     try {
       const r = await api.post(`/api/invoices/${id}/request-payment`,{recipient_revision:i.recipient_revision})
       toast(!r.delivered ? 'Payment email drafted to Outbox (Manual mode)'

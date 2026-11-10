@@ -335,6 +335,18 @@ function slackCard(esc) {
     </div></div>`
 }
 
+/**
+ * Redraw Settings without throwing away what the shop has typed. Every team action (add, remove,
+ * a failed role change) used to call settingsView() directly, which rebuilt the whole 60-field
+ * page and reset the dirty flag — unsaved shop details gone, silently, because a login was added.
+ */
+function repaintSettings() {
+  if (!settingsDirty) return settingsView()
+  confirmModal('Reload settings?',
+    'You have changes on this page that have not been saved. Reloading discards them.',
+    () => { settingsDirty = false; settingsView() }, 'Discard and reload')
+}
+
 export async function settingsView() {
   setPage('Settings')
   const d = await api.get('/api/settings')
@@ -426,16 +438,23 @@ export async function settingsView() {
           <div class="lbl" id="up-lbl">Extended-size upcharges (${esc(sym)} per piece)</div>
           <div class="dim" style="font-size:11px;margin-bottom:6px">Added on top of the base rate for big garments. Every estimate, invoice, PDF and export bills these.</div>
           <div class="grid4" role="group" aria-labelledby="up-lbl">
-            ${UPCHARGE_SIZES(upNow).map((sz) => `<div class="field" style="margin:0">
+            ${UPCHARGE_SIZES(upNow).map((key) => {
+              // The size name is a key of a setting a manager can write, and it is printed here
+              // four times. Escaped ONCE, at the source, so no sink below can forget to.
+              const sz = esc(key)
+              return `<div class="field" style="margin:0">
               <label for="fs-up-${sz}">${sz}</label>
-              <input class="input" id="fs-up-${sz}" data-up="${sz}" type="number" step="0.25" min="0" value="${esc(String(upNow[sz] ?? 0))}">
-            </div>`).join('')}
+              <input class="input" id="fs-up-${sz}" data-up="${sz}" type="number" step="0.25" min="0" value="${esc(String(upNow[key] ?? 0))}">
+            </div>` }).join('')}
           </div>
         </div>
         <div class="field"><label>Default press</label><select class="input" name="press_type">
           <option value="auto" ${s.press_type === 'auto' ? 'selected' : ''}>Automatic</option>
           <option value="manual" ${s.press_type === 'manual' ? 'selected' : ''}>Manual</option>
         </select><div class="dim" style="font-size:11px;margin-top:4px">Manual setup runs 12–72 min by color count</div></div>
+        <div class="field narrow"><label for="fs-default_turnaround_days">Standard turnaround (working days)</label>
+          <input class="input" id="fs-default_turnaround_days" name="default_turnaround_days" type="number" min="1" max="120" step="1" inputmode="numeric" value="${esc(s.default_turnaround_days || '10')}">
+          <div class="dim" style="font-size:11px;margin-top:4px">How long a normal order takes. A new job is due this many working days out unless the quote is a rush or you pick a date.</div></div>
 
         <!-- The only door in the product to settings.service_pricing.
              PUT /api/onboarding/service-pricing is its sole writer, and the only screen that calls
@@ -472,6 +491,9 @@ export async function settingsView() {
           <div class="disc-b" id="terms">
             ${ta('estimate_terms', 'Estimate terms', 'Printed at the bottom of every estimate')}
             ${ta('invoice_terms', 'Invoice terms')}
+            <div class="field narrow"><label for="fs-deposit_percent">Deposit customers are offered on the pay page (%)</label>
+              <input class="input" id="fs-deposit_percent" name="deposit_percent" type="number" min="1" max="100" step="1" inputmode="numeric" value="${esc(s.deposit_percent || '50')}">
+              <div class="dim" style="font-size:11px;margin-top:4px">The pay page offers this share of the invoice as a deposit, next to paying in full. 100 means payment in full only.</div></div>
           </div></details>
         <details class="disc"><summary>Email wording — 3 templates</summary>
           <div class="disc-b" id="tpl">
@@ -685,20 +707,16 @@ export async function settingsView() {
     const bar = document.createElement('div')
     bar.id = 'settings-savebar'
     bar.setAttribute('role', 'status')
-    const lift = window.matchMedia?.('(max-width: 900px)').matches ? 76 : 14
-    bar.style.cssText = `position:sticky;bottom:${lift}px;z-index:40;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding:10px 14px;background:var(--panel);border:1px solid var(--accent);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.28)`
-    bar.innerHTML = '<span style="font-weight:600">You have unsaved changes</span><span style="flex:1"></span><button type="button" class="btn" id="settings-savebar-go">Save settings</button>'
+    bar.className = 'settings-savebar'
+    bar.innerHTML = '<span class="settings-savebar-msg">You have unsaved changes</span><button type="button" class="btn" id="settings-savebar-go">Save settings</button>'
     $('#view').appendChild(bar)
     $('#settings-savebar-go').onclick = () => $('#save')?.click()
   }
   const markSettingsDirty = () => { settingsDirty = true; showSaveBar() }
-  for (const el of $$('#view input:not([type=file]), #view select, #view textarea')) el.addEventListener('input', markSettingsDirty)
-  const repaint = () => {
-    if (!settingsDirty) return settingsView()
-    confirmModal('Reload settings?',
-      'You have changes on this page that have not been saved. Reloading discards them.',
-      () => { settingsDirty = false; settingsView() }, 'Discard and reload')
-  }
+  // .role-sel saves itself the moment it changes; counting it as an unsaved edit raised a false
+  // "Leave without saving?" after a role change that had already been stored.
+  for (const el of $$('#view input:not([type=file]), #view select:not(.role-sel), #view textarea')) el.addEventListener('input', markSettingsDirty)
+  const repaint = () => repaintSettings()
   const repaintChrome = () => { repaint(); window.dispatchEvent(new Event('psc:settings')) }
 
   /* The paths the app DOES control: the sidebar, the tabbar, the `g` keyboard shortcuts and the
@@ -883,6 +901,19 @@ export async function settingsView() {
         catch { return {} }
       })()
       payload.size_upcharges = { ...keep, ...Object.fromEntries(upBoxes.map((el) => [el.dataset.up, Math.max(0, Number(el.value) || 0)])) }
+    }
+    // Two whole-number settings with a range. Blank means "leave it as it is", never zero.
+    for (const [key, lo, hi, what] of [['deposit_percent', 1, 100, 'The deposit is a percentage from 1 to 100.'], ['default_turnaround_days', 1, 120, 'Standard turnaround is 1 to 120 working days.']]) {
+      if (!(key in payload)) continue
+      if (payload[key] === null || payload[key] === '') { delete payload[key]; continue }
+      const n = Number(payload[key])
+      if (!Number.isFinite(n) || n < lo || n > hi) {
+        const el = $(`[name="${key}"]`)
+        if (el) { el.closest('details')?.setAttribute('open', ''); el.focus(); el.select?.() }
+        toast(what, true)
+        return
+      }
+      payload[key] = String(Math.round(n))
     }
     const err = $('#stripe-err')
     if (err) err.textContent = ''
@@ -1087,7 +1118,7 @@ export async function settingsView() {
       if (String(body.password).length < 8) { toast('The temporary password needs at least 8 characters', true); return }
       try {
         await api.post('/api/members', body)
-        closeModal(); toast('Team member added'); settingsView()
+        closeModal(); toast('Team member added'); repaintSettings()
       } catch (e) { toast(e.message, true) }
     },
   })
@@ -1095,11 +1126,11 @@ export async function settingsView() {
   // Inline role change.
   onOnce($('#view'), '.role-sel', async (_e, t) => {
     try { await api.patch(`/api/members/${t.dataset.mid}`, { role: t.value }); toast('Role updated'); window.dispatchEvent(new Event('psc:settings')) }
-    catch (e) { toast(e.message, true); settingsView() }
+    catch (e) { toast(e.message, true); repaintSettings() }
   }, 'change')
 
   onOnce($('#view'), '[data-du]', (_e, t) => confirmModal('Remove this login?', 'They lose access immediately and are signed out everywhere.', async () => {
-    try { await api.del(`/api/members/${t.dataset.du}`); toast('Removed'); settingsView() }
+    try { await api.del(`/api/members/${t.dataset.du}`); toast('Removed'); repaintSettings() }
     catch (e) { toast(e.message, true) }
   }, 'Remove'))
 }

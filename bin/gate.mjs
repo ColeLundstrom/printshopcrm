@@ -15091,7 +15091,7 @@ section('the estimate editor costs a calculator line the way the calculator did'
     const mg = src.slice(i, src.indexOf('\n  const draw', i))
     assert.ok(mg.length > 100, 'the marginGuard slice is empty — re-point this rule')
     const code = mg.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
-    assert.match(code, /if \(!it\.sizes\) continue/,
+    assert.match(code, /if \(!it\.sizes && !flatProduction\) continue/,
       'marginGuard costs lines with no size grid — the Discount button books ~$58.63 of press time against a credit and reads "Too thin"')
     // And the authoritative screen must still be making the same test, or they have diverged again.
     const roi = readFileSync(join(ROOT, 'lib/roi.mjs'), 'utf8')

@@ -47,7 +47,7 @@ export async function scanView() {
         ${hasDetector ? '<button class="btn" id="scan-start">Start camera</button><button class="btn ghost" id="scan-stop" hidden>Stop camera</button>' : ''}
       </div>
       <form id="scan-form" class="scan-form" autocomplete="off">
-        <input id="scan-input" name="code" inputmode="text" placeholder="Job number — e.g. JOB-1042" autofocus />
+        <input id="scan-input" name="code" aria-label="Job number to scan" inputmode="text" placeholder="Job number — e.g. JOB-1042" autofocus />
         <button class="btn primary" type="submit">Find job</button>
       </form>
       <div id="scan-job"></div>

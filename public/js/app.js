@@ -619,7 +619,13 @@ function handleRealtime(m) {
   } else if (m.type === 'branding') {
     refreshChrome()
   } else if (m.type === 'production') {
-    if (/^#\/production(?:\?|$)/.test(location.hash||'') || path === '/calendar') runRouter()
+    // Not under someone's hands. The queue repainted on every production event anywhere in the
+    // shop: a department picked but not yet applied snapped back, and the open "Automatic tasks"
+    // panel closed mid-edit. A control in use holds the repaint; the next event, or any
+    // navigation, catches the list up.
+    const held = document.activeElement?.closest?.('#prod-filter, #view details[open]')
+    if (path === '/calendar') runRouter()
+    else if (/^#\/production(?:\?|$)/.test(location.hash||'') && !held) runRouter()
     else if (path === '/tv') window.__pscTvRefresh?.()
     announce('Production tasks updated. Refresh an open job before continuing.')
   } else if (m.type === 'board') {

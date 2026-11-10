@@ -595,9 +595,9 @@ const EMPTY_GLYPHS = { '⚠': 'alert', '✓': 'check', '✅': 'check', '⌕': 's
  * opens with Enter/Space and needs no handler of its own; one document listener closes it on an
  * outside click, on Escape, and after any item in it is chosen. `items` is button/anchor HTML.
  */
-export const moreMenu = (items) => `<details class="more-menu" style="position:relative;display:inline-block">
-  <summary class="btn ghost" style="list-style:none;cursor:pointer" aria-label="More actions">More <span aria-hidden="true">▾</span></summary>
-  <div class="more-menu-list" role="group" style="position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:190px;display:flex;flex-direction:column;gap:2px;padding:6px;background:var(--panel);border:1px solid var(--line-2,var(--line));border-radius:var(--r-md,10px);box-shadow:0 12px 32px rgba(0,0,0,.28)">${items}</div>
+export const moreMenu = (items) => `<details class="more-menu">
+  <summary class="btn ghost" aria-label="More actions">More <span aria-hidden="true">▾</span></summary>
+  <div class="more-menu-list" role="group">${items}</div>
 </details>`
 if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
   document.addEventListener('click', (e) => {
@@ -649,7 +649,19 @@ const navGuard = createNavGuard((hash) => { location.hash = hash })
 export const guardLeave = (fn) => navGuard.register(fn)
 export const acceptRoute = (target) => navGuard.accept(target)
 
+/**
+ * Which navigation is on screen. Every runRouter() pass takes a new number; a view that awaits a
+ * fetch and then paints must check it is still the current one, or a slow response for the screen
+ * the user just LEFT writes its rows into the screen they went to (Estimates and Invoices share
+ * #list) or throws on a control that is no longer there and replaces the new screen with
+ * "Something broke". Take routeToken() before the first await, test routeIsCurrent(t) after.
+ */
+let routeGen = 0
+export const routeToken = () => routeGen
+export const routeIsCurrent = (token) => token === routeGen
+
 export async function runRouter() {
+  const gen = ++routeGen
   // Match against the path only; a `?query` (e.g. ?new=1, ?sep=1) shouldn't break routes
   // that end in `$`. Handlers read the full location.hash themselves for their params.
   const path = (location.hash.replace(/^#/, '') || '/').split('?')[0] || '/'
@@ -669,6 +681,8 @@ export async function runRouter() {
       if (view && r.handler !== lastHandler) view.innerHTML = skeleton(path === '/' || path === '/dashboard' ? 'cards' : 'list')
       lastHandler = r.handler
       try { await r.handler(...m.slice(1)) } catch (e) {
+        // A view the user has already left failed: the screen they are on now is not broken.
+        if (gen !== routeGen) { console.warn('superseded view failed:', e?.message || e); return }
         lastHandler = null   // the error panel replaced the view, so Try again starts it afresh
         console.error(e)
         // Twelve views call setPage(title, actions) before their first await, so a throw halfway

@@ -93,7 +93,8 @@ function drawWhat() {
   const o = state.order
   const c = state.contact
   const deco = o.decoration
-  const colorAxis = axisOf(deco) === 'colors'
+  const axis = axisOf(deco)
+  const colorAxis = axis === 'colors'
   $('#g-body').innerHTML = `<div class="guide-split">
     <section class="guide-card">
       <div class="guide-who">For <strong>${esc(c.name)}</strong>${c.company ? ` · ${esc(c.company)}` : ''} <button type="button" class="linkbtn" id="g-change">Change</button></div>
@@ -132,6 +133,12 @@ function drawWhat() {
         ${o.locations.length > 1 ? `<button type="button" class="del" data-rm-spot="${i}" aria-label="Remove location ${i + 1}">&times;</button>` : ''}
       </div>`).join('')}</div>
       <button type="button" class="btn ghost sm" id="g-add-spot">＋ Add another spot</button>
+      ${axis === 'stitches' ? `<div class="field narrow guide-extra"><label for="g-stitches">Stitch count <span class="dim" style="font-weight:400">optional</span></label>
+        <input class="input" id="g-stitches" type="number" min="0" step="500" inputmode="numeric" placeholder="8000" value="${o.stitches || ''}">
+        <p class="guide-hint">Embroidery is priced by stitches. A left-chest logo is usually 5,000–8,000; a full back can be 20,000 or more. Leave it blank to price a typical logo.</p></div>` : ''}
+      ${axis === 'area' ? `<div class="field narrow guide-extra"><label for="g-area">Print size in square inches <span class="dim" style="font-weight:400">optional</span></label>
+        <input class="input" id="g-area" type="number" min="0" step="1" inputmode="numeric" placeholder="50" value="${o.print_area || ''}">
+        <p class="guide-hint">Width × height of the print. A 4 × 4 left chest is 16; a 12 × 14 full front is 168. Leave it blank to price a mid-size print.</p></div>` : ''}
       ${colorAxis ? `<label class="guide-check"><input type="checkbox" id="g-dark"${o.dark_garment ? ' checked' : ''}> Dark shirt (adds a white underbase)</label>` : ''}
     </section>
 
@@ -147,6 +154,9 @@ function drawWhat() {
   $('#g-change').onclick = () => { state.step = 1; draw() }
   $('#g-garment').oninput = (e) => { o.garment = e.target.value; reprice() }
   $('#g-color').oninput = (e) => { o.garment_color = e.target.value; reprice() }
+  // Blank = not sent, so the price book's own default applies.
+  const optional = (id, key) => { const box = $(id); if (box) box.oninput = () => { const n = Math.floor(+box.value || 0); if (n > 0) o[key] = n; else delete o[key]; reprice() } }
+  optional('#g-stitches', 'stitches'); optional('#g-area', 'print_area')
   on($('#g-sizes'), '[data-size]', (_e, t) => { const n = Math.max(0, Math.floor(+t.value || 0)); if (n) o.sizes[t.dataset.size] = n; else delete o.sizes[t.dataset.size]; reprice() }, 'input')
   $('#g-total').oninput = (e) => { o.total_pieces = Math.max(0, Math.floor(+e.target.value || 0)); reprice() }
   $('#g-more-sizes')?.addEventListener('click', () => { state.moreSizes = true; drawWhat() })

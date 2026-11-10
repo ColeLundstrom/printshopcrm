@@ -1,4 +1,4 @@
-import { api, store, $, $$, el, esc, icon, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick } from '../core.js'
+import { api, store, $, $$, el, esc, icon, money, fmtDate, relTime, pill, setPage, empty, toast, undoable, go, on, modal, closeModal, confirmModal, formData, dueClass, dueLabel, daysOut, initials, onceClick, routeToken, routeIsCurrent } from '../core.js'
 import { SIZES, sizeSummary, sizeKeys } from '../shared/pricing.js'
 import { contactForm } from './contacts.js'
 import { mountArtProduction } from '../art-production.js'
@@ -44,7 +44,11 @@ export async function boardView() {
     ? (a.id ? `#${a.id}` : a.dataset?.id ? `.jcard[data-id="${a.dataset.id}"]` : a.dataset?.f ? `[data-f="${a.dataset.f}"]` : null)
     : null
   // runRouter() paints the loading skeleton on entry; a realtime re-run keeps #board on screen.
+  const nav = routeToken()
   const d = await api.get(`/api/board?filter=${boardState.filter}&assignee=${encodeURIComponent(boardState.assignee)}`)
+  // The user left while this was in flight (a realtime repaint, then a sidebar click): painting
+  // now would put the board over the screen they went to and throw on #new-job.
+  if (!routeIsCurrent(nav)) return
 
   const chip = (k, label, n) => `<button type="button" data-f="${k}" class="${boardState.filter === k ? 'on' : ''}" aria-pressed="${boardState.filter === k}">${label}${n != null ? ` <span>${n}</span>` : ''}</button>`
 
@@ -53,7 +57,7 @@ export async function boardView() {
         ${chip('all', 'All', d.counts.all)}${chip('week', 'This week')}${chip('rush', 'Rush', d.counts.rush)}
         ${chip('late', 'Late', d.counts.late)}${chip('unpaid', 'Unpaid', d.counts.unpaid)}
       </div>
-      <select class="input" id="bassign" style="max-width:170px">
+      <select class="input" id="bassign" aria-label="Show jobs assigned to" style="max-width:170px">
         <option value="all">Everyone</option>
         ${d.assignees.map((a) => `<option ${a === boardState.assignee ? 'selected' : ''}>${esc(a)}</option>`).join('')}
       </select>
@@ -181,7 +185,12 @@ function wireDnd() {
     if (!s.moved) return
     dragEndedAt = Date.now()
     const col = s.col
-    if (!col || col === s.from) return
+    // A realtime repaint while the card was held replaced every column and card, so the nodes this
+    // drag started with are detached. Comparing nodes then called a same-column drop a move (a
+    // no-op PATCH) and appended a second copy of the card. The board on screen is already the
+    // server's; abandon the drag. And compare stages, not elements.
+    if (!s.card.isConnected || !s.from.isConnected) return
+    if (!col || col.dataset.stage === s.from.dataset.stage) return
     const stage = col.dataset.stage
     const fromCol = s.from
     const fromStage = fromCol.dataset.stage
@@ -197,8 +206,9 @@ function wireDnd() {
       .catch((err) => { toast(err.message, true); boardView() })
     undoable(`Moved to ${col.querySelector('.nm').textContent}`, {
       undo: async () => {
-        fromCol.querySelector('.col-b').appendChild(s.card); recount()
-        try { await api.patch(`/api/jobs/${s.id}/stage`, { stage: fromStage }) } catch (err) { toast(err.message, true); boardView() }
+        const live = fromCol.isConnected && s.card.isConnected
+        if (live) { fromCol.querySelector('.col-b').appendChild(s.card); recount() }
+        try { await api.patch(`/api/jobs/${s.id}/stage`, { stage: fromStage }); if (!live) boardView() } catch (err) { toast(err.message, true); boardView() }
       },
     })
   })
@@ -354,7 +364,9 @@ function splitForm(job, lines, rest, after) {
 /* ---------- job detail ---------- */
 
 export async function jobDetailView(id) {
+  const nav = routeToken()
   const [j, roi] = await Promise.all([api.get(`/api/jobs/${id}`), api.get(`/api/roi/${id}`).catch(() => null)])
+  if (!routeIsCurrent(nav)) return
   const STAGES = [['new', 'New'], ['art_approval', 'Art Approval'], ['prepress', 'Prepress'], ['production', 'Production'], ['qc', 'QC'], ['shipping', 'Shipping'], ['complete', 'Complete']]
   const grid = (() => { try { return JSON.parse(j.sizes || '{}') } catch { return {} } })()
   const sizes = sizeKeys(grid).map((s) => [s, grid[s]])
@@ -431,7 +443,7 @@ export async function jobDetailView(id) {
       </div>
 
       <details id="job-advanced"${store.get('psc-job-advanced') === '1' ? ' open' : ''}>
-        <summary class="btn ghost" style="width:100%;justify-content:space-between;cursor:pointer;list-style:none"><span>Advanced: production files &amp; technical review</span><span class="dim" aria-hidden="true">▾</span></summary>
+        <summary class="fold-sum fold-bar">Advanced: production files &amp; technical review</summary>
         <div style="margin-top:var(--sp-5)">
       <section id="art-production" class="card" aria-label="Production files and review"><div class="card-h"><h3>Production files & review</h3></div><div class="card-b" role="status">Loading file review…</div></section>
         </div>

@@ -2,7 +2,7 @@ import { duplicateEstimateModal } from '../shared/estimate-duplicate.js'
 import { locationPricing, normalizeLocationItem, pickedLocation } from '../shared/location-pricing.js'
 import { unsupportedScreenPrintMethods } from '../shared/capacity-scope.js'
 import { recipientsPanel, bindRecipientEditor } from '../shared/billing-recipients.js'
-import { api, $, $$, el, esc, money, money0, moneyShort, undoable, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick } from '../core.js'
+import { api, $, $$, el, esc, money, money0, moneyShort, undoable, fmtDate, pill, setPage, empty, toast, go, on, formData, modal, closeModal, confirmModal, today , localDay, copyText, guardLeave, onOnce, onceClick, routeToken, routeIsCurrent } from '../core.js'
 import { COMMON_SIZES, SIZES, sizeTotal, sizeSummary, lineUpcharges, lineAmount, lineQty, lineUpcharge, computeTotals, jobCost, margin, marginVerdict, lineBlankCost, lineBlankCostKnown, guessColors, priceForMargin, raiseToSubtotal, valuePerHour } from '../shared/pricing.js'
 import { quoteModal } from './quote.js'
 import { PAGE, listState, applyList, sortTh, toggleSort, listFoot } from '../shared/list-tools.js'
@@ -38,7 +38,10 @@ export async function estimatesView() {
         <td class="num dim" data-label="Created" style="font-size:12px">${fmtDate(e.created_at)}</td>
       </tr>`).join('')}</tbody></table>${listFoot(r, 'estimate')}`
   }
-  const render = async () => { rows = await api.get(`/api/estimates?status=${listFilter}`); ls.shown = PAGE; paint() }
+  // Two guards on one fetch: the newest tab click wins (a slow "Sent" must not paint under
+  // "Approved"), and a response that lands after the user left never touches the next screen's #list.
+  const nav = routeToken(); let seq = 0
+  const render = async () => { const mine = ++seq; const got = await api.get(`/api/estimates?status=${listFilter}`); if (mine !== seq || !routeIsCurrent(nav)) return; rows = got; ls.shown = PAGE; paint() }
 
   $('#view').innerHTML = `<div class="searchbar"><div class="tabs" id="tabs" role="group" aria-label="Filter estimates by status">
       ${['all', 'draft', 'sent', 'approved'].map((s) => `<button type="button" data-s="${s}" class="${listFilter === s ? 'on' : ''}" aria-pressed="${listFilter === s}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}
@@ -241,7 +244,7 @@ export async function estimateEditor(id) {
       <input class="input" data-f="detail" aria-label="Detail or decoration, line ${i + 1}" value="${esc(it.decoration_pricing ? it.decoration_pricing.notes || '' : it.detail || '')}" placeholder="${gridded ? 'Black, 2 colors front' : 'One-time charge'}">
       ${gridded
         ? `<div class="qtycell" title="Set by the size grid">${lineQty(it)}<span class="dim" style="font-size:10px"> pcs</span></div>`
-        : `<input class="input num" data-f="qty" type="number" min="0" aria-label="Quantity, line ${i + 1}" value="${esc(it.qty)}">`}
+        : `<div class="qty-wrap"><input class="input num" data-f="qty" type="number" min="0" aria-label="Quantity, line ${i + 1}" value="${esc(it.qty)}"></div>`}
       <div class="rate-cell">
         <input class="input num" data-f="unit_price" ${it.decoration_pricing ? 'readonly title="Combined garment and location rate. Edit the garment rate or each location below."' : ''} type="number"${gridded ? ' min="0"' : ''} step="0.01" aria-label="Rate, line ${i + 1}" value="${esc(it.unit_price)}">
         <button class="mx-btn" ${it.decoration_pricing ? 'disabled' : ''} data-mx="${i}" type="button" title="${it.matrix ? `Priced from ${esc(it.matrix.name)}: ${esc(it.matrix.row)} × ${esc(it.matrix.col)}. Click to change.` : 'Price this line from one of your price matrices'}" aria-label="Price from a matrix">▦</button>
@@ -318,8 +321,12 @@ export async function estimateEditor(id) {
        * lib/roi.mjs:182 — the authoritative costing this guard's own docstring defers to — tests
        * exactly `if (it.sizes)`, which is why the ROI page always had this right and the editor
        * did not. Two screens must not disagree about the same estimate. */
-      if (!it.sizes) continue
-      const qty = sizeTotal(it.sizes)
+      // 1.39: lib/roi.mjs also costs a decorated line with a plain piece count ("48 pcs — sizes to
+      // come"), so this does too, by the same test. A line with neither a grid nor a decoration —
+      // the fee and the discount above — is still skipped.
+      const flatProduction = !it.sizes && lineQty(it) > 0 && !!(it.decoration || it.matrix?.name) && !/screen|setup|gang sheet/i.test(it.description || '')
+      if (!it.sizes && !flatProduction) continue
+      const qty = it.sizes ? sizeTotal(it.sizes) : lineQty(it)
       if (qty <= 0) continue // Sales-tax treatment does not remove production costs.
       priced = true
       pieces += qty
@@ -806,7 +813,9 @@ function mockupCard(mockups) {
 }
 
 export async function estimateDetailView(id) {
+  const nav = routeToken()
   const [e, cfg] = await Promise.all([api.get(`/api/estimates/${id}`), api.get('/api/settings')])
+  if (!routeIsCurrent(nav)) return
   // 402 = the shop's plan doesn't include artwork approval; treat as "no card" rather than an error.
   const mockups = await api.get(`/api/estimates/${id}/mockups`).catch(() => null)
   const up = (() => { try { return JSON.parse(cfg.settings.size_upcharges) } catch { return {} } })()
@@ -842,7 +851,7 @@ export async function estimateDetailView(id) {
         <h3>${esc(e.estimate_number)}</h3>${pill(e.status)}<div class="spacer"></div>
         <a class="dim" href="#/contacts/${e.contact_id}" style="font-size:13px">${esc(e.contact_name || '')} →</a>
       </div>
-      <table class="tbl">
+      <table class="tbl stack doc-lines">
         <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead>
         <tbody>${e.items.map((i) => {
           const extra = lineUpcharge(i, up)
@@ -850,11 +859,11 @@ export async function estimateDetailView(id) {
           <td><div style="font-weight:600">${esc(i.description)}</div>
             <div class="dim" style="font-size:12px">${esc([i.detail, i.decoration].filter(Boolean).join(' · '))}</div>
             ${i.sizes ? `<div class="sizetags">${sizeSummary(i.sizes).split(' / ').map((s) => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}</td>
-          <td class="num">${lineQty(i)}</td><td class="num">${money(i.unit_price)}${extra ? `<div class="dim" style="font-size:10.5px">+${money(extra)} sizes</div>` : ''}${
+          <td class="num" data-label="Qty">${lineQty(i)}</td><td class="num" data-label="Rate">${money(i.unit_price)}${extra ? `<div class="dim" style="font-size:10.5px">+${money(extra)} sizes</div>` : ''}${
             // Where the number came from — internal provenance, so a shop can trace a price back
             // to the sheet that produced it. Not part of what the customer receives.
             i.matrix ? `<div class="dim" style="font-size:10.5px" title="Priced from your ${esc(i.matrix.name)} matrix">▦ ${esc(i.matrix.name)}</div>` : ''}</td>
-          <td class="num"><strong>${money(lineAmount(i, up))}</strong></td>
+          <td class="num" data-label="Amount"><strong>${money(lineAmount(i, up))}</strong></td>
         </tr>`}).join('')}</tbody>
       </table>
       <div class="card-b">

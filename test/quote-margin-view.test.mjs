@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
-import { sizeTotal, guessColors, jobCost, lineBlankCost, lineBlankCostKnown, margin, marginVerdict, priceForMargin, raiseToSubtotal, computeTotals, valuePerHour } from '../public/js/shared/pricing.js'
+import { sizeTotal, lineQty, guessColors, jobCost, lineBlankCost, lineBlankCostKnown, margin, marginVerdict, priceForMargin, raiseToSubtotal, computeTotals, valuePerHour } from '../public/js/shared/pricing.js'
 
 // Execute the shipped editor calculation; only the DOM boundary is replaced. The slice runs from
 // marginGuard through the gauge helpers that follow it, up to `const draw`.
@@ -14,7 +14,7 @@ assert(start>0 && end>start)
 const fmt=value=>'$'+Number(value).toFixed(2)
 function preview(items, revenue=288, settings={}) {
   const node={hidden:false,innerHTML:'',className:''}
-  const ctx=vm.createContext({items,settings,up:{},$:()=>node,unsupportedScreenPrintMethods,sizeTotal,guessColors,jobCost,lineBlankCost,lineBlankCostKnown,margin,marginVerdict,priceForMargin,valuePerHour,
+  const ctx=vm.createContext({items,settings,up:{},$:()=>node,unsupportedScreenPrintMethods,sizeTotal,lineQty,guessColors,jobCost,lineBlankCost,lineBlankCostKnown,margin,marginVerdict,priceForMargin,valuePerHour,
     esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),money:fmt,money0:value=>'$'+Math.round(Number(value))})
   vm.runInContext(source.slice(start,end)+'\nmarginGuard('+revenue+');\nthis.__state=meterState;',ctx)
   node.state=ctx.__state ? {...ctx.__state} : null
@@ -129,4 +129,11 @@ test('an empty quote keeps the meter hidden rather than showing a fake 100%',()=
 test('no money in the meter is formatted by hand',()=>{
   const slice=source.slice(start,end)
   assert.doesNotMatch(slice,/\$\$\{|toLocaleString/)
+})
+
+test('a decorated line with a plain piece count is costed like lib/roi.mjs costs it; a bare fee is not',()=>{
+  const flat={description:'Sample tees',decoration:'Screen Print',qty:24,unit_price:12,blank_cost:4}
+  assert.match(preview([flat]).innerHTML,/profit on/,'48 pcs with sizes to come is still production')
+  assert.deepEqual(preview([flat]).state,preview([garment]).state,'same pieces, same cost as the size-grid line')
+  assert.deepEqual(preview([garment,{description:'Screen setup — 1 screen',decoration:'Screen Print',qty:1,unit_price:25}],313),preview([garment],313),'a setup line is not a garment')
 })

@@ -17,7 +17,7 @@ export function recipientsPanel(doc,type,canEdit) {
   // Collapsed and below the document: who gets the email is admin detail, and it used to open
   // every estimate and invoice — the first phone screen — ahead of the lines and the total.
   const billing = s?.billing_mode==='none' ? 'no invoice emails' : (s?.billing_email || s?.buyer_email || 'no email saved')
-  return `<details class="card" id="document-recipients" style="margin-top:var(--sp-6)"><summary class="card-h" style="cursor:pointer"><h3>Delivery contacts</h3><span class="dim" style="font-size:12px;margin-left:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(billing)}</span></summary><div class="card-b">
+  return `<details class="card" id="document-recipients" style="margin-top:var(--sp-6)"><summary class="card-h fold-sum"><h3>Delivery contacts</h3><span class="dim" style="font-size:12px;margin-left:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(billing)}</span></summary><div class="card-b">
     <p><strong>Buyer / quote approval:</strong> ${esc(s?.buyer_name || '—')} · ${esc(s?.buyer_email || 'No email saved')}</p>
     <p><strong>Invoice emails:</strong> ${s?.billing_mode==='none'?'Disabled':`${esc(s?.billing_name || '—')} · ${esc(s?.billing_email || 'No email saved')}`}</p>
     <p class="dim">${type==='invoice'?'Invoice, payment-link and reminder emails use the saved billing contact.':'Quote emails use the saved buyer. An invoice inherits these delivery contacts.'} Customer default changes apply to new documents.</p>

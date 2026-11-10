@@ -1,5 +1,5 @@
 import { quantityBands } from '../shared/location-pricing.js'
-import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal , onOnce, guardLeave } from '../core.js'
+import { api, $, $$, esc, money, fmtDate, setPage, empty, toast, go, on, modal, closeModal, confirmModal , onOnce, guardLeave, onceClick } from '../core.js'
 
 /* Custom price matrices — the shop's own price sheets, in any shape.
  *
@@ -114,19 +114,24 @@ function wireList() {
   }
 
   onOnce(root, '[data-edit]', (_e, el) => go(`/matrices/${el.dataset.edit}`))
+  // One create per press: these are POSTs, and a double-click made two matrices.
   onOnce(root, '[data-tpl]', async (_e, el) => {
+    if (el.dataset.busy) return
+    el.dataset.busy = '1'
     try {
       const { matrix } = await api.post('/api/matrices', { template: el.dataset.tpl })
       toast(`${matrix.name} added — it's yours now, change anything`)
       go(`/matrices/${matrix.id}`)
-    } catch (e) { toast(e.message, true) }
+    } catch (e) { toast(e.message, true) } finally { delete el.dataset.busy }
   })
   onOnce(root, '[data-dup]', async (_e, el) => {
+    if (el.dataset.busy) return
+    el.dataset.busy = '1'
     try {
       const { matrix } = await api.post(`/api/matrices/${el.dataset.dup}/duplicate`)
       toast(`Copied to “${matrix.name}”`)
       go(`/matrices/${matrix.id}`)
-    } catch (e) { toast(e.message, true) }
+    } catch (e) { toast(e.message, true) } finally { delete el.dataset.busy }
   })
   onOnce(root, '[data-def]', async (_e, el) => {
     try { await api.post(`/api/matrices/${el.dataset.def}/default`); toast('New quotes start on this matrix'); drawList() }
@@ -139,12 +144,12 @@ function wireList() {
       async () => { await api.del(`/api/matrices/${m.id}`); toast(`${m.name} deleted`); drawList() })
   })
   $('#mx-new').onclick = () => newMatrixModal()
-  $('#mx-new-blank').onclick = async () => {
+  onceClick($('#mx-new-blank'), 'Creating…', async () => {
     try {
       const { matrix } = await api.post('/api/matrices', { template: 'blank' })
       go(`/matrices/${matrix.id}`)
     } catch (e) { toast(e.message, true) }
-  }
+  })
 }
 
 /** Name it and say what the rows and columns mean. Four fields — the fastest path to a real grid. */
@@ -166,7 +171,7 @@ function newMatrixModal() {
     footer: `<button class="btn ghost" data-close>Cancel</button><button class="btn" id="mx-n-go">Create &amp; edit</button>`,
     onMount: (bg) => {
       $('#mx-n-name', bg).focus()
-      $('#mx-n-go', bg).onclick = async () => {
+      onceClick($('#mx-n-go', bg), 'Creating…', async () => {
         const name = $('#mx-n-name', bg).value.trim()
         if (!name) { const e = $('#mx-n-err', bg); e.textContent = 'Give the matrix a name.'; e.style.display = ''; return }
         try {
@@ -179,7 +184,7 @@ function newMatrixModal() {
           })
           closeModal(); go(`/matrices/${matrix.id}`)
         } catch (e) { const el = $('#mx-n-err', bg); el.textContent = e.message; el.style.display = '' }
-      }
+      })
     },
   })
 }
@@ -359,12 +364,24 @@ function wireEditor() {
       () => { dirty = false; go(to) }, 'Discard changes')
     return false
   })
-  $('#mx-dup').onclick = async () => {
-    const { matrix } = await api.post(`/api/matrices/${m.id}/duplicate`)
-    toast(`Copied to “${matrix.name}”`); go(`/matrices/${matrix.id}`)
-  }
+  onceClick($('#mx-dup'), 'Copying…', async () => {
+    try {
+      const { matrix } = await api.post(`/api/matrices/${m.id}/duplicate`)
+      toast(`Copied to “${matrix.name}”`); go(`/matrices/${matrix.id}`)
+    } catch (e) { toast(e.message, true) }
+  })
   const defBtn = $('#mx-def')
-  if (defBtn) defBtn.onclick = async () => { await api.post(`/api/matrices/${m.id}/default`); toast('New quotes start on this matrix'); matrixEditor(m.id) }
+  // Update in place. This used to re-run matrixEditor(), which refetched and redrew the grid —
+  // every price typed and not yet saved was gone, with no prompt.
+  onceClick(defBtn, 'Saving…', async () => {
+    try {
+      await api.post(`/api/matrices/${m.id}/default`)
+      m.isDefault = true
+      toast('New quotes start on this matrix')
+      const tag = document.createElement('span'); tag.className = 'pill green'; tag.textContent = 'This is the default for new quotes'
+      defBtn.replaceWith(tag)
+    } catch (e) { toast(e.message, true) }
+  })
   $('#mx-del').onclick = () => confirmModal('Delete this matrix?',
     `“${m.name}” is removed. Estimates already priced from it keep their prices.`,
     async () => { await api.del(`/api/matrices/${m.id}`); toast('Deleted'); go('/matrices') })

@@ -58,7 +58,7 @@ export async function developersView() {
             modal({
               title: 'Signing secret',
               body: `<p class="dim">Copy this now — it is shown once. Verify deliveries by recomputing the HMAC in <code>X-PSC-Signature</code>.</p><code class="dev-secret">${esc(r.secret)}</code>`,
-              footer: '<button class="btn" onclick="document.querySelector(\'.modal-bg\')?.remove()">Done</button>',
+              footer: '<button class="btn" data-close>Done</button>', // data-close → closeModal(): focus returns and the Escape listener is released
             })
             refresh()
           } catch (e) { toast(e.message, true) }

@@ -113,9 +113,9 @@ export async function contactsView() {
   }
 
   $('#view').innerHTML = `<div class="searchbar">
-      <input class="input" id="q" placeholder="Search name, company, email…" autocomplete="off">
+      <input class="input" id="q" type="search" aria-label="Search customers" placeholder="Search name, company, email…" autocomplete="off">
       <div class="tabs" id="tags" role="group" aria-label="Filter customers by tag"></div>
-    </div><details class="card" id="tag-filter" style="margin-bottom:12px"><summary class="card-h" style="cursor:pointer"><h3 style="font-size:13px">Filter</h3><span class="dim" id="customer-filter-status" role="status" aria-live="polite" style="font-size:12px;margin-left:8px"></span></summary><div class="card-b"><div class="wrap-row">
+    </div><details class="card" id="tag-filter" style="margin-bottom:12px"><summary class="card-h fold-sum"><h3 style="font-size:13px">Filter</h3><span class="dim" id="customer-filter-status" role="status" aria-live="polite" style="font-size:12px;margin-left:8px"></span></summary><div class="card-b"><div class="wrap-row">
       <label for="tag-mode">Included tags must match</label><select class="input" id="tag-mode" style="width:auto"><option value="all">All selected tags</option><option value="any">Any selected tag</option></select>
       <label for="exclude-tag">Exclude customers tagged</label><select class="input" id="exclude-tag" style="width:auto"><option value="">Choose a tag to exclude</option></select>
       <button class="btn ghost" id="clear-tags" type="button">Clear tags</button>
@@ -294,7 +294,7 @@ export function contactForm(c, after) {
         <div class="field"><label>Email</label><input class="input" name="email" type="email" value="${esc(c?.email || '')}" placeholder="jamie@example.com"></div>
         <div class="field"><label>Phone</label><input class="input" name="phone" value="${esc(c?.phone || '')}" placeholder="(714) 555-0142"></div>
       </div>
-      <details id="customer-more"${c ? ' open' : ''} style="margin:4px 0 12px"><summary style="cursor:pointer;font-weight:600;padding:8px 0">More details <span class="dim" style="font-weight:400">· tags, payment terms, addresses, tax, billing contact</span></summary>
+      <details id="customer-more"${c ? ' open' : ''} style="margin:4px 0 12px"><summary class="fold-sum fold-plain">More details <span class="dim" style="font-weight:400">· tags, payment terms, addresses, tax, billing contact</span></summary>
       <div class="field"><label>Tags (comma separated)</label><input class="input" name="tags" value="${esc((c?.tags || []).join(', '))}" placeholder="school, repeat, net-30"></div>
       <div class="field"><label for="customer-payment-term">Default payment terms for new invoices</label>
         <select class="input" id="customer-payment-term" name="payment_term">${[
@@ -404,7 +404,7 @@ export async function contactDetailView(id) {
       <div class="card-h"><h3>Activity</h3></div>
       <div class="card-b">
         <div class="row" style="margin-bottom:14px">
-          <input class="input" id="note" placeholder="Log a call, a note…">
+          <input class="input" id="note" aria-label="Add a note to this customer" placeholder="Log a call, a note…">
           <button class="btn ghost sm" id="add-note">Add</button>
         </div>
         ${d.activities.length ? `<div class="tl">${d.activities.map((a) => `
@@ -453,12 +453,19 @@ export async function contactDetailView(id) {
       go(`/estimates/${r.estimate_id}/edit`)
     } catch (e) { toast(e.message, true); again.disabled = false }
   }
+  // One note per press. A held or doubled Enter posted the same note two or three times: there
+  // was no in-flight flag, and the box was only cleared by the repaint that followed the POST.
+  let noteBusy = false
   const addNote = async () => {
-    const text = $('#note').value.trim()
-    if (!text) return
-    await api.post(`/api/contacts/${id}/note`, { text })
-    contactDetailView(id)
+    const box = $('#note')
+    const text = box.value.trim()
+    if (!text || noteBusy) return
+    noteBusy = true
+    box.value = ''
+    try { await api.post(`/api/contacts/${id}/note`, { text }); contactDetailView(id) }
+    catch (e) { box.value = text; toast(e.message, true) }
+    finally { noteBusy = false }
   }
   $('#add-note').onclick = addNote
-  $('#note').onkeydown = (e) => { if (e.key === 'Enter') addNote() }
+  $('#note').onkeydown = (e) => { if (e.key === 'Enter' && !e.repeat && !e.isComposing) addNote() }
 }

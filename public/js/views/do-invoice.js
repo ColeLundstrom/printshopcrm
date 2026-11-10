@@ -18,6 +18,8 @@ export async function doInvoiceView() {
   state = { step: 1, estimate: null, invoice: null }
   setPage('Bill a customer', '', '<a href="#/">Home</a> /')
   const [approved, sent] = await Promise.all([api.get('/api/estimates?status=approved'), api.get('/api/estimates?status=sent')])
+  // The shop's own deposit setting, for the hint on the terms step. Never worth failing the screen.
+  api.get('/api/settings').then((cfg) => { const n = Number((cfg?.settings || cfg)?.deposit_percent); if (n >= 1 && n <= 100) depositPct = Math.round(n) }).catch(() => {})
   state.approved = approved.filter((e) => !e.invoice_id)
   state.sent = sent
   draw()
@@ -82,6 +84,7 @@ async function pick(id, needsApproval) {
   } catch (err) { toast(err.message, true) }
 }
 
+let depositPct = 50
 function drawTerms() {
   const e = state.estimate
   const term = e.customer_payment_term || 'net_15'
@@ -95,7 +98,7 @@ function drawTerms() {
       <h2 class="guide-q">When do they need it? <span class="dim" style="font-weight:400;font-size:var(--fs-sm)">optional</span></h2>
       <div class="field narrow"><label for="inv-due" class="sr-only">Date the order is needed</label><input class="input" id="inv-due" type="date" min="${today()}"></div>
       <p class="guide-hint">Leave it blank and the job gets your normal turnaround.</p>`}
-    <p class="guide-hint">If you take cards, the pay page lets them pay a 50% deposit or the whole balance.</p>
+    <p class="guide-hint">${depositPct >= 100 ? 'If you take cards, the pay page lets them pay the whole balance online.' : `If you take cards, the pay page lets them pay a ${depositPct}% deposit or the whole balance. Change the deposit in Settings.`}</p>
     <button type="button" class="btn primary big" id="inv-go">${lite() ? 'Create invoice →' : 'Create invoice and job →'}</button>
   </section>`
   let chosen = term
