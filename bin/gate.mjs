@@ -1520,7 +1520,7 @@ await t('the two Follow-ups buttons obey the same switch the automation engine d
     assert.ok(i > 0, `${route} should still be there`)
     const body = src.slice(i, src.indexOf('\n}))', i))
     assert.match(body, /const deliver = s\.mode_followups !== 'manual'/, `${what} ignores the shop's Manual follow-up mode`)
-    assert.match(body, /vars: \{[^}]*\}, deliver \}\)/, `${what} computes deliver and then does not pass it`)
+    assert.match(body, /vars: \{[^}]*\},(?: origin: publicOrigin\(req\),)? deliver \}\)/, `${what} computes deliver and then does not pass it`)
     assert.match(body, /delivered: deliver/, `${what} must tell the screen which of the two things happened`)
     assert.match(body, /\$\{deliver \? '(?:sent|queued)' : 'drafted'\}/, '…and the customer timeline must distinguish a delivery request from an unsent draft')
   }
@@ -7730,7 +7730,9 @@ await t('a Stripe session is only accepted for the shop that created it', async 
   assert.match(foreign, /logActivity\('payment'/,
     '…and the shop has to be told, because the money is real and only they can reconcile it')
   // And checkout must still be stamping it, or the check above refuses every real payment.
-  assert.match(src, /metadata: \{ invoice: String\(id\), kind, slug: curSlug\(\) \}/,
+  // 1.39: the stamp lives in startCheckout itself, for every caller, and is omitted (not sent
+  // empty, which Stripe metadata validation rejects) when the install has no shops.
+  assert.match(src, /metadata:\{\.\.\.args\.metadata,\.\.\.\(curSlug\(\)\?\{slug:curSlug\(\)\}:\{\}\),checkout_ref/,
     'startCheckout must keep stamping the slug the confirm now reads')
   const connect = readFileSync(join(root, 'lib/connect.mjs'), 'utf8')
   assert.match(connect, /retrieveConnectedSession/, 'precondition: the unscoped platform retrieve still exists')
@@ -15093,7 +15095,10 @@ section('the estimate editor costs a calculator line the way the calculator did'
       'marginGuard costs lines with no size grid — the Discount button books ~$58.63 of press time against a credit and reads "Too thin"')
     // And the authoritative screen must still be making the same test, or they have diverged again.
     const roi = readFileSync(join(ROOT, 'lib/roi.mjs'), 'utf8')
-    assert.match(roi, /if \(it\.sizes\)/, 'lib/roi.mjs no longer discriminates on the size grid — the two costing screens have diverged')
+    // 1.39: a decorated line with a plain piece count is production too (it used to cost $0), but a
+    // line with neither a grid nor a decoration — the Discount line this rule exists for — is not.
+    assert.match(roi, /if \(it\.sizes \|\| flatProduction\)/, 'lib/roi.mjs no longer discriminates on the size grid — the two costing screens have diverged')
+    assert.match(roi, /const flatProduction = !it\.sizes && qty > 0 && !!\(it\.decoration \|\| it\.matrix\?\.name\)/, 'a grid-less line must carry a decoration before lib/roi.mjs costs it')
   })
 
   await t('the guard reads the field, and cannot quietly stop reading it', () => {

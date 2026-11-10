@@ -5212,7 +5212,7 @@ app.post('/api/estimates/:id/nudge', outboundLimit, wrap((req, res) => {
   const deliver = s.mode_followups !== 'manual'
   queueEmail({ contact: c,estimate_id:e.id,recipient_revision:e.recipient_revision,kind: 'nudge', subject: `Following up — estimate ${e.estimate_number}`,
     template: s.email_template_nudge,
-    vars: { estimate_number: e.estimate_number, total: money(e.total) }, deliver, origin: publicOrigin(req) })
+    vars: { estimate_number: e.estimate_number, total: money(e.total) }, origin: publicOrigin(req), deliver })
   const sentTo=documentRecipient(e,'estimate').email
   logActivity('estimate', `Follow-up ${deliver ? 'queued' : 'drafted'} on ${e.estimate_number} (${money(e.total)}) to ${sentTo}`, { contact_id: e.contact_id })
   res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
@@ -5228,7 +5228,7 @@ app.post('/api/invoices/:id/nudge', outboundLimit, wrap((req, res) => {
   const deliver = s.mode_followups !== 'manual'   // the same switch, for the same reason as above
   queueEmail({ contact: c, invoice_id:i.id,recipient_revision:i.recipient_revision,kind: 'nudge', subject: `Past due — invoice ${i.invoice_number}`,
     template: s.email_template_overdue,
-    vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, deliver, origin: publicOrigin(req) })
+    vars: { invoice_number: i.invoice_number, total: money(round2(i.amount_due - i.amount_paid)), due_date: i.due_date }, origin: publicOrigin(req), deliver })
   const sentTo=documentRecipient(i).email
   logActivity('invoice', `Payment reminder ${deliver ? 'queued' : 'drafted'} on ${i.invoice_number} to ${sentTo}`, { contact_id: i.contact_id })
   res.json({ ok: true, delivered: deliver, emailed_to: sentTo, email_live: notifyStatus(s).shop_email })
