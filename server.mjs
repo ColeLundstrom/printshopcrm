@@ -40,7 +40,7 @@ import { gzip } from 'node:zlib'
 import {
   all, get, run, iterate, tx, now, round2, getSettings, setSetting, publicSettings, applySettingsPatch, shopFormat, logActivity, computeTotals, getUpcharges,
   freezeUpcharges,
-  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, isoDaysFrom, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
+  syncInvoiceStatus, EFFECTIVE_STATUS_SQL, JOB_STAGES, JOB_STAGE_KEYS, todayIso, utcStartOfLocalDay, localDateOf, isoDaysFrom, pruneWebhookDeliveries, nextEstimateNumber, nextInvoiceNumber, nextJobNumber, sizeSummary, rollupSizes, garmentLines, lineQty, sizeTotal,
   lineAmount, lineUpcharge, SIZES, SIZE_KEY,
   scheduleFor, addBusinessDays, businessDaysBetween, templateValue, taxRateFor, clampRate, onContactCreated, onPaymentRecorded, onOpportunityStage, onJobStage, statusForStage, canWrite, SECRET_KEYS,
   stampShipDate,
@@ -1016,7 +1016,9 @@ function dispatchSubscriptions(event, data) {
   const payload = { event, at: now(), data }
   for (const sub of subs) {
     const deliveryId = Number(run('INSERT INTO webhook_deliveries (subscription_id, event, payload, status, next_attempt_at) VALUES (?,?,?,?,?)',
-      sub.id, event, JSON.stringify(payload), 'pending', now()).lastInsertRowid)
+      // Held 60s, like a retry's claim: stamped `now()` the row was already "due", and a tick landing
+      // during the immediate attempt below sent the same delivery a second time.
+      sub.id, event, JSON.stringify(payload), 'pending', new Date(Date.now() + 60_000).toISOString().replace('T', ' ').slice(0, 19)).lastInsertRowid)
     // One immediate attempt for responsiveness; every retry after that is owned by the tick drain
     // (retryDueWebhooks), which reads next_attempt_at from the row — so a restart mid-wait resumes
     // the retry instead of losing it. No in-process setTimeout to drop on a deploy.
@@ -1230,6 +1232,16 @@ app.use((req, res, next) => {
     if (req.role === 'owner' && req.method === 'GET') rememberPublicOrigin(req)
     // Soft paywall: once the trial lapses with no plan, block new work (writes) but keep read + billing open.
     const isWrite = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
+    // Cross-site request forgery. The session cookie is SameSite=Lax, which stops other SITES but
+    // not other ORIGINS of this site — any sibling subdomain could fire a body-less POST as the
+    // signed-in owner (rotate the API key, disconnect payments). Every current browser labels a
+    // request with Sec-Fetch-Site; a write that says it came from anywhere but this origin (or
+    // from the user directly: 'none') is refused. Absent header = not a browser, and those callers
+    // hold the cookie on purpose (the e2e gate, curl). Public endpoints never reach this branch
+    // with authority that matters, and are exempt so an embed on a shop's own site keeps working.
+    const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase()
+    if (isWrite && isApiPath(lp) && !isPublicApi(lp) && fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none')
+      return res.status(403).json({ error: 'That request came from another site and was refused. Open the app and try again.', code: 'cross_site_request' })
     const exempt = lp.startsWith('/api/auth/') || lp.startsWith('/api/billing') || lp.startsWith('/api/admin/') || lp.startsWith('/api/onboarding') || lp.startsWith('/api/stripe/')
     if (isWrite && isApiPath(lp) && !exempt && billingState(tenant).locked) {
       return res.status(402).json({ error: 'Your free trial has ended — choose a plan to keep working.', code: 'payment_required' })
@@ -1521,7 +1533,7 @@ function rateLimit({ windowMs = 15 * 60_000, max = 12, keyFn = null, message = n
 const OUTBOUND_MAX = Math.max(1, Number(String(process.env.PSC_OUTBOUND_MAX ?? '').trim()) || 300)
 const outboundLimit = rateLimit({
   windowMs: 60 * 60_000, max: OUTBOUND_MAX, bucket: 'outbound',
-  keyFn: (req) => `member:${req.member?.id || clientIp(req)}`,
+  keyFn: (req) => (req.tenant?.id ? `shop:${req.tenant.id}` : `member:${req.member?.id || clientIp(req)}`), // per SHOP: a per-member cap multiplied by every staff login the shop minted
   message: 'That is a lot of messages in one hour — give it a moment before sending more.',
 })
 
@@ -1851,7 +1863,10 @@ Please sign in and change your password from your profile the first time you're 
     .catch((e) => console.error('staff invite email:', e.message))
 }
 
-app.post('/api/auth/login', rateLimit({ max: 12 }), wrap(async (req, res) => {
+// The 12-per-window limit above is keyed on IP + email, so one address could try one password
+// against every account it liked and never meet a 429. A second, wider ceiling on the IP alone.
+const loginIpLimit = rateLimit({ max: 40, bucket: 'login-ip', keyFn: (req) => clientIp(req), message: 'Too many sign-in attempts from this connection. Wait a few minutes and try again.' })
+app.post('/api/auth/login', loginIpLimit, rateLimit({ max: 12 }), wrap(async (req, res) => {
   const b = req.body || {}
   // The account-wide backoff is what a distributed spray runs into, since the per-IP window above
   // hands every new host its own budget. But it is read here and ACTED ON only below, after the
@@ -2344,7 +2359,7 @@ app.get('/api/dashboard', wrap((_req, res) => {
     // so Revenue MTD, on the first screen after login, scanned every payment the shop had ever
     // taken. created_at is stored as 'YYYY-MM-DD HH:MM:SS', which orders identically to the date
     // alone, so comparing the text directly gives the same answer and seeks.
-    `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE p.created_at >= ?`, monthStart).v)
+    `SELECT COALESCE(SUM(p.amount), 0) AS v FROM payments p WHERE p.created_at >= ?`, utcStartOfLocalDay(monthStart)).v) // local month start as a UTC instant — agrees with Reports
   // MAX(…, 0) per invoice, so this agrees with the A/R aging report, which filters `> 0.005`.
   // Netting a negative balance against every OTHER customer's meant the dashboard and the report
   // could be hundreds of dollars apart with nothing on either screen to explain it — and
@@ -3186,6 +3201,12 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const inv = get("SELECT invoice_number FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
   if (inv) return res.status(409).json({ error: `Already invoiced as ${inv.invoice_number} — edit the invoice, not the estimate.` })
   const b = req.body || {}
+  // Two people with the same quote open: the second Save carried the line items it had loaded and
+  // silently erased the first person's — a $400 rush line gone, a 200, and no warning to either.
+  // The editor sends the edit_revision it loaded; a save against an older one is refused. Omitted
+  // (API callers, older tabs) keeps the previous last-write-wins behaviour.
+  if (b.edit_revision !== undefined && Number(b.edit_revision) !== (e.edit_revision || 0))
+    return res.status(409).json({ code: 'estimate_edited_elsewhere', error: 'Someone else saved this quote while you had it open. Reload to see their changes, then make yours again — nothing of theirs was overwritten.' })
   const notesError = textFieldError(b, ['notes'])
   if (notesError) return res.status(400).json(notesError)
   const s = getSettings()
@@ -3250,7 +3271,7 @@ app.put('/api/estimates/:id', wrap((req, res) => {
   const approvalInvalidated = revised && (!!e.approved_at || ['approved','invoiced'].includes(e.status))
   const artChangedJobs = tx(() => {
     invalidateEstimateApproval(e, next, { actor: req.member?.name })
-    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=?, tax_exempt_override=? WHERE id=?',
+    run('UPDATE estimates SET contact_id=?, items=?, subtotal=?, tax=?, total=?, tax_rate=?, notes=?, rush_days=?, billing_address=?, shipping_address=?, terms_snapshot=?, terms_snapshot_source=?, tax_exempt_override=?, edit_revision=COALESCE(edit_revision,0)+1 WHERE id=?',
       contactId, JSON.stringify(items), t.subtotal, t.tax, t.total, rate, str(b.notes, e.notes),
       next.rush_days, addresses.billing_address, addresses.shipping_address, next.terms_snapshot,
       termsChanged ? 'edited' : e.terms_snapshot_source, exemptOverride ? 1 : 0, id)
@@ -3705,7 +3726,23 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   try { assertEstimateRevision(e, req.body) }
   catch (error) { if (error.code === 'estimate_changed') return res.status(409).json({ error: error.message, code: error.code }); throw error }
   const existing = get("SELECT * FROM invoices WHERE estimate_id = ? AND status != 'void'", id)
-  if (existing) return res.status(409).json({ error: `Already invoiced as ${existing.invoice_number}` })
+  if (existing) {
+    // An online payment taken before 1.39 created the invoice and nothing else, and this guard then
+    // refused the only route that opens a job. An invoiced estimate with no job at all is that
+    // wedge: open the job against the invoice it already has instead of refusing.
+    if (!get('SELECT id FROM jobs WHERE estimate_id=? OR invoice_id=?', id, existing.id)) {
+      const jobId = tx(() => {
+        run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?) WHERE id=?`, now(), id)
+        recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?', id), { source: 'staff_conversion', actor: req.member?.name })
+        return openJobForPaidEstimate(e, existing.id)
+      })
+      const job = get('SELECT * FROM jobs WHERE id=?', jobId)
+      logActivity('invoice', `Job ${job.job_number} opened for ${existing.invoice_number}, which was paid online without one`, { contact_id: e.contact_id, job_id: jobId })
+      syncPipeline(get('SELECT * FROM estimates WHERE id = ?', id), 'approved')
+      return res.json({ ok: true, invoice_id: existing.id, job_id: jobId, invoice_number: existing.invoice_number, job_number: job.job_number, job_reused: false, repaired: true })
+    }
+    return res.status(409).json({ error: `Already invoiced as ${existing.invoice_number}` })
+  }
   const titleError = textFieldError(req.body, ['title'])
   if (titleError) return res.status(400).json(titleError)
 
@@ -5853,6 +5890,8 @@ app.put('/api/agent/config', requireRole('manager'), wrap((req, res) => {
   // These bind straight into TEXT columns; an object there was a node:sqlite named-parameter 500.
   const bad = textFieldError(b, ['name', 'greeting', 'persona', 'mode', 'knowledge', 'accent'])
   if (bad) return res.status(400).json(bad)
+  // The accent is written into the widget's stylesheet on the shop's public website: a colour, nothing else.
+  if (b.accent != null && b.accent !== '' && !/^#[0-9a-f]{6}$/i.test(String(b.accent))) return res.status(400).json({ error: 'Choose a six-digit hex color, such as #10d39a.', code: 'accent_invalid' })
   res.json({ config: saveBotConfig(b) })
 }))
 
@@ -8292,7 +8331,9 @@ app.get('/api/export/all.json', requireRole('manager'), wrap(async (_req, res) =
  * push.) Tab-delimited IIF is QuickBooks' native interchange format.
  */
 app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) => {
-  const d = (s) => { const x = new Date(String(s).replace(' ', 'T')); return `${x.getMonth() + 1}/${x.getDate()}/${x.getFullYear()}` }
+  // Stored timestamps are UTC. Read as server-local they put an evening sale on the next day — and
+  // across a month end, in the wrong month of the bookkeeper's ledger. The shop's calendar date.
+  const d = (s) => { const [y, m, day] = localDateOf(s).split('-').map(Number); return `${m}/${day}/${y}` }
   const money2 = (n) => (Number(n) || 0).toFixed(2)
   // IIF is tab-delimited and newline-terminated, so a tab or a newline inside ANY field ends the
   // field or the record early and everything after it is read by QuickBooks as new columns or a new
@@ -8312,11 +8353,23 @@ app.get('/api/export/quickbooks.iif', requireRole('manager'), wrap((_req, res) =
   // Income. These three reports were the only balance queries in the file without the filter the
   // other nine carry, so the dashboard said $0.00 outstanding while Books, the customer's mailed
   // statement and the bookkeeper's IIF all still billed the cancelled invoice.
-  for (const i of all(`SELECT i.*, c.name AS cn FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY i.id`)) {
+  for (const i of all(`SELECT i.*, c.name AS cn, e.subtotal AS est_subtotal, e.tax AS est_tax FROM invoices i LEFT JOIN contacts c ON c.id=i.contact_id LEFT JOIN estimates e ON e.id=i.estimate_id WHERE i.status != 'void' ORDER BY i.id`)) {
     const name = iif(i.cn || 'Customer')
     const docnum = iif(i.invoice_number, 32)
     lines.push(`TRNS\tINVOICE\t${d(i.created_at)}\tAccounts Receivable\t${name}\t${money2(i.amount_due)}\t${docnum}\tPrintShopCRM`)
-    lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Income\t${name}\t${money2(-i.amount_due)}\t${docnum}\t`)
+    // Sales tax collected is a liability, not income. The whole amount_due used to post to Sales
+    // Income, overstating revenue by the tax on every taxed invoice. Tax is split out only when it
+    // is KNOWN — the same rule Reports uses: the frozen credit base, or an estimate whose
+    // subtotal + tax still equals what the invoice bills.
+    const c100 = (n) => Math.round((Number(n) || 0) * 100)
+    let taxC = 0
+    const frozen = i.credit_base ? parse(i.credit_base, null) : null
+    if (frozen) {
+      if (frozen.tax_known !== false) taxC = Math.max(0, c100(frozen.tax) - (get('SELECT COALESCE(SUM(tax_cents),0) AS t FROM invoice_credits WHERE invoice_id=? AND cancelled_at IS NULL', i.id)?.t || 0))
+    } else if (i.est_subtotal != null && c100(i.est_subtotal) + c100(i.est_tax) === c100(i.amount_due)) taxC = c100(i.est_tax)
+    taxC = Math.min(Math.max(0, taxC), Math.max(0, c100(i.amount_due)))
+    lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Income\t${name}\t${money2(-(c100(i.amount_due) - taxC) / 100)}\t${docnum}\t`)
+    if (taxC > 0) lines.push(`SPL\tINVOICE\t${d(i.created_at)}\tSales Tax Payable\t${name}\t${money2(-taxC / 100)}\t${docnum}\tSales tax`)
     lines.push('ENDTRNS')
   }
   for (const p of all(`SELECT p.*, i.invoice_number, c.name AS cn FROM payments p JOIN invoices i ON i.id=p.invoice_id LEFT JOIN contacts c ON c.id=i.contact_id WHERE i.status != 'void' ORDER BY p.id`)) {
@@ -8515,7 +8568,7 @@ async function collectionManagerAction(req,res,action) {
       if(!id) throw collectionError('collection_review')
       const account=await client.account(),session=a.provider==='authorize_net'?await client.retrieveTransaction(id):await client.retrieve(id)
       if(!client.matchesSettings(getSettings()) || !!session.test!==!!a.is_test || session.currency!==a.currency || session.amountCents!==a.amount_cents) throw collectionError('collection_account')
-      if(a.provider!=='authorize_net' && (session.metadata?.slug!==curSlug() || session.id!==a.session_id || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==a.reference))) throw collectionError('collection_account')
+      if(a.provider!=='authorize_net' && (String(session.metadata?.slug ?? "")!==curSlug() || session.id!==a.session_id || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==a.reference))) throw collectionError('collection_account')
       if(a.provider==='authorize_net' && session.reference!==a.reference) throw collectionError('collection_account')
       let final=session
       if(action==='expire') {
@@ -8707,8 +8760,22 @@ app.post('/api/slack-test', requireRole('manager'), slackTestLimit, wrap(async (
     error: `Token works \u2014 connected to ${auth.team} \u2014 but we couldn't reach this shop's own web address to complete the check. If this shop isn't on a public https:// address yet, Slack won't be able to reach it either.` })
 }))
 
+const OWNER_PAYMENT_KEYS = ['payment_provider', 'stripe_secret', 'stripe_webhook_secret', 'stripe_publishable', 'anet_login_id', 'anet_transaction_key', 'anet_signature_key', 'anet_environment']
 app.put('/api/settings', requireRole('manager'), wrap(async (req, res) => {
   const patch = { ...(req.body || {}) }
+  // Where card money goes is the owner's decision. stripe_account_id was already unpatchable for
+  // that reason, but a manager could still paste their OWN processor keys or switch provider, and
+  // every pay link in the shop then paid into their account. An empty secret means "unchanged" and
+  // an unchanged value is not a change, so a manager saving the rest of Settings is unaffected.
+  if (!hasRole(req, 'owner')) {
+    const cur = getSettings()
+    if (OWNER_PAYMENT_KEYS.some((k) => k in patch && String(patch[k] ?? '') !== '' && String(patch[k]) !== String(cur[k] ?? '')))
+      return res.status(403).json({ error: 'Only the shop owner can change where card payments go.', code: 'owner_only_payments' })
+  }
+  // Size keys are printed on documents and in Settings; keep them to what a size name can be.
+  if (patch.size_upcharges && typeof patch.size_upcharges === 'object' && !Array.isArray(patch.size_upcharges)
+    && Object.keys(patch.size_upcharges).some((k) => k.length > 24 || /[<>"'&`\\\u0000-\u001f]/.test(k)))
+    return res.status(400).json({ error: 'A size name can be letters, numbers, spaces and dashes — up to 24 characters.', code: 'invalid_upcharges' })
   // A shop's SMTP host must not point into this server's own network (lib/notify.mjs re-checks
   // and pins the address at every connect; this is so the shop hears it while saving).
   if ('smtp_host' in patch) { const why = await smtpHostProblem(patch.smtp_host); if (why) return res.status(400).json({ error: why, code: 'smtp_host_blocked' }) }
@@ -8786,6 +8853,7 @@ app.post('/api/settings/disconnect/:group', requireRole('manager'), wrap((req, r
   const group = String(req.params.group)
   const keys = DISCONNECT_GROUPS[Object.hasOwn(DISCONNECT_GROUPS, group) ? group : '']
   if (!keys) return res.status(404).json({ error: 'No such integration', code: 'unknown_group' })
+  if (['payments', 'stripe', 'authorize_net'].includes(group) && !hasRole(req, 'owner')) return res.status(403).json({ error: 'Only the shop owner can disconnect card payments.', code: 'owner_only_payments' })
   for (const k of keys) setSetting(k, '')
   // On the shop's own timeline, because removing a credential is the kind of thing someone asks
   // about a week later — and in a shop with staff it needs to be traceable to a person.
@@ -8961,10 +9029,21 @@ app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this
       if (!(qty >= 1 && qty <= 5000)) return res.status(400).json({ error: 'A design quantity looks off — it must be between 1 and 5000.' })
     }
     const s = getSettings()
-    const { usedHeight } = nest(items, { sheetWidth: Number(s.dtf_sheet_width) || 22 })
+    // The nester materialises at most 5,000 boxes and clamps a too-wide design to the roll. Both
+    // were silent: 10,000 transfers were charged as 5,000, and a 60" design on a 22" roll was
+    // accepted at the minimum charge. Refuse what the price would not cover.
+    const rollW = Number(s.dtf_sheet_width) || 22
+    if (items.reduce((n, i) => n + Math.floor(Number(i.qty) || 0), 0) > 5000)
+      return res.status(400).json({ error: 'That is more than 5,000 transfers in one order. Split it into smaller orders, or contact the shop for a bulk quote.' })
+    if (items.some((i) => Number(i.w) > rollW + 1e-6))
+      return res.status(400).json({ error: `A design is wider than the ${rollW}" roll. Make it ${rollW}" wide or narrower.` })
+    const { usedHeight } = nest(items, { sheetWidth: rollW })
     const price = priceSheet(usedHeight, { pricePerInch: Number(s.dtf_price_per_inch) || 0.95, minCharge: Number(s.dtf_min_charge) || 10 })
-    const name = String(b.name || '').trim() || 'Website order'
-    const email = String(b.email || '').trim()
+    const name = (String(b.name || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 120)) || 'Website order'
+    const email = String(b.email || '').trim().slice(0, 254)
+    // This address receives the shop's "your estimate" mail. Anything that is not one plain address
+    // is refused rather than stored and mailed.
+    if (email && !/^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/.test(email)) return res.status(400).json({ error: 'That email address does not look right. Check it and try again.' })
 
     // Find or create the customer in this shop's CRM.
     let contact = email ? get('SELECT * FROM contacts WHERE lower(email)=lower(?)', email) : null
@@ -9003,13 +9082,18 @@ app.post('/api/embed/gangsheet/order', embedLimit(20, 'Too many orders from this
     if (paymentsReady(s)) {
       const origin = `${req.protocol}://${req.get('host')}`
       const shopQ = req.query.shop ? `&shop=${encodeURIComponent(req.query.shop)}` : ''
-      const co = await startCheckout(s, {
-        customerEmail: email,
-        lineItems: [{ name: `DTF Gang Sheet (${Math.ceil(usedHeight)}" × ${s.dtf_sheet_width}")`, amountCents: Math.round(t.total * 100), qty: 1 }],
-        successUrl: `${origin}/embed/gangsheet?paid=1${shopQ}`, cancelUrl: `${origin}/embed/gangsheet?canceled=1${shopQ}`,
-        metadata: { estimate: num, shop: s.shop_name },
-      })
-      return res.json({ mode: 'stripe', checkout_url: co.url, estimate: num, total: t.total })
+      // The estimate above is already real. A checkout that cannot start (processor down, keys
+      // revoked) used to answer 500, and every retry by the customer minted another sent estimate.
+      // Fall through to the quote answer instead: the order is on file and the shop follows up.
+      try {
+        const co = await startCheckout(s, {
+          customerEmail: email,
+          lineItems: [{ name: `DTF Gang Sheet (${Math.ceil(usedHeight)}" × ${s.dtf_sheet_width}")`, amountCents: Math.round(t.total * 100), qty: 1 }],
+          successUrl: `${origin}/embed/gangsheet?paid=1${shopQ}`, cancelUrl: `${origin}/embed/gangsheet?canceled=1${shopQ}`,
+          metadata: { estimate: num, shop: s.shop_name },
+        })
+        return res.json({ mode: 'stripe', checkout_url: co.url, estimate: num, total: t.total })
+      } catch (e) { console.error('gangsheet checkout:', e.message) }
     }
     // No Stripe connected — it's a quote the shop follows up on.
     res.json({ mode: 'quote', estimate: num, total: t.total, price })
@@ -9324,11 +9408,18 @@ const joinDot = (...parts) => parts.map((p) => String(p ?? '').trim()).filter(Bo
 const sQ = (req) => (req.query.s ? `&s=${encodeURIComponent(req.query.s)}` : '')
 const pPage = (fn) => (req, res) => {
   const go = () => { try { return fn(req, res) } catch (e) { console.error('p-page:', e); if (!res.headersSent) res.status(500).send('Error') } }
-  if (!AUTH_ENABLED || !req.query.s) return go()   // authed staff are already in tenant context via the gate
+  if (!AUTH_ENABLED) return go()
+  // No ?s= and no signed-in shop is nobody's page. It used to run against the shared default
+  // database — unreachable data, but real writes (portal key tables) into a file no shop owns.
+  if (!req.query.s) return req.tenant ? go() // authed staff are already in tenant context via the gate
+    : res.status(403).send(page('Link expired', '<div class="wrap"><div class="card"><h1>Link expired</h1><p>This link is incomplete or out of date. Ask the shop to send it again.</p></div></div>'))
   const t = getTenantBySlug(String(req.query.s))
   // Same rule as the embed routes: a suspended shop's public documents close with it. A pay button
   // on one of them would route money into an account the operator has just cut off.
   if (!tenantOpen(t)) return res.status(404).send('Unknown shop')
+  // So trustedOrigin() uses the origin this shop's owner signed in on, not whatever Host header a
+  // stranger holding a pay link chose — that header became the checkout's return URL.
+  if (!req.tenant) req.tenant = t
   return withTenant(t.slug, go)
 }
 
@@ -9418,7 +9509,7 @@ async function reconcileReversalInner(provider,id) {
     data=await retrieveStripeRefund({settings,id})
     if(data.unrelated)return {ignored:true}
     session=data.session;parentId=session.id
-    if(session.metadata?.slug!==curSlug())return {ignored:true}
+    if(String(session.metadata?.slug ?? "")!==curSlug())return {ignored:true}
     if(!session.paid || data.currency!==session.currency)throw new Error('Refund cannot be matched to a paid checkout in the same currency')
     attempt=session.metadata.checkout_ref?paymentAttempt(session.metadata.checkout_ref):attemptBySession('stripe',parentId)
     if(!attempt) {
@@ -9468,16 +9559,50 @@ async function reconcileReversalInner(provider,id) {
 function runPaymentEffects(effects) {
   for (const effect of effects) { try { effect() } catch(e) { console.error('payment follow-up:',e.message) } }
 }
-function invoiceForAttempt(attempt) {
+/**
+ * A customer who pays for an order online has said yes to it. Until 1.39 the invoice this creates
+ * from a website (gang-sheet) order was the ONLY thing it created: the estimate stayed 'sent', no
+ * job reached the board, the deal sat in the open forecast, and Convert then refused with "Already
+ * invoiced" — a paid order with no route into production. Creating the invoice here now does what
+ * Convert does, in the caller's transaction: approve the estimate, date the invoice, open (or
+ * adopt) the job. Announcements go on `effects`, which run after the transaction commits.
+ */
+function openJobForPaidEstimate(e, invId) {
+  const prior = get("SELECT * FROM jobs WHERE estimate_id = ? AND invoice_id IS NULL ORDER BY (status = 'active') DESC, id LIMIT 1", e.id)
+  if (prior) { run('UPDATE jobs SET invoice_id=?, updated_at=? WHERE id=?', invId, now(), prior.id); return prior.id }
+  if (get('SELECT id FROM jobs WHERE estimate_id=? AND invoice_id=?', e.id, invId)) return null
+  const items = parse(e.items, [])
+  const sizes = rollupSizes(items), lines = garmentLines(items)
+  const qty = items.reduce((s, i) => s + lineQty(i), 0)
+  const sched = jobScheduleFromEstimate(e, {})
+  const decoLine = items.find((i) => i.sizes && (i.decoration || i.matrix?.name)) || items.find((i) => i.decoration || i.matrix?.name)
+  const garmentText = (items.find((i) => i.sizes)?.description || items[0]?.description || '').split('—')[0].trim()
+  const title = items[0]?.description || `Order for ${get('SELECT name FROM contacts WHERE id=?', e.contact_id)?.name || 'customer'}`
+  return Number(run('INSERT INTO jobs (contact_id, estimate_id, invoice_id, job_number, title, status, stage, decoration, garment, sizes, line_sizes, quantities, due_date, turnaround_days, rush, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    e.contact_id, e.id, invId, nextJobNumber(), title, 'active', 'new', decoLine?.decoration || decoLine?.matrix?.name || 'Screen Print', garmentText || null,
+    JSON.stringify(sizes), JSON.stringify(lines), sizeSummary(sizes) || `${qty} pcs`,
+    sched.due_date, sched.turnaround_days, sched.rush, e.notes || '', now(), now()).lastInsertRowid)
+}
+function invoiceForAttempt(attempt, effects) {
   let inv=attempt.invoice_id ? get('SELECT * FROM invoices WHERE id=?',attempt.invoice_id) : null
   if(!inv && attempt.estimate_id) {
     const e=get('SELECT * FROM estimates WHERE id=?',attempt.estimate_id)
     if(!e) throw new Error('Original estimate is unavailable; reconcile this payment manually')
     inv=get("SELECT * FROM invoices WHERE estimate_id=? ORDER BY (status='void'),id DESC LIMIT 1",e.id)
     if(!inv) {
-    const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,created_at) VALUES (?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,now()).lastInsertRowid)
+    const id=Number(run('INSERT INTO invoices (estimate_id,contact_id,invoice_number,status,amount_due,due_date,created_at) VALUES (?,?,?,?,?,?,?)',e.id,e.contact_id,nextInvoiceNumber(),'unpaid',e.total,todayIso(),now()).lastInsertRowid)
     syncInvoiceStatus(id) // derived, like every invoice status: a $0 order is not 'unpaid'
     inv=get('SELECT * FROM invoices WHERE id=?',id)
+    const wasApproved = e.status === 'approved' || e.status === 'invoiced'
+    run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?), sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), now(), e.id)
+    recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',e.id), { source: wasApproved ? 'legacy_record' : 'customer_payment', actor: get('SELECT name FROM contacts WHERE id=?',e.contact_id)?.name })
+    const jobId = openJobForPaidEstimate(e, id)
+    if (Array.isArray(effects)) effects.push(() => {
+      const fresh = get('SELECT * FROM estimates WHERE id=?', e.id)
+      logActivity('invoice', `Estimate ${e.estimate_number} paid online — invoice ${inv.invoice_number}${jobId ? ', job opened on the board' : ''}`, { contact_id: e.contact_id, job_id: jobId || undefined })
+      if (!wasApproved) fireAuto('estimate.approved', { estimate: fresh, contact: get('SELECT * FROM contacts WHERE id = ?', e.contact_id), total: e.total })
+      syncPipeline(fresh, 'approved')
+    })
     }
   }
   if(!inv) throw new Error('Invoice unavailable; reconcile this payment manually')
@@ -9489,7 +9614,7 @@ function reconcileCheckout(attempt,session,transactionId,account) {
   const c=paymentCollection(attempt.reference)
   // Account, tenant, reference and environment must belong here before storing any receipt.
   if(c && (c.account_id!==account?.account_id || !!c.is_test!==!!account?.is_test || (c.destination||null)!==(account?.destination||null))) throw collectionError('collection_account')
-  if(attempt.provider!=='authorize_net' && (session.metadata?.slug!==curSlug() || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==attempt.reference))) throw collectionError('collection_account')
+  if(attempt.provider!=='authorize_net' && (String(session.metadata?.slug ?? "")!==curSlug() || (session.metadata?.checkout_ref && session.metadata.checkout_ref!==attempt.reference))) throw collectionError('collection_account')
   if(attempt.provider==='authorize_net' && session.reference!==attempt.reference) throw collectionError('collection_account')
   if(!!session.test!==!!attempt.is_test) throw collectionError('collection_account')
   const receipt=account?receiveCollectionPayment({attempt,provider:attempt.provider,account,session,transactionId}):null
@@ -9523,7 +9648,7 @@ function reconcileCheckout(attempt,session,transactionId,account) {
           if(!current || current.commercial_revision!==snapshot.estimate?.commercial_revision || current.total!==snapshot.estimate?.total || current.contact_id!==snapshot.estimate?.contact_id) throw collectionError('collection_changed')
         } else changed=c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:attempt.invoice_id,estimateId:attempt.estimate_id,currency:attempt.currency}))
       }
-      const inv=invoiceForAttempt(attempt)
+      const inv=invoiceForAttempt(attempt,effects)
       const review=extra || changed || inv.status==='void' || session.amountCents>Math.round(roundMoney(inv.amount_due-inv.amount_paid)*100)
       if(review) {
         run('UPDATE invoices SET payment_review=? WHERE id=?','Verified money arrived after the invoice or checkout changed. Review all receipts and the remaining balance before collecting again.',inv.id)
@@ -9558,7 +9683,7 @@ async function paymentEvidence(provider,transactionId) {
 }
 function acceptPaymentEvidence(provider,session,account,transactionId) {
   const ref=provider==='authorize_net'?session.reference:session.metadata?.checkout_ref
-  if(provider!=='authorize_net' && session.metadata?.slug!==curSlug()) throw collectionError('collection_account')
+  if(provider!=='authorize_net' && String(session.metadata?.slug ?? "")!==curSlug()) throw collectionError('collection_account')
   const a=ref?paymentAttempt(ref):attemptBySession(provider,transactionId)
   if(a) {
     if(a.provider!==provider) throw collectionError('collection_account')
@@ -9835,7 +9960,7 @@ app.post('/p/pay/:id/checkout', express.urlencoded({ extended: false }), pPage(a
       successUrl: `${back}&session_id={CHECKOUT_SESSION_ID}`,
       cancelUrl: back,
       customerEmail: documentRecipient(inv).email || undefined,
-      metadata: { invoice: String(id), kind, slug: curSlug() },
+      metadata: { invoice: String(id), kind },
     })
     res.redirect(303, url)
   } catch (e) {
@@ -10374,7 +10499,7 @@ const startCheckout = async (s, args) => {
   const attempt=reserveCollection({client,invoiceId,estimateId,amountCents,currency,kind:args.metadata?.kind||'balance',returnUrl:args.cancelUrl,
     buildRequest:a=>client.buildRequest({...args,amountCents,currency,reference:a.reference,
       successUrl:new URL(`/p/checkout/${a.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href+(client.provider==='authorize_net'?'':'&session_id={CHECKOUT_SESSION_ID}'),
-      metadata:{...args.metadata,slug:curSlug(),checkout_ref:a.reference,collection_version:'1',currency}})})
+      metadata:{...args.metadata,...(curSlug()?{slug:curSlug()}:{}),checkout_ref:a.reference,collection_version:'1',currency}})})
   const result=await resumeCollection({reference:attempt.reference,client})
   if(result.session.paid) {
     reconcileCheckout(paymentAttempt(attempt.reference),result.session,result.session.id,result.account)
@@ -10575,7 +10700,9 @@ app.use((err, req, res, _next) => {
   // every unexpected throw out of every route, so every 500 in production was a single
   // unattributable line. err.code too, because this handler branches on it eleven lines down.
   // Nothing leaves the process: the response body is still the generic text built below.
-  console.error('unhandled:', req.method, req.path, err?.code || '', (err && (err.stack || err.message)) || err)
+  // A stack for what is actually unexpected. An 'Order not found' the route threw on purpose (a
+  // status below 500) printed one too, and a page of those buries the real 500 beside it.
+  { const st = Number(err?.status || err?.statusCode) || 500; console.error('unhandled:', req.method, req.path, err?.code || '', (err && ((st >= 500 ? err.stack : '') || err.message)) || err) }
   // A route that throws AFTER it has started writing cannot be given a status any more — but it
   // must still be finished. This returned without res.end(), so the socket stayed open with no FIN
   // and no terminating chunk until the client gave up (measured at 75s on the export path), and
