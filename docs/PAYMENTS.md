@@ -69,6 +69,22 @@ New invoice-related outbox drafts are associated with their invoice and become u
 
 Invoice PDFs show credits and returned payments. QuickBooks sync explicitly stops on invoices with credits or processor reversals; this release does not create QuickBooks CreditMemo or RefundReceipt documents. Reconcile those books separately. Invoice credits are adjustments within this CRM, not a complete jurisdiction-specific credit-note/tax reporting system.
 
+## Team store orders paid at checkout
+
+A team store (**Merch stores**) can take payment when members order. It is one switch per store, off by default, and it can only be switched on while the shop's own processor is ready — the money goes to the shop's Stripe or Authorize.net account through the same durable checkout described above. There is no platform fee and no second processor.
+
+- **What a member is charged.** The store price of what they picked, plus sales tax at the rate of the customer the store was opened for (0 for a tax-exempt customer). The order page shows the total with tax before they continue; that figure is what the checkout charges.
+- **Saved first, paid second.** The order is stored before the checkout opens. A checkout that fails to start, expires or is abandoned leaves an unpaid order and a private link the member (or the shop, with **Copy pay link**) can use to pay later. While a checkout for an order is open, paying again resumes that same checkout; a paid order is never offered for payment again.
+- **Callbacks.** The signed provider callback and the member's return to the site both reconcile the payment, once. The session must carry this shop, this order, the reserved amount and currency, and the account that created it; anything else is held for review under **Payment connections** and the order stays unpaid.
+- **Closing.** After the close date, or once the store is closed or turned into its estimate, no new orders and no new payments are accepted. Orders already paid stay. A checkout that was opened before the store closed and is completed afterwards is still recorded — the money is real.
+- **Reaching the books.** Member payments wait on the store until its one estimate is converted. At that moment each prepaid order is posted to the invoice as its own payment row ("Team store order #N — Name paid online"), exactly once, and the invoice balance is what the unpaid members still owe. A member who pays after the invoice exists is posted to it straight away. Reports, A/R and QuickBooks see the money from the invoice date of posting, not from the day the member paid.
+- **Estimate total.** When any order has been taxed, the estimate bills exactly the sum of the orders. Per-order rounding can differ from tax on the summed goods by a cent or two; the difference appears as a stated "Sales tax adjustment" line.
+- **Refunds.** Refund at the processor. A refund of a payment already on the invoice follows the invoice path above. A refund that arrives before the store has an invoice marks the order **Refunded**, flags the store for a payment check, and — when the invoice is later raised — posts both the payment and its refund and holds the invoice for review. A paid order cannot be removed, and a store holding unposted payments cannot be deleted.
+- **Production.** A paid member order never opens a job. Production starts from the store's single estimate.
+- **Test keys** record a test checkout and leave the order unpaid.
+
+Not covered: per-member receipts by email (the order page is the receipt), partial payment of an order, a second different payment against one order (flagged for a manual refund), and stores taking payment on the legacy Lite edition have not been exercised. The Authorize.net path uses the same code as invoices but has only been tested with the Stripe fixture.
+
 ## Current boundaries
 
 - Chargebacks/disputes, payments created outside this app, and unsupported provider states require manual reconciliation. Refunds/voids are initiated at the provider, not through an app button. This release is not complete payment-accounting parity.

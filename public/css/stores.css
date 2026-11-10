@@ -54,3 +54,10 @@
   .st-price-in { width: 100px; }
   .st-copy { flex-wrap: wrap; }
 }
+
+/* Payment at checkout (1.40): the store's one money switch, and the note when an order needs a look. */
+.st-paytoggle { display: flex; gap: var(--sp-4); align-items: flex-start; margin-top: var(--sp-6); padding: var(--sp-5) var(--sp-6); border: 1px solid var(--line); border-radius: var(--r-md); cursor: pointer; font-size: var(--fs-sm); line-height: 1.45; }
+.st-paytoggle input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+.st-paytoggle:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.st-paytoggle:has(input:disabled) { cursor: default; opacity: .75; }
+.st-review { margin: var(--sp-6) 0 0; padding: var(--sp-5) var(--sp-6); border: 1px solid color-mix(in srgb, var(--amber) 55%, transparent); background: color-mix(in srgb, var(--amber) 10%, transparent); border-radius: var(--r-md); font-size: var(--fs-sm); color: var(--txt); }

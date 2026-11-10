@@ -3905,6 +3905,9 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
     return { invId, jobId, invNum, jobNum }
   })
   logActivity('invoice', `Estimate ${e.estimate_number} converted — invoice ${invNum}, ${prior ? `linked to the job already on the board, ${jobNum}` : `job ${jobNum}`}`, { contact_id: e.contact_id, job_id: jobId })
+  // A team store whose members paid at checkout: their money goes onto this invoice now, one
+  // payment row per paid order, so the balance left is what the unpaid members still owe.
+  { const fx=[]; try { merchStores.applyPrepayments(invId,fx) } catch (err) { console.error('store prepayments:',err.message) } runPaymentEffects(fx) }
   /*
    * Convert is the THIRD writer of status='approved' and was the only one that told nobody.
    *
@@ -9579,7 +9582,11 @@ const pPage = (fn) => (req, res) => {
 
 // One customer-portal link per customer, indexing the /p/ links below — see lib/portal-routes.mjs.
 const portal = registerPortalRoutes(app,{pPage,page,esc,logoImg,joinDot,token,shareUrl,paymentsReady:(s)=>paymentsReady(s),proofIsCurrent,publicOrigin,wrap})
-registerMerchRoutes(app,{pPage,page,esc,logoImg,joinDot,publicOrigin,wrap,requireRole,orderLimit:ipLimit(60),authEnabled:AUTH_ENABLED,syncPipeline})
+// Team stores can take payment at checkout (1.40). Everything they need from the payment core is
+// handed in, so the store never builds a second money path of its own.
+const merchStores = registerMerchRoutes(app,{pPage,page,esc,logoImg,joinDot,publicOrigin,wrap,requireRole,orderLimit:ipLimit(60),authEnabled:AUTH_ENABLED,syncPipeline,
+  payments:{ready:(s)=>paymentsReady(s),providerName:(s)=>providerName(s),startCheckout:(s,args)=>startCheckout(s,args),token,checkToken,collectionError,
+    notify:(n)=>rtBroadcast('notify',n),invoicePaid:(id,effects)=>{announceInvoicePaid(id,effects);enqueueQbo(id)}}})
 registerReportRoutes(app,{requireRole,wrap})
 
 app.get('/p/estimate/:id', pPage((req, res) => {
@@ -9725,6 +9732,11 @@ async function reconcileReversalInner(provider,id) {
     attempt=paymentAttempt(attempt.reference)
     const previous=get('SELECT * FROM payment_reversals WHERE provider=? AND provider_id=?',provider,id)
     if(previous && previous.attempt_ref===attempt.reference && previous.kind===data.kind && previous.amount_cents===data.amountCents && previous.status===data.status && previous.applied_cents===(attempt.is_test?0:data.appliedCents)) return {ok:true,duplicate:true,test:!!attempt.is_test,invoice_id:attempt.invoice_id}
+    // A refund of a team-store payment that has not reached an invoice yet flags the order and
+    // its store. Once the prepayment is posted the attempt carries invoice_id and the ordinary
+    // path below applies.
+    if(!attempt.is_test && attempt.store_order_id && !attempt.invoice_id)
+      return {ok:true,...merchStores.orderReversal({provider,id,kind:data.kind,attempt,amountCents:data.amountCents,status:data.status,appliedCents:data.appliedCents})}
     if(!attempt.is_test) {
       const inv=invoiceForAttempt(attempt)
       attempt={...attempt,invoice_id:inv.id}
@@ -9821,6 +9833,18 @@ function reconcileCheckout(attempt,session,transactionId,account) {
         finishCollection(attempt.reference,'test_paid')
         if(receipt) markCollectionReceipt(receipt.id,{invoiceId:attempt.invoice_id,state:'test'})
         return {test:true}
+      }
+      // A team-store order: there is no invoice to post to yet. The order is marked paid and the
+      // money waits on it until the store's single invoice is raised (merchStores.applyPrepayments)
+      // — unless that invoice already exists, in which case it is posted now. No job is opened
+      // per member; production starts from the store's one estimate.
+      if(attempt.store_order_id && !attempt.invoice_id) {
+        const done=merchStores.orderPaid({attempt,session,transactionId,extra,effects})
+        if(!extra) completeAttempt(attempt.reference,transactionId,null)
+        finishCollection(attempt.reference)
+        if(done.invoice_id && !extra) merchStores.applyPrepayments(done.invoice_id,effects)
+        if(receipt) markCollectionReceipt(receipt.id,{invoiceId:done.invoice_id,state:done.review?'applied_review':'applied',reason:done.review})
+        return {store_order:done.order_id,review:!!done.review}
       }
       let changed=false
       if(c) {
@@ -9955,7 +9979,7 @@ app.get('/p/checkout/:reference', pPage((req,res) => {
   const a=paymentAttempt(req.params.reference)
   if(!a || a.provider!=='authorize_net' || !a.checkout_token || a.status!=='pending' || Date.now()-Date.parse(a.created_at+'Z') > 14*60*1000) return res.status(410).send(page('Checkout expired','<div class="wrap"><div class="card"><h1>Checkout expired</h1><p>Return to your invoice for a new payment link.</p></div></div>'))
   const c=paymentCollection(a.reference)
-  if(c && c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:a.invoice_id,estimateId:a.estimate_id,currency:currencyCode(getSettings().currency)}))) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The invoice changed. Do not open another payment form; ask the shop to check this checkout.</p></div></div>'))
+  if(c && c.snapshot!==JSON.stringify(collectionSnapshot({invoiceId:a.invoice_id,estimateId:a.estimate_id,storeOrderId:a.store_order_id,currency:currencyCode(getSettings().currency)}))) return res.status(409).send(page('Payment under review','<div class="wrap"><div class="card"><h1>Payment under review</h1><p>The invoice changed. Do not open another payment form; ask the shop to check this checkout.</p></div></div>'))
   if(!['https://accept.authorize.net/payment/payment','https://test.authorize.net/payment/payment'].includes(a.checkout_url)) return res.status(500).send('Invalid checkout destination')
   res.setHeader('Content-Security-Policy',String(res.getHeader('Content-Security-Policy')).replace("form-action 'self'", "form-action 'self' https://accept.authorize.net https://test.authorize.net"))
   res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer')
@@ -9973,6 +9997,8 @@ app.get('/p/checkout/:reference/return', pPage(async (req,res) => {
   }
   const fresh=paymentAttempt(a.reference), paid=fresh.status==='paid'
   res.setHeader('Cache-Control','no-store')
+  // A team-store order has its own page, which says paid / not finished / refunded for itself.
+  if(fresh.store_order_id) { const back=merchStores.orderReturnPath(fresh.store_order_id); if(back) return res.redirect(303,back) }
   if(get('SELECT 1 FROM payment_reversals WHERE attempt_ref=? AND is_test=0',a.reference)) return res.send(page('Payment updated','<div class="wrap"><div class="card"><h1>Payment updated</h1><p>A refund or payment change has been recorded. Do not pay again from this checkout. Contact the shop for your current invoice and refund status.</p></div></div>'))
   if(fresh.status==='test_paid') return res.type('html').send(page('Test payment complete','<div class="wrap"><div class="card"><h1>Test payment complete</h1><p>No real money was collected. The invoice balance and production status have not changed.</p></div></div>'))
   res.setHeader('Cache-Control','no-store')
@@ -10679,8 +10705,10 @@ const startCheckout = async (s, args) => {
   const client=collectionClient(s),currency=currencyCode(s.currency)
   const invoiceId=Number(args.metadata?.invoice)||null
   const estimateId=invoiceId?null:get('SELECT id FROM estimates WHERE estimate_number=?',args.metadata?.estimate||'')?.id
+  // A team-store order is paid before any invoice or estimate exists for it.
+  const storeOrderId=!invoiceId && !estimateId ? Number(args.metadata?.store_order)||null : null
   const amountCents=args.lineItems.reduce((n,l)=>n+Math.round(l.amountCents)*(l.qty||1),0)
-  const attempt=reserveCollection({client,invoiceId,estimateId,amountCents,currency,kind:args.metadata?.kind||'balance',returnUrl:args.cancelUrl,
+  const attempt=reserveCollection({client,invoiceId,estimateId,storeOrderId,amountCents,currency,kind:args.metadata?.kind||'balance',returnUrl:args.cancelUrl,
     buildRequest:a=>client.buildRequest({...args,amountCents,currency,reference:a.reference,
       successUrl:new URL(`/p/checkout/${a.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href+(client.provider==='authorize_net'?'':'&session_id={CHECKOUT_SESSION_ID}'),
       metadata:{...args.metadata,...(curSlug()?{slug:curSlug()}:{}),checkout_ref:a.reference,collection_version:'1',currency}})})

@@ -17,6 +17,8 @@ const ORDER = ['YXS', 'YS', 'YM', 'YL', 'YXL', 'XS', 'S', 'M', 'L', 'XL', '2XL',
 
 const blankProduct = (name = '', price = '') => ({ name, price, description: '', image_url: '', sizes: ['S', 'M', 'L', 'XL', '2XL'], more: false })
 let liveTimer = null
+// Whether the shop's own card processor is connected — learned from the list, used by the new-store form.
+let paymentsReady = false
 
 /* ---------------- list ---------------- */
 
@@ -25,7 +27,8 @@ export async function storesView() {
   if (/[?&]new=1\b/.test(location.hash)) return newStoreForm()
   setPage('Merch stores', '<button class="btn primary" id="st-new" type="button">+ New store</button>')
   $('#st-new').onclick = () => newStoreForm()
-  const { stores } = await api.get('/api/stores')
+  const { stores, payments_ready } = await api.get('/api/stores')
+  paymentsReady = !!payments_ready
   if (!stores.length) {
     $('#view').innerHTML = `<div class="st-hero">${empty('products', 'Open a team store', 'Share one link with a team, a school or an office. Everyone picks their own item and size. When it closes you get one order with every size added up.',
       '<button class="btn primary big" id="st-first" type="button">Open your first store</button>')}</div>`
@@ -39,6 +42,7 @@ export async function storesView() {
       <div class="st-stats">
         <span><strong>${s.order_count}</strong> order${s.order_count === 1 ? '' : 's'}</span>
         <span><strong>${money(s.order_total)}</strong></span>
+        ${s.take_payment ? `<span>${money(s.payment.collected)} paid</span>` : ''}
         <span>${s.close_date ? `${s.is_open ? 'Closes' : 'Closed'} ${esc(fmtDate(s.close_date))}` : 'No close date'}</span>
       </div>
     </a>`).join('')}</div>`
@@ -50,7 +54,9 @@ const statusPill = (s) => s.estimate_id ? '<span class="pill blue">Estimated</sp
 
 function newStoreForm() {
   clearInterval(liveTimer)
-  const st = { contact: null, name: '', close_date: '', message: '', products: [blankProduct('T-shirt')] }
+  const st = { contact: null, name: '', close_date: '', message: '', take_payment: false, products: [blankProduct('T-shirt')] }
+  // Opened straight from a link (?new=1) the list has not told us yet.
+  api.get('/api/stores').then((r) => { paymentsReady = !!r.payments_ready; const box = $('#st-paybox'); if (box) box.innerHTML = payChoice(st.take_payment) }).catch(() => {})
   setPage('Open a team store', '', '<a href="#/stores">Merch stores</a> /')
   $('#view').innerHTML = `<div class="guide st-new">
     <div class="guide-card"><h2 class="guide-q">Who is the store for?</h2>
@@ -77,6 +83,8 @@ function newStoreForm() {
       <p class="guide-hint">Set one price per item. Tick the sizes they can pick.</p>
       <div id="st-products" class="st-products"></div>
       <button type="button" class="btn ghost" id="st-add">+ Add another item</button>
+      <h2 class="guide-q">How do members pay?</h2>
+      <div id="st-paybox">${payChoice(st.take_payment)}</div>
       <div class="guide-row"><span class="spacer"></span><button class="btn primary big" type="submit" id="st-create">Open the store →</button></div>
     </form>`
     drawProducts()
@@ -85,7 +93,7 @@ function newStoreForm() {
     on(form, '[data-size]', (_e, b) => { const on1 = !b.classList.contains('on'); b.classList.toggle('on', on1); b.setAttribute('aria-pressed', String(on1)) })
     on(form, '[data-more]', (_e, b) => { readProducts(); st.products[+b.dataset.more].more = true; drawProducts() })
     on(form, '[data-del]', (_e, b) => { readProducts(); st.products.splice(+b.dataset.del, 1); drawProducts() })
-    const sync = () => { st.name = $('#st-name').value; st.close_date = $('#st-close').value; st.message = $('#st-msg').value }
+    const sync = () => { st.name = $('#st-name').value; st.close_date = $('#st-close').value; st.message = $('#st-msg').value; st.take_payment = !!$('#st-takepay')?.checked }
     form.addEventListener('input', sync)
     $('#st-add').onclick = () => { readProducts(); st.products.push(blankProduct()); drawProducts(); $$('.st-prod .st-pname').at(-1)?.focus() }
     form.addEventListener('submit', async (e) => {
@@ -96,6 +104,7 @@ function newStoreForm() {
       try {
         const s = await api.post('/api/stores', {
           contact_id: st.contact.id, name: st.name, close_date: st.close_date || null, message: st.message,
+          ...(st.take_payment ? { take_payment: true } : {}),
           products: st.products.map((p) => ({ name: p.name, price: p.price === '' ? NaN : Number(p.price), description: p.description, image_url: p.image_url, sizes: p.sizes })),
         })
         toast('Store is open — copy the link and send it')
@@ -135,6 +144,12 @@ function newStoreForm() {
   if (cid) api.get(`/api/contacts/${cid}`).then((c) => c?.id && pick(c)).catch(() => {})
 }
 
+// The one choice about money. Offered only when the shop's own processor can take a card.
+function payChoice(on) {
+  if (!paymentsReady) return `<p class="guide-hint">Members order now and you collect payment yourself. To let them pay by card when they order, <a href="#/payments">connect Stripe or Authorize.net</a> first.</p>`
+  return `<label class="st-paytoggle"><input type="checkbox" id="st-takepay"${on ? ' checked' : ''}> <span><strong>Take payment when members order</strong><br><span class="dim">Each member pays by card at checkout, straight into your own payment account. Sales tax for this customer is added. Leave it off to collect payment yourself.</span></span></label>`
+}
+
 /* ---------------- detail ---------------- */
 
 export async function storeDetailView(id) {
@@ -145,7 +160,7 @@ export async function storeDetailView(id) {
   // Orders arrive while the shop watches: refresh quietly every 20s while this screen is open.
   liveTimer = setInterval(async () => {
     if (location.hash !== here || !$('#st-detail')) { clearInterval(liveTimer); return }
-    try { const fresh = await api.get(`/api/stores/${id}`); if (fresh.order_count !== s.order_count || fresh.status !== s.status) { Object.assign(s, fresh); draw(s) } } catch { /* next tick */ }
+    try { const fresh = await api.get(`/api/stores/${id}`); if (fresh.order_count !== s.order_count || fresh.status !== s.status || fresh.payment?.collected !== s.payment?.collected || fresh.payment?.needs_review !== s.payment?.needs_review) { Object.assign(s, fresh); draw(s) } } catch { /* next tick */ }
   }, 20000)
 }
 
@@ -153,6 +168,8 @@ function draw(s) {
   const sum = s.summary
   const sizes = ORDER.filter((z) => sum.products.some((p) => p.sizes[z])).concat([...new Set(sum.products.flatMap((p) => Object.keys(p.sizes)))].filter((z) => !ORDER.includes(z)))
   const canEstimate = !s.estimate_id && s.order_count > 0
+  const showPay = s.take_payment || s.payment.paid_orders > 0 || s.payment.needs_review > 0
+  const payPill = (o) => o.refunded_amount > 0 ? `<span class="pill red">Refunded ${money(o.refunded_amount)}</span>` : o.paid ? `<span class="pill green">Paid ${money(o.paid_amount)}</span>` : '<span class="pill gray">Not paid</span>'
   setPage(s.name, `${s.estimate_id ? `<a class="btn primary" href="#/estimates/${s.estimate_id}">Open estimate</a>` : `<button class="btn primary" id="st-est" type="button"${canEstimate ? '' : ' disabled title="Nobody has ordered yet"'}>Turn into estimate</button>`}
     ${s.is_open ? '<button class="btn ghost" id="st-close" type="button">Close store</button>' : s.estimate_id ? '' : '<button class="btn ghost" id="st-reopen" type="button">Reopen</button>'}
     <button class="btn danger" id="st-delete" type="button">Delete</button>`, '<a href="#/stores">Merch stores</a> /')
@@ -165,12 +182,16 @@ function draw(s) {
         <button class="btn primary" type="button" id="st-copy">Copy link</button>
         <a class="btn ghost" href="${esc(s.share_url)}" target="_blank" rel="noopener">Open</a></div>
       ${s.message ? `<p class="st-message">${esc(s.message)}</p>` : ''}
+      ${s.payments_ready || s.take_payment ? `<label class="st-paytoggle"><input type="checkbox" id="st-takepay"${s.take_payment ? ' checked' : ''}${s.estimate_id ? ' disabled' : ''}> <span><strong>Take payment when members order</strong><br><span class="dim">${s.take_payment && !s.payments_ready ? 'Your payment account is not connected right now, so members are not being charged. <a href="#/payments">Reconnect it</a>.' : `Members pay by card at checkout, into your own payment account${s.tax_rate > 0 ? `, with ${s.tax_rate}% sales tax added` : ''}.`}</span></span></label>` : ''}
     </div>
+    ${s.payment.needs_review ? `<div class="banner warn st-review" role="alert"><strong>${s.payment.needs_review} order${s.payment.needs_review === 1 ? ' needs' : 's need'} a payment check.</strong> A refund or an unexpected payment was recorded. See the note on the order below before making the estimate.</div>` : ''}
     <div class="kpis st-kpis">
       <div class="kpi"><div class="lbl">Orders</div><div class="val">${sum.orders}</div><div class="sub">people ordered</div></div>
       <div class="kpi"><div class="lbl">Pieces</div><div class="val">${sum.units}</div><div class="sub">to print</div></div>
       <div class="kpi info"><div class="lbl">Store total</div><div class="val">${money(sum.total)}</div><div class="sub">at store prices</div></div>
-      <div class="kpi"><div class="lbl">Items</div><div class="val">${s.products.length}</div><div class="sub">on offer</div></div>
+      ${s.take_payment || s.payment.paid_orders ? `<div class="kpi"><div class="lbl">Collected</div><div class="val">${money(s.payment.collected)}</div><div class="sub">${s.payment.paid_orders} of ${sum.orders} paid</div></div>
+      <div class="kpi${s.payment.outstanding > 0 ? ' warn' : ''}"><div class="lbl">Still to pay</div><div class="val">${money(s.payment.outstanding)}</div><div class="sub">from unpaid orders</div></div>`
+      : `<div class="kpi"><div class="lbl">Items</div><div class="val">${s.products.length}</div><div class="sub">on offer</div></div>`}
     </div>
     <div class="card st-sec"><div class="card-h"><h3>What to print</h3><span class="spacer"></span><span class="dim">Every order added up</span></div>
       ${sum.products.length ? `<div class="st-scroll"><table class="tbl st-matrix"><thead><tr><th>Item</th>${sizes.map((z) => `<th class="num">${esc(z)}</th>`).join('')}<th class="num">Pieces</th><th class="num">Total</th></tr></thead><tbody>
@@ -178,18 +199,27 @@ function draw(s) {
       </tbody></table></div>` : '<div class="card-b dim">Nothing yet. Orders show up here the moment someone places one.</div>'}
     </div>
     <div class="card st-sec"><div class="card-h"><h3>Orders</h3><span class="spacer"></span><span class="dim">${s.is_open ? 'Updates on its own' : ''}</span></div>
-      ${s.orders.length ? `<div class="st-scroll"><table class="tbl st-orders"><thead><tr><th>Who</th><th>Ordered</th><th class="num">Total</th><th>When</th><th></th></tr></thead><tbody>
+      ${s.orders.length ? `<div class="st-scroll"><table class="tbl st-orders"><thead><tr><th>Who</th><th>Ordered</th><th class="num">Total</th>${showPay ? '<th>Payment</th>' : ''}<th>When</th><th></th></tr></thead><tbody>
         ${s.orders.map((o) => `<tr><td><strong>${esc(o.name)}</strong><div class="dim">${esc(o.email)}</div>${o.note ? `<div class="st-note">${esc(o.note)}</div>` : ''}</td>
           <td>${o.items.map((i) => `<span class="st-line">${esc(i.name)} · ${esc(i.size)} × ${i.qty}</span>`).join('')}</td>
-          <td class="num">${money(o.total)}</td><td class="dim">${esc(fmtDate(o.created_at))}</td>
-          <td class="num">${s.estimate_id ? '' : `<button class="btn ghost sm" type="button" data-rm="${o.id}" aria-label="Remove ${esc(o.name)}'s order">Remove</button>`}</td></tr>`).join('')}
+          <td class="num">${money(o.tax != null ? o.due : o.total)}${o.tax > 0 ? `<div class="dim">incl. ${money(o.tax)} tax</div>` : ''}</td>
+          ${showPay ? `<td>${payPill(o)}${o.pay_review ? `<div class="st-note">${esc(o.pay_review)}</div>` : ''}${!o.paid && s.is_open && s.take_payment && o.pay_url ? `<div><button class="linkbtn" type="button" data-paylink="${esc(o.pay_url)}">Copy pay link</button></div>` : ''}</td>` : ''}
+          <td class="dim">${esc(fmtDate(o.created_at))}</td>
+          <td class="num">${s.estimate_id || o.paid ? '' : `<button class="btn ghost sm" type="button" data-rm="${o.id}" aria-label="Remove ${esc(o.name)}'s order">Remove</button>`}</td></tr>`).join('')}
       </tbody></table></div>` : `<div class="card-b">${empty('orders', 'No orders yet', 'Copy the link above and send it to the coach or organiser. Members order on their phone — no account needed.')}</div>`}
     </div></div>`
 
   $('#st-copy').onclick = () => copyText(s.share_url, 'Store link copied')
   const reload = () => storeDetailView(s.id)
+  const takepay = $('#st-takepay')
+  if (takepay) takepay.onchange = async () => {
+    takepay.disabled = true
+    try { await api.put(`/api/stores/${s.id}`, { take_payment: takepay.checked }); toast(takepay.checked ? 'Members now pay when they order' : 'Members order without paying'); reload() }
+    catch (e) { toast(e.message, true); takepay.checked = !takepay.checked; takepay.disabled = false }
+  }
+  on($('#st-detail'), '[data-paylink]', (_e, b) => copyText(b.dataset.paylink, 'Pay link copied — send it to the member'))
   const est = $('#st-est')
-  if (est) est.onclick = () => confirmModal('Turn into estimate?', `This makes one draft estimate for ${s.contact?.name || 'the customer'} with ${sum.units} pieces across ${sum.products.length} item${sum.products.length === 1 ? '' : 's'}, and closes the store to new orders.`, async () => {
+  if (est) est.onclick = () => confirmModal('Turn into estimate?', `This makes one draft estimate for ${s.contact?.name || 'the customer'} with ${sum.units} pieces across ${sum.products.length} item${sum.products.length === 1 ? '' : 's'}, and closes the store to new orders.${s.payment.paid_orders ? ` The ${money(s.payment.collected)} members already paid is posted to the invoice when you convert the estimate.` : ''}`, async () => {
     try { const r = await api.post(`/api/stores/${s.id}/estimate`, {}); toast(`Estimate ${r.estimate_number} created`); go(`/estimates/${r.estimate_id}`) } catch (e) { toast(e.message, true) }
   }, 'Make the estimate')
   const close = $('#st-close')
