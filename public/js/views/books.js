@@ -164,7 +164,7 @@ function render(aging, qbo, qs) {
     </div>
 
     <div class="card card-b" id="qbo-card">
-      <h2>QuickBooks Online <span class="dim qbo-oneway">One-way: PrintShopCRM → QuickBooks</span></h2>
+      <h2>QuickBooks Online <span class="pill">Beta</span> <span class="dim qbo-oneway">One-way: PrintShopCRM → QuickBooks</span></h2>
       ${qboBody}
       ${qbo.counts ? qboXero : ''}
     </div>
