@@ -3907,7 +3907,17 @@ app.post('/api/estimates/:id/convert', wrap((req, res) => {
   logActivity('invoice', `Estimate ${e.estimate_number} converted — invoice ${invNum}, ${prior ? `linked to the job already on the board, ${jobNum}` : `job ${jobNum}`}`, { contact_id: e.contact_id, job_id: jobId })
   // A team store whose members paid at checkout: their money goes onto this invoice now, one
   // payment row per paid order, so the balance left is what the unpaid members still owe.
-  { const fx=[]; try { merchStores.applyPrepayments(invId,fx) } catch (err) { console.error('store prepayments:',err.message) } runPaymentEffects(fx) }
+  {
+    const fx=[]
+    try { merchStores.applyPrepayments(invId,fx) }
+    catch (err) {
+      // Members' money is at the processor but not on this invoice. Say so on the invoice, where
+      // collections stop until someone looks, rather than only in a log nobody reads.
+      console.error('store prepayments:',err.message)
+      run('UPDATE invoices SET payment_review=? WHERE id=?','Team-store payments could not be applied to this invoice automatically. Check the store\'s paid orders against the payments here before collecting.',invId)
+    }
+    runPaymentEffects(fx)
+  }
   /*
    * Convert is the THIRD writer of status='approved' and was the only one that told nobody.
    *
@@ -9791,6 +9801,8 @@ function invoiceForAttempt(attempt, effects) {
     run(`UPDATE estimates SET status='approved', approved_at=COALESCE(approved_at,?), sent_at=COALESCE(sent_at,?) WHERE id=?`, now(), now(), e.id)
     recordEstimateApproval(get('SELECT * FROM estimates WHERE id=?',e.id), { source: wasApproved ? 'legacy_record' : 'customer_payment', actor: get('SELECT name FROM contacts WHERE id=?',e.contact_id)?.name })
     const jobId = openJobForPaidEstimate(e, id)
+    // If this estimate is a team store's, its members' prepaid orders belong on the invoice too.
+    try { merchStores.applyPrepayments(id, Array.isArray(effects) ? effects : []) } catch (err) { console.error('store prepayments:', err.message) }
     if (Array.isArray(effects)) effects.push(() => {
       const fresh = get('SELECT * FROM estimates WHERE id=?', e.id)
       logActivity('invoice', `Estimate ${e.estimate_number} paid online — invoice ${inv.invoice_number}${jobId ? ', job opened on the board' : ''}`, { contact_id: e.contact_id, job_id: jobId || undefined })
