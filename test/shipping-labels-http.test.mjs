@@ -4,11 +4,26 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHttpTestServer } from './helpers/http-test-server.mjs'
 
-const FAKE = fileURLToPath(new URL('./fixtures/fake-easypost.mjs', import.meta.url))
+const FAKE = new URL('./fixtures/fake-easypost.mjs', import.meta.url).href
+
+test('shipping label preload uses a file URL and preserves the outbound guard', () => {
+  // A Windows drive path is parsed as a URL scheme by --import, unlike a file URL.
+  assert.equal(new URL(FAKE).protocol, 'file:')
+  const guard = 'data:text/javascript,' + encodeURIComponent("globalThis.fetch = async () => { throw Error('Unexpected outbound request') }")
+  const check = spawnSync(process.execPath, ['--import', guard, '--import', FAKE, '--input-type=module', '-e', `
+    import assert from 'node:assert/strict'
+    const response = await fetch('https://api.easypost.com/v2/shipments', {
+      headers: { Authorization: 'Basic ' + Buffer.from('EZTKfixture:').toString('base64') },
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { shipments: [], has_more: false })
+    await assert.rejects(() => fetch('https://unmocked.example.test'), /Unexpected outbound request/)
+  `], { env: { FAKE_EASYPOST_PRELOAD: '1' }, encoding: 'utf8', timeout: 10000 })
+  assert.equal(check.status, 0, check.stderr || check.error?.message)
+})
 
 test('shipping labels over HTTP: one purchase per label, private files, shop and role boundaries', { timeout: 150000 }, async () => {
   const temp = mkdtempSync(join(tmpdir(), 'psc-labels-http-')), dest = join(temp, 'demo')
