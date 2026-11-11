@@ -18,6 +18,10 @@ test('actual shipping HTTP preserves permissions, durable receipts, associations
     assert.equal(built.status, 0, built.stderr)
     const env = JSON.parse(readFileSync(join(dest, 'demo-env.json'), 'utf8'))
     env.PSC_TICK_MS = '3600000'
+    // The normal 4s startup sweep can write unrelated automation rows midway through the
+    // byte-for-byte shipping snapshots on slower Windows runners. Keep both timers outside
+    // this route-isolation test; automation behavior has its own dedicated coverage.
+    env.PSC_TICK_INITIAL_MS = '3600000'
     const start = () => server.start({ cwd: dest, env, args: ['--no-warnings', '--import', './bin/demo-network-guard.mjs', 'server.mjs'] })
     control = new DatabaseSync(join(dest, 'data/control.db')); control.exec('PRAGMA busy_timeout=5000')
     db = new DatabaseSync(join(dest, 'data/tenants', readdirSync(join(dest, 'data/tenants'))[0], 'printshop.db'))
@@ -32,6 +36,15 @@ test('actual shipping HTTP preserves permissions, durable receipts, associations
       actors[name] = { id, cookie: 'psc_session=' + token }
     }
     await start()
+    // A stale session is removed only by the timed sweep. Prove the fixture's initial-delay
+    // setting actually isolates the snapshots below, including on a slow CI runner.
+    const expiredToken = 'fixture-expired-shipping-tick'
+    control.prepare('INSERT INTO sessions(token,tenant_id,member_id,expires_at) VALUES(?,?,?,?)')
+      .run(expiredToken, member.tenant_id, member.id, '2000-01-01 00:00:00')
+    await new Promise(resolve => setTimeout(resolve, 4300))
+    assert.equal(control.prepare('SELECT count(*) AS n FROM sessions WHERE token=?').get(expiredToken).n, 1,
+      'the startup sweep must not run during this route-isolation fixture')
+    control.prepare('DELETE FROM sessions WHERE token=?').run(expiredToken)
     const login = await fetch(server.base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: 'dylan@example.test', password: readFileSync(join(dest, 'LOGIN.txt'), 'utf8').match(/Password: (.+)/)[1] }) })
     assert.equal(login.status, 200)
