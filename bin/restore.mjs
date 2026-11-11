@@ -55,10 +55,10 @@
 import { DatabaseSync } from 'node:sqlite'
 import {
   statSync, readdirSync, mkdirSync, copyFileSync, renameSync, rmSync, existsSync,
-  chownSync, chmodSync,
+  chownSync, chmodSync, lstatSync, realpathSync, mkdtempSync,
 } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { join, resolve, dirname, basename } from 'node:path'
+import { join, resolve, dirname, basename, sep } from 'node:path'
 
 /* ------------------------------------------------------------------ args */
 const argv = process.argv.slice(2)
@@ -282,6 +282,28 @@ const artSource = (() => {
   try { if (statSync(dir).isDirectory()) return { kind: 'directory', path: dir } } catch { /* not there */ }
   return null
 })()
+// A custom data root may link uploads to a persistent volume. Moving ART_LIVE itself moves only
+// that link; the old restore then unpacked into a new directory at ART_LIVE, leaving the app's
+// original volume and its newer artwork untouched. Resolve and validate the target before any
+// database is replaced, then stage the new artwork on the target's own filesystem below.
+let artLinkTarget = ''
+let artLinkIdentity = null
+if (!flag('--skip-art') && artSource) {
+  let entry
+  try { entry = lstatSync(ART_LIVE) } catch (e) { if (e.code !== 'ENOENT') die(`cannot inspect artwork path: ${e.message}`) }
+  if (entry?.isSymbolicLink()) {
+    try { artLinkTarget = realpathSync(ART_LIVE) } catch {
+      die(`${ART_LIVE} is a broken uploads symlink — restore its target or use --skip-art; no databases were changed`)
+    }
+    const targetStat = statSync(artLinkTarget)
+    if (!targetStat.isDirectory()
+      || artLinkTarget === DATA_ROOT || DATA_ROOT.startsWith(artLinkTarget + sep)
+      || artLinkTarget === SRC || SRC.startsWith(artLinkTarget + sep) || artLinkTarget.startsWith(SRC + sep)) {
+      die(`${ART_LIVE} points to an unsafe artwork target — no databases were changed`)
+    }
+    artLinkIdentity = { uid: targetStat.uid, gid: targetStat.gid, mode: targetStat.mode & 0o7777 }
+  }
+}
 const countArt = (dir) => {
   let n = 0
   const walk = (d) => {
@@ -323,7 +345,7 @@ if (flag('--skip-art')) {
 } else if (artSource) {
   const live = existsSync(ART_LIVE) ? countArt(ART_LIVE) : 0
   say(`    ✓ ${artSource.kind === 'archive' ? basename(artSource.path) : 'uploads/'}`)
-  say(`        → ${ART_LIVE}${live ? `   (replacing ${live} file(s), moved into the safety copy)` : '   (new)'}`)
+  say(`        → ${ART_LIVE}${artLinkTarget ? ` → ${artLinkTarget}` : ''}${live ? `   (replacing ${live} file(s), moved into the safety copy)` : '   (new)'}`)
 } else {
   // The loud half. A database-only restore looks completely healthy and is missing every proof.
   say(`    ✗ NO ARTWORK IN THIS BACKUP`)
@@ -499,21 +521,13 @@ for (const p of pairs) {
 /* ------------------------------------------------------- the artwork */
 let artNote = 'no artwork in this backup — the files on disk were left alone'
 if (!flag('--skip-art') && artSource) {
-  // MOVED aside, never deleted, and on the same filesystem so it is a rename rather than a copy
-  // of somebody's whole art library. If the unpack fails it goes straight back.
-  const kept = join(SAFETY, 'uploads-previous')
-  let movedAside = false
-  if (existsSync(ART_LIVE)) {
-    mkdirSync(SAFETY, { recursive: true })
-    renameSync(ART_LIVE, kept)
-    movedAside = true
-  }
-  try {
-    mkdirSync(ART_LIVE, { recursive: true })
+  const unpackArt = (root) => {
+    const destination = join(root, 'uploads')
+    mkdirSync(destination, { recursive: true })
     if (artSource.kind === 'archive') {
       // tar, because backup.sh wrote a tar and Node has no archive reader in the standard
       // library — and this tool takes no dependencies. Present on Linux, macOS and Windows 10+.
-      execFileSync('tar', ['xzf', artSource.path, '-C', DATA_ROOT], { stdio: ['ignore', 'ignore', 'pipe'] })
+      execFileSync('tar', ['xzf', artSource.path, '-C', root], { stdio: ['ignore', 'ignore', 'pipe'] })
     } else {
       const copyTree = (from, to) => {
         mkdirSync(to, { recursive: true })
@@ -522,24 +536,75 @@ if (!flag('--skip-art') && artSource) {
           else copyFileSync(join(from, e.name), join(to, e.name))
         }
       }
-      copyTree(artSource.path, ART_LIVE)
+      copyTree(artSource.path, destination)
     }
-    const n = countArt(ART_LIVE)
+    const n = countArt(destination)
     if (!n) throw new Error('the archive unpacked to no files')
-    artNote = `${n} artwork file(s) restored to ${ART_LIVE}`
-    if (movedAside) undo.push({ back: kept, to: ART_LIVE, dir: true })
-    say(`  ✓ ${ART_LIVE}`)
-    say(`      ${n} artwork file(s)`)
-  } catch (e) {
-    // Put the shop's own art back before saying anything else. A restore must never be the thing
-    // that loses the files it was run to recover.
-    try { if (movedAside) { renameSync(ART_LIVE, join(SAFETY, 'uploads-failed-unpack')); renameSync(kept, ART_LIVE) } } catch { /* nothing better to do */ }
-    const why = String(e?.message || e).slice(0, 200)
-    say('')
-    say(`  ✗ THE ARTWORK DID NOT RESTORE: ${why}`)
-    say(`      The databases above are restored. ${movedAside ? 'The art that was on disk has been put back.' : ''}`)
-    say(`      Unpack it by hand:   tar xzf '${artSource.path}' -C '${DATA_ROOT}'`)
-    artNote = `ARTWORK NOT RESTORED — ${why}`
+    return n
+  }
+
+  if (artLinkTarget) {
+    // Keep the symlink and swap its TARGET. Staging beside the target makes both renames atomic
+    // even when the volume is on another filesystem from DATA_ROOT/backups.
+    const stage = mkdtempSync(join(dirname(artLinkTarget), '.psc-restore-art-'))
+    const kept = join(stage, 'uploads-previous')
+    let movedAside = false
+    let installed = false
+    try {
+      const n = unpackArt(stage)
+      const replacement = join(stage, 'uploads')
+      // `sudo restore` must not make the app's writable artwork directory root-owned.
+      chownSync(replacement, artLinkIdentity.uid, artLinkIdentity.gid)
+      chmodSync(replacement, artLinkIdentity.mode)
+      renameSync(artLinkTarget, kept)
+      movedAside = true
+      renameSync(replacement, artLinkTarget)
+      installed = true
+      undo.push({ back: kept, to: artLinkTarget, dir: true })
+      artNote = `${n} artwork file(s) restored through ${ART_LIVE}; previous files in ${kept}`
+      say(`  ✓ ${ART_LIVE} → ${artLinkTarget}`)
+      say(`      ${n} artwork file(s); previous files in ${kept}`)
+    } catch (e) {
+      if (movedAside) {
+        try {
+          if (installed) renameSync(artLinkTarget, join(stage, 'uploads-failed-unpack'))
+          renameSync(kept, artLinkTarget)
+          movedAside = false
+        } catch { /* keep the safety copy for manual recovery */ }
+      }
+      if (!movedAside) { try { rmSync(stage, { recursive: true, force: true }) } catch { /* best effort */ } }
+      const why = String(e?.message || e).slice(0, 200)
+      say(`  ✗ THE ARTWORK DID NOT RESTORE: ${why}`)
+      say(`      ${movedAside ? `Previous artwork is in ${kept}; repair the link target before starting the app.` : 'The original artwork and symlink were left in place.'}`)
+      artNote = `ARTWORK NOT RESTORED — ${why}`
+    }
+  } else {
+    // MOVED aside, never deleted, and on the same filesystem so it is a rename rather than a copy
+    // of somebody's whole art library. If the unpack fails it goes straight back.
+    const kept = join(SAFETY, 'uploads-previous')
+    let movedAside = false
+    if (existsSync(ART_LIVE)) {
+      mkdirSync(SAFETY, { recursive: true })
+      renameSync(ART_LIVE, kept)
+      movedAside = true
+    }
+    try {
+      const n = unpackArt(DATA_ROOT)
+      artNote = `${n} artwork file(s) restored to ${ART_LIVE}`
+      if (movedAside) undo.push({ back: kept, to: ART_LIVE, dir: true })
+      say(`  ✓ ${ART_LIVE}`)
+      say(`      ${n} artwork file(s)`)
+    } catch (e) {
+      // Put the shop's own art back before saying anything else. A restore must never be the thing
+      // that loses the files it was run to recover.
+      try { if (movedAside) { renameSync(ART_LIVE, join(SAFETY, 'uploads-failed-unpack')); renameSync(kept, ART_LIVE) } } catch { /* nothing better to do */ }
+      const why = String(e?.message || e).slice(0, 200)
+      say('')
+      say(`  ✗ THE ARTWORK DID NOT RESTORE: ${why}`)
+      say(`      The databases above are restored. ${movedAside ? 'The art that was on disk has been put back.' : ''}`)
+      say(`      Unpack it by hand:   tar xzf '${artSource.path}' -C '${DATA_ROOT}'`)
+      artNote = `ARTWORK NOT RESTORED — ${why}`
+    }
   }
 }
 

@@ -138,6 +138,11 @@ an artwork backup and the private configuration needed to recover the install. A
 
 Follow the [backup and restore instructions](../INSTALL.md#backups), keep a copy off the machine,
 and test a restore to a separate location. Do not copy a live SQLite database as your backup.
+If `DATA_ROOT/uploads` links to another persistent volume, `bin/restore.mjs` preserves that link
+and restores artwork into its resolved target. It keeps the previous target files in a
+`.psc-restore-art-*` directory beside the target; retain that safety copy until the restored
+shop's proofs and mockups have been checked. A broken uploads link stops the restore before any
+database is replaced, so repair the target or deliberately use `--skip-art`.
 
 ## Deliberate limits
 
