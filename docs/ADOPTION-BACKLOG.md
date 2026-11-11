@@ -1,6 +1,6 @@
 # Self-host adoption and product backlog
 
-Updated October 11, 2026. The goal is broad use of the complete free software on a shop's own
+Updated October 17, 2026. The goal is broad use of the complete free software on a shop's own
 computer or server. Optional managed hosting remains paid and must not be the default path or
 unlock features. Preserve existing hosting agreements and all shop prices/payment history.
 
@@ -68,6 +68,20 @@ components and acceptance gates at every stage; continue reliable free installat
 6. **Workflow coverage.** Method-specific capacity, damaged receiving, delivery defaults/deposit targets,
    carrier integrations, storefront/fundraising and designer workflows remain separately scoped
    projects. Each needs a data model, failure recovery and user acceptance before replacement claims.
+
+### Profitability research checkpoint — October 17, 2026
+
+Print Profit's current [home page](https://www.printprofit.com/) and
+[solutions page](https://www.printprofit.com/solutions) describe live revenue/cost/profit views,
+pricing recommendations informed by quote conversion and customer trends, proactive alerts and
+morning reports, and API/Excel/manual financial input. These are vendor descriptions, not
+independently tested capabilities. PrintShopCRM's [free profit planner](PROFIT-PLANNER.md) currently
+models one-operation cost-plus pricing, quantity breaks and monthly break-even in unsaved scenarios;
+job costing stores operation snapshots. The documented gaps are reconciled customer/product profit
+rollups, durable goals and alerts, and reviewed financial imports. Keep those in milestones 3–5,
+with source-to-total reconciliation, missing-cost flags, and explicit date windows before any
+recommendation or comparison. This research does not establish product parity or justify a paid
+feature gate in the self-hosted app.
 
 ## Website and adoption work
 

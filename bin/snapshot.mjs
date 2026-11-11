@@ -22,14 +22,21 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, relative, isAbsolute, sep } from 'node:path'
+import { snapshotName, snapshotCollision } from '../lib/snapshot-name.mjs'
 
 const ROOT = resolve(process.argv[2] || process.env.DATA_ROOT || '/data')
 const OUT = resolve(process.argv[3] || join(ROOT, '_snapshot'))
 const die = (msg) => { console.error(`\n  ✗ ${msg}\n`); process.exit(1) }
 
 try { if (!statSync(ROOT).isDirectory()) die(`${ROOT} is not a directory`) } catch { die(`${ROOT} does not exist`) }
-if (OUT === ROOT) die('the snapshot directory must not be the data root itself')
+// OUT is removed before the new snapshot is written. Refuse not only ROOT itself but any
+// ancestor of ROOT: a mistyped output such as /var/lib would otherwise delete /var/lib's
+// working shop databases while trying to replace an old backup directory.
+const rootFromOut = relative(OUT, ROOT)
+if (!rootFromOut || (!isAbsolute(rootFromOut) && rootFromOut !== '..' && !rootFromOut.startsWith('..' + sep))) {
+  die('the snapshot directory must not contain the data root')
+}
 
 // Never walk into the output directory, or a re-run snapshots its own previous snapshots — the
 // mistake that quietly doubled deploy/backup.sh's archive every night.
@@ -55,12 +62,8 @@ if (!dbs.length) die(`no .db files under ${ROOT} — nothing to back up, which i
 // name sitting in the data root, so both flatten to the same thing. VACUUM INTO refuses an
 // existing file, so the old code died mid-loop with a raw SQLite stack, having ALREADY rm -rf'd
 // the previous snapshot. Detect it before anything is deleted, and name both paths.
-const byName = new Map()
-for (const src of dbs) {
-  const name = src.slice(ROOT.length + 1).replaceAll('/', '__')
-  if (byName.has(name)) die(`two databases would be snapshotted to the same file "${name}":\n      ${byName.get(name)}\n      ${src}\n    Rename or remove one of them — nothing has been changed.`)
-  byName.set(name, src)
-}
+const collision = snapshotCollision(dbs.map(src => src.slice(ROOT.length + 1)))
+if (collision) die(`two databases would be snapshotted to the same file "${collision.name}":\n      ${join(ROOT, collision.first)}\n      ${join(ROOT, collision.second)}\n    Rename or remove one of them — nothing has been changed.`)
 
 rmSync(OUT, { recursive: true, force: true })
 /*
@@ -97,7 +100,7 @@ for (const src of dbs) {
   // shop with "unable to open database file" — AFTER printing "✓ printshop.db quick_check ok" for
   // the first. So the run looked like it was working right up until it wasn't, and a shop backing
   // up from a Windows box got the default handle and none of its tenants.
-  const name = src.slice(ROOT.length + 1).replace(/[\\/]/g, '__')
+  const name = snapshotName(src.slice(ROOT.length + 1))
   const dest = join(OUT, name)
   const db = new DatabaseSync(src, { readOnly: true })
   try { db.prepare('VACUUM INTO ?').run(dest) } finally { db.close() }
