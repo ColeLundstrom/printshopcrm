@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-10-10",
+  "model_repo": "https://github.com/ColeLundstrom/printshopcrm",
+  "model_commit": "7b3d654ada5f94e224269c11701424612425ba62",
+  "model_path": "public/js/shared/profit-planning.js",
+  "model_sha256": "c05aa968f3fdd380a408c0a0064994e61df29371f7f15e25815ec1b365abb0e1",
+  "fixtures": 1362,
+  "successful": 1336,
+  "rejected": 26,
+  "seed": 20261010,
+  "scope": "Authoritative quote unit/total cents and monthly sales-threshold cents only. Fictional input values. This is not full API, numeric-range, browser, database, or provider parity."
+}

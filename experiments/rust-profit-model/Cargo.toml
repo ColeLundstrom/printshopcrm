@@ -1,0 +1,13 @@
+[package]
+name = "printshopcrm-pricing-poc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-or-later"
+description = "Isolated, bounded Rust pricing-model compatibility experiment"
+
+[dependencies]
+
+[profile.release]
+overflow-checks = true
+

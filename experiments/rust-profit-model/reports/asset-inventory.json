@@ -1,0 +1,75 @@
+{
+  "reviewed_at": "2026-10-10",
+  "source_commit": "62a232712a3e49f51bfe6a4d0fc903ff1e6185aa",
+  "scope": "Tracked image/font paths and an explicit inline-artwork gap. Excludes local untracked uploads and customer files. Supplier images fetched at runtime need separate provider permission review.",
+  "assets": [
+    {
+      "path": "docs/img/capacity.png",
+      "sha256": "4de6ac38188fd7ff3758f98f243f4aefadf7c2827aea0ab1881c6707373a3e0a",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "docs/img/dashboard.png",
+      "sha256": "e101d43d5f5dec8d115491755977b5b43c4b4b75748ee1d0f2adb7e115a16a97",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "docs/img/estimates.png",
+      "sha256": "0f04ea9707a2cc292f399bcf34af0579bbad19557eeefdbf3d46205d8571a1e9",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "docs/img/job-board.png",
+      "sha256": "c89755b671bf068e1997d054d62875512a96d472d40a8bd312fe61b166ec326c",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "docs/img/pipeline.png",
+      "sha256": "a03592e4b43cfc0621cd4c1a5bbd36afc2376fcc176ca0c01ce5887541b6d466",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "docs/img/price-matrix.png",
+      "sha256": "b53b8cc928c02e761d23151da1073a34c329d1d6f830c0341c12363b9a2dde29",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "docs/img/profitability.png",
+      "sha256": "f0316d2f7e33bee1b8fb31bb3f92ea0213a56648c7f5c8001f4424020edf3d9d",
+      "type": "application screenshot",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm screenshot authorship and depicted names/artwork are authorized or fictional."
+    },
+    {
+      "path": "public/icon-maskable.svg",
+      "sha256": "18190295836573fcac2b60dea4f1e67918ebf78d380e9fa8bcd42eab4137c5ee",
+      "type": "application icon",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm logo/design origin and permission; trademark clearance is separate."
+    },
+    {
+      "path": "public/icon.svg",
+      "sha256": "e27f045bc698915d7b0419047f136f081626032fe7fe61c75f547219eef50b93",
+      "type": "application icon",
+      "rights_status": "Repository-tracked; no separate author/source/permission register found. Confirm origin and rights with maintainer.",
+      "review_needed": "Confirm logo/design origin and permission; trademark clearance is separate."
+    },
+    {
+      "path": "public/index.html inline SVG sprite; other inline artwork in source",
+      "type": "embedded artwork",
+      "rights_status": "Not covered by an extension-only binary asset inventory. Requires source-level provenance review."
+    }
+  ]
+}

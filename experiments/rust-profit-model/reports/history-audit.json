@@ -1,0 +1,83 @@
+{
+  "reviewed_at": "2026-10-10",
+  "branch": "main",
+  "head": "41fa29b6d4f064c69c47e880f82b95750071ccf8",
+  "commits": 502,
+  "complete_to_root": true,
+  "authors": {
+    "ColeLundstrom | shirtagency | cole@shirtagency.com": 481,
+    "ColeLundstrom | Cole Lundstrom | cole@merchtroop.com": 21
+  },
+  "license_history": [
+    {
+      "sha": "0b30f55ff50928bb6e9193c2f58796b28ead9710",
+      "date": "2026-08-23T17:48:50Z",
+      "message": "license: AGPL-3.0, and build out the contributor path\n\nRelicense from BSL 1.1 to the GNU AGPL v3. This is OSI-approved open\nsource: run it, fork it, sell services around it. The copyleft asks that\na modified version run as a service publish its changes, so improvements\nto a shared tool come back to the shops using it.\n\nFunding stays with hosting, setup and support, plus commercial licenses\nfor companies that cannot accept the copyleft. CONTRIBUTING.md documents\nthe non-exclusive relicensing grant that makes those possible, and says\nplainly why it is asked for and what it is not.\n\nAGPL section 13 compliance: the app now always shows a source link to\nevery user, on both the shell and the login page, since it is served over\na network. PSC_SOURCE_URL lets a fork point at its own corresponding\nsource; hostile values fall back to upstream rather than rendering.\n\nCommunity scaffolding: issue templates (including one for shop owners to\nreport where the software does not match how their shop actually works,\nwhich needs no code), a PR template, and a code of conduct.",
+      "url": "https://github.com/ColeLundstrom/printshopcrm/commit/0b30f55ff50928bb6e9193c2f58796b28ead9710"
+    },
+    {
+      "sha": "da738eb8f8f7ccc836fc38ff55ebe2828679aa4e",
+      "date": "2026-08-23T17:24:57Z",
+      "message": "license: relicense from MIT to Business Source License 1.1\n\nRunning PrintShopCRM to operate your own shop stays free and commercial,\nwith the full source. What the license reserves is offering it to third\nparties as a hosted or managed service — that requires a commercial\nlicense from the Licensor.\n\nSetting it up on a client's own infrastructure for a fee is explicitly\npermitted; operating it for them on infrastructure you control is not.\n\nEach version converts to Apache 2.0 on its own four-year clock\n(Change Date 2030-08-23 for this release).\n\nDocumentation updated to say 'source available' rather than 'open\nsource', since the hosting restriction means it is not OSI open source\nand claiming otherwise would be false.",
+      "url": "https://github.com/ColeLundstrom/printshopcrm/commit/da738eb8f8f7ccc836fc38ff55ebe2828679aa4e"
+    },
+    {
+      "sha": "756d5fb04d5cbf5ebe78e40d22a772a1f89a42be",
+      "date": "2026-08-23T16:56:47Z",
+      "message": "PrintShopCRM 1.0.0 — open-source shop management for print shops\n\nQuoting, estimates, invoicing, production board, art proofing, purchasing\nand per-job profitability, with the CRM built in.\n\nNode 22 + built-in SQLite. No build step, four runtime dependencies, one\ndatabase file. Runs single-shop out of the box or multi-tenant with an\nisolated database per shop.\n\nTests: 61 unit (bin/gate.mjs) + 17 end-to-end (bin/gate-e2e.sh).",
+      "url": "https://github.com/ColeLundstrom/printshopcrm/commit/756d5fb04d5cbf5ebe78e40d22a772a1f89a42be"
+    }
+  ],
+  "asset_history": [
+    {
+      "path": "public/icon.svg",
+      "commits": [
+        {
+          "sha": "756d5fb04d5cbf5ebe78e40d22a772a1f89a42be",
+          "date": "2026-08-23T16:56:47Z",
+          "message": "PrintShopCRM 1.0.0 — open-source shop management for print shops",
+          "url": "https://github.com/ColeLundstrom/printshopcrm/commit/756d5fb04d5cbf5ebe78e40d22a772a1f89a42be"
+        }
+      ]
+    },
+    {
+      "path": "public/icon-maskable.svg",
+      "commits": [
+        {
+          "sha": "756d5fb04d5cbf5ebe78e40d22a772a1f89a42be",
+          "date": "2026-08-23T16:56:47Z",
+          "message": "PrintShopCRM 1.0.0 — open-source shop management for print shops",
+          "url": "https://github.com/ColeLundstrom/printshopcrm/commit/756d5fb04d5cbf5ebe78e40d22a772a1f89a42be"
+        }
+      ]
+    },
+    {
+      "path": "docs/img",
+      "commits": [
+        {
+          "sha": "22751c99206b54a449cd2d7231fc9c66b4b1d80d",
+          "date": "2026-08-24T19:38:22Z",
+          "message": "Price matrices: any name, your rows, your columns",
+          "url": "https://github.com/ColeLundstrom/printshopcrm/commit/22751c99206b54a449cd2d7231fc9c66b4b1d80d"
+        },
+        {
+          "sha": "0b30f55ff50928bb6e9193c2f58796b28ead9710",
+          "date": "2026-08-23T17:48:50Z",
+          "message": "license: AGPL-3.0, and build out the contributor path",
+          "url": "https://github.com/ColeLundstrom/printshopcrm/commit/0b30f55ff50928bb6e9193c2f58796b28ead9710"
+        },
+        {
+          "sha": "756d5fb04d5cbf5ebe78e40d22a772a1f89a42be",
+          "date": "2026-08-23T16:56:47Z",
+          "message": "PrintShopCRM 1.0.0 — open-source shop management for print shops",
+          "url": "https://github.com/ColeLundstrom/printshopcrm/commit/756d5fb04d5cbf5ebe78e40d22a772a1f89a42be"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "GitHub attribution and commit dates are evidence of repository history, not proof of ownership or original authorship.",
+    "The initial import predates the visible development history. Rights in imported code/assets and authority for license transitions require supporting records.",
+    "This inspection did not compare the application against competitors' proprietary source or establish patent/trademark clearance."
+  ]
+}
