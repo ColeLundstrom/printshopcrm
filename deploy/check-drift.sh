@@ -44,7 +44,10 @@ echo "PrintShopCRM — release drift check"
 echo
 
 # ---------------------------------------------------------------- git / GitHub
-git fetch --quiet origin 2>/dev/null || true
+# A cached origin/main is not evidence of the current GitHub state. A network or auth failure
+# must fail the check even when the stale ref happens to match local HEAD.
+git fetch --quiet origin >/dev/null 2>&1
+FETCH_OK=$?
 LOCAL="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 REMOTE="$(git rev-parse --short origin/main 2>/dev/null || echo '?')"
 # `git status --porcelain` printing nothing because git REFUSED to run looks exactly like a clean
@@ -65,6 +68,8 @@ note "origin/main   $REMOTE"
 if [ "$LOCAL" = "?" ] || [ "$REMOTE" = "?" ]; then
   bad "could not read git here — this check did not run (dubious ownership? not a clone? no origin?)"
   note "      try: git config --global --add safe.directory \"$(pwd)\""
+elif [ "$FETCH_OK" -ne 0 ]; then
+  bad "could not refresh origin/main — remote release state is unverified"
 elif [ "$LOCAL" = "$REMOTE" ]; then
   good "GitHub matches this working tree"
 else
