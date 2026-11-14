@@ -10793,11 +10793,15 @@ const startCheckout = async (s, args) => {
   const client=collectionClient(s),currency=currencyCode(s.currency)
   const invoiceId=Number(args.metadata?.invoice)||null
   const estimateId=invoiceId?null:get('SELECT id FROM estimates WHERE estimate_number=?',args.metadata?.estimate||'')?.id
+  // The random checkout reference remains the reconciliation identity. A separate, bounded
+  // label gives the shop its invoice number in Stripe and Authorize.net payment records.
+  const invoiceNumber=invoiceId?String(get('SELECT invoice_number FROM invoices WHERE id=?',invoiceId)?.invoice_number||'').replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,200):''
+  const description=invoiceNumber?`Invoice ${invoiceNumber}`:undefined
   // A team-store order is paid before any invoice or estimate exists for it.
   const storeOrderId=!invoiceId && !estimateId ? Number(args.metadata?.store_order)||null : null
   const amountCents=args.lineItems.reduce((n,l)=>n+Math.round(l.amountCents)*(l.qty||1),0)
   const attempt=reserveCollection({client,invoiceId,estimateId,storeOrderId,amountCents,currency,kind:args.metadata?.kind||'balance',returnUrl:args.cancelUrl,
-    buildRequest:a=>client.buildRequest({...args,amountCents,currency,reference:a.reference,
+    buildRequest:a=>client.buildRequest({...args,amountCents,currency,reference:a.reference,description,
       successUrl:new URL(`/p/checkout/${a.reference}/return?s=${encodeURIComponent(curSlug())}`,args.successUrl).href+(client.provider==='authorize_net'?'':'&session_id={CHECKOUT_SESSION_ID}'),
       metadata:{...args.metadata,...(curSlug()?{slug:curSlug()}:{}),checkout_ref:a.reference,collection_version:'1',currency}})})
   const result=await resumeCollection({reference:attempt.reference,client})
