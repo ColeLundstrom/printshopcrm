@@ -159,6 +159,10 @@ test('actual public collection serializes payment choices and recovers a lost pr
     assert.equal(f.state().seq,before+1)
     const original=f.state().posts.at(-1),createdId=f.state().last.id
     assert(original.key)
+    const invoiceNumber=f.db.prepare('SELECT invoice_number FROM invoices WHERE id=?').get(inv.id).invoice_number
+    const originalParams=new URLSearchParams(original.body)
+    assert.equal(originalParams.get('payment_intent_data[description]'),`Invoice ${invoiceNumber}`)
+    assert.equal(originalParams.get('metadata[invoice]'),String(inv.id),'the new label must not replace the reconciliation identity')
     await f.restart()
     f.db.prepare('UPDATE payment_collections SET next_retry_at=0 WHERE reference=?').run((await f.collection(inv)).reference)
     const retry=await f.checkout(inv,'balance',choice);assert.equal(retry.status,303,retry.text)
@@ -243,6 +247,10 @@ test('verified additional Authorize.net captures retain their actual money and d
   const f=await fixture(t);await f.authorize()
   const inv=await f.invoice(),checkout=await f.checkout(inv);assert.equal(checkout.status,303,checkout.text)
   const reference=(await f.collection(inv)).reference
+  const invoiceNumber=f.db.prepare('SELECT invoice_number FROM invoices WHERE id=?').get(inv.id).invoice_number
+  const hosted=f.state().hosted.at(-1).request.transactionRequest.order
+  assert.equal(hosted.invoiceNumber,reference,'the provider reference remains the settlement identity')
+  assert.equal(hosted.description,`Invoice ${invoiceNumber}`)
   for(const id of ['91001','91002'])f.mutate(s=>s.transactions[id]={transId:id,transactionType:'authCaptureTransaction',authAmount:'100.00',transactionStatus:'capturedPendingSettlement',responseCode:1,settleAmount:'100.00',order:{invoiceNumber:reference},_login:'fixture-login'})
   assert.equal((await f.anetHook('91001',{authAmount:999999})).status,200)
   assert.equal(f.paid(inv).amount_paid,100,'Only the retrieved provider amount may become money')

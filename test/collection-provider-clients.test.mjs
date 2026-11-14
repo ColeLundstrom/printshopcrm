@@ -39,6 +39,9 @@ test('shop collection retries reuse exact credential-free request bytes and stab
   const params=new URLSearchParams(body)
   assert.equal(params.get('line_items[0][price_data][unit_amount]'),'1250')
   assert.equal(params.get('success_url'),input.successUrl)
+  assert.equal(params.get('payment_intent_data[description]'),null,'legacy non-invoice checkouts keep their provider description')
+  assert.equal(new URLSearchParams(first.buildRequest({...input,description:'Invoice INV-1001'})).get('payment_intent_data[description]'),'Invoice INV-1001')
+  assert.throws(()=>first.buildRequest({...input,description:'Invoice\nother shop'}),/payment description/)
   assert.deepEqual(await first.account(),{account_id:'acct_same',is_test:true,destination:null})
   await assert.rejects(first.create({requestBody:body,idempotencyKey:'collection:fixture:1'}),safe('stripe_unavailable',true))
   current.stripe_secret='sk_test_ROTATED'
@@ -111,6 +114,8 @@ test('Authorize.net snapshots authenticated configured identity and injects secr
     return response({messages:{resultCode:'Ok'},token:'fixture-token'})
   }
   const client=createAuthorizeCollectionClient(current,{send}),body=client.buildRequest(input)
+  assert.equal(JSON.parse(client.buildRequest({...input,description:'Invoice INV-1001'})).transactionRequest.order.description,'Invoice INV-1001')
+  assert.throws(()=>client.buildRequest({...input,description:'Invoice\nother shop'}),/payment description/)
   assert.doesNotMatch(body,/TRANSACTION_SENTINEL|fixtureLogin|merchantAuthentication/)
   const account=await client.account();assert.match(account.account_id,/^anet_login_[a-f0-9]{64}$/);assert.equal(account.is_test,true)
   current.anet_transaction_key='rotated-key';assert.equal(client.matchesSettings(current),false)
