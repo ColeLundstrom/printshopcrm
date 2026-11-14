@@ -86,7 +86,14 @@ fi
 
 # Verify what we just wrote actually opens. A backup nobody has ever restored is a hope, not a plan.
 while IFS= read -r bk; do
-  sqlite3 "$bk" 'PRAGMA quick_check;' >/dev/null 2>&1 || { echo "VERIFY FAILED: $bk is not a readable database" >&2; failed=$((failed + 1)); }
+  # SQLite may exit 0 while quick_check reports corruption as result rows. A successful
+  # invocation is not enough: the entire result must be exactly "ok".
+  check="$(sqlite3 "$bk" 'PRAGMA quick_check;' 2>/dev/null)"
+  check_status=$?
+  if [ "$check_status" -ne 0 ] || [ "$check" != 'ok' ]; then
+    echo "VERIFY FAILED: $bk did not pass PRAGMA quick_check" >&2
+    failed=$((failed + 1))
+  fi
 done < <(find "$DEST" -name '*.db')
 
 # Test the tar. This used to be `tar ... 2>/dev/null && rm -rf "$DEST"`, with the exit status
@@ -174,7 +181,10 @@ if [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ ! -f "$APP_DIR/bin/backup-
   echo "WARNING: off-site backup is configured, but bin/backup-drive.mjs was not found under $APP_DIR." >&2
   echo "         THIS BACKUP EXISTS ONLY ON THIS MACHINE. Re-run with APP_DIR=/path/to/printshopcrm." >&2
 fi
-if [ -f "$DEST.tar.gz" ] && [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ -f "$APP_DIR/bin/backup-drive.mjs" ]; then
+if [ "$failed" -gt 0 ] && [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ]; then
+  echo "WARNING: off-site upload skipped because this backup failed verification" >&2
+fi
+if [ "$failed" -eq 0 ] && [ -f "$DEST.tar.gz" ] && [ -n "${PSC_BACKUP_GDRIVE_REFRESH_TOKEN:-}" ] && [ -f "$APP_DIR/bin/backup-drive.mjs" ]; then
   if node --no-warnings "$APP_DIR/bin/backup-drive.mjs" upload "$DEST.tar.gz"; then
     offsite=" · copied off-site"
   else
