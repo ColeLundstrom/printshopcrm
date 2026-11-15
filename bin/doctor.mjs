@@ -90,6 +90,18 @@ function sameExistingDirectory(left, right, fs) {
   catch { return false }
 }
 
+// deploy/backup.sh uses find without -L. A linked root, directory or database file is
+// writable to the app but invisible to that backup walk. Inspect links only; open no DBs.
+function backupWalkerSkipsLink(root, path, fs) {
+  if (!contains(root, path)) return false
+  let current = path
+  while (true) {
+    try { if (fs.lstatSync(current).isSymbolicLink()) return true } catch {}
+    if (current === root) return false
+    current = dirname(current)
+  }
+}
+
 export function runDoctor({ root = ROOT, cwd = process.cwd(), env = process.env,
   nodeVersion = process.versions.node, resolveDependency, loadSqlite = () => require('node:sqlite'), fs = filesystem } = {}) {
   root = resolve(root)
@@ -193,6 +205,7 @@ export function runDoctor({ root = ROOT, cwd = process.cwd(), env = process.env,
   // backup.sh does not source .env for DATA_ROOT. Without an explicit shell value,
   // compare the intended data layout, and explain that the script needs that root.
   const backupRoot = resolve(cwd, env.DATA_ROOT || dataRoot)
+  const tenantRoot = join(dataRoot, 'tenants')
   if (!env.DATA_ROOT) {
     add('backup-root', 'warn', 'Backup layout is compared with the directory containing PSC_DB; no shell DATA_ROOT was provided.', 'Set DATA_ROOT explicitly when running deploy/backup.sh; it defaults to /var/lib/printshopcrm and does not load DATA_ROOT from .env.')
   }
@@ -204,6 +217,19 @@ export function runDoctor({ root = ROOT, cwd = process.cwd(), env = process.env,
   }
   if (config.PSC_CONTROL_DB !== ':memory:' && !contains(backupRoot, controlPath)) {
     add('backup-control', 'warn', 'PSC_CONTROL_DB is outside the selected backup DATA_ROOT.', 'Back up the registry too; tenant databases alone cannot restore staff sign-in. Review INSTALL.md before using snapshot or backup.sh.')
+  }
+  if (!contains(backupRoot, tenantRoot)) {
+    add('backup-tenants', 'warn', 'Tenant storage is outside the selected backup DATA_ROOT.',
+      'Include tenant databases in the backup plan; the supplied backup.sh only walks DATA_ROOT.')
+  }
+  const linkedBackupPaths = backupWalkerSkipsLink(backupRoot, backupRoot, fs) ? ['DATA_ROOT'] : [
+    !memoryDb && backupWalkerSkipsLink(backupRoot, dbPath, fs) ? 'PSC_DB' : null,
+    config.PSC_CONTROL_DB !== ':memory:' && backupWalkerSkipsLink(backupRoot, controlPath, fs) ? 'registry' : null,
+    backupWalkerSkipsLink(backupRoot, tenantRoot, fs) ? 'tenant storage' : null,
+  ].filter(Boolean)
+  if (linkedBackupPaths.length) {
+    add('backup-walker-links', 'warn', `The supplied backup walker skips linked paths: ${linkedBackupPaths.join(', ')}.`,
+      'Use a physical DATA_ROOT layout for backup.sh or arrange a separate verified SQLite-aware backup of every linked database. Do not move live data without a backup and restore plan.')
   }
   if (!memoryDb && !dbPath.endsWith('.db')) {
     add('backup-extension', 'warn', 'PSC_DB does not end in .db; the supplied backup walkers select .db files.', 'Use a .db filename when setting up a new install, or arrange explicit SQLite-aware backups of the existing database. Do not rename a live database.')

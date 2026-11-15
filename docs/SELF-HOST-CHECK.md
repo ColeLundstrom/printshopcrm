@@ -77,8 +77,8 @@ service's launch flags if its SQLite support differs from the check.
 - Writable database, tenant and artwork directories; type and read/write access checks on the
   configured database, registry and their existing WAL/SHM files.
 - Common persistence and backup-layout mismatches, including artwork outside the backup layout,
-  a registry outside the backup root, and a database name without the `.db` suffix used by the
-  supplied backup scripts.
+  tenant storage or a registry outside the backup root, linked database paths the supplied Linux
+  backup walker skips, and a database name without the `.db` suffix used by the backup scripts.
 
 Directory checks create a uniquely named `.psc-doctor-*` temporary directory and one small file,
 then remove both. If the intended directory does not exist, the doctor probes its nearest
@@ -128,6 +128,12 @@ Set `DATA_ROOT` explicitly when running it. It does not read `DATA_ROOT` from `.
 layout comparison uses an exported `DATA_ROOT` when supplied, otherwise the directory containing
 `PSC_DB`, with a warning to configure the actual backup command. A layout PASS is not evidence
 that cron uses the same settings or that an archive exists.
+
+The supplied Linux backup script uses `find` without following symbolic links. A writable
+`DATA_ROOT`, `tenants` directory, `PSC_DB` or registry reached through a link may therefore be
+omitted from its archive. The doctor warns about these linked paths and tenant storage outside the
+selected backup root. Keep the link and existing data intact while arranging a verified
+SQLite-aware backup and restore plan; do not rename or move a live database to silence a warning.
 
 `npm run snapshot -- <data-root> <new-output-directory>` makes SQLite-aware **database** snapshots;
 it defaults to `/data` if no data root is supplied and **does not copy artwork**. Choose a new
