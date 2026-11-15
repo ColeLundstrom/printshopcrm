@@ -183,6 +183,57 @@ test('backup cautions catch artwork outside the backup root and a custom control
   assert.match(formatReport(report), /snapshot/)
 })
 
+test('doctor warns when the supplied backup walker would skip linked tenant databases', { skip: process.platform === 'win32' }, t => {
+  const dir = fixture(t), data = join(dir, 'data'), outside = join(dir, 'outside-tenants')
+  fs.mkdirSync(data)
+  fs.mkdirSync(join(outside, 'shop'), { recursive: true })
+  fs.writeFileSync(join(outside, 'shop', 'printshop.db'), 'synthetic shop')
+  fs.symlinkSync(outside, join(data, 'tenants'))
+  const walked = spawnSync('find', [data, '-name', '*.db', '-type', 'f'], { encoding: 'utf8' })
+  assert.equal(walked.status, 0, walked.stderr)
+  assert.doesNotMatch(walked.stdout, /printshop\.db/, 'the supplied backup walk misses linked tenants')
+  const before = tree(dir)
+  const report = runDoctor({ ...ready, root: dir, cwd: dir,
+    env: { PSC_DB: join(data, 'printshop.db'), DATA_ROOT: data } })
+  assert.equal(check(report, 'tenant-storage').status, 'pass')
+  assert.equal(check(report, 'backup-walker-links')?.status, 'warn')
+  assert.match(check(report, 'backup-walker-links').message, /tenant/i)
+  assert.deepEqual(tree(dir), before)
+})
+
+test('doctor warns when database file links or the backup root link evade find', { skip: process.platform === 'win32' }, t => {
+  const dir = fixture(t), data = join(dir, 'data'), alias = join(dir, 'linked-data')
+  fs.mkdirSync(data)
+  fs.writeFileSync(join(data, 'actual.db'), 'synthetic database')
+  fs.symlinkSync(join(data, 'actual.db'), join(data, 'printshop.db'))
+  fs.symlinkSync(join(data, 'actual.db'), join(data, 'control.db'))
+  fs.symlinkSync(data, alias)
+  const walked = spawnSync('find', [data, '-name', '*.db', '-type', 'f'], { encoding: 'utf8' })
+  assert.equal(walked.status, 0, walked.stderr)
+  assert.doesNotMatch(walked.stdout, /(?:control|printshop)\.db/, 'the backup walk misses linked DB files')
+  const before = tree(dir)
+  const files = runDoctor({ ...ready, root: dir, cwd: dir,
+    env: { PSC_DB: join(data, 'printshop.db'), DATA_ROOT: data } })
+  assert.equal(check(files, 'database-storage').status, 'pass')
+  assert.equal(check(files, 'backup-walker-links')?.status, 'warn')
+  assert.match(check(files, 'backup-walker-links').message, /PSC_DB.*registry/i)
+  const rootLink = runDoctor({ ...ready, root: dir, cwd: dir,
+    env: { PSC_DB: join(alias, 'actual.db'), DATA_ROOT: alias } })
+  assert.equal(check(rootLink, 'backup-walker-links')?.status, 'warn')
+  assert.match(check(rootLink, 'backup-walker-links').message, /DATA_ROOT/)
+  assert.deepEqual(tree(dir), before)
+})
+
+test('doctor warns when tenant storage is outside the selected backup root', t => {
+  const dir = fixture(t), data = join(dir, 'data'), backup = join(dir, 'backup-root')
+  fs.mkdirSync(data)
+  fs.mkdirSync(backup)
+  const report = runDoctor({ ...ready, root: dir, cwd: dir,
+    env: { PSC_DB: join(data, 'printshop.db'), DATA_ROOT: backup } })
+  assert.equal(check(report, 'backup-tenants')?.status, 'warn')
+  assert.match(check(report, 'backup-tenants').message, /Tenant storage/)
+})
+
 test('CLI help and missing-dependency runs work in an install with no node_modules', t => {
   const dir = fixture(t)
   fs.mkdirSync(join(dir, 'bin'))
