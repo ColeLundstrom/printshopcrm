@@ -2945,7 +2945,9 @@ app.post('/api/import/contacts', uploadMem.single('file'), reTenant, requireRole
   // skip a row. Email dedupe is checked again inside each transaction because preview can be stale.
   const importDb = getDb()
   const { created, duplicates: newDupes, skipped: rejected, stopped } = await withImportCheckpoints(importDb, checkpoint => writeContactImport(importDb, toAdd, { checkpoint }))
-  if (created) {
+  // After a checkpoint timeout, automatic maintenance has been restored. Do not make one more
+  // synchronous timeline write that could stall the request while reporting saved batches.
+  if (created && stopped?.code !== 'import_checkpoint_timeout') {
     // The contacts are durable even if a full disk prevents writing this final timeline row.
     try { logActivity('contact', `Imported ${created} customer${created === 1 ? '' : 's'} from CSV`, {}) }
     catch (error) { console.error('customer import activity:', error.message) }
@@ -7208,9 +7210,25 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
   // interruptedImportReport in lib/csv.mjs for what the wrong sentence costs a shop.
   let stopped = null
   const importDb = getDb()
-  await withImportCheckpoints(importDb, async checkpoint => {
+  // PASSIVE maintenance is off the request thread, but syncing it after every small,
+  // latency-limited batch can make a large import spend minutes waiting for storage. Keep the
+  // 25 ms write batches and their event-loop yields; checkpoint after at most 200 more orders.
+  // A growing WAL asks for an earlier pass so the existing 64 MiB pinned-reader guard still
+  // stops an import before it commits its whole file.
+  let walPath = ''
+  try {
+    const dbPath = importDb.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file
+    if (dbPath) walPath = `${dbPath}-wal`
+  } catch { /* the ordinary checkpoint path will report database failures */ }
+  let lastCheckpointAt = 0
+  const traceLargeImport = diagnostic && grouped.length >= 9000
+  const traceImport = (stage, index) => {
+    if (traceLargeImport) console.log('[import-progress]', JSON.stringify({ stage, index, total: grouped.length }))
+  }
+  const writeBatches = async checkpoint => {
     for (let i = 0; i < grouped.length;) {
       const start = i, started = performance.now()
+      traceImport('batch-start', i)
       const countsBefore = [created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled, partlyPaid]
       let commitAt = started
       try {
@@ -7220,7 +7238,9 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
           do { const orderAt = performance.now(); writeOne(grouped[i], i); i++; metrics.max_order_ms = Math.max(metrics.max_order_ms, performance.now() - orderAt) }
           while (i < grouped.length && i - start < BATCH && performance.now() - started < 25)
           commitAt = performance.now()
+          traceImport('commit-start', i)
         })
+        traceImport('commit-end', i)
         metrics.max_commit_ms = Math.max(metrics.max_commit_ms, performance.now() - commitAt)
         metrics.max_batch_ms = Math.max(metrics.max_batch_ms, performance.now() - started)
       } catch (e) {
@@ -7228,13 +7248,34 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
         ;[created, contactsMade, skippedDupes, openQuotes, unpaidInvoices, reconciled, skippedCancelled, partlyPaid] = countsBefore
         stopped = e; break
       }
-      // Checkpoint maintenance yields the request thread after committed counts are durable.
-      // A pinned-WAL limit stops here without undoing the batch's successful accounting.
-      const checkpointAt = performance.now()
-      try { await checkpoint() } catch (error) { stopped = error; break }
-      metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
+      let walBytes = 0
+      try { if (walPath) walBytes = statSync(walPath).size } catch { /* WAL may not exist yet */ }
+      if (i - lastCheckpointAt >= BATCH || i === grouped.length || walBytes >= 32 * 1024 * 1024) {
+        // The checkpoint still runs after COMMIT, where a pinned-reader limit can report the
+        // exact committed count without rolling a successful batch back.
+        const checkpointAt = performance.now()
+        try { await checkpoint() } catch (error) { stopped = error; break }
+        traceImport('checkpoint-end', i)
+        metrics.max_checkpoint_ms = Math.max(metrics.max_checkpoint_ms, performance.now() - checkpointAt)
+        lastCheckpointAt = i
+      }
       if (i < grouped.length) await new Promise((r) => setImmediate(r))
     }
+  }
+  await withImportCheckpoints(importDb, async checkpoint => {
+    if (importDb === db || grouped.length < 1000) return writeBatches(checkpoint)
+    // Fast liveness polling writes to the default control database while this tenant imports.
+    // Thousands of real FULL-durability probes can hit that connection's automatic WAL
+    // checkpoint and make /health itself miss its latency target. Give it the remaining worker
+    // slot during large imports and maintain it off the request thread at a bounded cadence.
+    return withImportCheckpoints(db, async healthCheckpoint => {
+      const timer = setInterval(() => {
+        void healthCheckpoint().catch(error => console.error('health checkpoint maintenance:', error.message))
+      }, 2000)
+      timer.unref?.()
+      try { return await writeBatches(checkpoint) }
+      finally { clearInterval(timer) }
+    })
   })
   if (diagnostic) console.log('[import-diagnostics]', JSON.stringify({ orders: grouped.length, ...Object.fromEntries(Object.entries(metrics).map(([k,v])=>[k,Math.round(v)])) }))
   if (stopped) {
@@ -7245,7 +7286,12 @@ app.post('/api/import/orders', uploadMem.single('file'), reTenant, requireRole('
     // On the shop's own timeline, because the money is on the books either way and nothing else
     // in the product would name where it came from. Best effort: whatever stopped the import may
     // stop this too, and the report still has to reach the screen.
-    try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
+    // A timed-out checkpoint restored ordinary SQLite maintenance; even one more synchronous
+    // timeline write could run the same stalled auto-checkpoint on the request thread. The
+    // response still reports every committed batch and tells the shop to retry the same file.
+    if (stopped.code !== 'import_checkpoint_timeout') {
+      try { logActivity('note', `Import stopped after ${created} of ${grouped.length} order(s) — ${String(stopped.message).slice(0, 160)}`, {}) } catch { /* the disk that stopped the import may stop this too */ }
+    }
     return res.status(503).json(report)
   }
   // These orders have committed. A secondary timeline failure must not report that import failed.
@@ -11245,7 +11291,10 @@ server.listen(...(HOST ? [PORT, HOST] : [PORT]), () => {
     tickRunning = true
     try { await runTick() } finally { tickRunning = false }
   }
-  setTimeout(runTickGuarded, 4000).unref?.()
+  // Synthetic HTTP fixtures can set this alongside PSC_TICK_MS so a startup sweep does not
+  // race assertions about a single rejected request. Ordinary installs retain the 4s sweep.
+  const initialTickMs = process.env.PSC_DEMO === '1' ? Number(process.env.PSC_TICK_INITIAL_MS) : NaN
+  setTimeout(runTickGuarded, Number.isFinite(initialTickMs) && initialTickMs > 0 ? initialTickMs : 4000).unref?.()
   setInterval(runTickGuarded, TICK_MS).unref?.()
 
   // Warm the AI availability check off the request path, so Autopilot's first run doesn't

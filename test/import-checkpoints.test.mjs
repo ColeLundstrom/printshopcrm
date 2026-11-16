@@ -8,8 +8,9 @@ import { Worker } from 'node:worker_threads'
 import { EventEmitter } from 'node:events'
 import { execFileSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
+import { writeContactImport } from '../lib/contact-import.mjs'
 import {
-  createImportCheckpointManager, supportsImportCheckpointVersion, ImportCheckpointBacklogError, ImportCheckpointRestoreError,
+  createImportCheckpointManager, supportsImportCheckpointVersion, ImportCheckpointBacklogError, ImportCheckpointRestoreError, ImportCheckpointTimeoutError,
 } from '../lib/import-checkpoints.mjs'
 
 const workerUrl = new URL('../lib/import-checkpoint-worker.mjs', import.meta.url)
@@ -246,7 +247,7 @@ fixedTest('checkpoint timeout falls back safely and never releases its guard or 
   try {
     await manager.withImportCheckpoints(f.db, async checkpoint => {
       f.db.exec('INSERT INTO items(payload) VALUES(zeroblob(20000))')
-      assert.equal(await checkpoint(), null)
+      await assert.rejects(checkpoint(), error => error instanceof ImportCheckpointTimeoutError && error.code === 'import_checkpoint_timeout')
       assert.equal(auto(f.db), 37)
     })
     await actualExit.promise
@@ -259,6 +260,67 @@ fixedTest('checkpoint timeout falls back safely and never releases its guard or 
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM items').get().n, 1)
     assert.equal(sync(f.db), 2)
   } finally { observedExit?.(); delayedWorker?.removeAllListeners(); await manager.shutdownImportCheckpoints(); clearInterval(keepAlive); f.close() }
+})
+
+fixedTest('a slow checkpoint keeps automatic checkpointing off until its worker replies', { timeout: 20000 }, async () => {
+  const f = fixture(), diagnostics = []
+  const manager = createImportCheckpointManager({
+    diagnostic: event => diagnostics.push(event), checkpointSlowMs: 15, checkpointTimeoutMs: 150,
+    createWorker: () => {
+      const worker = new EventEmitter()
+      queueMicrotask(() => worker.emit('message', { type: 'ready', version: f.db.prepare('SELECT sqlite_version() v').get().v, pageSize: 4096 }))
+      worker.postMessage = message => {
+        if (message.type === 'checkpoint') setTimeout(() => worker.emit('message', {
+          type: 'checkpoint', id: message.id, result: { busy: 0, log: 0, checkpointed: 0 }, durationMs: 60,
+        }), 60)
+        if (message.type === 'close') setImmediate(() => worker.emit('exit', 0))
+      }
+      worker.terminate = () => { setImmediate(() => worker.emit('exit', 0)); return Promise.resolve(0) }
+      return worker
+    },
+  })
+  try {
+    await manager.withImportCheckpoints(f.db, async checkpoint => {
+      f.db.exec('INSERT INTO items(payload) VALUES(zeroblob(20000))')
+      const pending = checkpoint()
+      await new Promise(resolve => setTimeout(resolve, 35))
+      assert.equal(auto(f.db), 0, 'a slow pass must not restore synchronous auto-checkpoints during import')
+      assert.equal((await pending).busy, 0)
+      assert.equal(auto(f.db), 0)
+    })
+    assert.ok(diagnostics.some(event => event.event === 'checkpoint-slow'))
+    assert.equal(diagnostics.some(event => event.reason === 'checkpoint-timeout'), false)
+    assert.equal(auto(f.db), 37)
+    assert.equal(f.db.prepare('SELECT count(*) n FROM items').get().n, 1)
+  } finally { await manager.shutdownImportCheckpoints(); f.close() }
+})
+
+fixedTest('a stuck checkpoint stops after the last committed customer batch', { timeout: 20000 }, async () => {
+  const f = fixture()
+  const keepAlive = setInterval(() => {}, 1000) // fake worker has no native event-loop handle
+  f.db.exec(`CREATE TABLE contacts(id INTEGER PRIMARY KEY, name TEXT, email TEXT, phone TEXT, company TEXT,
+    notes TEXT, tags TEXT, billing_address TEXT, shipping_address TEXT, created_at TEXT, updated_at TEXT)`)
+  const manager = createImportCheckpointManager({
+    diagnostic: quiet, checkpointSlowMs: 10, checkpointTimeoutMs: 30,
+    createWorker: () => {
+      const worker = new EventEmitter()
+      let exited = false
+      const exit = () => { if (!exited) { exited = true; worker.emit('exit', 0) } }
+      queueMicrotask(() => worker.emit('message', { type: 'ready', version: f.db.prepare('SELECT sqlite_version() v').get().v, pageSize: 4096 }))
+      worker.postMessage = message => { if (message.type === 'close') setImmediate(exit) }
+      worker.terminate = () => { setImmediate(exit); return Promise.resolve(0) }
+      return worker
+    },
+  })
+  try {
+    const contacts = Array.from({ length: 4 }, (_, i) => ({ name: `Buyer ${i}`, email: `buyer${i}@example.test`, phone: '', company: '', notes: '', tags: '' }))
+    const result = await manager.withImportCheckpoints(f.db, checkpoint => writeContactImport(f.db, contacts, { batchSize: 2, checkpoint }))
+    assert.equal(result.created, 2)
+    assert.equal(result.stopped?.code, 'import_checkpoint_timeout')
+    assert.equal(f.db.prepare('SELECT count(*) n FROM contacts').get().n, 2)
+    assert.equal(auto(f.db), 37)
+    assert.equal(sync(f.db), 2)
+  } finally { await manager.shutdownImportCheckpoints(); clearInterval(keepAlive); f.close() }
 })
 
 fixedTest('two transient restore failures retain the original threshold through close and worker exit', { timeout: 20000 }, async () => {
