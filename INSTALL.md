@@ -458,11 +458,15 @@ Schema migrations run automatically at startup and are additive — they add col
 don't drop them. Take the snapshot anyway; it is exactly what `bin/restore.mjs` puts back:
 
 ```bash
-sudo systemctl stop printshopcrm
-sudo -u printshopcrm npm run restore -- /var/backups/pre-upgrade-<stamp> \
-  --data-root /var/lib/printshopcrm --yes
-sudo systemctl start printshopcrm
+SNAPSHOT='/var/lib/printshopcrm/backups/pre-upgrade-<stamp>'  # replace <stamp> with the successful snapshot's timestamp
+sudo -u printshopcrm npm run restore -- "$SNAPSHOT" --data-root /var/lib/printshopcrm \
+  && sudo systemctl stop printshopcrm \
+  && sudo -u printshopcrm npm run restore -- "$SNAPSHOT" --data-root /var/lib/printshopcrm --yes \
+  && sudo systemctl start printshopcrm
 ```
+
+The first restore command only previews the archive. If preview, service stop or restore fails,
+the chain stops; resolve the error before starting the service.
 
 To verify before restarting, run the tests against the new code:
 
