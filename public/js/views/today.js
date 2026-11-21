@@ -126,7 +126,7 @@ export function insightsCard(i) {
         <a class="ins-fig" href="#/pipeline"><span class="ins-v">${i.win_rate_90d == null ? '—' : i.win_rate_90d + '%'}</span><span class="ins-l">Quotes won, 90 days</span>
           <span class="ins-d">${i.open_quotes_90d} still open</span></a>
         <a class="ins-fig" href="#/roi"><span class="ins-v ${margin == null ? '' : margin >= i.margin_target ? 'good' : margin >= 25 ? 'warn' : 'bad'}">${margin == null ? '—' : margin + '%'}</span><span class="ins-l">Margin kept on finished jobs</span>
-          <span class="ins-d">target ${i.margin_target}% · ${i.jobs_measured} job${i.jobs_measured === 1 ? '' : 's'}</span></a>
+          <span class="ins-d">target ${i.margin_target}% · ${i.jobs_measured} of ${i.jobs_completed_total} finished jobs with net sales${i.jobs_without_sale_value ? ` · ${i.jobs_without_sale_value} excluded` : ''}</span></a>
       </div>
       <svg class="ins-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Collected and won per week, last ${n} weeks">${bars}</svg>
     </div>

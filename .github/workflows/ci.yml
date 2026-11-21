@@ -104,8 +104,10 @@ jobs:
 
       - run: npm ci
 
+      # Parallel fixture bootstraps can contend for SQLite's migration lock on macOS.
+      # Keep the same suite and gate, but run the independent files serially as on Windows.
       - name: Unit tests
-        run: npm test
+        run: node --test --test-concurrency=1 test/*.test.mjs && node bin/gate.mjs
 
       - name: End-to-end tests
         run: node bin/gate-e2e.mjs

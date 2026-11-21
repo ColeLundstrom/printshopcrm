@@ -23,10 +23,16 @@ export async function roiView() {
     <div class="kpis">
       <div class="kpi"><div class="lbl">Revenue</div><div class="val">${money0(t.revenue)}</div><div class="sub">${t.count} costed jobs</div></div>
       <div class="kpi bad"><div class="lbl">Cost to produce</div><div class="val">${money0(t.cost)}</div><div class="sub">blanks · decoration · labor · screens</div></div>
-      <div class="kpi"><div class="lbl">Profit</div><div class="val">${money0(t.profit)}</div><div class="sub">what you actually keep</div></div>
+      <div class="kpi"><div class="lbl">Modeled profit</div><div class="val">${money0(t.profit)}</div><div class="sub">priced jobs, before tax</div></div>
       <div class="kpi ${t.margin < 40 ? 'warn' : ''}"><div class="lbl">Avg margin</div><div class="val">${t.margin}%</div>
         <div class="sub">${t.losers ? `<span style="color:var(--red)">${t.losers} losing money</span> · ` : ''}${t.thin} thin</div></div>
     </div>
+
+    <div class="card" style="margin-bottom:16px"><div class="card-b" style="font-size:13px">
+      <strong>Profit coverage: ${t.count} of ${t.total_jobs} jobs (${t.coverage_pct}%).</strong>
+      ${t.excluded_jobs ? `${t.excluded_jobs} job${t.excluded_jobs === 1 ? ' has' : 's have'} no positive net sale value and ${t.excluded_jobs === 1 ? 'is' : 'are'} excluded from revenue, cost, profit and margin totals.` : 'Every job has a positive net sale value.'}
+      Costs use the shop's current model; missing catalog matches use an estimated blank cost.
+    </div></div>
 
     ${t.losers || t.thin ? `<div class="card" style="border-color:${t.losers ? 'rgba(255,95,109,.4)' : 'rgba(247,185,85,.4)'};margin-bottom:16px">
       <div class="card-b" style="font-size:13px">
@@ -34,24 +40,24 @@ export async function roiView() {
         ${t.thin ? `<strong style="color:var(--amber)">${t.thin} under 25% margin.</strong> ` : ''}
         These are priced too low for what they cost you. Raise the price or the quantity next time. Sorted worst-first below.
       </div></div>` : `<div class="card" style="border-color:rgba(16,211,154,.3);margin-bottom:16px"><div class="card-b" style="font-size:13px">
-        <strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Every job is profitable.</strong> Nothing under 25% margin.</div></div>`}
+        <strong style="color:var(--accent)">${icon('check', 'ico ico-inline')} Every costed job is profitable.</strong> Nothing under 25% margin.</div></div>`}
 
-    <div class="card">
-      <div class="card-h"><h3>Every job, costed</h3><div class="spacer"></div>
+    <div class="card roi-results">
+      <div class="card-h"><h3>Jobs with net sales</h3><div class="spacer"></div>
         <div class="tabs" id="roi-sort" role="group" aria-label="Sort jobs">
           <button type="button" data-s="margin" class="${sortBy === 'margin' ? 'on' : ''}" aria-pressed="${sortBy === 'margin'}">By margin</button>
           <button type="button" data-s="profit" class="${sortBy === 'profit' ? 'on' : ''}" aria-pressed="${sortBy === 'profit'}">By profit</button>
           <button type="button" data-s="revenue" class="${sortBy === 'revenue' ? 'on' : ''}" aria-pressed="${sortBy === 'revenue'}">By revenue</button>
         </div></div>
-      ${d.jobs.length ? `<table class="tbl">
+      ${d.jobs.length ? `<table class="tbl stack">
         <thead><tr><th>Job</th><th class="num">Pieces</th><th class="num">Revenue</th><th class="num">Cost</th><th class="num">Profit</th><th class="num">Margin</th></tr></thead>
         <tbody>${sorted.map((r) => `<tr class="click" data-job="${r.job_id}">
-          <td><div style="font-weight:600">${esc(r.title)}</div><div class="mono">${esc(r.job_number)}${!r.blank_matched ? ' · <span class="dim" title="No catalog match, cost estimated">est. cost</span>' : ''}</div></td>
-          <td class="num">${r.pieces}</td>
-          <td class="num">${money(r.revenue)}</td>
-          <td class="num muted">${money(r.cost)}</td>
-          <td class="num"><strong style="color:${r.profit >= 0 ? 'var(--txt)' : 'var(--red)'}">${money(r.profit)}</strong></td>
-          <td class="num">${verdictPill(r)}</td>
+          <td data-label="Job"><div style="font-weight:600">${esc(r.title)}</div><div class="mono">${esc(r.job_number)}${!r.blank_matched ? ' · <span class="dim" title="No catalog match, cost estimated">est. cost</span>' : ''}</div></td>
+          <td class="num" data-label="Pieces">${r.pieces}</td>
+          <td class="num" data-label="Revenue">${money(r.revenue)}</td>
+          <td class="num muted" data-label="Cost">${money(r.cost)}</td>
+          <td class="num" data-label="Profit"><strong style="color:${r.profit >= 0 ? 'var(--txt)' : 'var(--red)'}">${money(r.profit)}</strong></td>
+          <td class="num" data-label="Margin">${verdictPill(r)}</td>
         </tr>`).join('')}</tbody></table>`
         : empty('roi', 'No costed jobs yet', 'Convert an estimate to a job and its profitability shows here.', '<a class="btn" href="#/estimates">Go to estimates</a>')}
     </div>
@@ -70,7 +76,7 @@ export async function roiView() {
   if (keepSort) $(`#roi-sort [data-s="${CSS.escape(keepSort)}"]`)?.focus?.()
 }
 
-const roiList = (rows) => rows.length ? `<table class="tbl"><tbody>${rows.map((r) => `
+const roiList = (rows) => rows.length ? `<table class="tbl roi-list"><tbody>${rows.map((r) => `
   <tr class="click" data-job="${r.job_id}">
     <td><div style="font-weight:600;font-size:12.5px">${esc(r.title)}</div><div class="mono">${esc(r.job_number)}</div></td>
     <td class="num"><strong>${money0(r.profit)}</strong></td>
