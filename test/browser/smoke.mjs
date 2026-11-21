@@ -181,7 +181,8 @@ async function exercise(viewport, cookies) {
       await screenshot(page, scenario, 'returned-fresh')
     })
     await check(scenario, 'Profitability names excluded jobs and keeps its totals scoped', async () => {
-      await page.goto(server.base + '/#/roi')
+      // Keep the document alive so a scheduled badge refresh is not aborted by a full reload.
+      await page.evaluate(() => { location.hash = '#/roi' })
       await page.getByText('Profit coverage:', { exact: false }).waitFor()
       const totals = await page.evaluate(async () => (await (await fetch('/api/roi')).json()).totals)
       assert(totals.excluded_jobs >= 1, 'Synthetic demo has an unpriced job')
@@ -198,6 +199,7 @@ async function exercise(viewport, cookies) {
         }), 'All sort choices are visible on mobile')
         assert(await page.locator('.roi-results td[data-label="Margin"]').first().isVisible(), 'Mobile job card shows its margin')
       }
+      await isolation.waitForIdle()
       await screenshot(page, scenario, 'profit-coverage')
     })
   } catch (error) {
