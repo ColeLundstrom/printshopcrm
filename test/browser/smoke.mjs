@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /** Real Google Chrome UI checks against a disposable demo. Never accepts a production URL. */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
 import { createHttpTestServer } from '../helpers/http-test-server.mjs'
 import { isolateBrowser, redact, requestLabel } from './isolation.mjs'
 
@@ -179,6 +180,26 @@ async function exercise(viewport, cookies) {
       await isolation.waitForIdle()
       await screenshot(page, scenario, 'returned-fresh')
     })
+    await check(scenario, 'Profitability names excluded jobs and keeps its totals scoped', async () => {
+      await page.goto(server.base + '/#/roi')
+      await page.getByText('Profit coverage:', { exact: false }).waitFor()
+      const totals = await page.evaluate(async () => (await (await fetch('/api/roi')).json()).totals)
+      assert(totals.excluded_jobs >= 1, 'Synthetic demo has an unpriced job')
+      const text = await page.locator('#view').innerText()
+      assert.match(text, new RegExp(`Profit coverage: ${totals.count} of ${totals.total_jobs} jobs \\(${totals.coverage_pct}%\\)`))
+      assert.match(text, new RegExp(`${totals.excluded_jobs} jobs? have no positive net sale value|1 job has no positive net sale value`))
+      assert.match(text, /Modeled profit/i)
+      assert.doesNotMatch(text, /Every job is profitable\./)
+      assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Profitability has no horizontal overflow')
+      if (viewport.mobile) {
+        assert(await page.locator('#roi-sort [data-s="revenue"]').evaluate(button => {
+          const box = button.getBoundingClientRect()
+          return box.right <= innerWidth && box.left >= 0
+        }), 'All sort choices are visible on mobile')
+        assert(await page.locator('.roi-results td[data-label="Margin"]').first().isVisible(), 'Mobile job card shows its margin')
+      }
+      await screenshot(page, scenario, 'profit-coverage')
+    })
   } catch (error) {
     if (new URL(page.url()).pathname === '/') await screenshot(page, scenario, 'failure').catch(() => {})
     throw error
@@ -204,6 +225,12 @@ try {
   server = await createHttpTestServer()
   const prepared = spawnSync(process.execPath, ['bin/demo.mjs', destination, String(server.port)], { cwd: root, encoding: 'utf8', timeout: 120000 })
   assert.equal(prepared.status, 0, 'Isolated synthetic demo preparation failed')
+  const tenantRoot = join(destination, 'data/tenants')
+  const db = new DatabaseSync(join(tenantRoot, readdirSync(tenantRoot)[0], 'printshop.db'))
+  const contact = db.prepare('SELECT id FROM contacts ORDER BY id LIMIT 1').get()
+  assert(contact, 'Synthetic demo has a customer')
+  db.prepare("INSERT INTO jobs(contact_id,job_number,title,status,stage) VALUES(?,'COVERAGE-UNPRICED','Unpriced fixture','complete','complete')").run(contact.id)
+  db.close()
   const env = JSON.parse(readFileSync(join(destination, 'demo-env.json'), 'utf8'))
   const password = readFileSync(join(destination, 'LOGIN.txt'), 'utf8').match(/^Password: (.+)$/m)?.[1]
   assert(password, 'Demo credentials were not generated')

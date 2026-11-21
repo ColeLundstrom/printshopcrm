@@ -345,6 +345,12 @@ table.tbl tr:last-child td { border-bottom: 0; }
 table.tbl tbody tr { transition: .1s; }
 table.tbl tbody tr.click { cursor: pointer; }
 table.tbl tbody tr.click:hover { background: var(--panel-2); }
+.roi-list td.num { white-space: nowrap; }
+@media (max-width: 720px) {
+  .roi-results .card-h { display: block; }
+  .roi-results .tabs { margin-top: var(--sp-4); width: 100%; }
+  .roi-results .tabs button { flex: 1; padding-inline: var(--sp-3); }
+}
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--mono); font-size: var(--fs-xs); color: var(--txt-2); }
 
